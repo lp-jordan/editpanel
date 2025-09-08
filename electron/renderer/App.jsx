@@ -1,25 +1,22 @@
 const { useEffect, useState } = React;
 
 function App() {
-  const [connected, setConnected] = useState(false);
+  const [status, setStatus] = useState('waiting for Resolve');
   const [info, setInfo] = useState(null);
   const [log, setLog] = useState([]);
 
-  // Load context information on mount
   useEffect(() => {
-    let active = true;
-    window.leaderpassAPI
-      .call('context')
-      .then(ctx => {
-        if (active) {
-          setInfo(ctx);
-          setConnected(true);
-        }
-      })
-      .catch(() => setConnected(false));
+    const unsubscribeStatus = window.electronAPI.onHelperStatus(message => {
+      if (message.ok && message.data) {
+        setStatus('connected');
+        setInfo(message.data);
+      } else if (!message.ok && message.error === 'No Resolve running') {
+        setStatus('waiting for Resolve');
+        setInfo(null);
+      }
+    });
 
-    // Subscribe to helper messages
-    const unsubscribe = window.electronAPI.onHelperMessage(message => {
+    const unsubscribeLog = window.electronAPI.onHelperMessage(message => {
       setLog(prev => {
         const next = [...prev, message];
         return next.slice(-20);
@@ -27,19 +24,19 @@ function App() {
     });
 
     return () => {
-      active = false;
-      unsubscribe && unsubscribe();
+      unsubscribeStatus && unsubscribeStatus();
+      unsubscribeLog && unsubscribeLog();
     };
   }, []);
 
   const callAction = action => {
-    window.leaderpassAPI.call(action);
+    window.leaderpassAPI.call(action).catch(() => {});
   };
 
   return (
     <div>
       <div>
-        <strong>Connection:</strong> {connected ? 'Connected' : 'Disconnected'}
+        <strong>Connection:</strong> {status}
       </div>
       <div>
         <strong>Info:</strong>
