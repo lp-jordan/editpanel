@@ -5,6 +5,7 @@ const readline = require('readline');
 
 let helper;
 let helperReader;
+const pending = [];
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -24,6 +25,32 @@ app.whenReady().then(() => {
   });
   helperReader = readline.createInterface({ input: helper.stdout });
 
+  helperReader.on('line', line => {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch (e) {
+      message = { ok: false, error: 'invalid response' };
+    }
+
+    if (message.event === 'status') {
+      BrowserWindow.getAllWindows().forEach(w =>
+        w.webContents.send('helper-status', message)
+      );
+      return;
+    }
+
+    if (pending.length) {
+      const event = pending.shift();
+      message = Object.assign({ ok: !message.error }, message);
+      event.reply('helper-response', message);
+    } else {
+      BrowserWindow.getAllWindows().forEach(w =>
+        w.webContents.send('helper-status', message)
+      );
+    }
+  });
+
   ipcMain.on('helper-request', (event, payload) => {
     if (!helper) {
       event.reply('helper-response', { ok: false, error: 'helper not running' });
@@ -31,26 +58,12 @@ app.whenReady().then(() => {
     }
     const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
     helper.stdin.write(`${request}\n`);
-    helperReader.once('line', line => {
-      let response;
-      try {
-        response = JSON.parse(line);
-        response = Object.assign({ ok: !response.error }, response);
-      } catch (e) {
-        response = { ok: false, error: 'invalid response' };
-      }
-      event.reply('helper-response', response);
-    });
+    pending.push(event);
   });
 
   // Handle generic leaderpass actions invoked from the renderer.
   ipcMain.handle('leaderpass-call', async (event, action) => {
-    if (action === 'context') {
-      // In a real application this would retrieve live context.
-      return { status: 'ok', message: 'connected' };
-    }
     const msg = `Action ${action} invoked`;
-    // Forward message to renderer consoles.
     BrowserWindow.getAllWindows().forEach(w =>
       w.webContents.send('helper-message', msg)
     );
