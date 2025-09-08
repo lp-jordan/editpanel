@@ -43,6 +43,20 @@ app.whenReady().then(() => {
     });
   });
 
+  // Handle generic leaderpass actions invoked from the renderer.
+  ipcMain.handle('leaderpass-call', async (event, action) => {
+    if (action === 'context') {
+      // In a real application this would retrieve live context.
+      return { status: 'ok', message: 'connected' };
+    }
+    const msg = `Action ${action} invoked`;
+    // Forward message to renderer consoles.
+    BrowserWindow.getAllWindows().forEach(w =>
+      w.webContents.send('helper-message', msg)
+    );
+    return { status: 'ok' };
+  });
+
   createWindow();
 
   app.on('activate', () => {
