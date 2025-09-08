@@ -38,27 +38,33 @@ app.whenReady().then(() => {
   });
 
   helperReader.on('line', line => {
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch (e) {
-      message = { ok: false, error: 'invalid response' };
-    }
+          let message;
+      try {
+        message = JSON.parse(line);
+      } catch (e) {
+        message = { ok: false, error: 'invalid response' };
+      }
 
-    if (message.event === 'status') {
-      BrowserWindow.getAllWindows().forEach(w =>
-        w.webContents.send('helper-status', message)
-      );
-      return;
-    }
+      if (message.event === 'status') {
+        BrowserWindow.getAllWindows().forEach(w =>
+          w.webContents.send('helper-status', message)
+        );
+        return;
+      }
 
-    if (pending.length) {
-      const event = pending.shift();
-      message = Object.assign({ ok: !message.error }, message);
-      event.reply('helper-response', message);
-    } else {
+      if (pending.length) {
+        const event = pending.shift();
+        message = Object.assign({ ok: !message.error }, message);
+        event.reply('helper-response', message);
+      } else {
+        BrowserWindow.getAllWindows().forEach(w =>
+          w.webContents.send('helper-status', message)
+        );
+      }
+    } catch (err) {
+      console.error('Error processing helper output:', err);
       BrowserWindow.getAllWindows().forEach(w =>
-        w.webContents.send('helper-status', message)
+        w.webContents.send('helper-error', { error: err.message })
       );
     }
   });
