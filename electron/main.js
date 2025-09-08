@@ -26,16 +26,18 @@ app.whenReady().then(() => {
 
   ipcMain.on('helper-request', (event, payload) => {
     if (!helper) {
-      event.reply('helper-response', { error: 'helper not running' });
+      event.reply('helper-response', { ok: false, error: 'helper not running' });
       return;
     }
-    helper.stdin.write(`${JSON.stringify(payload)}\n`);
+    const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    helper.stdin.write(`${request}\n`);
     helperReader.once('line', line => {
       let response;
       try {
         response = JSON.parse(line);
+        response = Object.assign({ ok: !response.error }, response);
       } catch (e) {
-        response = { error: 'invalid response' };
+        response = { ok: false, error: 'invalid response' };
       }
       event.reply('helper-response', response);
     });
