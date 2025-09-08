@@ -37,6 +37,32 @@ app.whenReady().then(() => {
     }
   });
 
+  helperReader.on('line', line => {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch (e) {
+      message = { ok: false, error: 'invalid response' };
+    }
+
+    if (message.event === 'status') {
+      BrowserWindow.getAllWindows().forEach(w =>
+        w.webContents.send('helper-status', message)
+      );
+      return;
+    }
+
+    if (pending.length) {
+      const event = pending.shift();
+      message = Object.assign({ ok: !message.error }, message);
+      event.reply('helper-response', message);
+    } else {
+      BrowserWindow.getAllWindows().forEach(w =>
+        w.webContents.send('helper-status', message)
+      );
+    }
+  });
+
   ipcMain.on('helper-request', (event, payload) => {
     if (!helperProc) {
       event.reply('helper-response', { ok: false, error: 'helper not running' });
@@ -58,12 +84,7 @@ app.whenReady().then(() => {
 
   // Handle generic leaderpass actions invoked from the renderer.
   ipcMain.handle('leaderpass-call', async (event, action) => {
-    if (action === 'context') {
-      // In a real application this would retrieve live context.
-      return { status: 'ok', message: 'connected' };
-    }
     const msg = `Action ${action} invoked`;
-    // Forward message to renderer consoles.
     BrowserWindow.getAllWindows().forEach(w =>
       w.webContents.send('helper-message', msg)
     );

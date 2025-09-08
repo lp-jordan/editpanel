@@ -28,23 +28,22 @@ def _print(obj: dict) -> None:
     sys.stdout.flush()
 
 
+import threading
+
+
 resolve = None
-while True:
-    if dvr is not None:
-        try:  # pragma: no cover - depends on Resolve being available
-            resolve = dvr.scriptapp("Resolve")
-        except Exception:  # pragma: no cover - best effort connection attempt
-            resolve = None
-    if resolve:
-        break
-    _print({"ok": False, "error": "No Resolve running"})
-    time.sleep(1)
+project_manager = None
+project = None
+timeline = None
 
 
-# Cache project and timeline for later handlers
-project_manager = resolve.GetProjectManager() if resolve else None
-project = project_manager.GetCurrentProject() if project_manager else None
-timeline = project.GetCurrentTimeline() if project else None
+def _update_context() -> None:
+    """Refresh global project and timeline references."""
+
+    global project_manager, project, timeline
+    project_manager = resolve.GetProjectManager() if resolve else None
+    project = project_manager.GetCurrentProject() if project_manager else None
+    timeline = project.GetCurrentTimeline() if project else None
 
 
 def handle_context(_payload: dict) -> dict:
@@ -95,6 +94,40 @@ HANDLERS = {
     "start_render": handle_start_render,
     "stop_render": handle_stop_render,
 }
+
+
+def _watch_resolve() -> None:
+    """Emit status updates about Resolve availability."""
+
+    global resolve
+    last_ok = False
+    while True:
+        new_resolve = None
+        if dvr is not None:
+            try:  # pragma: no cover - depends on Resolve being available
+                new_resolve = dvr.scriptapp("Resolve")
+            except Exception:  # pragma: no cover - best effort connection attempt
+                new_resolve = None
+        if new_resolve:
+            resolve = new_resolve
+            _update_context()
+            if not last_ok:
+                _print({
+                    "ok": True,
+                    "error": None,
+                    "data": handle_context({}),
+                    "event": "status",
+                })
+            last_ok = True
+        else:
+            resolve = None
+            _update_context()
+            _print({"ok": False, "error": "No Resolve running", "event": "status"})
+            last_ok = False
+        time.sleep(1)
+
+
+threading.Thread(target=_watch_resolve, daemon=True).start()
 
 
 def main() -> None:
