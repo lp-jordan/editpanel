@@ -27,7 +27,7 @@ contextBridge.exposeInMainWorld('leaderpassAPI', {
 contextBridge.exposeInMainWorld('electronAPI', {
   /**
    * Subscribe to helper messages.
-   * @param {(message: string) => void} callback
+   * @param {(payload: any) => void} callback
    * @returns {() => void} unsubscribe function
    */
   onHelperMessage(callback) {
