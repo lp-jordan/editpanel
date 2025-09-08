@@ -3,6 +3,8 @@ const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
 
+const pending = [];
+
 let helperProc;
 let helperReader;
 let win;
@@ -26,18 +28,6 @@ app.whenReady().then(() => {
   helperReader = readline.createInterface({ input: helperProc.stdout });
 
   helperReader.on('line', line => {
-    let payload;
-    try {
-      payload = JSON.parse(line);
-    } catch (e) {
-      payload = { ok: false, error: 'invalid response' };
-    }
-    if (win) {
-      win.webContents.send('helper-message', payload);
-    }
-  });
-
-  helperReader.on('line', line => {
     try {
       let message;
       try {
@@ -57,10 +47,6 @@ app.whenReady().then(() => {
         const event = pending.shift();
         message = Object.assign({ ok: !message.error }, message);
         event.reply('helper-response', message);
-      } else {
-        BrowserWindow.getAllWindows().forEach(w =>
-          w.webContents.send('helper-status', message)
-        );
       }
     } catch (err) {
       console.error('Error processing helper output:', err);
@@ -77,16 +63,7 @@ app.whenReady().then(() => {
     }
     const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
     helperProc.stdin.write(`${request}\n`);
-    helperReader.once('line', line => {
-      let response;
-      try {
-        response = JSON.parse(line);
-        response = Object.assign({ ok: !response.error }, response);
-      } catch (e) {
-        response = { ok: false, error: 'invalid response' };
-      }
-      event.reply('helper-response', response);
-    });
+    pending.push(event);
   });
 
   // Handle generic leaderpass actions invoked from the renderer.
