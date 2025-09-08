@@ -13,15 +13,16 @@ function App() {
       .then(ctx => {
         if (active) {
           setInfo(ctx);
-          setConnected(true);
         }
       })
-      .catch(() => setConnected(false));
+      .catch(() => {});
 
     // Subscribe to helper messages
-    const unsubscribe = window.electronAPI.onHelperMessage(message => {
+    const unsubscribe = window.electronAPI.onHelperMessage(payload => {
+      setConnected(payload.error !== 'No Resolve running');
       setLog(prev => {
-        const next = [...prev, message];
+        const entry = typeof payload === 'string' ? payload : JSON.stringify(payload);
+        const next = [...prev, entry];
         return next.slice(-20);
       });
     });

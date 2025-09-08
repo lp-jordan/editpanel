@@ -3,11 +3,12 @@ const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
 
-let helper;
+let helperProc;
 let helperReader;
+let win;
 
 function createWindow() {
-  const win = new BrowserWindow({
+  win = new BrowserWindow({
     width: 800,
     height: 600,
     webPreferences: {
@@ -19,18 +20,30 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  helper = spawn('python', [path.join(__dirname, '..', 'helper', 'resolve_helper.py')], {
+  helperProc = spawn('python', [path.join(__dirname, '..', 'helper', 'resolve_helper.py')], {
     stdio: ['pipe', 'pipe', 'inherit']
   });
-  helperReader = readline.createInterface({ input: helper.stdout });
+  helperReader = readline.createInterface({ input: helperProc.stdout });
+
+  helperReader.on('line', line => {
+    let payload;
+    try {
+      payload = JSON.parse(line);
+    } catch (e) {
+      payload = { ok: false, error: 'invalid response' };
+    }
+    if (win) {
+      win.webContents.send('helper-message', payload);
+    }
+  });
 
   ipcMain.on('helper-request', (event, payload) => {
-    if (!helper) {
+    if (!helperProc) {
       event.reply('helper-response', { ok: false, error: 'helper not running' });
       return;
     }
     const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    helper.stdin.write(`${request}\n`);
+    helperProc.stdin.write(`${request}\n`);
     helperReader.once('line', line => {
       let response;
       try {
@@ -67,9 +80,9 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (helper) {
-    helper.kill();
-    helper = null;
+  if (helperProc) {
+    helperProc.kill();
+    helperProc = null;
     helperReader && helperReader.close();
   }
   if (process.platform !== 'darwin') {
