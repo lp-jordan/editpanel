@@ -38,7 +38,8 @@ app.whenReady().then(() => {
   });
 
   helperReader.on('line', line => {
-          let message;
+    try {
+      let message;
       try {
         message = JSON.parse(line);
       } catch (e) {
