@@ -12,13 +12,23 @@ from __future__ import annotations
 import json
 import sys
 import time
+import logging
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 # Try importing the Resolve scripting module.  If it cannot be imported we
 # still keep emitting the "No Resolve running" message as requested.
 try:  # pragma: no cover - depends on Resolve being installed
     import DaVinciResolveScript as dvr  # type: ignore
+    logger.info("DaVinciResolveScript module imported")
 except Exception:  # pragma: no cover - best effort logging
+    logger.exception("Failed to import DaVinciResolveScript module")
     dvr = None
 
 
@@ -100,18 +110,23 @@ def _watch_resolve() -> None:
     """Emit status updates about Resolve availability."""
 
     global resolve
+    logger.info("Watching for Resolve availability")
     last_ok = False
     while True:
         new_resolve = None
         if dvr is not None:
+            if not last_ok:
+                logger.info("Attempting to connect to Resolve...")
             try:  # pragma: no cover - depends on Resolve being available
                 new_resolve = dvr.scriptapp("Resolve")
             except Exception:  # pragma: no cover - best effort connection attempt
+                logger.exception("Error while attempting to connect to Resolve")
                 new_resolve = None
         if new_resolve:
             resolve = new_resolve
             _update_context()
             if not last_ok:
+                logger.info("Connected to Resolve")
                 _print({
                     "ok": True,
                     "error": None,
@@ -120,6 +135,10 @@ def _watch_resolve() -> None:
                 })
             last_ok = True
         else:
+            if last_ok:
+                logger.warning("Lost connection to Resolve")
+            else:
+                logger.warning("Resolve not running")
             resolve = None
             _update_context()
             _print({"ok": False, "error": "No Resolve running", "event": "status"})
