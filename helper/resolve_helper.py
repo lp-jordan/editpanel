@@ -1,27 +1,119 @@
-from pathlib import Path
+"""Simple Resolve bridge communicating over JSON lines.
+
+This helper script connects to DaVinci Resolve via the
+``DaVinciResolveScript`` module and exposes a tiny command based
+interface over stdin/stdout.  It keeps trying to attach to a running
+Resolve instance and once connected it listens for JSON encoded
+requests and replies with JSON objects.
+"""
+
+from __future__ import annotations
+
 import json
 import sys
+import time
 
 
-def resolve_path(*segments):
-    """Resolve a filesystem path from the given segments."""
-    return str(Path(__file__).resolve().parent.joinpath(*segments))
+# Try importing the Resolve scripting module.  If it cannot be imported we
+# still keep emitting the "No Resolve running" message as requested.
+try:  # pragma: no cover - depends on Resolve being installed
+    import DaVinciResolveScript as dvr  # type: ignore
+except Exception:  # pragma: no cover - best effort logging
+    dvr = None
 
 
-def main():
-    """Read JSON requests from stdin and write responses to stdout."""
+def _print(obj: dict) -> None:
+    """Serialize *obj* to JSON and write it to stdout, flushing immediately."""
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+resolve = None
+while True:
+    if dvr is not None:
+        try:  # pragma: no cover - depends on Resolve being available
+            resolve = dvr.scriptapp("Resolve")
+        except Exception:  # pragma: no cover - best effort connection attempt
+            resolve = None
+    if resolve:
+        break
+    _print({"ok": False, "error": "No Resolve running"})
+    time.sleep(1)
+
+
+# Cache project and timeline for later handlers
+project_manager = resolve.GetProjectManager() if resolve else None
+project = project_manager.GetCurrentProject() if project_manager else None
+timeline = project.GetCurrentTimeline() if project else None
+
+
+def handle_context(_payload: dict) -> dict:
+    """Return basic Resolve context information."""
+
+    return {
+        "project": project.GetName() if project else None,
+        "timeline": timeline.GetName() if timeline else None,
+    }
+
+
+def handle_add_marker(payload: dict) -> dict:
+    """Add a marker on the current timeline."""
+
+    if not timeline:
+        raise RuntimeError("No timeline")
+
+    frame = int(payload.get("frame", 0))
+    color = payload.get("color", "Blue")
+    name = payload.get("name", "")
+    note = payload.get("note", "")
+    duration = int(payload.get("duration", 1))
+    custom_data = payload.get("custom_data", "")
+
+    result = timeline.AddMarker(frame, color, name, note, duration, custom_data)
+    return {"result": bool(result)}
+
+
+def handle_start_render(_payload: dict) -> dict:
+    """Start rendering the current project."""
+
+    if not project:
+        raise RuntimeError("No project")
+    return {"result": project.StartRendering()}
+
+
+def handle_stop_render(_payload: dict) -> dict:
+    """Stop the current render job."""
+
+    if not project:
+        raise RuntimeError("No project")
+    return {"result": project.StopRendering()}
+
+
+HANDLERS = {
+    "context": handle_context,
+    "add_marker": handle_add_marker,
+    "start_render": handle_start_render,
+    "stop_render": handle_stop_render,
+}
+
+
+def main() -> None:
+    """Read JSON lines from stdin and dispatch to command handlers."""
+
     for line in sys.stdin:
         try:
-            payload = json.loads(line)
-            segments = payload.get("segments", [])
-            result = resolve_path(*segments)
-            response = {"result": result}
-        except Exception as exc:  # pragma: no cover - best effort error reporting
-            response = {"error": str(exc)}
-        json.dump(response, sys.stdout)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+            request = json.loads(line)
+            cmd = request.get("cmd")
+            handler = HANDLERS.get(cmd)
+            if handler is None:
+                raise ValueError(f"unknown command: {cmd}")
+            data = handler(request)
+            response = {"ok": True, "data": data, "error": None}
+        except Exception as exc:  # pragma: no cover - best effort error report
+            response = {"ok": False, "data": None, "error": str(exc)}
+        _print(response)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - script entry point
     main()
+
