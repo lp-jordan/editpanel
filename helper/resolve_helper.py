@@ -142,7 +142,7 @@ def _resp_err(req_id: Any, msg: str) -> Dict[str, Any]:
     return {"id": req_id, "ok": False, "data": None, "error": msg}
 
 
-from .commands import HANDLERS
+from helper.commands import HANDLERS
 
 # ---------- Main loop ----------
 def main() -> None:
