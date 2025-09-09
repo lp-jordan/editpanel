@@ -24,6 +24,7 @@ Supported commands (MVP):
   - "add_marker"      -> add marker at playhead / timecode / frame
   - "start_render"    -> start rendering current project (uses current Deliver settings)
   - "stop_render"     -> stop current render
+  - "connect"         -> manually connect to Resolve
   - "shutdown"        -> (optional) gracefully exit helper
 """
 
@@ -95,61 +96,29 @@ def _status_event(ok: bool, code: str, msg: Optional[str] = None) -> None:
         }
     _print(payload)
 
-def _watch_resolve(poll_seconds: float = 1.5) -> None:
-    """Background thread: attach/monitor Resolve and emit status changes."""
+def _monitor_resolve(poll_seconds: float = 1.5) -> None:
+    """Background thread: monitor Resolve and emit status on disconnect."""
     global resolve, project_manager, project, timeline
-    logger.info("Watching for Resolve availability")
-    last_code: Optional[str] = None
-
+    logger.info("Monitoring Resolve session")
     while True:
-        if not _get_resolve_available:
-            if last_code != "NO_PYTHON_GET_RESOLVE":
-                logger.error("python_get_resolve unavailable")
-                _status_event(False, "NO_PYTHON_GET_RESOLVE", "python_get_resolve not found")
-                last_code = "NO_PYTHON_GET_RESOLVE"
-            time.sleep(2.0)
-            continue
-
+        time.sleep(poll_seconds)
+        if not resolve:
+            break
         try:
-            if resolve is None:
-                # Try to attach until we get a handle
-                r = GetResolve()  # returns handle or None
-                if r:
-                    resolve = r
-                    _update_context()
-                    logger.info("Connected to Resolve")
-                    _status_event(True, "CONNECTED")
-                    last_code = "CONNECTED"
-                else:
-                    if last_code != "NO_SESSION":
-                        logger.warning("No Resolve session detected")
-                        _status_event(False, "NO_SESSION", "No Resolve running or attach failed")
-                        last_code = "NO_SESSION"
-            else:
-                # Cheap liveness check (ProjectManager should exist while Resolve is open)
-                try:
-                    pm = resolve.GetProjectManager()
-                except Exception:
-                    pm = None
-                if not pm:
-                    logger.warning("Lost Resolve session")
-                    resolve = None
-                    project_manager = project = timeline = None
-                    if last_code != "NO_SESSION":
-                        _status_event(False, "NO_SESSION", "Resolve closed or session lost")
-                        last_code = "NO_SESSION"
-        except Exception as e:
-            logger.exception("Error during Resolve attach/check")
+            pm = resolve.GetProjectManager()
+        except Exception:
+            pm = None
+        if not pm:
+            logger.warning("Lost Resolve session")
             resolve = None
             project_manager = project = timeline = None
-            if last_code != "NO_SESSION":
-                _status_event(False, "NO_SESSION", f"Attach error: {e}")
-                last_code = "NO_SESSION"
+            _status_event(False, "NO_SESSION", "Resolve closed or session lost")
+            break
+        else:
+            _update_context()
 
-        time.sleep(poll_seconds)
-
-# Start watcher thread immediately
-threading.Thread(target=_watch_resolve, daemon=True).start()
+# Emit initial disconnected status
+_status_event(False, "NO_SESSION", "Not connected")
 
 # ---------- Command handlers ----------
 def _resp_ok(req_id: Any, data: Any) -> Dict[str, Any]:
@@ -157,6 +126,24 @@ def _resp_ok(req_id: Any, data: Any) -> Dict[str, Any]:
 
 def _resp_err(req_id: Any, msg: str) -> Dict[str, Any]:
     return {"id": req_id, "ok": False, "data": None, "error": msg}
+
+def handle_connect(_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Manually attach to a running Resolve instance."""
+    global resolve
+    if resolve:
+        return {"result": True}
+    if not _get_resolve_available:
+        _status_event(False, "NO_PYTHON_GET_RESOLVE", "python_get_resolve not found")
+        raise RuntimeError("python_get_resolve not available")
+    r = GetResolve()
+    if not r:
+        _status_event(False, "NO_SESSION", "No Resolve running or attach failed")
+        raise RuntimeError("No Resolve running")
+    resolve = r
+    _update_context()
+    _status_event(True, "CONNECTED")
+    threading.Thread(target=_monitor_resolve, daemon=True).start()
+    return {"result": True}
 
 def handle_context(_payload: Dict[str, Any]) -> Dict[str, Any]:
     """Return basic Resolve context information."""
@@ -229,6 +216,7 @@ HANDLERS = {
     "start_render": handle_start_render,
     "stop_render":  handle_stop_render,
     "shutdown":     handle_shutdown,
+    "connect":      handle_connect,
 }
 
 # ---------- Main loop ----------

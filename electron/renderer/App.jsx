@@ -3,6 +3,7 @@ const { useEffect, useState } = React;
 function App() {
   const [project, setProject] = useState('');
   const [log, setLog] = useState([]);
+  const [connected, setConnected] = useState(false);
 
   const appendLog = msg => {
     setLog(prev => {
@@ -12,25 +13,17 @@ function App() {
   };
 
   useEffect(() => {
-    let active = true;
-
-    window.leaderpassAPI
-      .call('context')
-      .then(res => {
-        if (!active) return;
-        const ctx = res.data || res;
-        setProject(ctx.project || '');
-        appendLog(`Context: ${JSON.stringify(ctx)}`);
-      })
-      .catch(err => {
-        appendLog(`Context error: ${err?.error || err}`);
-      });
-
     const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
       const msg = `Status: ${status.code}${status.error ? ' - ' + status.error : ''}`;
       appendLog(msg);
-      if (status.data && status.data.project) {
-        setProject(status.data.project);
+      if (status.code === 'CONNECTED' && status.ok) {
+        setConnected(true);
+        if (status.data && status.data.project) {
+          setProject(status.data.project);
+        }
+      } else {
+        setConnected(false);
+        setProject('');
       }
     });
 
@@ -40,7 +33,6 @@ function App() {
     });
 
     return () => {
-      active = false;
       unsubscribeStatus();
       unsubscribeMessage();
     };
@@ -50,26 +42,43 @@ function App() {
     appendLog(`${action} clicked`);
   };
 
+  const handleConnect = () => {
+    window.leaderpassAPI
+      .call('connect')
+      .then(() => appendLog('Connect success'))
+      .catch(err => appendLog(`Connect error: ${err?.error || err}`));
+  };
+
   return (
     <div className="app-container">
       <header>{project || 'No Project'}</header>
-      <div className="button-grid">
-        <button className="task-button" onClick={() => logAction('Export')}>
-          <span className="icon">📤</span>
-          <span>Export</span>
-        </button>
-        <button className="task-button" onClick={() => logAction('Spellcheck')}>
-          <span className="icon">📝</span>
-          <span>Spellcheck</span>
-        </button>
-        <button className="task-button" onClick={() => logAction('New Project Bins')}>
-          <span className="icon">🗂️</span>
-          <span>New Project Bins</span>
-        </button>
-      </div>
-      <div className="log">
-        <pre>{log.join('\n')}</pre>
-      </div>
+      {connected ? (
+        <>
+          <div className="button-grid">
+            <button className="task-button" onClick={() => logAction('Export')}>
+              <span className="icon">📤</span>
+              <span>Export</span>
+            </button>
+            <button className="task-button" onClick={() => logAction('Spellcheck')}>
+              <span className="icon">📝</span>
+              <span>Spellcheck</span>
+            </button>
+            <button className="task-button" onClick={() => logAction('New Project Bins')}>
+              <span className="icon">🗂️</span>
+              <span>New Project Bins</span>
+            </button>
+          </div>
+          <div className="log">
+            <pre>{log.join('\n')}</pre>
+          </div>
+        </>
+      ) : (
+        <div className="connect-container">
+          <button className="connect-button" onClick={handleConnect}>
+            Connect
+          </button>
+        </div>
+      )}
     </div>
   );
 }
