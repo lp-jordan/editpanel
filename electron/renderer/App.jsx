@@ -4,6 +4,7 @@ function App() {
   const [project, setProject] = useState('');
   const [log, setLog] = useState([]);
   const [connected, setConnected] = useState(false);
+  const [showLog, setShowLog] = useState(false);
 
   const appendLog = msg => {
     setLog(prev => {
@@ -68,8 +69,16 @@ function App() {
               <span>New Project Bins</span>
             </button>
           </div>
-          <div className="log">
-            <pre>{log.join('\n')}</pre>
+          <button
+            className="log-toggle"
+            onClick={() => setShowLog(prev => !prev)}
+          >
+            {showLog ? 'Hide Log' : 'Show Log'}
+          </button>
+          <div className={`log-tray ${showLog ? 'open' : ''}`}>
+            <div className="log">
+              <pre>{log.join('\n')}</pre>
+            </div>
           </div>
         </>
       ) : (
