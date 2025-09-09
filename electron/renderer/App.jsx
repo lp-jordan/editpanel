@@ -64,7 +64,7 @@ function App() {
   };
 
   return (
-    <div className="app-container" style={{ paddingBottom: consoleOpen ? '230px' : '30px' }}>
+    <div className="app-container" style={{ paddingBottom: consoleOpen ? '240px' : '40px' }}>
       <header>{project || 'No Project'}</header>
       {connected ? (
         <>
