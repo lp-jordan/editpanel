@@ -1,7 +1,5 @@
-const { useState } = React;
-
 function SlideoutConsole({ log }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = React.useState(false);
 
   return (
     <div className={`slideout-console ${open ? 'open' : ''}`}>

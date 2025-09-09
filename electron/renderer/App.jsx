@@ -1,11 +1,9 @@
-const { useEffect, useState } = React;
-
 function App() {
-  const [project, setProject] = useState('');
-  const [timeline, setTimeline] = useState('');
-  const [log, setLog] = useState([]);
-  const [connected, setConnected] = useState(false);
-  const [showLog, setShowLog] = useState(false);
+  const [project, setProject] = React.useState('');
+  const [timeline, setTimeline] = React.useState('');
+  const [log, setLog] = React.useState([]);
+  const [connected, setConnected] = React.useState(false);
+  const [showLog, setShowLog] = React.useState(false);
 
   const appendLog = msg => {
     setLog(prev => {
@@ -14,7 +12,7 @@ function App() {
     });
   };
 
-  useEffect(() => {
+  React.useEffect(() => {
     const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
       const msg = `Status: ${status.code}${status.error ? ' - ' + status.error : ''}`;
       appendLog(msg);
