@@ -2,6 +2,7 @@ const { useEffect, useState } = React;
 
 function App() {
   const [project, setProject] = useState('');
+  const [timeline, setTimeline] = useState('');
   const [log, setLog] = useState([]);
   const [connected, setConnected] = useState(false);
   const [showLog, setShowLog] = useState(false);
@@ -19,12 +20,18 @@ function App() {
       appendLog(msg);
       if (status.code === 'CONNECTED' && status.ok) {
         setConnected(true);
-        if (status.data && status.data.project) {
-          setProject(status.data.project);
+        if (status.data) {
+          if (status.data.project) {
+            setProject(status.data.project);
+          }
+          if (status.data.timeline) {
+            setTimeline(status.data.timeline);
+          }
         }
       } else {
         setConnected(false);
         setProject('');
+        setTimeline('');
       }
     });
 
@@ -55,7 +62,7 @@ function App() {
       <header>{project || 'No Project'}</header>
       {connected ? (
         <>
-          <div className="button-grid">
+          <div className="function-grid">
             <button className="task-button" onClick={() => logAction('Export')}>
               <span className="icon">📤</span>
               <span>Export</span>
@@ -69,16 +76,9 @@ function App() {
               <span>New Project Bins</span>
             </button>
           </div>
-          <button
-            className="log-toggle"
-            onClick={() => setShowLog(prev => !prev)}
-          >
-            {showLog ? 'Hide Log' : 'Show Log'}
-          </button>
-          <div className={`log-tray ${showLog ? 'open' : ''}`}>
-            <div className="log">
-              <pre>{log.join('\n')}</pre>
-            </div>
+          <div className="dashboard">
+            <h2>Dashboard</h2>
+            <div>Active Timeline: {timeline || 'None'}</div>
           </div>
         </>
       ) : (
@@ -88,6 +88,7 @@ function App() {
           </button>
         </div>
       )}
+      <SlideoutConsole log={log} />
     </div>
   );
 }
