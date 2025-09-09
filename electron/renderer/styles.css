@@ -40,6 +40,10 @@ header {
   justify-items: center;
 }
 
+.folder-grid {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+
 
 .task-button {
   width: 120px;
@@ -65,6 +69,42 @@ header {
   font-size: 2rem;
   margin-bottom: 0.5rem;
   color: #fff;
+}
+
+.folder-button {
+  width: 160px;
+  height: 90px;
+  border: 1px solid #d4af37;
+  border-radius: 8px;
+  background: #1e1e1e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  font-weight: 700;
+  text-transform: uppercase;
+  transition: background 0.1s ease-in-out, transform 0.1s ease-in-out;
+}
+
+.folder-button:hover {
+  background: #2a2a2a;
+  transform: scale(1.05);
+}
+
+.back-button {
+  margin: 1rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid #d4af37;
+  border-radius: 8px;
+  background: #1e1e1e;
+  color: #fff;
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.back-button:hover {
+  background: #2a2a2a;
 }
 
 

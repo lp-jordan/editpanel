@@ -4,6 +4,7 @@ function App() {
   const [log, setLog] = React.useState([]);
   const [connected, setConnected] = React.useState(false);
   const [consoleOpen, setConsoleOpen] = React.useState(false);
+  const [currentCategory, setCurrentCategory] = React.useState(null);
 
   const appendLog = msg => {
     setLog(prev => {
@@ -63,25 +64,62 @@ function App() {
       .catch(err => appendLog(`Project bin creation error: ${err?.error || err}`));
   };
 
+  const handleLPBaseExport = () => {
+    logAction('LP Base Export');
+    // Placeholder for LP Base Export script
+  };
+
+  const categories = ['SETUP', 'EDIT', 'AUDIO', 'DELIVER'];
+
+  const actions = {
+    SETUP: [
+      { label: 'New Project Bins', icon: '🗂️', onClick: handleNewProjectBins }
+    ],
+    EDIT: [
+      { label: 'Spellcheck', icon: '📝', onClick: () => logAction('Spellcheck') }
+    ],
+    AUDIO: [],
+    DELIVER: [
+      { label: 'LP Base Export', icon: '📤', onClick: handleLPBaseExport }
+    ]
+  };
+
   return (
     <div className="app-container" style={{ paddingBottom: consoleOpen ? '240px' : '40px' }}>
       <header>{project || 'No Project'}</header>
       {connected ? (
         <>
-          <div className="function-grid">
-            <button className="task-button" onClick={() => logAction('Export')}>
-              <span className="icon">📤</span>
-              <span>Export</span>
-            </button>
-            <button className="task-button" onClick={() => logAction('Spellcheck')}>
-              <span className="icon">📝</span>
-              <span>Spellcheck</span>
-            </button>
-            <button className="task-button" onClick={handleNewProjectBins}>
-              <span className="icon">🗂️</span>
-              <span>New Project Bins</span>
-            </button>
-          </div>
+          {currentCategory === null ? (
+            <div className="function-grid folder-grid">
+              {categories.map(cat => (
+                <button
+                  key={cat}
+                  className="folder-button"
+                  onClick={() => setCurrentCategory(cat)}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="category-view">
+              <button className="back-button" onClick={() => setCurrentCategory(null)}>
+                Back
+              </button>
+              <div className="function-grid">
+                {actions[currentCategory].map(action => (
+                  <button
+                    key={action.label}
+                    className="task-button"
+                    onClick={action.onClick}
+                  >
+                    <span className="icon">{action.icon}</span>
+                    <span>{action.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="dashboard">
             <h2>Dashboard</h2>
             <div>Active Timeline: {timeline || 'None'}</div>
