@@ -58,6 +58,12 @@ def _print(obj: Dict[str, Any]) -> None:
         except SystemExit:
             pass
 
+
+def log(msg: str) -> None:
+    """Send a log message to the Electron app."""
+    timestamp = time.strftime("%H:%M:%S")
+    _print({"event": "message", "message": f"[{timestamp}] {msg}"})
+
 # ---------- Resolve attach mechanism ----------
 try:
     # This helper abstracts locating Resolve’s SDK and returning a live handle.
@@ -211,6 +217,44 @@ def handle_stop_render(_payload: Dict[str, Any]) -> Dict[str, Any]:
     ok = project.StopRendering()
     return {"result": bool(ok)}
 
+
+def handle_create_project_bins(_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Automatically create a standard project bin structure."""
+    if not project:
+        raise RuntimeError("No active project")
+
+    media_pool = project.GetMediaPool()
+    root_folder = media_pool.GetRootFolder()
+
+    bins_structure = {
+        "FOOTAGE": ["BROLL", "ATEM", "4K"],
+        "AUDIO": [],
+        "SEQUENCES": ["MC"],
+        "WORK": [],
+        "MUSIC": [],
+        "SFX": [],
+        "GFX": [],
+        "EXPORT": [],
+    }
+
+    log("Starting project bin generation")
+
+    for main_bin, sub_bins in bins_structure.items():
+        main_folder = media_pool.AddSubFolder(root_folder, main_bin)
+        if main_folder:
+            log(f"✅ Created bin: {main_bin}")
+            for sub_bin in sub_bins:
+                sub_folder = media_pool.AddSubFolder(main_folder, sub_bin)
+                if sub_folder:
+                    log(f"    ✅ Created sub-bin: {sub_bin}")
+                else:
+                    log(f"    ❌ Failed to create sub-bin: {sub_bin}")
+        else:
+            log(f"❌ Failed to create bin: {main_bin}")
+
+    log("✔️ Project bin structure creation complete.")
+    return {"result": True}
+
 def handle_shutdown(_payload: Dict[str, Any]) -> Dict[str, Any]:
     """Gracefully exit the helper."""
     # Give stdout time to flush in caller
@@ -222,6 +266,7 @@ HANDLERS = {
     "add_marker":   handle_add_marker,
     "start_render": handle_start_render,
     "stop_render":  handle_stop_render,
+    "create_project_bins": handle_create_project_bins,
     "shutdown":     handle_shutdown,
     "connect":      handle_connect,
 }
