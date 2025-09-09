@@ -100,6 +100,8 @@ def _monitor_resolve(poll_seconds: float = 1.5) -> None:
     """Background thread: monitor Resolve and emit status on disconnect."""
     global resolve, project_manager, project, timeline
     logger.info("Monitoring Resolve session")
+    prev_project = project.GetName() if project else None
+    prev_timeline = timeline.GetName() if timeline else None
     while True:
         time.sleep(poll_seconds)
         if not resolve:
@@ -116,6 +118,11 @@ def _monitor_resolve(poll_seconds: float = 1.5) -> None:
             break
         else:
             _update_context()
+            curr_project = project.GetName() if project else None
+            curr_timeline = timeline.GetName() if timeline else None
+            if curr_project != prev_project or curr_timeline != prev_timeline:
+                _status_event(True, "CONNECTED")
+                prev_project, prev_timeline = curr_project, curr_timeline
 
 # Emit initial disconnected status
 _status_event(False, "NO_SESSION", "Not connected")
