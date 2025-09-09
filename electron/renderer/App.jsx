@@ -65,8 +65,13 @@ function App() {
   };
 
   const handleLPBaseExport = () => {
-    logAction('LP Base Export');
-    // Placeholder for LP Base Export script
+    appendLog('LP Base Export clicked');
+    window.leaderpassAPI
+      .call('lp_base_export')
+      .then(() => appendLog('LP Base Export command sent'))
+      .catch(err =>
+        appendLog(`LP Base Export error: ${err?.error || err}`)
+      );
   };
 
   const categories = ['SETUP', 'EDIT', 'AUDIO', 'DELIVER'];
