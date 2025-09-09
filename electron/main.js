@@ -43,6 +43,13 @@ app.whenReady().then(() => {
         return;
       }
 
+      if (message.event === 'message') {
+        BrowserWindow.getAllWindows().forEach(w =>
+          w.webContents.send('helper-message', message.message || message.data)
+        );
+        return;
+      }
+
       if (pending.length) {
         const event = pending.shift();
         message = Object.assign({ ok: !message.error }, message);

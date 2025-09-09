@@ -55,6 +55,14 @@ function App() {
       .catch(err => appendLog(`Connect error: ${err?.error || err}`));
   };
 
+  const handleNewProjectBins = () => {
+    appendLog('New Project Bins clicked');
+    window.leaderpassAPI
+      .call('create_project_bins')
+      .then(() => appendLog('Project bin creation command sent'))
+      .catch(err => appendLog(`Project bin creation error: ${err?.error || err}`));
+  };
+
   return (
     <div className="app-container">
       <header>{project || 'No Project'}</header>
@@ -69,7 +77,7 @@ function App() {
               <span className="icon">📝</span>
               <span>Spellcheck</span>
             </button>
-            <button className="task-button" onClick={() => logAction('New Project Bins')}>
+            <button className="task-button" onClick={handleNewProjectBins}>
               <span className="icon">🗂️</span>
               <span>New Project Bins</span>
             </button>
