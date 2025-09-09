@@ -66,13 +66,19 @@ def log(msg: str) -> None:
 
 # ---------- Resolve attach mechanism ----------
 try:
-    # This helper abstracts locating Resolve’s SDK and returning a live handle.
-    from python_get_resolve import GetResolve  # type: ignore
+    # Prefer the bundled helper first.
+    from .python_get_resolve import GetResolve
     _get_resolve_available = True
-    logger.info("python_get_resolve available")
+    logger.info("python_get_resolve available (bundled)")
 except Exception:
-    _get_resolve_available = False
-    logger.exception("python_get_resolve not importable")
+    try:
+        # Fallback to the external package if the local one is missing.
+        from python_get_resolve import GetResolve  # type: ignore
+        _get_resolve_available = True
+        logger.info("python_get_resolve available (external)")
+    except Exception:
+        _get_resolve_available = False
+        logger.exception("python_get_resolve not importable")
 
 # Global Resolve context
 resolve = None
