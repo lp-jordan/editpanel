@@ -22,8 +22,9 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  helperProc = spawn('python', [path.join(__dirname, '..', 'helper', 'resolve_helper.py')], {
-    stdio: ['pipe', 'pipe', 'inherit']
+  helperProc = spawn('python', ['-m', 'helper.resolve_helper'], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    cwd: path.join(__dirname, '..')
   });
   helperReader = readline.createInterface({ input: helperProc.stdout });
 
