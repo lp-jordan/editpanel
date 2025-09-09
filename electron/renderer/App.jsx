@@ -1,57 +1,73 @@
 const { useEffect, useState } = React;
 
 function App() {
-  const [status, setStatus] = useState('waiting for Resolve');
-  const [info, setInfo] = useState(null);
+  const [project, setProject] = useState('');
   const [log, setLog] = useState([]);
+
+  const appendLog = msg => {
+    setLog(prev => {
+      const next = [...prev, msg];
+      return next.slice(-20);
+    });
+  };
 
   useEffect(() => {
     let active = true;
+
     window.leaderpassAPI
       .call('context')
-      .then(ctx => {
-        if (active) {
-          setInfo(ctx);
-        }
+      .then(res => {
+        if (!active) return;
+        const ctx = res.data || res;
+        setProject(ctx.project || '');
+        appendLog(`Context: ${JSON.stringify(ctx)}`);
       })
-      .catch(() => {});
-
-    // Subscribe to helper messages
-    const unsubscribe = window.electronAPI.onHelperMessage(payload => {
-      setConnected(payload.error !== 'No Resolve running');
-      setLog(prev => {
-        const entry = typeof payload === 'string' ? payload : JSON.stringify(payload);
-        const next = [...prev, entry];
-        return next.slice(-20);
+      .catch(err => {
+        appendLog(`Context error: ${err?.error || err}`);
       });
+
+    const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
+      const msg = `Status: ${status.code}${status.error ? ' - ' + status.error : ''}`;
+      appendLog(msg);
+      if (status.data && status.data.project) {
+        setProject(status.data.project);
+      }
+    });
+
+    const unsubscribeMessage = window.electronAPI.onHelperMessage(payload => {
+      const entry = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      appendLog(entry);
     });
 
     return () => {
-      unsubscribeStatus && unsubscribeStatus();
-      unsubscribeLog && unsubscribeLog();
+      active = false;
+      unsubscribeStatus();
+      unsubscribeMessage();
     };
   }, []);
 
-  const callAction = action => {
-    window.leaderpassAPI.call(action).catch(() => {});
+  const logAction = action => {
+    appendLog(`${action} clicked`);
   };
 
   return (
-    <div>
-      <div>
-        <strong>Connection:</strong> {status}
+    <div className="app-container">
+      <header>{project || 'No Project'}</header>
+      <div className="button-grid">
+        <button className="task-button" onClick={() => logAction('Export')}>
+          <span className="icon">📤</span>
+          <span>Export</span>
+        </button>
+        <button className="task-button" onClick={() => logAction('Spellcheck')}>
+          <span className="icon">📝</span>
+          <span>Spellcheck</span>
+        </button>
+        <button className="task-button" onClick={() => logAction('New Project Bins')}>
+          <span className="icon">🗂️</span>
+          <span>New Project Bins</span>
+        </button>
       </div>
-      <div>
-        <strong>Info:</strong>
-        <pre>{info ? JSON.stringify(info, null, 2) : '...'}</pre>
-      </div>
-      <div>
-        <button onClick={() => callAction('add_marker')}>Add Marker</button>
-        <button onClick={() => callAction('start_render')}>Start Render</button>
-        <button onClick={() => callAction('stop_render')}>Stop Render</button>
-      </div>
-      <div>
-        <h3>Log</h3>
+      <div className="log">
         <pre>{log.join('\n')}</pre>
       </div>
     </div>
