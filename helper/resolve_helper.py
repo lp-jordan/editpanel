@@ -133,143 +133,16 @@ def _monitor_resolve(poll_seconds: float = 1.5) -> None:
 # Emit initial disconnected status
 _status_event(False, "NO_SESSION", "Not connected")
 
-# ---------- Command handlers ----------
+# ---------- Response helpers ----------
 def _resp_ok(req_id: Any, data: Any) -> Dict[str, Any]:
     return {"id": req_id, "ok": True, "data": data, "error": None}
+
 
 def _resp_err(req_id: Any, msg: str) -> Dict[str, Any]:
     return {"id": req_id, "ok": False, "data": None, "error": msg}
 
-def handle_connect(_payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Manually attach to a running Resolve instance."""
-    global resolve
-    if resolve:
-        return {"result": True}
-    if not _get_resolve_available:
-        _status_event(False, "NO_PYTHON_GET_RESOLVE", "python_get_resolve not found")
-        raise RuntimeError("python_get_resolve not available")
-    r = GetResolve()
-    if not r:
-        _status_event(False, "NO_SESSION", "No Resolve running or attach failed")
-        raise RuntimeError("No Resolve running")
-    resolve = r
-    _update_context()
-    _status_event(True, "CONNECTED")
-    threading.Thread(target=_monitor_resolve, daemon=True).start()
-    return {"result": True}
 
-def handle_context(_payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Return basic Resolve context information."""
-    return {
-        "project": project.GetName() if project else None,
-        "timeline": timeline.GetName() if timeline else None,
-    }
-
-def handle_add_marker(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Add a marker on the current timeline.
-
-    Accepts either:
-      - timecode: "HH:MM:SS:FF"  -> preferred for precision
-      - frame: int               -> will be used directly
-      - none                     -> uses current playhead timecode
-    """
-    if not timeline:
-        raise RuntimeError("No active timeline")
-
-    color = payload.get("color", "Blue")
-    name = payload.get("name", "")
-    note = payload.get("note", "")
-    duration = int(payload.get("duration", 1))
-    custom_data = payload.get("custom_data", "")
-
-    if "timecode" in payload and payload["timecode"]:
-        tc = str(payload["timecode"])
-        res = timeline.AddMarker(tc, color, name, note, duration, custom_data)
-    elif "frame" in payload:
-        # Some Resolve builds accept frame index directly; fall back to playhead if it fails.
-        try:
-            frame = int(payload["frame"])
-            res = timeline.AddMarker(frame, color, name, note, duration, custom_data)  # type: ignore[arg-type]
-        except Exception:
-            tc = timeline.GetCurrentTimecode()
-            res = timeline.AddMarker(tc, color, name, note, duration, custom_data)
-    else:
-        tc = timeline.GetCurrentTimecode()
-        res = timeline.AddMarker(tc, color, name, note, duration, custom_data)
-
-    return {"result": bool(res)}
-
-def handle_start_render(_payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Start rendering with current Deliver settings (creates job if necessary)."""
-    if not project:
-        raise RuntimeError("No active project")
-    # If no render jobs exist, try to create one with current settings
-    jobs = project.GetRenderJobList() or []
-    if not jobs:
-        project.AddRenderJob()
-    ok = project.StartRendering()
-    return {"result": bool(ok)}
-
-def handle_stop_render(_payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Stop the current render job."""
-    if not project:
-        raise RuntimeError("No active project")
-    ok = project.StopRendering()
-    return {"result": bool(ok)}
-
-
-def handle_create_project_bins(_payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Automatically create a standard project bin structure."""
-    if not project:
-        raise RuntimeError("No active project")
-
-    media_pool = project.GetMediaPool()
-    root_folder = media_pool.GetRootFolder()
-
-    bins_structure = {
-        "FOOTAGE": ["BROLL", "ATEM", "4K"],
-        "AUDIO": [],
-        "SEQUENCES": ["MC"],
-        "WORK": [],
-        "MUSIC": [],
-        "SFX": [],
-        "GFX": [],
-        "EXPORT": [],
-    }
-
-    log("Starting project bin generation")
-
-    for main_bin, sub_bins in bins_structure.items():
-        main_folder = media_pool.AddSubFolder(root_folder, main_bin)
-        if main_folder:
-            log(f"✅ Created bin: {main_bin}")
-            for sub_bin in sub_bins:
-                sub_folder = media_pool.AddSubFolder(main_folder, sub_bin)
-                if sub_folder:
-                    log(f"    ✅ Created sub-bin: {sub_bin}")
-                else:
-                    log(f"    ❌ Failed to create sub-bin: {sub_bin}")
-        else:
-            log(f"❌ Failed to create bin: {main_bin}")
-
-    log("✔️ Project bin structure creation complete.")
-    return {"result": True}
-
-def handle_shutdown(_payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Gracefully exit the helper."""
-    # Give stdout time to flush in caller
-    threading.Thread(target=lambda: (time.sleep(0.05), sys.exit(0)), daemon=True).start()
-    return {"result": True}
-
-HANDLERS = {
-    "context":      handle_context,
-    "add_marker":   handle_add_marker,
-    "start_render": handle_start_render,
-    "stop_render":  handle_stop_render,
-    "create_project_bins": handle_create_project_bins,
-    "shutdown":     handle_shutdown,
-    "connect":      handle_connect,
-}
+from .commands import HANDLERS
 
 # ---------- Main loop ----------
 def main() -> None:
