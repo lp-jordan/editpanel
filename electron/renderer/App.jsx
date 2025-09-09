@@ -5,6 +5,7 @@ function App() {
   const [timeline, setTimeline] = useState('');
   const [log, setLog] = useState([]);
   const [connected, setConnected] = useState(false);
+  const [showLog, setShowLog] = useState(false);
 
   const appendLog = msg => {
     setLog(prev => {
