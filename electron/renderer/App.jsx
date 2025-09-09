@@ -3,7 +3,7 @@ function App() {
   const [timeline, setTimeline] = React.useState('');
   const [log, setLog] = React.useState([]);
   const [connected, setConnected] = React.useState(false);
-  const [showLog, setShowLog] = React.useState(false);
+  const [consoleOpen, setConsoleOpen] = React.useState(false);
 
   const appendLog = msg => {
     setLog(prev => {
@@ -64,7 +64,7 @@ function App() {
   };
 
   return (
-    <div className="app-container">
+    <div className="app-container" style={{ paddingBottom: consoleOpen ? '240px' : '40px' }}>
       <header>{project || 'No Project'}</header>
       {connected ? (
         <>
@@ -94,7 +94,7 @@ function App() {
           </button>
         </div>
       )}
-      <SlideoutConsole log={log} />
+      <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />
     </div>
   );
 }
