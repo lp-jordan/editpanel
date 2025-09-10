@@ -15,6 +15,10 @@ function App() {
   };
 
   React.useEffect(() => {
+    if (!window.electronAPI) {
+      return;
+    }
+
     const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
       const msg = `Status: ${status.code}${status.error ? ' - ' + status.error : ''}`;
       appendLog(msg);
@@ -41,8 +45,8 @@ function App() {
     });
 
     return () => {
-      unsubscribeStatus();
-      unsubscribeMessage();
+      unsubscribeStatus && unsubscribeStatus();
+      unsubscribeMessage && unsubscribeMessage();
     };
   }, []);
 
