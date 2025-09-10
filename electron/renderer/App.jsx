@@ -5,6 +5,7 @@ function App() {
   const [connected, setConnected] = React.useState(false);
   const [consoleOpen, setConsoleOpen] = React.useState(false);
   const [currentCategory, setCurrentCategory] = React.useState(null);
+  const [spellReport, setSpellReport] = React.useState([]);
 
   const appendLog = msg => {
     setLog(prev => {
@@ -14,6 +15,10 @@ function App() {
   };
 
   React.useEffect(() => {
+    if (!window.electronAPI) {
+      return;
+    }
+
     const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
       const msg = `Status: ${status.code}${status.error ? ' - ' + status.error : ''}`;
       appendLog(msg);
@@ -40,8 +45,8 @@ function App() {
     });
 
     return () => {
-      unsubscribeStatus();
-      unsubscribeMessage();
+      unsubscribeStatus && unsubscribeStatus();
+      unsubscribeMessage && unsubscribeMessage();
     };
   }, []);
 
@@ -74,6 +79,23 @@ function App() {
       );
   };
 
+  const handleSpellcheck = () => {
+    appendLog('Spellcheck started');
+    window.leaderpassAPI
+      .call('spellcheck')
+      .then(async res => {
+        const items = (res.data && res.data.items) || [];
+        const checked = [];
+        for (const item of items) {
+          const misspelled = await window.spellcheckAPI.misspellings(item.text);
+          checked.push({ ...item, misspelled });
+        }
+        setSpellReport(checked);
+        appendLog('Spellcheck complete');
+      })
+      .catch(err => appendLog(`Spellcheck error: ${err?.error || err}`));
+  };
+
   const categories = ['SETUP', 'EDIT', 'AUDIO', 'DELIVER'];
 
   const actions = {
@@ -81,7 +103,7 @@ function App() {
       { label: 'New Project Bins', icon: '🗂️', onClick: handleNewProjectBins }
     ],
     EDIT: [
-      { label: 'Spellcheck', icon: '📝', onClick: () => logAction('Spellcheck') }
+      { label: 'Spellcheck', icon: '📝', onClick: handleSpellcheck }
     ],
     AUDIO: [],
     DELIVER: [
@@ -128,6 +150,7 @@ function App() {
           <div className="dashboard">
             <h2>Dashboard</h2>
             <div>Active Timeline: {timeline || 'None'}</div>
+            <SpellcheckReport report={spellReport} />
           </div>
         </>
       ) : (
