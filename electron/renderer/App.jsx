@@ -97,13 +97,17 @@ function App() {
       appendLog('Leaderpass API not available; cannot run spellcheck');
       return;
     }
+    const misspell = window.spellcheckAPI?.misspellings;
+    if (!misspell) {
+      appendLog('Spellcheck API not available; using fallback');
+    }
     window.leaderpassAPI
       .call('spellcheck')
       .then(async res => {
         const items = (res.data && res.data.items) || [];
         const checked = [];
         for (const item of items) {
-          const misspelled = await window.spellcheckAPI.misspellings(item.text);
+          const misspelled = misspell ? await misspell(item.text) : [];
           checked.push({ ...item, misspelled });
         }
         setSpellReport(checked);
