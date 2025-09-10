@@ -1,4 +1,17 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const nspell = require('nspell');
+const dictionary = require('dictionary-en-us');
+
+// Load dictionary once and create a spellchecker instance.
+const spellPromise = new Promise((resolve, reject) => {
+  dictionary((err, dict) => {
+    if (err) {
+      reject(err);
+    } else {
+      resolve(nspell(dict));
+    }
+  });
+});
 
 // Expose API for invoking helper commands.
 contextBridge.exposeInMainWorld('leaderpassAPI', {
@@ -20,6 +33,21 @@ contextBridge.exposeInMainWorld('leaderpassAPI', {
 
       ipcRenderer.send('helper-request', { cmd, ...params });
     });
+  }
+});
+
+// Expose basic spellcheck helper using nspell.
+contextBridge.exposeInMainWorld('spellcheckAPI', {
+  async misspellings(text) {
+    try {
+      const spell = await spellPromise;
+      const words = String(text)
+        .split(/\W+/)
+        .filter(Boolean);
+      return words.filter(w => !spell.correct(w));
+    } catch (err) {
+      return [];
+    }
   }
 });
 
