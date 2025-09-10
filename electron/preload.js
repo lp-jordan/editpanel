@@ -1,17 +1,23 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const nspell = require('nspell');
-const dictionary = require('dictionary-en-us');
 
-// Load dictionary once and create a spellchecker instance.
-const spellPromise = new Promise((resolve, reject) => {
-  dictionary((err, dict) => {
-    if (err) {
-      reject(err);
-    } else {
-      resolve(nspell(dict));
-    }
+let spellPromise;
+try {
+  const nspell = require('nspell');
+  const dictionary = require('dictionary-en-us');
+
+  // Load dictionary once and create a spellchecker instance.
+  spellPromise = new Promise((resolve, reject) => {
+    dictionary((err, dict) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(nspell(dict));
+      }
+    });
   });
-});
+} catch (err) {
+  console.warn('Spellcheck disabled; failed to load dictionary:', err);
+}
 
 // Expose API for invoking helper commands.
 contextBridge.exposeInMainWorld('leaderpassAPI', {
@@ -36,20 +42,28 @@ contextBridge.exposeInMainWorld('leaderpassAPI', {
   }
 });
 
-// Expose basic spellcheck helper using nspell.
-contextBridge.exposeInMainWorld('spellcheckAPI', {
-  async misspellings(text) {
-    try {
-      const spell = await spellPromise;
-      const words = String(text)
-        .split(/\W+/)
-        .filter(Boolean);
-      return words.filter(w => !spell.correct(w));
-    } catch (err) {
-      return [];
+// Expose basic spellcheck helper using nspell, or a no-op if unavailable.
+const spellcheckAPI = spellPromise
+  ? {
+      async misspellings(text) {
+        try {
+          const spell = await spellPromise;
+          const words = String(text)
+            .split(/\W+/)
+            .filter(Boolean);
+          return words.filter(w => !spell.correct(w));
+        } catch (err) {
+          return [];
+        }
+      }
     }
-  }
-});
+  : {
+      misspellings() {
+        return [];
+      }
+    };
+
+contextBridge.exposeInMainWorld('spellcheckAPI', spellcheckAPI);
 
 // Expose helper message and status subscription API.
 contextBridge.exposeInMainWorld('electronAPI', {
