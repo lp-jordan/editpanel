@@ -116,6 +116,14 @@ header {
   border-radius: 8px;
 }
 
+.spell-report {
+  margin-top: 1rem;
+}
+
+.spell-report .misspelled {
+  color: #ff6b6b;
+}
+
 .dashboard h2 {
   margin: 0 0 0.5rem 0;
   font-weight: 700;
