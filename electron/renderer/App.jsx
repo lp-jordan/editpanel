@@ -55,6 +55,10 @@ function App() {
   };
 
   const handleConnect = () => {
+    if (!window.leaderpassAPI) {
+      appendLog('Leaderpass API not available; cannot connect');
+      return;
+    }
     window.leaderpassAPI
       .call('connect')
       .then(() => appendLog('Connect success'))
@@ -63,6 +67,10 @@ function App() {
 
   const handleNewProjectBins = () => {
     appendLog('New Project Bins clicked');
+    if (!window.leaderpassAPI) {
+      appendLog('Leaderpass API not available; cannot create project bins');
+      return;
+    }
     window.leaderpassAPI
       .call('create_project_bins')
       .then(() => appendLog('Project bin creation command sent'))
@@ -71,6 +79,10 @@ function App() {
 
   const handleLPBaseExport = () => {
     appendLog('LP Base Export clicked');
+    if (!window.leaderpassAPI) {
+      appendLog('Leaderpass API not available; cannot export LP Base');
+      return;
+    }
     window.leaderpassAPI
       .call('lp_base_export')
       .then(() => appendLog('LP Base Export command sent'))
@@ -81,6 +93,10 @@ function App() {
 
   const handleSpellcheck = () => {
     appendLog('Spellcheck started');
+    if (!window.leaderpassAPI) {
+      appendLog('Leaderpass API not available; cannot run spellcheck');
+      return;
+    }
     window.leaderpassAPI
       .call('spellcheck')
       .then(async res => {
@@ -155,7 +171,11 @@ function App() {
         </>
       ) : (
         <div className="connect-container">
-          <button className="connect-button" onClick={handleConnect}>
+          <button
+            className="connect-button"
+            onClick={handleConnect}
+            disabled={!window.leaderpassAPI}
+          >
             Connect
           </button>
         </div>
