@@ -124,10 +124,21 @@ header {
   color: #ff6b6b;
 }
 
-.spell-report .spell-summary {
-  margin-bottom: 0.5rem;
-  font-weight: 700;
-  color: #d4af37;
+.spell-report table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+.spell-report th,
+.spell-report td {
+  border: 1px solid #444;
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+}
+
+.spell-report th {
+  background: #1e1e1e;
 }
 
 .dashboard h2 {
