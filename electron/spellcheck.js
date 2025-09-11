@@ -4,11 +4,11 @@ const nspell = require('nspell');
 
 let dictionary;
 try {
-  dictionary = require('dictionary-en-us');
+  dictionary = require('dictionary-en');
 } catch (err) {
   if (err.code === 'MODULE_NOT_FOUND') {
     console.warn(
-      "dictionary-en-us module not found; spell checking will treat all words as valid. Install 'dictionary-en-us' for full spell checking."
+      "dictionary-en module not found; spell checking will treat all words as valid. Install 'dictionary-en' for full spell checking."
     );
   } else {
     throw err;
