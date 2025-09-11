@@ -6,7 +6,12 @@ function App() {
   const [consoleOpen, setConsoleOpen] = React.useState(false);
   const [currentCategory, setCurrentCategory] = React.useState(null);
   const [spellReport, setSpellReport] = React.useState([]);
-  const [spellTotals, setSpellTotals] = React.useState({ items: 0, misspellings: 0 });
+  const [spellTotals, setSpellTotals] = React.useState({
+    items: 0,
+    words: 0,
+    issues: 0,
+    ignored: 0
+  });
 
   const appendLog = msg => {
     setLog(prev => {
@@ -106,21 +111,30 @@ function App() {
       .call('spellcheck')
       .then(async res => {
         const items = (res.data && res.data.items) || [];
-        const grouped = [];
+        const rows = [];
         let totalItems = 0;
-        let totalMisspellings = 0;
-        for (const group of items) {
-          const entries = [];
-          for (const entry of group.entries || []) {
-            const misspelled = misspell ? await misspell(entry.text) : [];
-            entries.push({ ...entry, misspelled });
-            totalItems += 1;
-            totalMisspellings += misspelled.length;
+        let totalWords = 0;
+        let totalIssues = 0;
+        let totalIgnored = 0;
+        for (const entry of items) {
+          const result = misspell
+            ? await misspell(entry.text)
+            : { words: entry.text.split(/\W+/).filter(Boolean).length, misspelled: [], ignored: 0 };
+          totalItems += 1;
+          totalWords += result.words;
+          totalIssues += result.misspelled.length;
+          totalIgnored += result.ignored;
+          if (result.misspelled.length > 0) {
+            rows.push({ ...entry, misspelled: result.misspelled });
           }
-          grouped.push({ track: group.track, clip: group.clip, entries });
         }
-        setSpellReport(grouped);
-        setSpellTotals({ items: totalItems, misspellings: totalMisspellings });
+        setSpellReport(rows);
+        setSpellTotals({
+          items: totalItems,
+          words: totalWords,
+          issues: totalIssues,
+          ignored: totalIgnored
+        });
         appendLog('Spellcheck complete');
       })
       .catch(err => appendLog(`Spellcheck error: ${err?.error || err}`));
