@@ -74,3 +74,5 @@ async function misspellings(_, text) {
     return { words: 0, misspelled: [], ignored: 0 };
   }
 }
+
+module.exports = { misspellings };
