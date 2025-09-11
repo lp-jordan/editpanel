@@ -4,45 +4,13 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
-const nspell = require('nspell');
-const dictionary = require('dictionary-en-us');
+const { misspellings } = require('./spellcheck');
 
 const pending = [];
 
 let helperProc;
 let helperReader;
 let win;
-let spellPromise;
-let allowList = new Set();
-const allowPath = path.join(__dirname, 'spellcheck_allowlist.txt');
-fs.promises
-  .readFile(allowPath, 'utf8')
-  .then(contents => {
-    allowList = new Set(
-      contents
-        .split(/\r?\n/)
-        .map(w => w.trim().toLowerCase())
-        .filter(Boolean)
-    );
-  })
-  .catch(() => {
-    allowList = new Set();
-  });
-
-function loadSpell() {
-  if (!spellPromise) {
-    spellPromise = new Promise((resolve, reject) => {
-      dictionary((err, dict) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(nspell(dict));
-        }
-      });
-    });
-  }
-  return spellPromise;
-}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -118,28 +86,7 @@ app.whenReady().then(() => {
   );
   ipcMain.handle('fs:stat', (_, p) => fs.promises.stat(p));
 
-  ipcMain.handle('spellcheck:misspellings', async (_, text) => {
-    try {
-      const spell = await loadSpell();
-      const words = String(text)
-        .split(/\W+/)
-        .filter(Boolean);
-      const misspelled = [];
-      let ignored = 0;
-      for (const w of words) {
-        if (!spell.correct(w)) {
-          if (allowList.has(w.toLowerCase())) {
-            ignored++;
-          } else {
-            misspelled.push(w);
-          }
-        }
-      }
-      return { words: words.length, misspelled, ignored };
-    } catch (err) {
-      return { words: 0, misspelled: [], ignored: 0 };
-    }
-  });
+  ipcMain.handle('spellcheck:misspellings', misspellings);
 
   // Handle generic leaderpass actions invoked from the renderer.
   ipcMain.handle('leaderpass-call', async (event, action) => {
