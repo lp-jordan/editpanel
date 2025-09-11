@@ -29,7 +29,14 @@ function SpellcheckReport({ report }) {
                 </div>
                 <div>Text: {row.text}</div>
                 {row.misspelled && row.misspelled.length ? (
-                  <div>Misspelled: {row.misspelled.join(', ')}</div>
+                  <div>
+                    Misspelled:{' '}
+                    {row.misspelled
+                      .map(m =>
+                        m.count > 1 ? `${m.word} (x${m.count})` : m.word
+                      )
+                      .join(', ')}
+                  </div>
                 ) : null}
               </div>
             );

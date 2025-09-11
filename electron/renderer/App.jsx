@@ -109,7 +109,16 @@ function App() {
         for (const group of items) {
           const entries = [];
           for (const entry of group.entries || []) {
-            const misspelled = misspell ? await misspell(entry.text) : [];
+            const raw = misspell ? await misspell(entry.text) : [];
+            const normalized = raw.map(w => w.toLowerCase());
+            const tally = {};
+            for (const word of normalized) {
+              tally[word] = (tally[word] || 0) + 1;
+            }
+            const misspelled = Object.entries(tally).map(([word, count]) => ({
+              word,
+              count
+            }));
             entries.push({ ...entry, misspelled });
           }
           grouped.push({ track: group.track, clip: group.clip, entries });
