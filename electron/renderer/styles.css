@@ -124,6 +124,23 @@ header {
   color: #ff6b6b;
 }
 
+.spell-report table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+.spell-report th,
+.spell-report td {
+  border: 1px solid #444;
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+}
+
+.spell-report th {
+  background: #1e1e1e;
+}
+
 .dashboard h2 {
   margin: 0 0 0.5rem 0;
   font-weight: 700;
