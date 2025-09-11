@@ -1,7 +1,19 @@
 const fs = require('fs');
 const path = require('path');
 const nspell = require('nspell');
-const dictionary = require('dictionary-en-us');
+
+let dictionary;
+try {
+  dictionary = require('dictionary-en-us');
+} catch (err) {
+  if (err.code === 'MODULE_NOT_FOUND') {
+    console.warn(
+      "dictionary-en-us module not found; spell checking will treat all words as valid. Install 'dictionary-en-us' for full spell checking."
+    );
+  } else {
+    throw err;
+  }
+}
 
 let spellPromise;
 let allowList = new Set();
@@ -23,15 +35,19 @@ fs.promises
 
 function loadSpell() {
   if (!spellPromise) {
-    spellPromise = new Promise((resolve, reject) => {
-      dictionary((err, dict) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(nspell(dict));
-        }
+    if (dictionary) {
+      spellPromise = new Promise((resolve, reject) => {
+        dictionary((err, dict) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(nspell(dict));
+          }
+        });
       });
-    });
+    } else {
+      spellPromise = Promise.resolve({ correct: () => true });
+    }
   }
   return spellPromise;
 }
@@ -57,6 +73,3 @@ async function misspellings(_, text) {
   } catch (err) {
     return { words: 0, misspelled: [], ignored: 0 };
   }
-}
-
-module.exports = { misspellings };
