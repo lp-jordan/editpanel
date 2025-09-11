@@ -1,5 +1,4 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const fs = require('fs');
 const path = require('path');
 
 let spellPromise;
@@ -18,18 +17,20 @@ try {
       }
     });
   });
-  try {
-    const allowPath = path.join(__dirname, 'spellcheck_allowlist.txt');
-    const contents = fs.readFileSync(allowPath, 'utf8');
-    allowList = new Set(
-      contents
-        .split(/\r?\n/)
-        .map(w => w.trim().toLowerCase())
-        .filter(Boolean)
-    );
-  } catch (err) {
-    allowList = new Set();
-  }
+  const allowPath = path.join(__dirname, 'spellcheck_allowlist.txt');
+  ipcRenderer
+    .invoke('fs:readFile', allowPath)
+    .then(contents => {
+      allowList = new Set(
+        contents
+          .split(/\r?\n/)
+          .map(w => w.trim().toLowerCase())
+          .filter(Boolean)
+      );
+    })
+    .catch(() => {
+      allowList = new Set();
+    });
 } catch (err) {
   console.warn('Spellcheck disabled; failed to load dictionary:', err);
 }
@@ -114,5 +115,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('helper-status', handler);
     return () => ipcRenderer.removeListener('helper-status', handler);
   }
+});
+
+contextBridge.exposeInMainWorld('fsAPI', {
+  readFile: p => ipcRenderer.invoke('fs:readFile', p),
+  writeFile: (p, data) => ipcRenderer.invoke('fs:writeFile', p, data),
+  stat: p => ipcRenderer.invoke('fs:stat', p)
 });
 
