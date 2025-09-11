@@ -1,12 +1,7 @@
-function SpellcheckReport({ report, totals = { items: 0, misspellings: 0 } }) {
-  if (!report || report.length === 0) {
-    return (
-      <div className="spell-report">
-        <h3>Spellcheck Report</h3>
-        <div>No text found.</div>
-      </div>
-    );
-  }
+function SpellcheckReport({
+  report,
+  totals = { items: 0, words: 0, issues: 0, ignored: 0 }
+}) {
 
   const renderText = (text, misspelled) => {
     if (!misspelled || misspelled.length === 0) return text;
@@ -26,32 +21,36 @@ function SpellcheckReport({ report, totals = { items: 0, misspellings: 0 } }) {
   return (
     <div className="spell-report">
       <h3>Spellcheck Report</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Track</th>
-            <th>Clip</th>
-            <th>Comp</th>
-            <th>Tool</th>
-            <th>Text</th>
-            <th>Misspelled</th>
-          </tr>
-        </thead>
-        <tbody>
-          {report.map((group, gidx) =>
-            group.entries.map((row, idx) => (
-              <tr key={`${gidx}-${idx}`}>
-                <td>{group.track}</td>
-                <td>{group.clip}</td>
-                <td>{row.comp}</td>
+      {report && report.length ? (
+        <table>
+          <thead>
+            <tr>
+              <th>Track</th>
+              <th>Tool</th>
+              <th>Timecode</th>
+              <th>Text</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.map((row, idx) => (
+              <tr key={idx}>
+                <td>{row.track}</td>
                 <td>{row.tool}</td>
+                <td>{row.timecode}</td>
                 <td>{renderText(row.text, row.misspelled)}</td>
-                <td>{row.misspelled && row.misspelled.length ? row.misspelled.join(', ') : ''}</td>
               </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <div>No issues found.</div>
+      )}
+      <div className="spell-summary">
+        <div>Total text items scanned: {totals.items}</div>
+        <div>Total words scanned: {totals.words}</div>
+        <div>Issues found: {totals.issues}</div>
+        <div>Dictionary hits ignored: {totals.ignored}</div>
+      </div>
     </div>
   );
 }

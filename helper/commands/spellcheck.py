@@ -1,5 +1,4 @@
 from typing import Any, Dict, List, Tuple
-from itertools import groupby
 
 
 def _safe_get(obj, name, default=None):
@@ -55,20 +54,6 @@ def _tool_id(tool):
     except Exception:
         pass
     return "UnknownTool"
-
-
-def _get_comp_name(comp):
-    try:
-        n = _safe_get(comp, "GetAttrs")
-        if callable(n):
-            attrs = comp.GetAttrs() or {}
-            name = attrs.get("COMPS_Name")
-            if name:
-                return str(name)
-    except Exception:
-        pass
-    n = _safe_get(comp, "Name")
-    return str(n) if n else "(Unnamed Comp)"
 
 
 def _extract_text_from_tool(comp, tool):
@@ -129,6 +114,21 @@ def _extract_texts_from_comp(comp):
     return out
 
 
+def _frames_to_tc(frame: int, fps: float) -> str:
+    """Convert a frame number to HH:MM:SS:FF timecode."""
+    try:
+        fps_int = int(round(fps))
+        if fps_int <= 0:
+            fps_int = 24
+    except Exception:
+        fps_int = 24
+    hours = frame // (fps_int * 3600)
+    minutes = (frame // (fps_int * 60)) % 60
+    seconds = (frame // fps_int) % 60
+    frames = frame % fps_int
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
+
+
 def handle_spellcheck(_payload: Dict[str, Any]) -> Dict[str, Any]:
     """Extract all Text+ strings from the active timeline."""
     from .. import resolve_helper as rh
@@ -137,6 +137,10 @@ def handle_spellcheck(_payload: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError("No active timeline")
 
     timeline = rh.timeline
+    try:
+        fps = float(timeline.GetSetting("timelineFrameRate") or 24)
+    except Exception:
+        fps = 24
     vcount = int(timeline.GetTrackCount("video") or 0)
     found: List[Dict[str, Any]] = []
 
@@ -151,32 +155,22 @@ def handle_spellcheck(_payload: Dict[str, Any]) -> Dict[str, Any]:
 
         for item in items:
             try:
-                clip_name = item.GetName() if hasattr(item, "GetName") else "(Unnamed Clip)"
+                get_start = getattr(item, "GetStart", None)
+                start_frame = int(get_start() or 0) if callable(get_start) else 0
+                timecode = _frames_to_tc(start_frame, fps)
                 comps = _get_fusion_comps(item)
                 if not comps:
                     continue
                 for comp in comps:
-                    comp_name = _get_comp_name(comp)
                     pairs = _extract_texts_from_comp(comp)
                     for tool_id, text in pairs:
                         found.append({
                             "track": track_index,
-                            "clip": clip_name,
-                            "comp": comp_name,
                             "tool": tool_id,
+                            "timecode": timecode,
                             "text": text,
                         })
             except Exception:
                 continue
 
-    # Sort by track and clip, then group entries
-    found.sort(key=lambda x: (x["track"], x["clip"]))
-    grouped: List[Dict[str, Any]] = []
-    for (track, clip), items in groupby(found, key=lambda x: (x["track"], x["clip"])):
-        entries = [
-            {k: v for k, v in item.items() if k not in ("track", "clip")}
-            for item in items
-        ]
-        grouped.append({"track": track, "clip": clip, "entries": entries})
-
-    return {"items": grouped}
+    return {"items": found}

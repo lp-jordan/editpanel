@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const fs = require('fs');
+const path = require('path');
 
 let spellPromise;
+let allowList = new Set();
 try {
   const nspell = require('nspell');
   const dictionary = require('dictionary-en-us');
@@ -15,6 +18,18 @@ try {
       }
     });
   });
+  try {
+    const allowPath = path.join(__dirname, 'spellcheck_allowlist.txt');
+    const contents = fs.readFileSync(allowPath, 'utf8');
+    allowList = new Set(
+      contents
+        .split(/\r?\n/)
+        .map(w => w.trim().toLowerCase())
+        .filter(Boolean)
+    );
+  } catch (err) {
+    allowList = new Set();
+  }
 } catch (err) {
   console.warn('Spellcheck disabled; failed to load dictionary:', err);
 }
@@ -51,15 +66,26 @@ const spellcheckAPI = spellPromise
           const words = String(text)
             .split(/\W+/)
             .filter(Boolean);
-          return words.filter(w => !spell.correct(w));
+          const misspelled = [];
+          let ignored = 0;
+          for (const w of words) {
+            if (!spell.correct(w)) {
+              if (allowList.has(w.toLowerCase())) {
+                ignored++;
+              } else {
+                misspelled.push(w);
+              }
+            }
+          }
+          return { words: words.length, misspelled, ignored };
         } catch (err) {
-          return [];
+          return { words: 0, misspelled: [], ignored: 0 };
         }
       }
     }
   : {
       misspellings() {
-        return [];
+        return { words: 0, misspelled: [], ignored: 0 };
       }
     };
 

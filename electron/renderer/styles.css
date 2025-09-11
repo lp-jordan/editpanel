@@ -141,6 +141,10 @@ header {
   background: #1e1e1e;
 }
 
+.spell-report .spell-summary {
+  margin-top: 0.5rem;
+}
+
 .dashboard h2 {
   margin: 0 0 0.5rem 0;
   font-weight: 700;
