@@ -1,3 +1,22 @@
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightText(text, misspelled) {
+  if (!misspelled || misspelled.length === 0) {
+    return text;
+  }
+  let highlighted = text;
+  misspelled.forEach(word => {
+    const regex = new RegExp(`\\b${escapeRegExp(word)}\\b`, 'g');
+    highlighted = highlighted.replace(
+      regex,
+      `<span class="misspelled-word">${word}</span>`
+    );
+  });
+  return highlighted;
+}
+
 function SpellcheckReport({ report }) {
   if (!report || report.length === 0) {
     return (
@@ -27,7 +46,11 @@ function SpellcheckReport({ report }) {
                 <div>
                   [{String(globalIdx).padStart(3, '0')}] Comp: {row.comp} | Tool: {row.tool}
                 </div>
-                <div>Text: {row.text}</div>
+                <div
+                  dangerouslySetInnerHTML={{
+                    __html: 'Text: ' + highlightText(row.text, row.misspelled)
+                  }}
+                />
                 {row.misspelled && row.misspelled.length ? (
                   <div>Misspelled: {row.misspelled.join(', ')}</div>
                 ) : null}
