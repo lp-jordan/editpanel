@@ -7,7 +7,7 @@
     "test": "echo 'No tests'"
   },
   "dependencies": {
-    "dictionary-en-us": "^3.0.0",
+    "dictionary-en": "^4.0.0",
     "electron": "^28.0.0",
     "nspell": "^2.1.0",
     "react": "^18.0.0",
