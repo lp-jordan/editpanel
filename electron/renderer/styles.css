@@ -129,6 +129,12 @@ header {
   color: #000;
 }
 
+.spell-report .spell-summary {
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+  color: #d4af37;
+}
+
 .dashboard h2 {
   margin: 0 0 0.5rem 0;
   font-weight: 700;

@@ -31,6 +31,9 @@ function SpellcheckReport({ report }) {
   return (
     <div className="spell-report">
       <h3>Spellcheck Report</h3>
+      <div className="spell-summary">
+        {totals.items} items scanned, {totals.misspellings} issues found
+      </div>
       {report.map((group, gidx) => (
         <div key={gidx} className="spell-group">
           <div className="group-header">
