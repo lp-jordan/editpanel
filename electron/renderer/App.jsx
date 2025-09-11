@@ -105,12 +105,16 @@ function App() {
       .call('spellcheck')
       .then(async res => {
         const items = (res.data && res.data.items) || [];
-        const checked = [];
-        for (const item of items) {
-          const misspelled = misspell ? await misspell(item.text) : [];
-          checked.push({ ...item, misspelled });
+        const grouped = [];
+        for (const group of items) {
+          const entries = [];
+          for (const entry of group.entries || []) {
+            const misspelled = misspell ? await misspell(entry.text) : [];
+            entries.push({ ...entry, misspelled });
+          }
+          grouped.push({ track: group.track, clip: group.clip, entries });
         }
-        setSpellReport(checked);
+        setSpellReport(grouped);
         appendLog('Spellcheck complete');
       })
       .catch(err => appendLog(`Spellcheck error: ${err?.error || err}`));

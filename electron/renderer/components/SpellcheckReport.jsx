@@ -8,21 +8,32 @@ function SpellcheckReport({ report }) {
     );
   }
 
+  let globalIdx = 0;
   return (
     <div className="spell-report">
       <h3>Spellcheck Report</h3>
-      {report.map((row, idx) => (
-        <div
-          key={idx}
-          className={row.misspelled && row.misspelled.length ? 'misspelled' : ''}
-        >
-          <div>
-            [{String(idx + 1).padStart(3, '0')}] Track {row.track} | Clip: {row.clip} | Comp: {row.comp} | Tool: {row.tool}
+      {report.map((group, gidx) => (
+        <div key={gidx} className="spell-group">
+          <div className="group-header">
+            Track {group.track} | Clip: {group.clip}
           </div>
-          <div>Text: {row.text}</div>
-          {row.misspelled && row.misspelled.length ? (
-            <div>Misspelled: {row.misspelled.join(', ')}</div>
-          ) : null}
+          {group.entries.map((row, idx) => {
+            globalIdx += 1;
+            return (
+              <div
+                key={idx}
+                className={row.misspelled && row.misspelled.length ? 'misspelled' : ''}
+              >
+                <div>
+                  [{String(globalIdx).padStart(3, '0')}] Comp: {row.comp} | Tool: {row.tool}
+                </div>
+                <div>Text: {row.text}</div>
+                {row.misspelled && row.misspelled.length ? (
+                  <div>Misspelled: {row.misspelled.join(', ')}</div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       ))}
     </div>

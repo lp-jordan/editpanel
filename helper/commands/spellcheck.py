@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Tuple
+from itertools import groupby
 
 
 def _safe_get(obj, name, default=None):
@@ -168,4 +169,14 @@ def handle_spellcheck(_payload: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 continue
 
-    return {"items": found}
+    # Sort by track and clip, then group entries
+    found.sort(key=lambda x: (x["track"], x["clip"]))
+    grouped: List[Dict[str, Any]] = []
+    for (track, clip), items in groupby(found, key=lambda x: (x["track"], x["clip"])):
+        entries = [
+            {k: v for k, v in item.items() if k not in ("track", "clip")}
+            for item in items
+        ]
+        grouped.append({"track": track, "clip": clip, "entries": entries})
+
+    return {"items": grouped}
