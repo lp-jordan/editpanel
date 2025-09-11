@@ -73,4 +73,4 @@ async function misspellings(_, text) {
   } catch (err) {
     return { words: 0, misspelled: [], ignored: 0 };
   }
-;
+}
