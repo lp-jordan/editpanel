@@ -1,4 +1,4 @@
-function SpellcheckReport({ report }) {
+function SpellcheckReport({ report, totals = { items: 0, misspellings: 0 } }) {
   if (!report || report.length === 0) {
     return (
       <div className="spell-report">
