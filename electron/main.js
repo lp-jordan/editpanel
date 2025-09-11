@@ -1,4 +1,6 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow } = require('electron');
+const { ipcMain } = require('electron');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
@@ -14,7 +16,9 @@ function createWindow() {
     width: 800,
     height: 600,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js')
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true
     }
   });
 
@@ -73,6 +77,12 @@ app.whenReady().then(() => {
     helperProc.stdin.write(`${request}\n`);
     pending.push(event);
   });
+
+  ipcMain.handle('fs:readFile', (_, p) => fs.promises.readFile(p, 'utf8'));
+  ipcMain.handle('fs:writeFile', (_, p, data) =>
+    fs.promises.writeFile(p, data, 'utf8')
+  );
+  ipcMain.handle('fs:stat', (_, p) => fs.promises.stat(p));
 
   // Handle generic leaderpass actions invoked from the renderer.
   ipcMain.handle('leaderpass-call', async (event, action) => {
