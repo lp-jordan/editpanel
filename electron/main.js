@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Menu } = require('electron');
 const { ipcMain } = require('electron');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -28,6 +28,22 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  const template = [
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    }
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+
   helperProc = spawn('python', ['-m', 'helper.resolve_helper'], {
     stdio: ['pipe', 'pipe', 'inherit'],
     cwd: path.join(__dirname, '..')
