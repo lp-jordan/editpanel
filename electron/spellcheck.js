@@ -3,16 +3,24 @@ const path = require('path');
 const nspell = require('nspell');
 
 let dictionary;
-try {
-  dictionary = require('dictionary-en');
-} catch (err) {
-  if (err.code === 'MODULE_NOT_FOUND') {
-    console.warn(
-      "dictionary-en module not found; spell checking will treat all words as valid. Install 'dictionary-en' for full spell checking."
-    );
-  } else {
-    throw err;
+
+async function loadDictionary() {
+  if (dictionary === undefined) {
+    try {
+      const mod = await import('dictionary-en');
+      dictionary = mod.default || mod;
+    } catch (err) {
+      if (err.code === 'MODULE_NOT_FOUND' || err.code === 'ERR_MODULE_NOT_FOUND') {
+        console.warn(
+          "dictionary-en module not found; spell checking will treat all words as valid. Install 'dictionary-en' for full spell checking."
+        );
+        dictionary = null;
+      } else {
+        throw err;
+      }
+    }
   }
+  return dictionary;
 }
 
 let spellPromise;
@@ -35,19 +43,20 @@ fs.promises
 
 function loadSpell() {
   if (!spellPromise) {
-    if (dictionary) {
-      spellPromise = new Promise((resolve, reject) => {
-        dictionary((err, dict) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(nspell(dict));
-          }
+    spellPromise = loadDictionary().then(dict => {
+      if (dict) {
+        return new Promise((resolve, reject) => {
+          dict((err, data) => {
+            if (err) {
+              reject(err);
+            } else {
+              resolve(nspell(data));
+            }
+          });
         });
-      });
-    } else {
-      spellPromise = Promise.resolve({ correct: () => true });
-    }
+      }
+      return { correct: () => true };
+    });
   }
   return spellPromise;
 }
