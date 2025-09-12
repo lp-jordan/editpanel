@@ -148,7 +148,15 @@ function App() {
           totalIssues += result.misspelled.length;
           totalIgnored += result.ignored;
           if (result.misspelled.length > 0) {
-            rows.push({ ...entry, misspelled: result.misspelled });
+            rows.push({
+              track: entry.track,
+              tool: entry.tool,
+              timecode: entry.timecode,
+              text: entry.text,
+              start_frame: entry.start_frame,
+              tool_name: entry.tool_name,
+              misspelled: result.misspelled
+            });
           }
         }
         setSpellReport(rows);

@@ -8,6 +8,7 @@ from .create_project_bins import handle_create_project_bins
 from .lp_base_export import handle_lp_base_export
 from .shutdown import handle_shutdown
 from .spellcheck import handle_spellcheck
+from .update_text import handle_update_text
 
 # Mapping of command names to handler functions
 HANDLERS = {
@@ -20,4 +21,5 @@ HANDLERS = {
     "shutdown": handle_shutdown,
     "connect": handle_connect,
     "spellcheck": handle_spellcheck,
+    "update_text": handle_update_text,
 }
