@@ -58,10 +58,9 @@ function loadSpell() {
         }
 
         const spell = nspell(dict);
-        return
-          typeof spell.correct === 'function' && typeof spell.suggest === 'function'
-            ? spell
-            : { correct: () => true, suggest: () => [] };
+        return typeof spell.correct === 'function' && typeof spell.suggest === 'function'
+          ? spell
+          : { correct: () => true, suggest: () => [] };
       }
       return { correct: () => true, suggest: () => [] };
     });
