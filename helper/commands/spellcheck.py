@@ -89,7 +89,7 @@ def _extract_text_from_tool(comp, tool):
 
 
 def _extract_texts_from_comp(comp):
-    out: List[Tuple[str, str]] = []
+    out: List[Tuple[str, str, str]] = []  # (tool_id, tool_name, text)
     try:
         get_tool_list = _safe_get(comp, "GetToolList")
         if not callable(get_tool_list):
@@ -98,15 +98,19 @@ def _extract_texts_from_comp(comp):
         for arg in (False, True):
             try:
                 tools = get_tool_list(arg) or {}
-                iterable = tools.values() if hasattr(tools, "values") else tools
-                for t in iterable:
+                if hasattr(tools, "items"):
+                    iterable = tools.items()
+                else:
+                    iterable = [(None, t) for t in tools]
+                for name, t in iterable:
                     tid = _tool_id(t)
                     if (id(t), tid) in seen:
                         continue
                     seen.add((id(t), tid))
                     texts = _extract_text_from_tool(comp, t)
+                    tool_name = str(name) if name is not None else ""
                     for s in texts:
-                        out.append((tid, s))
+                        out.append((tid, tool_name, s))
             except Exception:
                 continue
     except Exception:
@@ -163,10 +167,12 @@ def handle_spellcheck(_payload: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 for comp in comps:
                     pairs = _extract_texts_from_comp(comp)
-                    for tool_id, text in pairs:
+                    for tool_id, tool_name, text in pairs:
                         found.append({
                             "track": track_index,
                             "tool": tool_id,
+                            "tool_name": tool_name,
+                            "start_frame": start_frame,
                             "timecode": timecode,
                             "text": text,
                         })

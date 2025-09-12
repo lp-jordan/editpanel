@@ -7,10 +7,11 @@ function SpellcheckReport({
     x: 0,
     y: 0,
     suggestions: [],
-    target: null
+    target: null,
+    row: null
   });
 
-  const handleContextMenu = async e => {
+  const handleContextMenu = async (e, row) => {
     e.preventDefault();
     const word = e.target.textContent;
     let suggestions = [];
@@ -25,7 +26,8 @@ function SpellcheckReport({
       x: e.pageX,
       y: e.pageY,
       suggestions,
-      target: e.target
+      target: e.target,
+      row
     });
   };
 
@@ -54,10 +56,21 @@ function SpellcheckReport({
       menu.target.textContent = suggestion;
       menu.target.classList.remove('misspelled');
     }
+    if (window.leaderpassAPI && menu.row) {
+      const { track, start_frame, tool_name } = menu.row;
+      window.leaderpassAPI
+        .call('update_text', {
+          track,
+          start_frame,
+          tool_name,
+          text: suggestion
+        })
+        .catch(() => {});
+    }
     setMenu(prev => ({ ...prev, visible: false }));
   };
 
-  const renderText = (text, misspelled) => {
+  const renderText = (row, text, misspelled) => {
     if (!misspelled || misspelled.length === 0) return text;
     const missSet = new Set(misspelled.map(w => w.toLowerCase()));
     return text.split(/(\W+)/).map((part, idx) => {
@@ -66,7 +79,7 @@ function SpellcheckReport({
           <span
             key={idx}
             className="misspelled"
-            onContextMenu={handleContextMenu}
+            onContextMenu={e => handleContextMenu(e, row)}
           >
             {part}
           </span>
@@ -95,7 +108,7 @@ function SpellcheckReport({
                 <td>{row.track}</td>
                 <td>{row.tool}</td>
                 <td>{row.timecode}</td>
-                <td>{renderText(row.text, row.misspelled)}</td>
+                <td>{renderText(row, row.text, row.misspelled)}</td>
               </tr>
             ))}
           </tbody>
