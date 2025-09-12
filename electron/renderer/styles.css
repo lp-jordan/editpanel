@@ -124,6 +124,31 @@ header {
   color: #ff6b6b;
 }
 
+.suggestion-menu {
+  position: absolute;
+  background: #1e1e1e;
+  border: 1px solid #d4af37;
+  border-radius: 4px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  z-index: 1000;
+}
+
+.suggestion-menu li {
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+}
+
+.suggestion-menu li:hover {
+  background: #2a2a2a;
+}
+
+.suggestion-menu .no-suggestion {
+  color: #888;
+  cursor: default;
+}
+
 .spell-report table {
   width: 100%;
   border-collapse: collapse;

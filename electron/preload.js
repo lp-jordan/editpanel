@@ -17,7 +17,8 @@ contextBridge.exposeInMainWorld('leaderpassAPI', {
 });
 
 contextBridge.exposeInMainWorld('spellcheckAPI', {
-  misspellings: text => ipcRenderer.invoke('spellcheck:misspellings', text)
+  misspellings: text => ipcRenderer.invoke('spellcheck:misspellings', text),
+  suggestions: word => ipcRenderer.invoke('spellcheck:suggestions', word)
 });
 
 contextBridge.exposeInMainWorld('electronAPI', {
