@@ -62,11 +62,11 @@ function loadSpell() {
 }
 
 async function misspellings(_, text) {
+  const words = String(text)
+    .split(/\W+/)
+    .filter(Boolean);
   try {
     const spell = await loadSpell();
-    const words = String(text)
-      .split(/\W+/)
-      .filter(Boolean);
     const misspelled = [];
     let ignored = 0;
     for (const w of words) {
@@ -80,7 +80,13 @@ async function misspellings(_, text) {
     }
     return { words: words.length, misspelled, ignored };
   } catch (err) {
-    return { words: 0, misspelled: [], ignored: 0 };
+    console.error('Spellcheck failed to load dictionary', err);
+    return {
+      words: words.length,
+      misspelled: [],
+      ignored: 0,
+      error: err && err.message ? err.message : String(err)
+    };
   }
 }
 
