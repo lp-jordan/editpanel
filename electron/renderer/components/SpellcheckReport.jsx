@@ -12,6 +12,14 @@ function SpellcheckReport({
     row: null
   });
 
+  const [editingIdx, setEditingIdx] = React.useState(null);
+  const [editValue, setEditValue] = React.useState('');
+  const [texts, setTexts] = React.useState(() => report.map(r => r.text));
+
+  React.useEffect(() => {
+    setTexts(report.map(r => r.text));
+  }, [report]);
+
   const handleContextMenu = async (e, row) => {
     e.preventDefault();
     const word = e.target.textContent;
@@ -71,6 +79,30 @@ function SpellcheckReport({
     setMenu(prev => ({ ...prev, visible: false }));
   };
 
+  const startEdit = idx => {
+    setEditingIdx(idx);
+    setEditValue(texts[idx] || '');
+  };
+
+  const saveEdit = (row, idx) => {
+    const newText = editValue;
+    onLog(`Updating text for track ${row.track} at ${row.timecode}`);
+    if (window.leaderpassAPI) {
+      const { track, start_frame, tool_name } = row;
+      window.leaderpassAPI
+        .call('update_text', { track, start_frame, tool_name, text: newText })
+        .then(() => onLog('Text update sent'))
+        .catch(err => onLog(`Update text error: ${err?.error || err}`));
+    }
+    const next = [...texts];
+    next[idx] = newText;
+    setTexts(next);
+    if (row && Array.isArray(row.misspelled)) {
+      row.misspelled = [];
+    }
+    setEditingIdx(null);
+  };
+
   const jumpToTimecode = (row, word) => {
     const tc = row.timecode;
     onLog(`Misspelling "${word}" clicked at ${tc}`);
@@ -124,7 +156,26 @@ function SpellcheckReport({
                 <td>{row.track}</td>
                 <td>{row.tool}</td>
                 <td>{row.timecode}</td>
-                <td>{renderText(row, row.text, row.misspelled)}</td>
+                <td>
+                  {editingIdx === idx ? (
+                    <div className="text-edit-container">
+                      <textarea
+                        value={editValue}
+                        onChange={e => setEditValue(e.target.value)}
+                      />
+                      <button
+                        className="save-button"
+                        onClick={() => saveEdit(row, idx)}
+                      >
+                        ✔️
+                      </button>
+                    </div>
+                  ) : (
+                    <div onDoubleClick={() => startEdit(idx)}>
+                      {renderText(row, texts[idx], row.misspelled)}
+                    </div>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

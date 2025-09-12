@@ -166,6 +166,31 @@ header {
   background: #1e1e1e;
 }
 
+.spell-report .text-edit-container {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.spell-report textarea {
+  flex: 1;
+  background: #000;
+  color: #fff;
+  border: 1px solid #444;
+  resize: vertical;
+}
+
+.spell-report .save-button {
+  background: #1e1e1e;
+  color: #d4af37;
+  border: 1px solid #d4af37;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.spell-report .save-button:hover {
+  background: #2a2a2a;
+}
+
 .spell-report .spell-summary {
   margin-top: 0.5rem;
 }
