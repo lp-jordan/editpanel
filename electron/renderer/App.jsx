@@ -231,7 +231,11 @@ function App() {
           <div className="dashboard">
             <h2>Dashboard</h2>
             <div>Active Timeline: {timeline || 'None'}</div>
-            <SpellcheckReport report={spellReport} totals={spellTotals} />
+            <SpellcheckReport
+              report={spellReport}
+              totals={spellTotals}
+              onLog={appendLog}
+            />
           </div>
         </>
       ) : (

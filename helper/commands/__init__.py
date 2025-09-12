@@ -9,6 +9,7 @@ from .lp_base_export import handle_lp_base_export
 from .shutdown import handle_shutdown
 from .spellcheck import handle_spellcheck
 from .update_text import handle_update_text
+from .goto import handle_goto
 
 # Mapping of command names to handler functions
 HANDLERS = {
@@ -22,4 +23,5 @@ HANDLERS = {
     "connect": handle_connect,
     "spellcheck": handle_spellcheck,
     "update_text": handle_update_text,
+    "goto": handle_goto,
 }

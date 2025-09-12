@@ -1,6 +1,7 @@
 function SpellcheckReport({
   report,
-  totals = { items: 0, words: 0, issues: 0, ignored: 0 }
+  totals = { items: 0, words: 0, issues: 0, ignored: 0 },
+  onLog = () => {}
 }) {
   const [menu, setMenu] = React.useState({
     visible: false,
@@ -70,6 +71,20 @@ function SpellcheckReport({
     setMenu(prev => ({ ...prev, visible: false }));
   };
 
+  const jumpToTimecode = (row, word) => {
+    const tc = row.timecode;
+    onLog(`Misspelling "${word}" clicked at ${tc}`);
+    if (!window.leaderpassAPI) {
+      onLog('Leaderpass API not available; cannot navigate');
+      return;
+    }
+    onLog(`Requesting playhead move to ${tc}`);
+    window.leaderpassAPI
+      .call('goto', { timecode: tc })
+      .then(() => onLog(`Playhead moved to ${tc}`))
+      .catch(err => onLog(`Goto error: ${err?.error || err}`));
+  };
+
   const renderText = (row, text, misspelled) => {
     if (!misspelled || misspelled.length === 0) return text;
     const missSet = new Set(misspelled.map(w => w.toLowerCase()));
@@ -80,6 +95,7 @@ function SpellcheckReport({
             key={idx}
             className="misspelled"
             onContextMenu={e => handleContextMenu(e, row)}
+            onClick={() => jumpToTimecode(row, part)}
           >
             {part}
           </span>
