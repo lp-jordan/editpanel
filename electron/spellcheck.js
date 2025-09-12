@@ -45,15 +45,20 @@ function loadSpell() {
   if (!spellPromise) {
     spellPromise = loadDictionary().then(dict => {
       if (dict) {
-        return new Promise((resolve, reject) => {
-          dict((err, data) => {
-            if (err) {
-              reject(err);
-            } else {
-              resolve(nspell(data));
-            }
+        if (typeof dict === 'function') {
+          return new Promise((resolve, reject) => {
+            dict((err, data) => {
+              if (err) {
+                reject(err);
+              } else {
+                resolve(nspell(data));
+              }
+            });
           });
-        });
+        }
+
+        const spell = nspell(dict);
+        return typeof spell.correct === 'function' ? spell : { correct: () => true };
       }
       return { correct: () => true };
     });
