@@ -58,9 +58,12 @@ function loadSpell() {
         }
 
         const spell = nspell(dict);
-        return typeof spell.correct === 'function' ? spell : { correct: () => true };
+        return
+          typeof spell.correct === 'function' && typeof spell.suggest === 'function'
+            ? spell
+            : { correct: () => true, suggest: () => [] };
       }
-      return { correct: () => true };
+      return { correct: () => true, suggest: () => [] };
     });
   }
   return spellPromise;
@@ -95,4 +98,16 @@ async function misspellings(_, text) {
   }
 }
 
-module.exports = { misspellings };
+async function suggestions(_, word) {
+  try {
+    const spell = await loadSpell();
+    const results =
+      typeof spell.suggest === 'function' ? spell.suggest(String(word)) : [];
+    return results.slice(0, 5);
+  } catch (err) {
+    console.error('Spell suggestion failed to load dictionary', err);
+    return [];
+  }
+}
+
+module.exports = { misspellings, suggestions };

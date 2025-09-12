@@ -4,7 +4,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
-const { misspellings } = require('./spellcheck');
+const { misspellings, suggestions } = require('./spellcheck');
 
 const pending = [];
 
@@ -87,6 +87,7 @@ app.whenReady().then(() => {
   ipcMain.handle('fs:stat', (_, p) => fs.promises.stat(p));
 
   ipcMain.handle('spellcheck:misspellings', misspellings);
+  ipcMain.handle('spellcheck:suggestions', suggestions);
 
   // Handle generic leaderpass actions invoked from the renderer.
   ipcMain.handle('leaderpass-call', async (event, action) => {
