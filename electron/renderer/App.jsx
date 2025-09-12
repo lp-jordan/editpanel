@@ -12,6 +12,7 @@ function App() {
     issues: 0,
     ignored: 0
   });
+  const [spellHistory, setSpellHistory] = React.useState([]);
 
   const appendLog = msg => {
     setLog(prev => {
@@ -60,7 +61,26 @@ function App() {
     appendLog(`${action} clicked`);
   };
 
+  const cacheSpellcheck = () => {
+    if (
+      spellReport.length ||
+      spellTotals.items ||
+      spellTotals.words ||
+      spellTotals.issues ||
+      spellTotals.ignored
+    ) {
+      setSpellHistory(prev => [
+        ...prev,
+        { report: spellReport, totals: spellTotals, timestamp: Date.now() }
+      ]);
+      appendLog('Spellcheck report cached to history');
+    }
+    setSpellReport([]);
+    setSpellTotals({ items: 0, words: 0, issues: 0, ignored: 0 });
+  };
+
   const handleConnect = () => {
+    cacheSpellcheck();
     if (!window.leaderpassAPI) {
       appendLog('Leaderpass API not available; cannot connect');
       return;
@@ -72,6 +92,7 @@ function App() {
   };
 
   const handleNewProjectBins = () => {
+    cacheSpellcheck();
     appendLog('New Project Bins clicked');
     if (!window.leaderpassAPI) {
       appendLog('Leaderpass API not available; cannot create project bins');
@@ -84,6 +105,7 @@ function App() {
   };
 
   const handleLPBaseExport = () => {
+    cacheSpellcheck();
     appendLog('LP Base Export clicked');
     if (!window.leaderpassAPI) {
       appendLog('Leaderpass API not available; cannot export LP Base');
@@ -98,6 +120,7 @@ function App() {
   };
 
   const handleSpellcheck = () => {
+    cacheSpellcheck();
     appendLog('Spellcheck started');
     if (!window.leaderpassAPI) {
       appendLog('Leaderpass API not available; cannot run spellcheck');
@@ -174,7 +197,13 @@ function App() {
             </div>
           ) : (
             <div className="category-view">
-              <button className="back-button" onClick={() => setCurrentCategory(null)}>
+              <button
+                className="back-button"
+                onClick={() => {
+                  cacheSpellcheck();
+                  setCurrentCategory(null);
+                }}
+              >
                 Back
               </button>
               <div className="function-grid">
