@@ -28,6 +28,7 @@ SUPPORTED_ENGINES = {"local", "openai"}
 DEFAULT_ENGINE = "local"
 DEFAULT_LOCAL_MODEL = "small"
 DEFAULT_OPENAI_MODEL = "whisper-1"
+REQUIRED_CUDA_VERSION = "13.1.1"
 
 
 class TranscriptionError(RuntimeError):
@@ -185,6 +186,7 @@ def _transcribe_with_local_engine(audio_path: Path, language: Optional[str], mod
             "model": model,
             "language": getattr(info, "language", language),
             "duration": float(getattr(info, "duration", 0.0) or 0.0),
+            "required_cuda_version": REQUIRED_CUDA_VERSION,
         },
     }
 
