@@ -13,6 +13,10 @@ function App() {
     ignored: 0
   });
   const [spellHistory, setSpellHistory] = React.useState([]);
+  const [transcribeFolderPath, setTranscribeFolderPath] = React.useState('');
+  const [transcribeBusy, setTranscribeBusy] = React.useState(false);
+  const [transcribeProgress, setTranscribeProgress] = React.useState([]);
+  const [transcribeSummary, setTranscribeSummary] = React.useState(null);
 
   const appendLog = msg => {
     setLog(prev => {
@@ -171,6 +175,79 @@ function App() {
       .catch(err => appendLog(`Spellcheck error: ${err?.error || err}`));
   };
 
+
+  const handleTranscribe = async () => {
+    cacheSpellcheck();
+    const folderPath = transcribeFolderPath.trim();
+    if (!folderPath) {
+      appendLog('Transcribe error: folder path is required');
+      setTranscribeSummary({
+        success: false,
+        message: 'Provide a folder path before running transcription.',
+        failures: []
+      });
+      return;
+    }
+
+    if (!window.electronAPI?.transcribeFolder) {
+      appendLog('Transcribe API not available; cannot transcribe folder');
+      setTranscribeSummary({
+        success: false,
+        message: 'Transcribe API not available in preload.',
+        failures: []
+      });
+      return;
+    }
+
+    setTranscribeBusy(true);
+    setTranscribeSummary(null);
+    setTranscribeProgress([`Transcription started for ${folderPath}`]);
+    appendLog(`Transcribe started: ${folderPath}`);
+
+    try {
+      const result = await window.electronAPI.transcribeFolder(folderPath);
+      const files = Array.isArray(result?.data?.files)
+        ? result.data.files
+        : Array.isArray(result?.files)
+          ? result.files
+          : [];
+      const failures = Array.isArray(result?.data?.failures)
+        ? result.data.failures
+        : Array.isArray(result?.failures)
+          ? result.failures
+          : files.filter(file => file && (file.error || file.ok === false));
+      const completed = typeof result?.data?.completed === 'number'
+        ? result.data.completed
+        : files.length - failures.length;
+
+      const message = `Transcription complete: ${completed} succeeded, ${failures.length} failed`;
+      setTranscribeProgress(prev => [...prev, message]);
+      setTranscribeSummary({
+        success: true,
+        message,
+        failures
+      });
+      appendLog(message);
+
+      failures.forEach(failure => {
+        const name = failure?.file || failure?.path || 'unknown file';
+        const error = failure?.error || failure?.reason || 'unknown error';
+        appendLog(`Transcribe failure (${name}): ${error}`);
+      });
+    } catch (err) {
+      const errorMsg = err?.error || err?.message || String(err);
+      appendLog(`Transcribe error: ${errorMsg}`);
+      setTranscribeProgress(prev => [...prev, `Transcription failed: ${errorMsg}`]);
+      setTranscribeSummary({
+        success: false,
+        message: `Transcription failed: ${errorMsg}`,
+        failures: []
+      });
+    } finally {
+      setTranscribeBusy(false);
+    }
+  };
+
   const categories = ['SETUP', 'EDIT', 'AUDIO', 'DELIVER'];
 
   const actions = {
@@ -180,7 +257,9 @@ function App() {
     EDIT: [
       { label: 'Spellcheck', icon: '📝', onClick: handleSpellcheck }
     ],
-    AUDIO: [],
+    AUDIO: [
+      { label: 'Transcribe Folder', icon: '🎙️', onClick: handleTranscribe }
+    ],
     DELIVER: [
       { label: 'LP Base Export', icon: '📤', onClick: handleLPBaseExport }
     ]
@@ -220,6 +299,7 @@ function App() {
                     key={action.label}
                     className="task-button"
                     onClick={action.onClick}
+                    disabled={action.label === 'Transcribe Folder' && transcribeBusy}
                   >
                     <span className="icon">{action.icon}</span>
                     <span>{action.label}</span>
@@ -231,6 +311,42 @@ function App() {
           <div className="dashboard">
             <h2>Dashboard</h2>
             <div>Active Timeline: {timeline || 'None'}</div>
+            <div className="transcribe-panel">
+              <h3>Transcribe</h3>
+              <input
+                type="text"
+                placeholder="Folder path for audio files"
+                value={transcribeFolderPath}
+                onChange={event => setTranscribeFolderPath(event.target.value)}
+                disabled={transcribeBusy}
+              />
+              <div>
+                <button onClick={handleTranscribe} disabled={transcribeBusy}>
+                  {transcribeBusy ? 'Transcribing…' : 'Run Transcribe Folder'}
+                </button>
+              </div>
+              {transcribeProgress.length > 0 ? (
+                <ul>
+                  {transcribeProgress.map((line, index) => (
+                    <li key={`${line}-${index}`}>{line}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {transcribeSummary ? (
+                <div>
+                  <strong>{transcribeSummary.message}</strong>
+                  {transcribeSummary.failures.length > 0 ? (
+                    <ul>
+                      {transcribeSummary.failures.map((failure, index) => {
+                        const name = failure?.file || failure?.path || `file ${index + 1}`;
+                        const error = failure?.error || failure?.reason || 'unknown error';
+                        return <li key={`${name}-${index}`}>{name}: {error}</li>;
+                      })}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             <SpellcheckReport
               report={spellReport}
               totals={spellTotals}

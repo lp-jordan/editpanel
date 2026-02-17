@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event, status) => callback(status);
     ipcRenderer.on('helper-status', handler);
     return () => ipcRenderer.removeListener('helper-status', handler);
+  },
+
+  transcribeFolder(folderPath) {
+    return ipcRenderer.invoke('audio:transcribe-folder', folderPath);
   }
 });
 
@@ -40,4 +44,3 @@ contextBridge.exposeInMainWorld('fsAPI', {
   writeFile: (p, data) => ipcRenderer.invoke('fs:writeFile', p, data),
   stat: p => ipcRenderer.invoke('fs:stat', p)
 });
-

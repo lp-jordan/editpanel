@@ -27,6 +27,19 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
+function queueHelperRequest(payload) {
+  return new Promise((resolve, reject) => {
+    if (!helperProc) {
+      reject(new Error('helper not running'));
+      return;
+    }
+
+    const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    helperProc.stdin.write(`${request}\n`);
+    pending.push({ resolve, reject });
+  });
+}
+
 app.whenReady().then(() => {
   const template = [
     {
@@ -74,9 +87,15 @@ app.whenReady().then(() => {
       }
 
       if (pending.length) {
-        const event = pending.shift();
+        const request = pending.shift();
         message = Object.assign({ ok: !message.error }, message);
-        event.reply('helper-response', message);
+        if (request.event) {
+          request.event.reply('helper-response', message);
+        } else if (message.ok) {
+          request.resolve(message);
+        } else {
+          request.reject(message);
+        }
       }
     } catch (err) {
       console.error('Error processing helper output:', err);
@@ -93,7 +112,14 @@ app.whenReady().then(() => {
     }
     const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
     helperProc.stdin.write(`${request}\n`);
-    pending.push(event);
+    pending.push({ event });
+  });
+
+  ipcMain.handle('audio:transcribe-folder', async (_, folderPath) => {
+    if (!folderPath) {
+      throw new Error('folderPath is required');
+    }
+    return queueHelperRequest({ cmd: 'transcribe_folder', folder_path: folderPath });
   });
 
   ipcMain.handle('fs:readFile', (_, p) => fs.promises.readFile(p, 'utf8'));
