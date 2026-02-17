@@ -386,149 +386,158 @@ function App() {
 
   const actions = {
     SETUP: [
-      { label: 'New Project Bins', icon: '🗂️', onClick: handleNewProjectBins }
+      { label: 'New Project Bins', icon: '🗂️', onClick: handleNewProjectBins, resolveRequired: true }
     ],
     EDIT: [
-      { label: 'Spellcheck', icon: '📝', onClick: handleSpellcheck }
+      { label: 'Spellcheck', icon: '📝', onClick: handleSpellcheck, resolveRequired: true }
     ],
     AUDIO: [
       { label: 'Transcribe Folder', icon: '🎙️', onClick: handleTranscribe }
     ],
     DELIVER: [
-      { label: 'LP Base Export', icon: '📤', onClick: handleLPBaseExport }
+      { label: 'LP Base Export', icon: '📤', onClick: handleLPBaseExport, resolveRequired: true }
     ]
   };
 
   return (
     <div className="app-container" style={{ paddingBottom: consoleOpen ? '240px' : '40px' }}>
       <header>{project || 'No Project'}</header>
-      {connected ? (
-        <>
-          {currentCategory === null ? (
-            <div className="function-grid folder-grid">
-              {categories.map(cat => (
-                <button
-                  key={cat}
-                  className="folder-button"
-                  onClick={() => setCurrentCategory(cat)}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="category-view">
-              <button
-                className="back-button"
-                onClick={() => {
-                  cacheSpellcheck();
-                  setCurrentCategory(null);
-                }}
-              >
-                Back
-              </button>
-              <div className="function-grid">
-                {actions[currentCategory].map(action => (
-                  <button
-                    key={action.label}
-                    className="task-button"
-                    onClick={action.onClick}
-                    disabled={action.label === 'Transcribe Folder' && transcribeBusy}
-                  >
-                    <span className="icon">{action.icon}</span>
-                    <span>{action.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          <div className="dashboard">
-            <h2>Dashboard</h2>
-            <div>Active Timeline: {timeline || 'None'}</div>
-            <div className="transcribe-panel">
-              <h3>Transcribe</h3>
-              <input
-                type="text"
-                placeholder="Folder path for audio files"
-                value={transcribeFolderPath}
-                onChange={event => setTranscribeFolderPath(event.target.value)}
-                disabled={transcribeBusy}
-              />
-              <div>
-                <button onClick={handleTranscribe} disabled={transcribeBusy}>
-                  {transcribeBusy ? 'Transcribing…' : 'Run Transcribe Folder'}
-                </button>
-                <button
-                  onClick={handleCancelTranscribe}
-                  disabled={!transcribeBusy}
-                  style={{ marginLeft: 8 }}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleTestGpu}
-                  disabled={transcribeBusy}
-                  style={{ marginLeft: 8 }}
-                >
-                  Test GPU
-                </button>
-                <span style={{ marginLeft: 8 }}>Mode: {gpuEnabled ? 'GPU (CUDA)' : 'CPU (int8)'}</span>
-                {transcribeBusy ? <span style={{ marginLeft: 8 }}>⏳ In progress…</span> : null}
-              </div>
-              {transcribeBusy || transcribeStatus.total > 0 ? (
-                <div>
-                  Progress: {transcribeStatus.completed + transcribeStatus.failed}/{transcribeStatus.total || '?'}
-                  {' '}({transcribeStatus.completed} succeeded, {transcribeStatus.failed} failed)
-                  {transcribeStatus.currentFile ? (
-                    <div>Current file: {transcribeStatus.currentFile}</div>
-                  ) : null}
-                </div>
-              ) : null}
-              {transcribeProgress.length > 0 ? (
-                <ul>
-                  {transcribeProgress.map((line, index) => (
-                    <li key={`${line}-${index}`}>{line}</li>
-                  ))}
-                </ul>
-              ) : null}
-              {transcribeSummary ? (
-                <div>
-                  <strong>{transcribeSummary.message}</strong>
-                  {typeof transcribeSummary.total === 'number' ? (
-                    <div>
-                      Summary: {transcribeSummary.completed} succeeded / {transcribeSummary.failed} failed / {transcribeSummary.total} total
-                    </div>
-                  ) : null}
-                  {transcribeSummary.failures.length > 0 ? (
-                    <ul>
-                      {transcribeSummary.failures.map((failure, index) => {
-                        const name = failure?.file || failure?.path || `file ${index + 1}`;
-                        const error = failure?.error || failure?.reason || 'unknown error';
-                        return <li key={`${name}-${index}`}>{name}: {error}</li>;
-                      })}
-                    </ul>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            <SpellcheckReport
-              report={spellReport}
-              totals={spellTotals}
-              onLog={appendLog}
-            />
-          </div>
-        </>
+      <div className="connect-container" style={{ justifyContent: 'flex-start', gap: 8 }}>
+        <button
+          className="connect-button"
+          onClick={handleConnect}
+          disabled={!window.leaderpassAPI}
+        >
+          Connect
+        </button>
+        <span>
+          Resolve status: {connected ? 'Connected' : 'Disconnected'}
+        </span>
+      </div>
+      {currentCategory === null ? (
+        <div className="function-grid folder-grid">
+          {categories.map(cat => (
+            <button
+              key={cat}
+              className="folder-button"
+              onClick={() => setCurrentCategory(cat)}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
       ) : (
-        <div className="connect-container">
+        <div className="category-view">
           <button
-            className="connect-button"
-            onClick={handleConnect}
-            disabled={!window.leaderpassAPI}
+            className="back-button"
+            onClick={() => {
+              cacheSpellcheck();
+              setCurrentCategory(null);
+            }}
           >
-            Connect
+            Back
           </button>
+          <div className="function-grid">
+            {actions[currentCategory].map(action => {
+              const disabled =
+                (action.resolveRequired && !connected) ||
+                (action.label === 'Transcribe Folder' && transcribeBusy);
+              const disabledReason = action.resolveRequired && !connected
+                ? 'Connect to Resolve to use this action.'
+                : undefined;
+
+              return (
+                <button
+                  key={action.label}
+                  className="task-button"
+                  onClick={action.onClick}
+                  disabled={disabled}
+                  title={disabledReason}
+                >
+                  <span className="icon">{action.icon}</span>
+                  <span>{action.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
+      {!connected ? <div>Resolve-only actions are disabled until connection is established.</div> : null}
+      <div className="dashboard">
+        <h2>Dashboard</h2>
+        <div>Active Timeline: {timeline || 'None'}</div>
+        <div className="transcribe-panel">
+          <h3>Transcribe</h3>
+          <input
+            type="text"
+            placeholder="Folder path for audio files"
+            value={transcribeFolderPath}
+            onChange={event => setTranscribeFolderPath(event.target.value)}
+            disabled={transcribeBusy}
+          />
+          <div>
+            <button onClick={handleTranscribe} disabled={transcribeBusy}>
+              {transcribeBusy ? 'Transcribing…' : 'Run Transcribe Folder'}
+            </button>
+            <button
+              onClick={handleCancelTranscribe}
+              disabled={!transcribeBusy}
+              style={{ marginLeft: 8 }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleTestGpu}
+              disabled={transcribeBusy}
+              style={{ marginLeft: 8 }}
+            >
+              Test GPU
+            </button>
+            <span style={{ marginLeft: 8 }}>Mode: {gpuEnabled ? 'GPU (CUDA)' : 'CPU (int8)'}</span>
+            {transcribeBusy ? <span style={{ marginLeft: 8 }}>⏳ In progress…</span> : null}
+          </div>
+          {transcribeBusy || transcribeStatus.total > 0 ? (
+            <div>
+              Progress: {transcribeStatus.completed + transcribeStatus.failed}/{transcribeStatus.total || '?'}
+              {' '}({transcribeStatus.completed} succeeded, {transcribeStatus.failed} failed)
+              {transcribeStatus.currentFile ? (
+                <div>Current file: {transcribeStatus.currentFile}</div>
+              ) : null}
+            </div>
+          ) : null}
+          {transcribeProgress.length > 0 ? (
+            <ul>
+              {transcribeProgress.map((line, index) => (
+                <li key={`${line}-${index}`}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
+          {transcribeSummary ? (
+            <div>
+              <strong>{transcribeSummary.message}</strong>
+              {typeof transcribeSummary.total === 'number' ? (
+                <div>
+                  Summary: {transcribeSummary.completed} succeeded / {transcribeSummary.failed} failed / {transcribeSummary.total} total
+                </div>
+              ) : null}
+              {transcribeSummary.failures.length > 0 ? (
+                <ul>
+                  {transcribeSummary.failures.map((failure, index) => {
+                    const name = failure?.file || failure?.path || `file ${index + 1}`;
+                    const error = failure?.error || failure?.reason || 'unknown error';
+                    return <li key={`${name}-${index}`}>{name}: {error}</li>;
+                  })}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+        <SpellcheckReport
+          report={spellReport}
+          totals={spellTotals}
+          onLog={appendLog}
+        />
+      </div>
       <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />
     </div>
   );
