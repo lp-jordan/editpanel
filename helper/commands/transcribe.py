@@ -1,4 +1,6 @@
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime
@@ -299,12 +301,28 @@ def _discover_files(root: Path, recursive: bool) -> Iterable[Path]:
             yield candidate.resolve()
 
 
+def _resolve_ffmpeg_executable() -> str:
+    configured = (os.environ.get("FFMPEG_PATH") or "").strip()
+    if configured:
+        expanded = Path(configured).expanduser()
+        if expanded.exists():
+            return str(expanded)
+
+    discovered = shutil.which("ffmpeg")
+    if discovered:
+        return discovered
+
+    return "ffmpeg"
+
+
 def _run_ffmpeg_normalization(source: Path, temp_dir: Path) -> Tuple[bool, Optional[Path], str]:
     safe_stem = _sanitize_filename(source.stem)
     prepared_audio = temp_dir / f"{safe_stem}_16k_mono.wav"
 
+    ffmpeg_executable = _resolve_ffmpeg_executable()
+
     cmd = [
-        "ffmpeg",
+        ffmpeg_executable,
         "-y",
         "-i",
         str(source),

@@ -6,6 +6,13 @@ const path = require('path');
 const readline = require('readline');
 const { misspellings, suggestions } = require('./spellcheck');
 
+let ffmpegPath = '';
+try {
+  ffmpegPath = require('ffmpeg-static') || '';
+} catch (_error) {
+  ffmpegPath = '';
+}
+
 const pending = [];
 
 let helperProc;
@@ -59,7 +66,11 @@ app.whenReady().then(() => {
 
   helperProc = spawn('python', ['-m', 'helper.resolve_helper'], {
     stdio: ['pipe', 'pipe', 'inherit'],
-    cwd: path.join(__dirname, '..')
+    cwd: path.join(__dirname, '..'),
+    env: {
+      ...process.env,
+      ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {})
+    }
   });
   helperReader = readline.createInterface({ input: helperProc.stdout });
 
