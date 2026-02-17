@@ -17,9 +17,47 @@ function App() {
   const [transcribeBusy, setTranscribeBusy] = React.useState(false);
   const [transcribeProgress, setTranscribeProgress] = React.useState([]);
   const [transcribeSummary, setTranscribeSummary] = React.useState(null);
+  const [transcribeStatus, setTranscribeStatus] = React.useState({
+    total: 0,
+    completed: 0,
+    failed: 0,
+    currentFile: ''
+  });
 
   const appendTranscribeProgress = React.useCallback(message => {
     setTranscribeProgress(prev => [...prev, message].slice(-200));
+  }, []);
+
+  const parseTranscribeProgress = React.useCallback(entry => {
+    const queuedMatch = entry.match(/Transcribe: queued (\d+) file\(s\)/);
+    if (queuedMatch) {
+      const total = Number(queuedMatch[1]) || 0;
+      setTranscribeStatus(prev => ({ ...prev, total }));
+      return;
+    }
+
+    const processingMatch = entry.match(/Transcribe: \[(\d+)\/(\d+)\] processing (.+)$/);
+    if (processingMatch) {
+      const total = Number(processingMatch[2]) || 0;
+      setTranscribeStatus(prev => ({
+        ...prev,
+        total,
+        currentFile: processingMatch[3]
+      }));
+      return;
+    }
+
+    const doneMatch = entry.match(/Transcribe: done /);
+    if (doneMatch) {
+      setTranscribeStatus(prev => ({ ...prev, completed: prev.completed + 1 }));
+      return;
+    }
+
+    const failedMatch = entry.match(/Transcribe: failed /);
+    if (failedMatch) {
+      setTranscribeStatus(prev => ({ ...prev, failed: prev.failed + 1 }));
+      return;
+    }
   }, []);
 
   const appendLog = msg => {
@@ -59,6 +97,7 @@ function App() {
       appendLog(entry);
       if (entry.includes('Transcribe:')) {
         appendTranscribeProgress(entry);
+        parseTranscribeProgress(entry);
       }
     });
 
@@ -222,6 +261,7 @@ function App() {
 
     setTranscribeBusy(true);
     setTranscribeSummary(null);
+    setTranscribeStatus({ total: 0, completed: 0, failed: 0, currentFile: '' });
     setTranscribeProgress([`Transcription started for ${folderPath}`]);
     appendLog(`Transcribe started: ${folderPath}`);
 
@@ -292,6 +332,24 @@ function App() {
       });
     } finally {
       setTranscribeBusy(false);
+    }
+  };
+
+  const handleCancelTranscribe = async () => {
+    if (!transcribeBusy) {
+      return;
+    }
+    if (!window.electronAPI?.cancelTranscribe) {
+      appendLog('Cancel API not available; cannot cancel transcription');
+      return;
+    }
+    try {
+      const result = await window.electronAPI.cancelTranscribe();
+      const message = result?.message || 'Transcription canceled';
+      appendLog(message);
+      appendTranscribeProgress(`Transcribe: ${message}`);
+    } catch (err) {
+      appendLog(`Cancel transcription error: ${err?.error || err?.message || err}`);
     }
   };
 
@@ -371,8 +429,24 @@ function App() {
                 <button onClick={handleTranscribe} disabled={transcribeBusy}>
                   {transcribeBusy ? 'Transcribing…' : 'Run Transcribe Folder'}
                 </button>
+                <button
+                  onClick={handleCancelTranscribe}
+                  disabled={!transcribeBusy}
+                  style={{ marginLeft: 8 }}
+                >
+                  Cancel
+                </button>
                 {transcribeBusy ? <span style={{ marginLeft: 8 }}>⏳ In progress…</span> : null}
               </div>
+              {transcribeBusy || transcribeStatus.total > 0 ? (
+                <div>
+                  Progress: {transcribeStatus.completed + transcribeStatus.failed}/{transcribeStatus.total || '?'}
+                  {' '}({transcribeStatus.completed} succeeded, {transcribeStatus.failed} failed)
+                  {transcribeStatus.currentFile ? (
+                    <div>Current file: {transcribeStatus.currentFile}</div>
+                  ) : null}
+                </div>
+              ) : null}
               {transcribeProgress.length > 0 ? (
                 <ul>
                   {transcribeProgress.map((line, index) => (

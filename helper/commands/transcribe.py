@@ -484,8 +484,11 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     rh.log(f"Transcribe: queued {len(discovered_sources)} file(s) from {root}")
 
-    for source in discovered_sources:
+    total_sources = len(discovered_sources)
+
+    for index, source in enumerate(discovered_sources, start=1):
         rh.log(f"Transcribe: queued {source}")
+        rh.log(f"Transcribe: [{index}/{total_sources}] processing {source}")
         output_paths = _resolve_output_paths(source, output_mode, output_dir, overwrite)
         output_path = output_paths["mode"]
         text_output_path = output_paths["txt"]

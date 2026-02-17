@@ -18,52 +18,22 @@ const pending = [];
 let helperProc;
 let helperReader;
 let win;
+let transcribeInProgress = false;
 
-function createWindow() {
-  win = new BrowserWindow({
-    width: 800,
-    height: 600,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true
+function flushPendingWithError(message) {
+  while (pending.length) {
+    const request = pending.shift();
+    if (request.event) {
+      request.event.reply('helper-response', { ok: false, error: message });
+      continue;
     }
-  });
-
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    if (request.reject) {
+      request.reject(new Error(message));
+    }
+  }
 }
 
-function queueHelperRequest(payload) {
-  return new Promise((resolve, reject) => {
-    if (!helperProc) {
-      reject(new Error('helper not running'));
-      return;
-    }
-
-    const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    helperProc.stdin.write(`${request}\n`);
-    pending.push({ resolve, reject });
-  });
-}
-
-app.whenReady().then(() => {
-  const template = [
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' }
-      ]
-    }
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-
+function startHelper() {
   helperProc = spawn('python', ['-m', 'helper.resolve_helper'], {
     stdio: ['pipe', 'pipe', 'inherit'],
     cwd: path.join(__dirname, '..'),
@@ -116,6 +86,72 @@ app.whenReady().then(() => {
     }
   });
 
+  helperProc.on('exit', () => {
+    flushPendingWithError('helper process exited');
+    transcribeInProgress = false;
+    helperProc = null;
+    if (helperReader) {
+      helperReader.close();
+      helperReader = null;
+    }
+  });
+}
+
+function restartHelper(reason = 'helper restart requested') {
+  if (helperProc) {
+    helperProc.kill('SIGTERM');
+  }
+  flushPendingWithError(reason);
+  startHelper();
+}
+
+function createWindow() {
+  win = new BrowserWindow({
+    width: 800,
+    height: 600,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true
+    }
+  });
+
+  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+}
+
+function queueHelperRequest(payload) {
+  return new Promise((resolve, reject) => {
+    if (!helperProc) {
+      reject(new Error('helper not running'));
+      return;
+    }
+
+    const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    helperProc.stdin.write(`${request}\n`);
+    pending.push({ resolve, reject });
+  });
+}
+
+app.whenReady().then(() => {
+  const template = [
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    }
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+
+  startHelper();
+
   ipcMain.on('helper-request', (event, payload) => {
     if (!helperProc) {
       event.reply('helper-response', { ok: false, error: 'helper not running' });
@@ -130,7 +166,24 @@ app.whenReady().then(() => {
     if (!folderPath) {
       throw new Error('folderPath is required');
     }
-    return queueHelperRequest({ cmd: 'transcribe_folder', folder_path: folderPath });
+    transcribeInProgress = true;
+    try {
+      return await queueHelperRequest({ cmd: 'transcribe_folder', folder_path: folderPath });
+    } finally {
+      transcribeInProgress = false;
+    }
+  });
+
+  ipcMain.handle('audio:cancel-transcribe', async () => {
+    if (!transcribeInProgress) {
+      return { ok: true, canceled: false, message: 'No transcription in progress' };
+    }
+    restartHelper('transcription canceled');
+    BrowserWindow.getAllWindows().forEach(w =>
+      w.webContents.send('helper-message', 'Transcribe: canceled by user')
+    );
+    transcribeInProgress = false;
+    return { ok: true, canceled: true, message: 'Transcription canceled' };
   });
 
   ipcMain.handle('dialog:pickFolder', async () => {
