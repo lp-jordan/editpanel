@@ -9,6 +9,7 @@
   "dependencies": {
     "dictionary-en": "^4.0.0",
     "electron": "^28.0.0",
+    "ffmpeg-static": "^5.3.0",
     "nspell": "^2.1.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0"
