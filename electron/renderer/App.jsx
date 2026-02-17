@@ -18,6 +18,10 @@ function App() {
   const [transcribeProgress, setTranscribeProgress] = React.useState([]);
   const [transcribeSummary, setTranscribeSummary] = React.useState(null);
 
+  const appendTranscribeProgress = React.useCallback(message => {
+    setTranscribeProgress(prev => [...prev, message].slice(-200));
+  }, []);
+
   const appendLog = msg => {
     setLog(prev => {
       const next = [...prev, msg];
@@ -53,6 +57,9 @@ function App() {
     const unsubscribeMessage = window.electronAPI.onHelperMessage(payload => {
       const entry = typeof payload === 'string' ? payload : JSON.stringify(payload);
       appendLog(entry);
+      if (entry.includes('Transcribe:')) {
+        appendTranscribeProgress(entry);
+      }
     });
 
     return () => {
@@ -177,6 +184,11 @@ function App() {
 
 
   const handleTranscribe = async () => {
+    if (transcribeBusy) {
+      appendLog('Transcribe already running; ignoring duplicate request');
+      return;
+    }
+
     cacheSpellcheck();
 
     if (!window.electronAPI?.transcribeFolder) {
@@ -234,11 +246,17 @@ function App() {
         : typeof result?.data?.completed === 'number'
           ? result.data.completed
           : outputs.length - failures.length;
+      const total = typeof result?.data?.files_processed === 'number'
+        ? result.data.files_processed + failures.length
+        : outputs.length + failures.length;
 
-      const message = `Transcription complete: ${completed} succeeded, ${failures.length} failed`;
-      setTranscribeProgress(prev => [...prev, message]);
+      const message = `Transcription complete: ${completed}/${total} succeeded, ${failures.length} failed`;
+      appendTranscribeProgress(message);
       setTranscribeSummary({
         success: true,
+        completed,
+        total,
+        failed: failures.length,
         message,
         failures
       });
@@ -266,7 +284,7 @@ function App() {
     } catch (err) {
       const errorMsg = err?.error || err?.message || String(err);
       appendLog(`Transcribe error: ${errorMsg}`);
-      setTranscribeProgress(prev => [...prev, `Transcription failed: ${errorMsg}`]);
+      appendTranscribeProgress(`Transcription failed: ${errorMsg}`);
       setTranscribeSummary({
         success: false,
         message: `Transcription failed: ${errorMsg}`,
@@ -353,6 +371,7 @@ function App() {
                 <button onClick={handleTranscribe} disabled={transcribeBusy}>
                   {transcribeBusy ? 'Transcribing…' : 'Run Transcribe Folder'}
                 </button>
+                {transcribeBusy ? <span style={{ marginLeft: 8 }}>⏳ In progress…</span> : null}
               </div>
               {transcribeProgress.length > 0 ? (
                 <ul>
@@ -364,6 +383,11 @@ function App() {
               {transcribeSummary ? (
                 <div>
                   <strong>{transcribeSummary.message}</strong>
+                  {typeof transcribeSummary.total === 'number' ? (
+                    <div>
+                      Summary: {transcribeSummary.completed} succeeded / {transcribeSummary.failed} failed / {transcribeSummary.total} total
+                    </div>
+                  ) : null}
                   {transcribeSummary.failures.length > 0 ? (
                     <ul>
                       {transcribeSummary.failures.map((failure, index) => {
