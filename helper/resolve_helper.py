@@ -149,10 +149,15 @@ def _resp_err(req_id: Any, msg: str) -> Dict[str, Any]:
 
 
 from helper.commands import HANDLERS
+from helper.commands.transcribe import configure_cuda_dll_directories, _ensure_cuda_runtime_packages
+
 
 # ---------- Main loop ----------
 def main() -> None:
     """Read JSON lines from stdin and dispatch to command handlers."""
+    _ensure_cuda_runtime_packages(log)
+    cuda_env = configure_cuda_dll_directories(log)
+    log(f"Transcribe: CUDA DLL directories added={len(cuda_env.get('dll_directories_added', []))}")
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:

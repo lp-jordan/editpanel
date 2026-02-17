@@ -162,16 +162,27 @@ app.whenReady().then(() => {
     pending.push({ event });
   });
 
-  ipcMain.handle('audio:transcribe-folder', async (_, folderPath) => {
+  ipcMain.handle('audio:transcribe-folder', async (_, payload = {}) => {
+    const folderPath = typeof payload === 'string' ? payload : payload.folderPath;
+    const useGpu = Boolean(payload && typeof payload === 'object' ? payload.useGpu : false);
     if (!folderPath) {
       throw new Error('folderPath is required');
     }
     transcribeInProgress = true;
     try {
-      return await queueHelperRequest({ cmd: 'transcribe_folder', folder_path: folderPath });
+      return await queueHelperRequest({
+        cmd: 'transcribe_folder',
+        folder_path: folderPath,
+        engine: 'local',
+        use_gpu: useGpu
+      });
     } finally {
       transcribeInProgress = false;
     }
+  });
+
+  ipcMain.handle('audio:test-gpu', async () => {
+    return queueHelperRequest({ cmd: 'test_cuda' });
   });
 
   ipcMain.handle('audio:cancel-transcribe', async () => {

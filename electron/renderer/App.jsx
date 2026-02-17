@@ -17,6 +17,7 @@ function App() {
   const [transcribeBusy, setTranscribeBusy] = React.useState(false);
   const [transcribeProgress, setTranscribeProgress] = React.useState([]);
   const [transcribeSummary, setTranscribeSummary] = React.useState(null);
+  const [gpuEnabled, setGpuEnabled] = React.useState(() => window.localStorage.getItem('transcribe.gpuEnabled') === 'true');
   const [transcribeStatus, setTranscribeStatus] = React.useState({
     total: 0,
     completed: 0,
@@ -107,6 +108,10 @@ function App() {
     };
   }, []);
 
+
+  React.useEffect(() => {
+    window.localStorage.setItem('transcribe.gpuEnabled', gpuEnabled ? 'true' : 'false');
+  }, [gpuEnabled]);
   const logAction = action => {
     appendLog(`${action} clicked`);
   };
@@ -266,7 +271,7 @@ function App() {
     appendLog(`Transcribe started: ${folderPath}`);
 
     try {
-      const result = await window.electronAPI.transcribeFolder(folderPath);
+      const result = await window.electronAPI.transcribeFolder(folderPath, { useGpu: gpuEnabled });
       const outputs = Array.isArray(result?.data?.outputs)
         ? result.data.outputs
         : Array.isArray(result?.outputs)
@@ -353,6 +358,30 @@ function App() {
     }
   };
 
+
+  const handleTestGpu = async () => {
+    if (!window.electronAPI?.testGpu) {
+      appendLog('GPU test API not available');
+      return;
+    }
+    appendLog('Testing CUDA/GPU initialization...');
+    try {
+      const result = await window.electronAPI.testGpu();
+      const data = result?.data || result;
+      if (data?.ok) {
+        setGpuEnabled(true);
+        appendLog('GPU test passed. GPU acceleration enabled.');
+      } else {
+        const reason = data?.reason || 'unknown CUDA initialization error';
+        setGpuEnabled(false);
+        appendLog(`GPU test failed: ${reason}`);
+      }
+    } catch (err) {
+      setGpuEnabled(false);
+      appendLog(`GPU test error: ${err?.error || err?.message || err}`);
+    }
+  };
+
   const categories = ['SETUP', 'EDIT', 'AUDIO', 'DELIVER'];
 
   const actions = {
@@ -436,6 +465,14 @@ function App() {
                 >
                   Cancel
                 </button>
+                <button
+                  onClick={handleTestGpu}
+                  disabled={transcribeBusy}
+                  style={{ marginLeft: 8 }}
+                >
+                  Test GPU
+                </button>
+                <span style={{ marginLeft: 8 }}>Mode: {gpuEnabled ? 'GPU (CUDA)' : 'CPU (int8)'}</span>
                 {transcribeBusy ? <span style={{ marginLeft: 8 }}>⏳ In progress…</span> : null}
               </div>
               {transcribeBusy || transcribeStatus.total > 0 ? (
