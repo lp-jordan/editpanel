@@ -221,6 +221,27 @@ def _transcribe_with_openai_engine(audio_path: Path, language: Optional[str], mo
     }
 
 
+def _validate_engine_dependencies(engine: str) -> None:
+    """Fail fast when required transcription dependencies are unavailable."""
+    if engine == "local":
+        try:
+            import faster_whisper  # noqa: F401
+        except ImportError as exc:
+            raise TranscriptionError(
+                "Missing dependency 'faster-whisper'. Install it to use engine='local'."
+            ) from exc
+        return
+
+    if engine == "openai":
+        try:
+            import openai  # noqa: F401
+        except ImportError as exc:
+            raise TranscriptionError(
+                "Missing dependency 'openai'. Install it to use engine='openai'."
+            ) from exc
+        return
+
+
 def transcribe_audio_file(path: Path, language: Optional[str], model: str, engine: str) -> Dict[str, Any]:
     """Transcribe an audio file and return transcript text + segment timings."""
     if not path.exists() or not path.is_file():
@@ -405,6 +426,32 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
     outputs: List[Dict[str, Any]] = []
     failures: List[Dict[str, Any]] = []
     discovered_sources = list(_discover_files(root, recursive))
+
+    try:
+        _validate_engine_dependencies(engine)
+    except TranscriptionError as exc:
+        reason = str(exc)
+        rh.log(f"Transcribe: aborted ({reason})")
+        return {
+            "folder_path": str(root),
+            "scan_mode": "recursive" if recursive else "top_level_only",
+            "language": language,
+            "model": model,
+            "engine": engine,
+            "output_mode": output_mode,
+            "output_dir": str(Path(output_dir).expanduser().resolve()) if output_dir else None,
+            "include_txt_header": include_txt_header,
+            "collision_strategy": "overwrite" if overwrite else "suffix",
+            "overwrite": overwrite,
+            "files_processed": 0,
+            "outputs": [],
+            "failures": [{
+                "file": None,
+                "output": None,
+                "text_output": None,
+                "reason": reason,
+            }],
+        }
 
     rh.log(f"Transcribe: queued {len(discovered_sources)} file(s) from {root}")
 
