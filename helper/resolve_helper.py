@@ -31,11 +31,22 @@ Supported commands (MVP):
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import logging
 import threading
 from typing import Any, Dict, Optional
+
+
+if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+    try:
+        import nvidia.cublas
+
+        _cuda_dll_dir = os.path.join(os.path.dirname(nvidia.cublas.__file__), "bin")
+        os.add_dll_directory(_cuda_dll_dir)
+    except Exception as exc:
+        print(f"CUDA DLL dir not added: {exc}", file=sys.stderr)
 
 # ---------- Logging ----------
 logging.basicConfig(
