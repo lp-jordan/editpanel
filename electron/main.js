@@ -13,16 +13,19 @@ try {
   ffmpegPath = '';
 }
 
-const pending = [];
+const resolvePending = [];
+const transcribePending = [];
 
-let helperProc;
-let helperReader;
+let resolveHelperProc;
+let resolveHelperReader;
+let transcribeWorkerProc;
+let transcribeWorkerReader;
 let win;
 let transcribeInProgress = false;
 
-function flushPendingWithError(message) {
-  while (pending.length) {
-    const request = pending.shift();
+function flushPendingWithError(queue, message) {
+  while (queue.length) {
+    const request = queue.shift();
     if (request.event) {
       request.event.reply('helper-response', { ok: false, error: message });
       continue;
@@ -33,8 +36,8 @@ function flushPendingWithError(message) {
   }
 }
 
-function startHelper() {
-  helperProc = spawn('python', ['-m', 'helper.resolve_helper'], {
+function spawnWorker() {
+  return spawn('python', ['-m', 'helper.resolve_helper'], {
     stdio: ['pipe', 'pipe', 'inherit'],
     cwd: path.join(__dirname, '..'),
     env: {
@@ -42,9 +45,13 @@ function startHelper() {
       ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {})
     }
   });
-  helperReader = readline.createInterface({ input: helperProc.stdout });
+}
 
-  helperReader.on('line', line => {
+function startResolveHelper() {
+  resolveHelperProc = spawnWorker();
+  resolveHelperReader = readline.createInterface({ input: resolveHelperProc.stdout });
+
+  resolveHelperReader.on('line', line => {
     try {
       let message;
       try {
@@ -55,7 +62,7 @@ function startHelper() {
 
       if (message.event === 'status') {
         BrowserWindow.getAllWindows().forEach(w =>
-          w.webContents.send('helper-status', message)
+          w.webContents.send('resolve-status', message)
         );
         return;
       }
@@ -67,8 +74,8 @@ function startHelper() {
         return;
       }
 
-      if (pending.length) {
-        const request = pending.shift();
+      if (resolvePending.length) {
+        const request = resolvePending.shift();
         message = Object.assign({ ok: !message.error }, message);
         if (request.event) {
           request.event.reply('helper-response', message);
@@ -79,30 +86,84 @@ function startHelper() {
         }
       }
     } catch (err) {
-      console.error('Error processing helper output:', err);
+      console.error('Error processing resolve helper output:', err);
       BrowserWindow.getAllWindows().forEach(w =>
         w.webContents.send('helper-error', { error: err.message })
       );
     }
   });
 
-  helperProc.on('exit', () => {
-    flushPendingWithError('helper process exited');
-    transcribeInProgress = false;
-    helperProc = null;
-    if (helperReader) {
-      helperReader.close();
-      helperReader = null;
+  resolveHelperProc.on('exit', () => {
+    flushPendingWithError(resolvePending, 'resolve helper process exited');
+    resolveHelperProc = null;
+    if (resolveHelperReader) {
+      resolveHelperReader.close();
+      resolveHelperReader = null;
     }
   });
 }
 
-function restartHelper(reason = 'helper restart requested') {
-  if (helperProc) {
-    helperProc.kill('SIGTERM');
+function startTranscribeWorker() {
+  transcribeWorkerProc = spawnWorker();
+  transcribeWorkerReader = readline.createInterface({ input: transcribeWorkerProc.stdout });
+
+  transcribeWorkerReader.on('line', line => {
+    try {
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch (e) {
+        message = { ok: false, error: 'invalid response' };
+      }
+
+      if (message.event === 'status') {
+        BrowserWindow.getAllWindows().forEach(w =>
+          w.webContents.send('transcribe-status', message)
+        );
+        return;
+      }
+
+      if (message.event === 'message') {
+        BrowserWindow.getAllWindows().forEach(w =>
+          w.webContents.send('helper-message', message.message || message.data)
+        );
+        return;
+      }
+
+      if (transcribePending.length) {
+        const request = transcribePending.shift();
+        message = Object.assign({ ok: !message.error }, message);
+        if (message.ok) {
+          request.resolve(message);
+        } else {
+          request.reject(message);
+        }
+      }
+    } catch (err) {
+      console.error('Error processing transcribe worker output:', err);
+      BrowserWindow.getAllWindows().forEach(w =>
+        w.webContents.send('helper-error', { error: err.message })
+      );
+    }
+  });
+
+  transcribeWorkerProc.on('exit', () => {
+    flushPendingWithError(transcribePending, 'transcribe worker process exited');
+    transcribeInProgress = false;
+    transcribeWorkerProc = null;
+    if (transcribeWorkerReader) {
+      transcribeWorkerReader.close();
+      transcribeWorkerReader = null;
+    }
+  });
+}
+
+function restartTranscribeWorker(reason = 'transcribe worker restart requested') {
+  if (transcribeWorkerProc) {
+    transcribeWorkerProc.kill('SIGTERM');
   }
-  flushPendingWithError(reason);
-  startHelper();
+  flushPendingWithError(transcribePending, reason);
+  startTranscribeWorker();
 }
 
 function createWindow() {
@@ -120,16 +181,29 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
-function queueHelperRequest(payload) {
+function queueResolveRequest(payload) {
   return new Promise((resolve, reject) => {
-    if (!helperProc) {
-      reject(new Error('helper not running'));
+    if (!resolveHelperProc) {
+      reject(new Error('resolve helper not running'));
       return;
     }
 
     const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    helperProc.stdin.write(`${request}\n`);
-    pending.push({ resolve, reject });
+    resolveHelperProc.stdin.write(`${request}\n`);
+    resolvePending.push({ resolve, reject });
+  });
+}
+
+function queueTranscribeRequest(payload) {
+  return new Promise((resolve, reject) => {
+    if (!transcribeWorkerProc) {
+      reject(new Error('transcribe worker not running'));
+      return;
+    }
+
+    const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    transcribeWorkerProc.stdin.write(`${request}\n`);
+    transcribePending.push({ resolve, reject });
   });
 }
 
@@ -150,16 +224,17 @@ app.whenReady().then(() => {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
-  startHelper();
+  startResolveHelper();
+  startTranscribeWorker();
 
   ipcMain.on('helper-request', (event, payload) => {
-    if (!helperProc) {
-      event.reply('helper-response', { ok: false, error: 'helper not running' });
+    if (!resolveHelperProc) {
+      event.reply('helper-response', { ok: false, error: 'resolve helper not running' });
       return;
     }
     const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    helperProc.stdin.write(`${request}\n`);
-    pending.push({ event });
+    resolveHelperProc.stdin.write(`${request}\n`);
+    resolvePending.push({ event });
   });
 
   ipcMain.handle('audio:transcribe-folder', async (_, payload = {}) => {
@@ -170,7 +245,7 @@ app.whenReady().then(() => {
     }
     transcribeInProgress = true;
     try {
-      return await queueHelperRequest({
+      return await queueTranscribeRequest({
         cmd: 'transcribe_folder',
         folder_path: folderPath,
         engine: 'local',
@@ -182,14 +257,14 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('audio:test-gpu', async () => {
-    return queueHelperRequest({ cmd: 'test_cuda' });
+    return queueTranscribeRequest({ cmd: 'test_cuda' });
   });
 
   ipcMain.handle('audio:cancel-transcribe', async () => {
     if (!transcribeInProgress) {
       return { ok: true, canceled: false, message: 'No transcription in progress' };
     }
-    restartHelper('transcription canceled');
+    restartTranscribeWorker('transcription canceled');
     BrowserWindow.getAllWindows().forEach(w =>
       w.webContents.send('helper-message', 'Transcribe: canceled by user')
     );
@@ -222,12 +297,12 @@ app.whenReady().then(() => {
   ipcMain.handle('spellcheck:suggestions', suggestions);
 
   // Handle generic leaderpass actions invoked from the renderer.
-  ipcMain.handle('leaderpass-call', async (event, action) => {
-    const msg = `Action ${action} invoked`;
-    BrowserWindow.getAllWindows().forEach(w =>
-      w.webContents.send('helper-message', msg)
-    );
-    return { status: 'ok' };
+  ipcMain.handle('leaderpass-call', async (_, action = {}) => {
+    const payload = typeof action === 'string' ? { cmd: action } : action;
+    if (!payload || !payload.cmd) {
+      throw new Error('leaderpass action must include cmd');
+    }
+    return queueResolveRequest(payload);
   });
 
   createWindow();
@@ -240,10 +315,15 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (helperProc) {
-    helperProc.kill();
-    helperProc = null;
-    helperReader && helperReader.close();
+  if (resolveHelperProc) {
+    resolveHelperProc.kill();
+    resolveHelperProc = null;
+    resolveHelperReader && resolveHelperReader.close();
+  }
+  if (transcribeWorkerProc) {
+    transcribeWorkerProc.kill();
+    transcribeWorkerProc = null;
+    transcribeWorkerReader && transcribeWorkerReader.close();
   }
   if (process.platform !== 'darwin') {
     app.quit();
