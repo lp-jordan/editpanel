@@ -4,6 +4,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import site
+import importlib
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
@@ -29,6 +31,10 @@ DEFAULT_ENGINE = "local"
 DEFAULT_LOCAL_MODEL = "small"
 DEFAULT_OPENAI_MODEL = "whisper-1"
 REQUIRED_CUDA_VERSION = "13.1.1"
+CUDA_REQUIRED_PACKAGES = (
+    "nvidia-cublas-cu12",
+    "nvidia-cuda-runtime-cu12",
+)
 
 
 class TranscriptionError(RuntimeError):
@@ -43,6 +49,81 @@ def _attempt_python_dependency_install(package_name: str) -> bool:
         return True
     except Exception:
         return False
+
+
+
+
+def _is_pip_package_installed(package_name: str) -> bool:
+    command = [sys.executable, "-m", "pip", "show", package_name]
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    except Exception:
+        return False
+    return completed.returncode == 0
+
+
+def _discover_site_package_roots() -> List[Path]:
+    roots: List[Path] = []
+    for entry in site.getsitepackages() + [site.getusersitepackages()]:
+        if not entry:
+            continue
+        candidate = Path(entry)
+        if candidate.exists() and candidate not in roots:
+            roots.append(candidate)
+    return roots
+
+
+def configure_cuda_dll_directories(log_func: Optional[Any] = None) -> Dict[str, Any]:
+    """Prepare CUDA DLL lookup paths and report helper runtime environment."""
+    report: Dict[str, Any] = {
+        "python_executable": sys.executable,
+        "dll_candidates": [],
+        "dll_directories_added": [],
+        "missing_dll_directories": [],
+        "cublas_dll_found": False,
+    }
+
+    if log_func:
+        log_func(f"Transcribe: python executable {sys.executable}")
+
+    dll_relative_paths = [
+        Path("nvidia") / "cublas" / "bin",
+        Path("nvidia") / "cuda_runtime" / "bin",
+    ]
+
+    for site_root in _discover_site_package_roots():
+        for rel_path in dll_relative_paths:
+            candidate = site_root / rel_path
+            report["dll_candidates"].append(str(candidate))
+            if candidate.exists():
+                if hasattr(os, "add_dll_directory"):
+                    os.add_dll_directory(str(candidate))
+                    report["dll_directories_added"].append(str(candidate))
+                    if log_func:
+                        log_func(f"Transcribe: registered CUDA DLL directory {candidate}")
+            else:
+                report["missing_dll_directories"].append(str(candidate))
+
+    cublas_exists = False
+    for added_dir in report["dll_directories_added"]:
+        dll_dir = Path(added_dir)
+        if any(dll_dir.glob("cublas64*.dll")):
+            cublas_exists = True
+            break
+    report["cublas_dll_found"] = cublas_exists
+    if log_func:
+        log_func(f"Transcribe: cublas DLL present={cublas_exists}")
+    return report
+
+
+def _ensure_cuda_runtime_packages(log_func: Optional[Any] = None) -> None:
+    for package_name in CUDA_REQUIRED_PACKAGES:
+        if _is_pip_package_installed(package_name):
+            continue
+        installed = _attempt_python_dependency_install(package_name)
+        if log_func:
+            status = "installed" if installed else "missing"
+            log_func(f"Transcribe: CUDA package {package_name} status={status}")
 
 
 def _format_srt_timestamp(seconds: float) -> str:
@@ -132,9 +213,9 @@ def _normalize_model(value: Optional[str], engine: str) -> str:
     return DEFAULT_LOCAL_MODEL
 
 
-def _transcribe_with_local_engine(audio_path: Path, language: Optional[str], model: str) -> Dict[str, Any]:
+def _load_whisper_model_class() -> Any:
     try:
-        from faster_whisper import WhisperModel
+        module = importlib.import_module("faster_whisper")
     except ImportError as exc:
         installed = _attempt_python_dependency_install("faster-whisper")
         if not installed:
@@ -143,18 +224,42 @@ def _transcribe_with_local_engine(audio_path: Path, language: Optional[str], mod
                 "Please ensure pip can install it for the python interpreter used by the app."
             ) from exc
         try:
-            from faster_whisper import WhisperModel
+            module = importlib.import_module("faster_whisper")
         except ImportError as retry_exc:
             raise TranscriptionError(
                 "Dependency installation reported success, but 'faster-whisper' is still unavailable."
             ) from retry_exc
+    return module.WhisperModel
+
+
+def _build_local_whisper_model(model: str, prefer_gpu: bool, log_func: Optional[Any] = None) -> Tuple[Any, str]:
+    WhisperModel = _load_whisper_model_class()
+
+    if prefer_gpu:
+        try:
+            whisper_model = WhisperModel(model, device="cuda")
+            return whisper_model, "cuda"
+        except Exception as exc:
+            if log_func:
+                log_func(f"Transcribe: CUDA init failed ({exc}); retrying on CPU")
 
     try:
-        whisper_model = WhisperModel(model, device="auto", compute_type="auto")
+        whisper_model = WhisperModel(model, device="cpu", compute_type="int8")
+        return whisper_model, "cpu"
     except Exception as exc:
         raise TranscriptionError(
             f"Unable to initialize faster-whisper model '{model}': {exc}"
         ) from exc
+
+
+def _transcribe_with_local_engine(
+    audio_path: Path,
+    language: Optional[str],
+    model: str,
+    prefer_gpu: bool,
+    log_func: Optional[Any] = None,
+) -> Dict[str, Any]:
+    whisper_model, active_device = _build_local_whisper_model(model, prefer_gpu=prefer_gpu, log_func=log_func)
 
     transcribe_kwargs: Dict[str, Any] = {}
     if language:
@@ -184,11 +289,24 @@ def _transcribe_with_local_engine(audio_path: Path, language: Optional[str], mod
         "metadata": {
             "engine": "local",
             "model": model,
+            "device": active_device,
             "language": getattr(info, "language", language),
             "duration": float(getattr(info, "duration", 0.0) or 0.0),
             "required_cuda_version": REQUIRED_CUDA_VERSION,
         },
     }
+
+
+def handle_test_cuda(payload: Dict[str, Any]) -> Dict[str, Any]:
+    model = _normalize_model(payload.get("model"), "local")
+    try:
+        WhisperModel = _load_whisper_model_class()
+        whisper_model = WhisperModel(model, device="cuda")
+        if whisper_model is None:
+            raise RuntimeError("model init returned no instance")
+        return {"ok": True, "model": model}
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc), "model": model}
 
 
 def _transcribe_with_openai_engine(audio_path: Path, language: Optional[str], model: str) -> Dict[str, Any]:
@@ -273,13 +391,13 @@ def _validate_engine_dependencies(engine: str) -> None:
         return
 
 
-def transcribe_audio_file(path: Path, language: Optional[str], model: str, engine: str) -> Dict[str, Any]:
+def transcribe_audio_file(path: Path, language: Optional[str], model: str, engine: str, use_gpu: bool = False, log_func: Optional[Any] = None) -> Dict[str, Any]:
     """Transcribe an audio file and return transcript text + segment timings."""
     if not path.exists() or not path.is_file():
         raise TranscriptionError(f"audio file does not exist: {path}")
 
     if engine == "local":
-        return _transcribe_with_local_engine(path, language, model)
+        return _transcribe_with_local_engine(path, language, model, prefer_gpu=use_gpu, log_func=log_func)
     if engine == "openai":
         return _transcribe_with_openai_engine(path, language, model)
     raise TranscriptionError(f"unsupported engine: {engine}")
@@ -453,6 +571,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
     output_dir = payload.get("output_dir")
     include_txt_header = bool(payload.get("include_txt_header", False))
     overwrite = bool(payload.get("overwrite", False))
+    use_gpu = bool(payload.get("use_gpu", False))
 
     outputs: List[Dict[str, Any]] = []
     failures: List[Dict[str, Any]] = []
@@ -474,6 +593,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
             "include_txt_header": include_txt_header,
             "collision_strategy": "overwrite" if overwrite else "suffix",
             "overwrite": overwrite,
+            "use_gpu": use_gpu,
             "files_processed": 0,
             "outputs": [],
             "failures": [{
@@ -524,7 +644,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
 
                 try:
                     rh.log(f"Transcribe: transcribing {source}")
-                    transcription = transcribe_audio_file(prepared_audio, language, model, engine)
+                    transcription = transcribe_audio_file(prepared_audio, language, model, engine, use_gpu=use_gpu, log_func=rh.log)
                     _write_transcription_output(
                         output_path,
                         output_mode,
@@ -570,7 +690,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         try:
             rh.log(f"Transcribe: transcribing {source}")
-            transcription = transcribe_audio_file(source, language, model, engine)
+            transcription = transcribe_audio_file(source, language, model, engine, use_gpu=use_gpu, log_func=rh.log)
             _write_transcription_output(
                 output_path,
                 output_mode,
@@ -623,6 +743,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
         "language": language,
         "model": model,
         "engine": engine,
+        "use_gpu": use_gpu,
         "output_mode": output_mode,
         "output_dir": str(Path(output_dir).expanduser().resolve()) if output_dir else None,
         "include_txt_header": include_txt_header,
