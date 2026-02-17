@@ -215,19 +215,25 @@ function App() {
 
     try {
       const result = await window.electronAPI.transcribeFolder(folderPath);
-      const files = Array.isArray(result?.data?.files)
-        ? result.data.files
-        : Array.isArray(result?.files)
-          ? result.files
-          : [];
+      const outputs = Array.isArray(result?.data?.outputs)
+        ? result.data.outputs
+        : Array.isArray(result?.outputs)
+          ? result.outputs
+          : Array.isArray(result?.data?.files)
+            ? result.data.files
+            : Array.isArray(result?.files)
+              ? result.files
+              : [];
       const failures = Array.isArray(result?.data?.failures)
         ? result.data.failures
         : Array.isArray(result?.failures)
           ? result.failures
-          : files.filter(file => file && (file.error || file.ok === false));
-      const completed = typeof result?.data?.completed === 'number'
-        ? result.data.completed
-        : files.length - failures.length;
+          : outputs.filter(file => file && (file.error || file.ok === false));
+      const completed = typeof result?.data?.files_processed === 'number'
+        ? result.data.files_processed
+        : typeof result?.data?.completed === 'number'
+          ? result.data.completed
+          : outputs.length - failures.length;
 
       const message = `Transcription complete: ${completed} succeeded, ${failures.length} failed`;
       setTranscribeProgress(prev => [...prev, message]);
@@ -237,6 +243,20 @@ function App() {
         failures
       });
       appendLog(message);
+
+      outputs.forEach(entry => {
+        const sourceName = entry?.file || 'unknown source';
+        const textOutput = entry?.text_output;
+        const paths = Array.isArray(entry?.output_paths)
+          ? entry.output_paths
+          : [entry?.output].filter(Boolean);
+        if (textOutput) {
+          appendLog(`Transcript txt for ${sourceName}: ${textOutput}`);
+        }
+        paths.forEach(pathValue => {
+          appendLog(`Transcribe output for ${sourceName}: ${pathValue}`);
+        });
+      });
 
       failures.forEach(failure => {
         const name = failure?.file || failure?.path || 'unknown file';
