@@ -183,7 +183,10 @@ def main() -> None:
 
             handler = HANDLERS[cmd]
             # Handlers receive the entire request so they can read params freely.
-            data = handler(request)
+            if cmd in {"transcribe", "transcribe_folder"}:
+                data = handler(request, log_func=log)
+            else:
+                data = handler(request)
             _print(_resp_ok(req_id, data))
         except Exception as exc:
             # Best-effort error response; include id if present so caller can match it.
