@@ -1,6 +1,7 @@
 import re
 import subprocess
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -19,6 +20,194 @@ SUPPORTED_EXTENSIONS = {
 
 FFMPEG_REQUIRING_NORMALIZATION = {".mp3", ".mp4"}
 INVALID_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+SUPPORTED_ENGINES = {"local", "openai"}
+DEFAULT_ENGINE = "local"
+DEFAULT_LOCAL_MODEL = "tiny"
+DEFAULT_OPENAI_MODEL = "whisper-1"
+
+
+class TranscriptionError(RuntimeError):
+    """Raised when transcription cannot be completed."""
+
+
+def _format_srt_timestamp(seconds: float) -> str:
+    safe_seconds = max(0.0, float(seconds))
+    whole = timedelta(seconds=safe_seconds)
+    total_ms = int(whole.total_seconds() * 1000)
+    hours = total_ms // 3_600_000
+    minutes = (total_ms % 3_600_000) // 60_000
+    secs = (total_ms % 60_000) // 1_000
+    millis = total_ms % 1_000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _segments_to_srt(segments: List[Dict[str, Any]]) -> str:
+    if not segments:
+        return ""
+
+    chunks: List[str] = []
+    for idx, segment in enumerate(segments, start=1):
+        start = _format_srt_timestamp(segment.get("start", 0.0))
+        end = _format_srt_timestamp(segment.get("end", segment.get("start", 0.0)))
+        text = str(segment.get("text", "")).strip() or "..."
+        chunks.append(f"{idx}\n{start} --> {end}\n{text}\n")
+    return "\n".join(chunks).strip() + "\n"
+
+
+def _write_transcription_output(
+    output_path: Path,
+    output_mode: str,
+    transcript_text: str,
+    segments: List[Dict[str, Any]],
+    metadata: Dict[str, Any],
+) -> None:
+    if output_mode == "txt":
+        output_path.write_text(transcript_text, encoding="utf-8")
+        return
+
+    if output_mode == "srt":
+        srt_body = _segments_to_srt(segments)
+        output_path.write_text(srt_body, encoding="utf-8")
+        return
+
+    payload = {
+        "text": transcript_text,
+        "segments": segments,
+        "metadata": metadata,
+    }
+    import json
+
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _normalize_engine(value: Optional[str]) -> str:
+    if value is None:
+        return DEFAULT_ENGINE
+    engine = str(value).strip().lower()
+    if engine not in SUPPORTED_ENGINES:
+        raise ValueError(f"engine must be one of: {', '.join(sorted(SUPPORTED_ENGINES))}")
+    return engine
+
+
+def _normalize_model(value: Optional[str], engine: str) -> str:
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    if engine == "openai":
+        return DEFAULT_OPENAI_MODEL
+    return DEFAULT_LOCAL_MODEL
+
+
+def _transcribe_with_local_engine(audio_path: Path, language: Optional[str], model: str) -> Dict[str, Any]:
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise TranscriptionError(
+            "Missing dependency 'faster-whisper'. Install it to use engine='local'."
+        ) from exc
+
+    try:
+        whisper_model = WhisperModel(model, device="auto", compute_type="auto")
+    except Exception as exc:
+        raise TranscriptionError(
+            f"Unable to initialize faster-whisper model '{model}': {exc}"
+        ) from exc
+
+    transcribe_kwargs: Dict[str, Any] = {}
+    if language:
+        transcribe_kwargs["language"] = language
+
+    try:
+        segments_iter, info = whisper_model.transcribe(str(audio_path), **transcribe_kwargs)
+    except Exception as exc:
+        raise TranscriptionError(f"faster-whisper runtime error: {exc}") from exc
+
+    segments: List[Dict[str, Any]] = []
+    full_text_chunks: List[str] = []
+    for segment in segments_iter:
+        text = (segment.text or "").strip()
+        if text:
+            full_text_chunks.append(text)
+        segments.append({
+            "id": int(getattr(segment, "id", len(segments))),
+            "start": float(getattr(segment, "start", 0.0) or 0.0),
+            "end": float(getattr(segment, "end", 0.0) or 0.0),
+            "text": text,
+        })
+
+    return {
+        "text": " ".join(full_text_chunks).strip(),
+        "segments": segments,
+        "metadata": {
+            "engine": "local",
+            "model": model,
+            "language": getattr(info, "language", language),
+            "duration": float(getattr(info, "duration", 0.0) or 0.0),
+        },
+    }
+
+
+def _transcribe_with_openai_engine(audio_path: Path, language: Optional[str], model: str) -> Dict[str, Any]:
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise TranscriptionError(
+            "Missing dependency 'openai'. Install it to use engine='openai'."
+        ) from exc
+
+    try:
+        client = OpenAI()
+    except Exception as exc:
+        raise TranscriptionError(
+            f"Failed to initialize OpenAI client (check OPENAI_API_KEY and runtime): {exc}"
+        ) from exc
+
+    request: Dict[str, Any] = {
+        "model": model,
+        "response_format": "verbose_json",
+    }
+    if language:
+        request["language"] = language
+
+    try:
+        with audio_path.open("rb") as audio_file:
+            response = client.audio.transcriptions.create(file=audio_file, **request)
+    except Exception as exc:
+        raise TranscriptionError(f"OpenAI transcription request failed: {exc}") from exc
+
+    response_dict = response.model_dump() if hasattr(response, "model_dump") else dict(response)
+    raw_segments = response_dict.get("segments") or []
+    segments: List[Dict[str, Any]] = []
+    for idx, segment in enumerate(raw_segments):
+        segments.append({
+            "id": int(segment.get("id", idx)),
+            "start": float(segment.get("start", 0.0) or 0.0),
+            "end": float(segment.get("end", 0.0) or 0.0),
+            "text": str(segment.get("text", "")).strip(),
+        })
+
+    text = str(response_dict.get("text", "")).strip()
+    return {
+        "text": text,
+        "segments": segments,
+        "metadata": {
+            "engine": "openai",
+            "model": model,
+            "language": response_dict.get("language", language),
+            "duration": float(response_dict.get("duration", 0.0) or 0.0),
+        },
+    }
+
+
+def transcribe_audio_file(path: Path, language: Optional[str], model: str, engine: str) -> Dict[str, Any]:
+    """Transcribe an audio file and return transcript text + segment timings."""
+    if not path.exists() or not path.is_file():
+        raise TranscriptionError(f"audio file does not exist: {path}")
+
+    if engine == "local":
+        return _transcribe_with_local_engine(path, language, model)
+    if engine == "openai":
+        return _transcribe_with_openai_engine(path, language, model)
+    raise TranscriptionError(f"unsupported engine: {engine}")
 
 
 def _normalize_output_mode(value: Optional[str]) -> str:
@@ -102,7 +291,7 @@ def _run_ffmpeg_normalization(source: Path, temp_dir: Path) -> Tuple[bool, Optio
 
 
 def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Discover transcribable media files and return a structured work plan.
+    """Discover transcribable media files and execute transcription.
 
     Payload contract:
     - folder_path (required): folder that will be scanned.
@@ -128,7 +317,8 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     recursive = _normalize_recursive_flag(payload.get("recursive"))
     language = payload.get("language")
-    model = payload.get("model")
+    engine = _normalize_engine(payload.get("engine"))
+    model = _normalize_model(payload.get("model"), engine)
     output_mode = _normalize_output_mode(payload.get("output_mode"))
     overwrite = bool(payload.get("overwrite", False))
 
@@ -168,14 +358,65 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                 preprocess_info["status"] = "normalized"
                 preprocess_info["details"] = details
                 preprocess_info["temporary_audio"] = prepared_audio.name
-                preprocess_info["cleanup"] = "temporary audio removed after preparation"
+                preprocess_info["cleanup"] = "temporary audio removed after transcription"
+
+                try:
+                    transcription = transcribe_audio_file(prepared_audio, language, model, engine)
+                    _write_transcription_output(
+                        output_path,
+                        output_mode,
+                        transcription["text"],
+                        transcription["segments"],
+                        transcription["metadata"],
+                    )
+                except TranscriptionError as exc:
+                    failures.append({
+                        "file": str(source),
+                        "output": str(output_path),
+                        "reason": str(exc),
+                    })
+                    continue
+
+                outputs.append({
+                    "file": str(source),
+                    "output": str(output_path),
+                    "status": "transcribed",
+                    "text": transcription["text"],
+                    "segments": transcription["segments"],
+                    "language": transcription["metadata"].get("language", language),
+                    "model": transcription["metadata"].get("model", model),
+                    "engine": engine,
+                    "output_mode": output_mode,
+                    "preprocess": preprocess_info,
+                })
+                continue
+
+        try:
+            transcription = transcribe_audio_file(source, language, model, engine)
+            _write_transcription_output(
+                output_path,
+                output_mode,
+                transcription["text"],
+                transcription["segments"],
+                transcription["metadata"],
+            )
+        except TranscriptionError as exc:
+            failures.append({
+                "file": str(source),
+                "output": str(output_path),
+                "reason": str(exc),
+            })
+            continue
 
         outputs.append({
             "file": str(source),
             "output": str(output_path),
-            "status": "ready",
-            "language": language,
-            "model": model,
+            "status": "transcribed",
+            "text": transcription["text"],
+            "segments": transcription["segments"],
+            "language": transcription["metadata"].get("language", language),
+            "model": transcription["metadata"].get("model", model),
+            "engine": engine,
             "output_mode": output_mode,
             "preprocess": preprocess_info,
         })
@@ -185,6 +426,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
         "scan_mode": "recursive" if recursive else "top_level_only",
         "language": language,
         "model": model,
+        "engine": engine,
         "output_mode": output_mode,
         "overwrite": overwrite,
         "files_processed": len(outputs),
