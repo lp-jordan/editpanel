@@ -36,6 +36,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   transcribeFolder(folderPath) {
     return ipcRenderer.invoke('audio:transcribe-folder', folderPath);
+  },
+
+  cancelTranscribe() {
+    return ipcRenderer.invoke('audio:cancel-transcribe');
   }
 });
 
