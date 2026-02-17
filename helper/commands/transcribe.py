@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from datetime import timedelta
@@ -25,12 +26,22 @@ FFMPEG_REQUIRING_NORMALIZATION = {".mp3", ".mp4"}
 INVALID_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 SUPPORTED_ENGINES = {"local", "openai"}
 DEFAULT_ENGINE = "local"
-DEFAULT_LOCAL_MODEL = "tiny"
+DEFAULT_LOCAL_MODEL = "small"
 DEFAULT_OPENAI_MODEL = "whisper-1"
 
 
 class TranscriptionError(RuntimeError):
     """Raised when transcription cannot be completed."""
+
+
+def _attempt_python_dependency_install(package_name: str) -> bool:
+    """Try to install a missing python package for the active interpreter."""
+    command = [sys.executable, "-m", "pip", "install", package_name]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        return True
+    except Exception:
+        return False
 
 
 def _format_srt_timestamp(seconds: float) -> str:
@@ -124,9 +135,18 @@ def _transcribe_with_local_engine(audio_path: Path, language: Optional[str], mod
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
-        raise TranscriptionError(
-            "Missing dependency 'faster-whisper'. Install it to use engine='local'."
-        ) from exc
+        installed = _attempt_python_dependency_install("faster-whisper")
+        if not installed:
+            raise TranscriptionError(
+                "Missing dependency 'faster-whisper' and automatic install failed. "
+                "Please ensure pip can install it for the python interpreter used by the app."
+            ) from exc
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as retry_exc:
+            raise TranscriptionError(
+                "Dependency installation reported success, but 'faster-whisper' is still unavailable."
+            ) from retry_exc
 
     try:
         whisper_model = WhisperModel(model, device="auto", compute_type="auto")
@@ -227,8 +247,17 @@ def _validate_engine_dependencies(engine: str) -> None:
         try:
             import faster_whisper  # noqa: F401
         except ImportError as exc:
+            installed = _attempt_python_dependency_install("faster-whisper")
+            if installed:
+                try:
+                    import faster_whisper  # noqa: F401
+                except ImportError:
+                    pass
+                else:
+                    return
             raise TranscriptionError(
-                "Missing dependency 'faster-whisper'. Install it to use engine='local'."
+                "Missing dependency 'faster-whisper' and automatic install failed. "
+                "Please ensure pip can install it for the python interpreter used by the app."
             ) from exc
         return
 
