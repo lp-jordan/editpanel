@@ -25,6 +25,25 @@ function App() {
     currentFile: ''
   });
 
+  const formatElapsedTime = React.useCallback(milliseconds => {
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+      return '0s';
+    }
+
+    const totalSeconds = Math.round(milliseconds / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${seconds}s`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m ${seconds}s`;
+    }
+    return `${seconds}s`;
+  }, []);
+
   const appendTranscribeProgress = React.useCallback(message => {
     setTranscribeProgress(prev => [...prev, message].slice(-200));
   }, []);
@@ -269,6 +288,7 @@ function App() {
     setTranscribeStatus({ total: 0, completed: 0, failed: 0, currentFile: '' });
     setTranscribeProgress([`Transcription started for ${folderPath}`]);
     appendLog(`Transcribe started: ${folderPath}`);
+    const transcribeStartedAt = Date.now();
 
     try {
       const result = await window.electronAPI.transcribeFolder(folderPath, { useGpu: gpuEnabled });
@@ -294,14 +314,16 @@ function App() {
       const total = typeof result?.data?.files_processed === 'number'
         ? result.data.files_processed + failures.length
         : outputs.length + failures.length;
+      const elapsed = formatElapsedTime(Date.now() - transcribeStartedAt);
 
-      const message = `Transcription complete: ${completed}/${total} succeeded, ${failures.length} failed`;
+      const message = `Transcription complete: ${completed}/${total} succeeded, ${failures.length} failed (completed in ${elapsed})`;
       appendTranscribeProgress(message);
       setTranscribeSummary({
         success: true,
         completed,
         total,
         failed: failures.length,
+        elapsed,
         message,
         failures
       });
