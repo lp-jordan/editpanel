@@ -36,6 +36,12 @@ CUDA_REQUIRED_PACKAGES = (
     "nvidia-cuda-runtime-cu12",
 )
 
+_CUDA_INIT_STATE: Dict[str, Any] = {
+    "attempted": False,
+    "packages_checked": False,
+    "report": None,
+}
+
 
 class TranscriptionError(RuntimeError):
     """Raised when transcription cannot be completed."""
@@ -124,6 +130,31 @@ def _ensure_cuda_runtime_packages(log_func: Optional[Any] = None) -> None:
         if log_func:
             status = "installed" if installed else "missing"
             log_func(f"Transcribe: CUDA package {package_name} status={status}")
+
+
+def _get_cuda_diagnostics_snapshot() -> Dict[str, Any]:
+    report = _CUDA_INIT_STATE.get("report") or {}
+    initialized = bool(_CUDA_INIT_STATE["attempted"])
+    return {
+        "initialized": initialized,
+        "cached": initialized and bool(report),
+        "dll_paths": list(report.get("dll_directories_added") or []),
+        "cublas_dll_found": bool(report.get("cublas_dll_found")),
+        "python_executable": report.get("python_executable", sys.executable),
+    }
+
+
+def ensure_cuda_environment(log_func: Optional[Any] = None) -> Dict[str, Any]:
+    """Initialize CUDA runtime dependencies once per process and return diagnostics."""
+    if not _CUDA_INIT_STATE["packages_checked"]:
+        _ensure_cuda_runtime_packages(log_func)
+        _CUDA_INIT_STATE["packages_checked"] = True
+
+    if not _CUDA_INIT_STATE["attempted"]:
+        _CUDA_INIT_STATE["report"] = configure_cuda_dll_directories(log_func)
+        _CUDA_INIT_STATE["attempted"] = True
+
+    return _get_cuda_diagnostics_snapshot()
 
 
 def _format_srt_timestamp(seconds: float) -> str:
@@ -297,16 +328,30 @@ def _transcribe_with_local_engine(
     }
 
 
-def handle_test_cuda(payload: Dict[str, Any]) -> Dict[str, Any]:
+def handle_test_cuda(payload: Dict[str, Any], log_func: Optional[Any] = None) -> Dict[str, Any]:
     model = _normalize_model(payload.get("model"), "local")
+    cuda_diag = ensure_cuda_environment(log_func=log_func)
     try:
         WhisperModel = _load_whisper_model_class()
         whisper_model = WhisperModel(model, device="cuda")
         if whisper_model is None:
             raise RuntimeError("model init returned no instance")
-        return {"ok": True, "model": model}
+        return {
+            "ok": True,
+            "model": model,
+            "cuda_init": cuda_diag,
+            "dll_paths": cuda_diag.get("dll_paths", []),
+            "device_selected": "cuda",
+        }
     except Exception as exc:
-        return {"ok": False, "reason": str(exc), "model": model}
+        return {
+            "ok": False,
+            "reason": str(exc),
+            "model": model,
+            "cuda_init": cuda_diag,
+            "dll_paths": cuda_diag.get("dll_paths", []),
+            "device_selected": "cpu",
+        }
 
 
 def _transcribe_with_openai_engine(audio_path: Path, language: Optional[str], model: str) -> Dict[str, Any]:
@@ -396,10 +441,33 @@ def transcribe_audio_file(path: Path, language: Optional[str], model: str, engin
     if not path.exists() or not path.is_file():
         raise TranscriptionError(f"audio file does not exist: {path}")
 
+    cuda_diag: Dict[str, Any] = {
+        "initialized": False,
+        "cached": False,
+        "dll_paths": [],
+        "cublas_dll_found": False,
+        "python_executable": sys.executable,
+    }
+
     if engine == "local":
-        return _transcribe_with_local_engine(path, language, model, prefer_gpu=use_gpu, log_func=log_func)
+        if use_gpu:
+            cuda_diag = ensure_cuda_environment(log_func=log_func)
+        result = _transcribe_with_local_engine(path, language, model, prefer_gpu=use_gpu, log_func=log_func)
+        selected_device = result.get("metadata", {}).get("device", "cpu")
+        result["diagnostics"] = {
+            "cuda_init": cuda_diag,
+            "dll_paths": cuda_diag.get("dll_paths", []),
+            "device_selected": selected_device,
+        }
+        return result
     if engine == "openai":
-        return _transcribe_with_openai_engine(path, language, model)
+        result = _transcribe_with_openai_engine(path, language, model)
+        result["diagnostics"] = {
+            "cuda_init": cuda_diag,
+            "dll_paths": cuda_diag.get("dll_paths", []),
+            "device_selected": "remote",
+        }
+        return result
     raise TranscriptionError(f"unsupported engine: {engine}")
 
 
@@ -596,6 +664,9 @@ def handle_transcribe(payload: Dict[str, Any], log_func: Optional[Any] = None) -
             "collision_strategy": "overwrite" if overwrite else "suffix",
             "overwrite": overwrite,
             "use_gpu": use_gpu,
+            "cuda_init": _get_cuda_diagnostics_snapshot(),
+            "dll_paths": _get_cuda_diagnostics_snapshot().get("dll_paths", []),
+            "device_selected": None,
             "files_processed": 0,
             "outputs": [],
             "failures": [{
@@ -687,6 +758,7 @@ def handle_transcribe(payload: Dict[str, Any], log_func: Optional[Any] = None) -
                     "engine": engine,
                     "output_mode": output_mode,
                     "preprocess": preprocess_info,
+                    "diagnostics": transcription.get("diagnostics", {}),
                 })
                 continue
 
@@ -733,6 +805,7 @@ def handle_transcribe(payload: Dict[str, Any], log_func: Optional[Any] = None) -
             "engine": engine,
             "output_mode": output_mode,
             "preprocess": preprocess_info,
+            "diagnostics": transcription.get("diagnostics", {}),
         })
 
     log_func(
@@ -751,6 +824,9 @@ def handle_transcribe(payload: Dict[str, Any], log_func: Optional[Any] = None) -
         "include_txt_header": include_txt_header,
         "collision_strategy": "overwrite" if overwrite else "suffix",
         "overwrite": overwrite,
+        "cuda_init": outputs[-1].get("diagnostics", {}).get("cuda_init") if outputs else _get_cuda_diagnostics_snapshot(),
+        "dll_paths": outputs[-1].get("diagnostics", {}).get("dll_paths", []) if outputs else _get_cuda_diagnostics_snapshot().get("dll_paths", []),
+        "device_selected": outputs[-1].get("diagnostics", {}).get("device_selected") if outputs else None,
         "files_processed": len(outputs),
         "outputs": outputs,
         "failures": failures,
