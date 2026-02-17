@@ -365,6 +365,8 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
     - Intermediate audio is removed immediately after each file is prepared.
     """
 
+    from .. import resolve_helper as rh
+
     folder_path = payload.get("folder_path")
     if not folder_path or not isinstance(folder_path, str):
         raise ValueError("folder_path is required")
@@ -384,8 +386,12 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     outputs: List[Dict[str, Any]] = []
     failures: List[Dict[str, Any]] = []
+    discovered_sources = list(_discover_files(root, recursive))
 
-    for source in _discover_files(root, recursive):
+    rh.log(f"Transcribe: queued {len(discovered_sources)} file(s) from {root}")
+
+    for source in discovered_sources:
+        rh.log(f"Transcribe: queued {source}")
         output_paths = _resolve_output_paths(source, output_mode, output_dir, overwrite)
         output_path = output_paths["mode"]
         text_output_path = output_paths["txt"]
@@ -397,11 +403,14 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
         }
 
         if preprocess_info["required"]:
+            rh.log(f"Transcribe: extracting audio {source}")
             with tempfile.TemporaryDirectory(prefix="transcribe_audio_") as temp_dir_raw:
                 temp_dir = Path(temp_dir_raw)
                 ok, prepared_audio, details = _run_ffmpeg_normalization(source, temp_dir)
 
                 if not ok:
+                    short_reason = details.split(" | ")[0]
+                    rh.log(f"Transcribe: failed {source} ({short_reason})")
                     failures.append({
                         "file": str(source),
                         "output": str(output_path),
@@ -415,6 +424,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                 preprocess_info["cleanup"] = "temporary audio removed after transcription"
 
                 try:
+                    rh.log(f"Transcribe: transcribing {source}")
                     transcription = transcribe_audio_file(prepared_audio, language, model, engine)
                     _write_transcription_output(
                         output_path,
@@ -423,6 +433,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                         transcription["segments"],
                         transcription["metadata"],
                     )
+                    rh.log(f"Transcribe: writing txt {text_output_path}")
                     text_file_content = _build_transcript_text_file_content(
                         transcription["text"],
                         source,
@@ -431,6 +442,8 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                     )
                     text_output_path.write_text(text_file_content, encoding="utf-8")
                 except TranscriptionError as exc:
+                    short_reason = str(exc).splitlines()[0][:160]
+                    rh.log(f"Transcribe: failed {source} ({short_reason})")
                     failures.append({
                         "file": str(source),
                         "output": str(output_path),
@@ -439,6 +452,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                     })
                     continue
 
+                rh.log(f"Transcribe: done {source}")
                 outputs.append({
                     "file": str(source),
                     "output": str(output_path),
@@ -456,6 +470,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                 continue
 
         try:
+            rh.log(f"Transcribe: transcribing {source}")
             transcription = transcribe_audio_file(source, language, model, engine)
             _write_transcription_output(
                 output_path,
@@ -464,6 +479,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                 transcription["segments"],
                 transcription["metadata"],
             )
+            rh.log(f"Transcribe: writing txt {text_output_path}")
             text_file_content = _build_transcript_text_file_content(
                 transcription["text"],
                 source,
@@ -472,6 +488,8 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
             text_output_path.write_text(text_file_content, encoding="utf-8")
         except TranscriptionError as exc:
+            short_reason = str(exc).splitlines()[0][:160]
+            rh.log(f"Transcribe: failed {source} ({short_reason})")
             failures.append({
                 "file": str(source),
                 "output": str(output_path),
@@ -480,6 +498,7 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
             })
             continue
 
+        rh.log(f"Transcribe: done {source}")
         outputs.append({
             "file": str(source),
             "output": str(output_path),
@@ -494,6 +513,10 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
             "output_mode": output_mode,
             "preprocess": preprocess_info,
         })
+
+    rh.log(
+        f"Transcribe: complete total={len(discovered_sources)} succeeded={len(outputs)} failed={len(failures)}"
+    )
 
     return {
         "folder_path": str(root),
