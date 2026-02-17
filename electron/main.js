@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu } = require('electron');
+const { app, BrowserWindow, Menu, dialog } = require('electron');
 const { ipcMain } = require('electron');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -120,6 +120,21 @@ app.whenReady().then(() => {
       throw new Error('folderPath is required');
     }
     return queueHelperRequest({ cmd: 'transcribe_folder', folder_path: folderPath });
+  });
+
+  ipcMain.handle('dialog:pickFolder', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory']
+    });
+
+    if (result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
+      return { canceled: true };
+    }
+
+    return {
+      canceled: false,
+      folderPath: result.filePaths[0]
+    };
   });
 
   ipcMain.handle('fs:readFile', (_, p) => fs.promises.readFile(p, 'utf8'));

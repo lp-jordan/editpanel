@@ -39,6 +39,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }
 });
 
+contextBridge.exposeInMainWorld('dialogAPI', {
+  pickFolder() {
+    return ipcRenderer.invoke('dialog:pickFolder');
+  }
+});
+
 contextBridge.exposeInMainWorld('fsAPI', {
   readFile: p => ipcRenderer.invoke('fs:readFile', p),
   writeFile: (p, data) => ipcRenderer.invoke('fs:writeFile', p, data),

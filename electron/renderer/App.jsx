@@ -178,16 +178,6 @@ function App() {
 
   const handleTranscribe = async () => {
     cacheSpellcheck();
-    const folderPath = transcribeFolderPath.trim();
-    if (!folderPath) {
-      appendLog('Transcribe error: folder path is required');
-      setTranscribeSummary({
-        success: false,
-        message: 'Provide a folder path before running transcription.',
-        failures: []
-      });
-      return;
-    }
 
     if (!window.electronAPI?.transcribeFolder) {
       appendLog('Transcribe API not available; cannot transcribe folder');
@@ -198,6 +188,25 @@ function App() {
       });
       return;
     }
+
+    if (!window.dialogAPI?.pickFolder) {
+      appendLog('Folder picker API not available; cannot pick folder');
+      setTranscribeSummary({
+        success: false,
+        message: 'Folder picker API not available in preload.',
+        failures: []
+      });
+      return;
+    }
+
+    const selection = await window.dialogAPI.pickFolder();
+    if (selection?.canceled || !selection?.folderPath) {
+      appendLog('Transcribe canceled: no folder selected');
+      return;
+    }
+
+    const folderPath = selection.folderPath;
+    setTranscribeFolderPath(folderPath);
 
     setTranscribeBusy(true);
     setTranscribeSummary(null);
