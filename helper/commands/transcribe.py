@@ -1,6 +1,7 @@
 import re
 import subprocess
 import tempfile
+from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -78,6 +79,26 @@ def _write_transcription_output(
     import json
 
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _build_transcript_text_file_content(
+    transcript_text: str,
+    source: Path,
+    metadata: Dict[str, Any],
+    include_header: bool,
+) -> str:
+    normalized_text = transcript_text.strip()
+    if not include_header:
+        return normalized_text
+
+    generated_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    header_lines = [
+        f"source: {source.name}",
+        f"generated_at: {generated_at}",
+        f"model: {metadata.get('model') or 'unknown'}",
+    ]
+    body = normalized_text
+    return "\n".join(header_lines + ["", body]).rstrip() + "\n"
 
 
 def _normalize_engine(value: Optional[str]) -> str:
@@ -230,10 +251,45 @@ def _sanitize_filename(value: str) -> str:
     return sanitized or "output"
 
 
-def _default_output_path(source: Path, output_mode: str) -> Path:
+def _resolve_output_root(source: Path, output_dir: Optional[str]) -> Path:
+    if output_dir:
+        root = Path(output_dir).expanduser().resolve()
+        if not root.exists() or not root.is_dir():
+            raise ValueError(f"output_dir does not exist or is not a directory: {output_dir}")
+        return root
+    return source.parent.resolve()
+
+
+def _resolve_collision_path(candidate: Path, overwrite: bool) -> Path:
+    if overwrite or not candidate.exists():
+        return candidate
+
+    index = 1
+    while True:
+        suffixed = candidate.with_name(f"{candidate.stem}_{index}{candidate.suffix}")
+        if not suffixed.exists():
+            return suffixed
+        index += 1
+
+
+def _resolve_output_paths(
+    source: Path,
+    output_mode: str,
+    output_dir: Optional[str],
+    overwrite: bool,
+) -> Dict[str, Path]:
     safe_stem = _sanitize_filename(source.stem)
-    normalized_parent = source.parent.resolve()
-    return normalized_parent / f"{safe_stem}.{output_mode}"
+    root = _resolve_output_root(source, output_dir)
+
+    txt_candidate = root / f"{safe_stem}.txt"
+    txt_path = _resolve_collision_path(txt_candidate, overwrite)
+
+    mode_path = txt_path if output_mode == "txt" else _resolve_collision_path(root / f"{safe_stem}.{output_mode}", overwrite)
+
+    return {
+        "txt": txt_path,
+        "mode": mode_path,
+    }
 
 
 def _discover_files(root: Path, recursive: bool) -> Iterable[Path]:
@@ -299,7 +355,9 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
     - language (optional): BCP-47 language code or model-specific language hint.
     - model (optional): model identifier used by downstream transcription tooling.
     - output_mode (optional): one of txt, json, srt. Defaults to txt.
-    - overwrite (optional): when false, existing output files are reported as failures.
+    - output_dir (optional): when provided, write outputs to this directory.
+    - include_txt_header (optional): prepend source/model/timestamp metadata to txt output.
+    - overwrite (optional): when false, output filename collisions are resolved by suffixing (_1, _2, ...).
 
     Notes:
     - .mp3 and .mp4 files are preprocessed with ffmpeg into mono 16k PCM WAV in a
@@ -320,21 +378,17 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
     engine = _normalize_engine(payload.get("engine"))
     model = _normalize_model(payload.get("model"), engine)
     output_mode = _normalize_output_mode(payload.get("output_mode"))
+    output_dir = payload.get("output_dir")
+    include_txt_header = bool(payload.get("include_txt_header", False))
     overwrite = bool(payload.get("overwrite", False))
 
     outputs: List[Dict[str, Any]] = []
     failures: List[Dict[str, Any]] = []
 
     for source in _discover_files(root, recursive):
-        output_path = _default_output_path(source, output_mode)
-
-        if output_path.exists() and not overwrite:
-            failures.append({
-                "file": str(source),
-                "output": str(output_path),
-                "reason": "output exists and overwrite is false",
-            })
-            continue
+        output_paths = _resolve_output_paths(source, output_mode, output_dir, overwrite)
+        output_path = output_paths["mode"]
+        text_output_path = output_paths["txt"]
 
         preprocess_info = {
             "required": source.suffix.lower() in FFMPEG_REQUIRING_NORMALIZATION,
@@ -369,10 +423,18 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                         transcription["segments"],
                         transcription["metadata"],
                     )
+                    text_file_content = _build_transcript_text_file_content(
+                        transcription["text"],
+                        source,
+                        transcription["metadata"],
+                        include_txt_header,
+                    )
+                    text_output_path.write_text(text_file_content, encoding="utf-8")
                 except TranscriptionError as exc:
                     failures.append({
                         "file": str(source),
                         "output": str(output_path),
+                        "text_output": str(text_output_path),
                         "reason": str(exc),
                     })
                     continue
@@ -380,6 +442,8 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                 outputs.append({
                     "file": str(source),
                     "output": str(output_path),
+                    "text_output": str(text_output_path),
+                    "output_paths": [str(text_output_path)] if output_mode == "txt" else [str(text_output_path), str(output_path)],
                     "status": "transcribed",
                     "text": transcription["text"],
                     "segments": transcription["segments"],
@@ -400,10 +464,18 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
                 transcription["segments"],
                 transcription["metadata"],
             )
+            text_file_content = _build_transcript_text_file_content(
+                transcription["text"],
+                source,
+                transcription["metadata"],
+                include_txt_header,
+            )
+            text_output_path.write_text(text_file_content, encoding="utf-8")
         except TranscriptionError as exc:
             failures.append({
                 "file": str(source),
                 "output": str(output_path),
+                "text_output": str(text_output_path),
                 "reason": str(exc),
             })
             continue
@@ -411,6 +483,8 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
         outputs.append({
             "file": str(source),
             "output": str(output_path),
+            "text_output": str(text_output_path),
+            "output_paths": [str(text_output_path)] if output_mode == "txt" else [str(text_output_path), str(output_path)],
             "status": "transcribed",
             "text": transcription["text"],
             "segments": transcription["segments"],
@@ -428,6 +502,9 @@ def handle_transcribe(payload: Dict[str, Any]) -> Dict[str, Any]:
         "model": model,
         "engine": engine,
         "output_mode": output_mode,
+        "output_dir": str(Path(output_dir).expanduser().resolve()) if output_dir else None,
+        "include_txt_header": include_txt_header,
+        "collision_strategy": "overwrite" if overwrite else "suffix",
         "overwrite": overwrite,
         "files_processed": len(outputs),
         "outputs": outputs,
