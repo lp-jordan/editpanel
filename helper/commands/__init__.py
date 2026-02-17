@@ -10,6 +10,7 @@ from .shutdown import handle_shutdown
 from .spellcheck import handle_spellcheck
 from .update_text import handle_update_text
 from .goto import handle_goto
+from .transcribe import handle_transcribe
 
 # Mapping of command names to handler functions
 HANDLERS = {
@@ -24,4 +25,6 @@ HANDLERS = {
     "spellcheck": handle_spellcheck,
     "update_text": handle_update_text,
     "goto": handle_goto,
+    "transcribe": handle_transcribe,
+    "transcribe_folder": handle_transcribe,
 }
