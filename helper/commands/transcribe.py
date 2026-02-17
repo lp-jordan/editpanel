@@ -6,6 +6,7 @@ import sys
 import tempfile
 import site
 import importlib
+import ctypes
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
@@ -41,6 +42,8 @@ _CUDA_INIT_STATE: Dict[str, Any] = {
     "packages_checked": False,
     "report": None,
 }
+
+_CUDA_DLL_DIRECTORY_HANDLES: List[Any] = []
 
 
 class TranscriptionError(RuntimeError):
@@ -87,6 +90,8 @@ def configure_cuda_dll_directories(log_func: Optional[Any] = None) -> Dict[str, 
         "dll_directories_added": [],
         "missing_dll_directories": [],
         "cublas_dll_found": False,
+        "cublas_preload": {"ok": False, "error": None},
+        "path_updated": False,
     }
 
     if log_func:
@@ -103,7 +108,11 @@ def configure_cuda_dll_directories(log_func: Optional[Any] = None) -> Dict[str, 
             report["dll_candidates"].append(str(candidate))
             if candidate.exists():
                 if hasattr(os, "add_dll_directory"):
-                    os.add_dll_directory(str(candidate))
+                    # Keep a strong reference to the returned handle for the life
+                    # of the process; otherwise Python may remove the search path
+                    # once the handle is garbage collected.
+                    dll_handle = os.add_dll_directory(str(candidate))
+                    _CUDA_DLL_DIRECTORY_HANDLES.append(dll_handle)
                     report["dll_directories_added"].append(str(candidate))
                     if log_func:
                         log_func(f"Transcribe: registered CUDA DLL directory {candidate}")
@@ -117,6 +126,27 @@ def configure_cuda_dll_directories(log_func: Optional[Any] = None) -> Dict[str, 
             cublas_exists = True
             break
     report["cublas_dll_found"] = cublas_exists
+
+    if report["dll_directories_added"]:
+        path_entries = os.environ.get("PATH", "").split(os.pathsep)
+        added_to_path = False
+        for added_dir in report["dll_directories_added"]:
+            if added_dir not in path_entries:
+                path_entries.insert(0, added_dir)
+                added_to_path = True
+        if added_to_path:
+            os.environ["PATH"] = os.pathsep.join(path_entries)
+            report["path_updated"] = True
+
+    if cublas_exists and sys.platform == "win32":
+        try:
+            ctypes.WinDLL("cublas64_12.dll")
+            report["cublas_preload"] = {"ok": True, "error": None}
+        except Exception as exc:
+            report["cublas_preload"] = {"ok": False, "error": str(exc)}
+            if log_func:
+                log_func(f"Transcribe: failed to preload cublas64_12.dll ({exc})")
+
     if log_func:
         log_func(f"Transcribe: cublas DLL present={cublas_exists}")
     return report
@@ -140,6 +170,8 @@ def _get_cuda_diagnostics_snapshot() -> Dict[str, Any]:
         "cached": initialized and bool(report),
         "dll_paths": list(report.get("dll_directories_added") or []),
         "cublas_dll_found": bool(report.get("cublas_dll_found")),
+        "cublas_preload": dict(report.get("cublas_preload") or {"ok": False, "error": None}),
+        "path_updated": bool(report.get("path_updated")),
         "python_executable": report.get("python_executable", sys.executable),
     }
 
