@@ -29,6 +29,7 @@ const PING_TIMEOUT_MS = 3000;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
 const TRANSCRIBE_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 const TRANSCRIBE_POLL_INTERVAL_MS = 1000;
+const RESOLVE_CONNECTIVITY_ENABLED = false;
 
 let win;
 let transcribeInProgress = false;
@@ -347,6 +348,9 @@ function startHealthChecks() {
   }
   healthTimer = setInterval(() => {
     Object.values(workers).forEach(state => {
+      if (state.name === WORKERS.resolve && !RESOLVE_CONNECTIVITY_ENABLED) {
+        return;
+      }
       healthCheckWorker(state);
     });
   }, HEALTH_INTERVAL_MS);
@@ -414,7 +418,11 @@ app.whenReady().then(() => {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
-  spawnResolveWorker();
+  if (RESOLVE_CONNECTIVITY_ENABLED) {
+    spawnResolveWorker();
+  } else {
+    markUnavailable(workers[WORKERS.resolve], 'resolve connectivity disabled');
+  }
   spawnMediaWorker();
   spawnPlatformWorker();
   startHealthChecks();
@@ -450,6 +458,15 @@ app.whenReady().then(() => {
   jobEngine.resumeRecoverableJobs();
 
   ipcMain.on('helper-request', (event, payload) => {
+    if (!RESOLVE_CONNECTIVITY_ENABLED) {
+      event.reply('helper-response', {
+        ok: false,
+        data: null,
+        error: normalizeError(new Error('Resolve connectivity is temporarily disabled')),
+        metrics: {}
+      });
+      return;
+    }
     sendWorkerRequest(payload, WORKERS.resolve, event).catch(error => {
       event.reply('helper-response', {
         ok: false,
@@ -639,6 +656,12 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+
+  if (!RESOLVE_CONNECTIVITY_ENABLED) {
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('helper-message', 'Resolve connectivity disabled for this build (transcribe-focused mode).');
+    });
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

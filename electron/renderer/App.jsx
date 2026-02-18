@@ -103,7 +103,21 @@ function App() {
       }
     });
 
-    const unsubscribeJobEvents = window.electronAPI.onJobEvent(() => {
+    const unsubscribeJobEvents = window.electronAPI.onJobEvent(event => {
+      if (event?.type === 'step_progress' && event?.worker === 'media') {
+        const statusLabel = event.state || 'progress';
+        const timingLabel = Number.isFinite(event?.timing_ms) ? ` (${formatDuration(event.timing_ms)})` : '';
+        const errorLabel = event?.error?.message ? ` - ${event.error.message}` : '';
+        appendLog(`[media-step] ${event.step_id || 'unknown'} ${statusLabel}${timingLabel}${errorLabel}`);
+      }
+
+      if (event?.type === 'job_state') {
+        const transcribeJobId = event?.job_id || '';
+        if (transcribeJobId) {
+          appendLog(`[job] ${transcribeJobId} -> ${event.state}`);
+        }
+      }
+
       window.electronAPI.dashboardSnapshot()
         .then(result => setDashboard(result?.data || { jobs: [], logs_by_job_step: {} }))
         .catch(() => null);
@@ -115,7 +129,7 @@ function App() {
       unsubscribeJobEvents && unsubscribeJobEvents();
       unsubscribeWorkerEvents && unsubscribeWorkerEvents();
     };
-  }, [appendLog]);
+  }, [appendLog, formatDuration]);
 
   React.useEffect(() => {
     if (!window.electronAPI?.dashboardSnapshot) return;
