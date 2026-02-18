@@ -14,7 +14,6 @@ function App() {
   const [footerExpanded, setFooterExpanded] = React.useState(false);
 
   const [transcribeSource, setTranscribeSource] = React.useState('');
-  const [transcribeOutput, setTranscribeOutput] = React.useState('');
   const [transcribeBusy, setTranscribeBusy] = React.useState(false);
   const [transcribeProgress, setTranscribeProgress] = React.useState({
     total: 0,
@@ -81,94 +80,10 @@ function App() {
         .catch(() => null);
     });
 
-    const unsubscribeTranscribeStatus = window.electronAPI.onTranscribeStatus?.(payload => {
-      if (payload?.event === 'progress') {
-        const stepState = payload?.data?.state;
-        const stepId = payload?.data?.step_id;
-        if (stepState && stepId) {
-          appendLog(`Transcribe step ${stepId}: ${stepState}`);
-        }
-        return;
-      }
-
-      if (payload?.event !== 'message' || typeof payload?.message !== 'string') return;
-
-      const message = payload.message;
-      appendLog(message);
-      const discoverMatch = message.match(/Transcribe:\s+(?:discovered\s+(\d+)\s+supported files|queued\s+(\d+)\s+files?(?:\s+from\b.*)?)/i);
-      const processingMatch = message.match(/Transcribe:\s+\[(\d+)\/(\d+)\]\s+processing\s+(.+)$/i);
-      const doneMatch = message.match(/Transcribe:\s+done\s+(.+)$/i);
-      const failedMatch = message.match(/Transcribe:\s+failed\s+(.+)\s+\(/i);
-      const completeMatch = message.match(/Transcribe:\s+complete\s+total=(\d+)\s+succeeded=(\d+)\s+failed=(\d+)/i);
-
-      if (discoverMatch) {
-        const discovered = Number(discoverMatch[1] || discoverMatch[2] || 0);
-        setTranscribeProgress({
-          total: discovered,
-          completed: 0,
-          failed: 0,
-          currentSource: '',
-          startedAt: Date.now(),
-          updatedAt: Date.now(),
-          lastDurationSeconds: null
-        });
-        return;
-      }
-
-      if (processingMatch) {
-        const processingIndex = Number(processingMatch[1] || 0);
-        const processingTotal = Number(processingMatch[2] || 0);
-        setTranscribeProgress(prev => ({
-          ...prev,
-          total: processingTotal || prev.total || 0,
-          completed: processingIndex === 1
-            ? 0
-            : (processingIndex > 0 ? Math.max(prev.completed, processingIndex - 1) : prev.completed),
-          failed: processingIndex === 1 ? 0 : prev.failed,
-          currentSource: processingMatch[3] || prev.currentSource,
-          startedAt: processingIndex === 1 ? Date.now() : (prev.startedAt || Date.now()),
-          updatedAt: Date.now()
-        }));
-        return;
-      }
-
-      if (doneMatch || failedMatch) {
-        setTranscribeProgress(prev => {
-          const completed = prev.completed + 1;
-          const failed = prev.failed + (failedMatch ? 1 : 0);
-          const startedAt = prev.startedAt || Date.now();
-          const durationSeconds = Math.max(0, (Date.now() - startedAt) / 1000);
-          return {
-            ...prev,
-            completed,
-            failed,
-            currentSource: failedMatch?.[1] || doneMatch?.[1] || prev.currentSource,
-            updatedAt: Date.now(),
-            lastDurationSeconds: durationSeconds
-          };
-        });
-        return;
-      }
-
-      if (completeMatch) {
-        const total = Number(completeMatch[1] || 0);
-        const succeeded = Number(completeMatch[2] || 0);
-        const failed = Number(completeMatch[3] || 0);
-        setTranscribeProgress(prev => ({
-          ...prev,
-          total: total || prev.total,
-          completed: Math.min(total || Number.MAX_SAFE_INTEGER, succeeded + failed),
-          failed,
-          updatedAt: Date.now()
-        }));
-      }
-    });
-
     return () => {
       unsubscribeStatus && unsubscribeStatus();
       unsubscribeMessage && unsubscribeMessage();
       unsubscribeJobEvents && unsubscribeJobEvents();
-      unsubscribeTranscribeStatus && unsubscribeTranscribeStatus();
     };
   }, [appendLog]);
 
@@ -260,18 +175,43 @@ function App() {
 
     try {
       setTranscribeBusy(true);
+      setTranscribeProgress({
+        total: 0,
+        completed: 0,
+        failed: 0,
+        currentSource: 'Processing folder…',
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        lastDurationSeconds: null
+      });
       const response = await window.electronAPI.transcribeFolder(transcribeSource, {
-        output_dir: transcribeOutput || undefined,
         useGpu: false,
         engine: 'local'
       });
+      const outputs = Array.isArray(response?.data?.outputs) ? response.data.outputs : [];
+      const failures = Array.isArray(response?.data?.failures) ? response.data.failures : [];
+      const completed = outputs.length + failures.length;
+      const currentSource = outputs[outputs.length - 1]?.file || failures[failures.length - 1]?.file || '';
+      setTranscribeProgress(prev => ({
+        ...prev,
+        total: completed,
+        completed,
+        failed: failures.length,
+        currentSource,
+        updatedAt: Date.now(),
+        lastDurationSeconds: prev.startedAt ? Math.max(0, (Date.now() - prev.startedAt) / 1000) : null
+      }));
       appendLog(`Transcribe completed. Files processed: ${response?.data?.files_processed ?? 'unknown'}`);
     } catch (err) {
+      setTranscribeProgress(prev => ({
+        ...prev,
+        updatedAt: Date.now()
+      }));
       appendLog(`Transcribe error: ${err?.error?.message || err?.message || JSON.stringify(err)}`);
     } finally {
       setTranscribeBusy(false);
     }
-  }, [appendLog, transcribeOutput, transcribeSource]);
+  }, [appendLog, transcribeSource]);
 
   const categories = React.useMemo(() => ([
     {
@@ -314,24 +254,19 @@ function App() {
       .reverse();
   }, [dashboard]);
 
-  const transcribeJobs = (dashboard.jobs || []).filter(job => job.preset_id === 'transcribe_folder');
-  const latestTranscribeJob = transcribeJobs[0] || null;
-  const isLatestTranscribeActive = Boolean(latestTranscribeJob && ['queued', 'running'].includes(latestTranscribeJob.state));
-  const elapsedMs = latestTranscribeJob?.started_at
-    ? ((latestTranscribeJob?.finished_at || (isLatestTranscribeActive ? Date.now() : latestTranscribeJob.started_at)) - latestTranscribeJob.started_at)
-    : (transcribeProgress.startedAt
-      ? ((isLatestTranscribeActive ? Date.now() : (transcribeProgress.updatedAt || Date.now())) - transcribeProgress.startedAt)
-      : null);
+  const elapsedMs = transcribeProgress.startedAt
+    ? (((transcribeBusy ? Date.now() : (transcribeProgress.updatedAt || Date.now())) - transcribeProgress.startedAt))
+    : null;
   const remainingItems = Math.max(0, (transcribeProgress.total || 0) - (transcribeProgress.completed || 0));
   const estimatedRemainingMs = transcribeProgress.completed > 0 && elapsedMs
     ? Math.round((elapsedMs / transcribeProgress.completed) * remainingItems)
-    : latestTranscribeJob?.eta_ms;
+    : null;
   const completedLabel = transcribeProgress.total
     ? `${Math.min(transcribeProgress.completed, transcribeProgress.total)}/${transcribeProgress.total}`
     : '0/0';
   const transcribeProgressPercent = transcribeProgress.total > 0
     ? Math.round((Math.min(transcribeProgress.completed, transcribeProgress.total) / transcribeProgress.total) * 100)
-    : (isLatestTranscribeActive ? 1 : 0);
+    : (transcribeBusy ? 1 : 0);
   const selectedTaskProgressPercent = selectedTaskData?.key === 'transcribe'
     ? transcribeProgressPercent
     : (activeJob && ['queued', 'running'].includes(activeJob.state) ? 50 : 0);
@@ -360,15 +295,14 @@ function App() {
           <div className="path-row">
             <label>Output folder</label>
             <div>
-              <input value={transcribeOutput} onChange={e => setTranscribeOutput(e.target.value)} placeholder="Optional output folder for .txt files" />
-              <button onClick={() => pickFolder(setTranscribeOutput)}>Browse</button>
+              <input value="Same folder as source media" readOnly />
             </div>
           </div>
           <div className="transcribe-stats-grid">
             <div><span>Current item</span><strong>{transcribeProgress.currentSource || 'Waiting for active media item'}</strong></div>
             <div><span>Estimated time remaining</span><strong>{formatDuration(estimatedRemainingMs)}</strong></div>
             <div><span>Total batch progress</span><strong>{completedLabel}</strong></div>
-            <div><span>Process status</span><strong>{latestTranscribeJob?.state || 'Idle'}</strong></div>
+            <div><span>Process status</span><strong>{transcribeBusy ? 'running' : 'idle'}</strong></div>
             <div><span>Total elapsed time</span><strong>{formatDuration(elapsedMs)}</strong></div>
             <div><span>Files failed</span><strong>{transcribeProgress.failed}</strong></div>
           </div>

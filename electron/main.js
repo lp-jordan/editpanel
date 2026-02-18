@@ -99,7 +99,9 @@ function broadcastWorkerStatus(workerName, status) {
       error: payload.error,
       metrics: {}
     });
-    w.webContents.send(workerName === WORKERS.media ? 'transcribe-status' : 'resolve-status', payload);
+    if (workerName !== WORKERS.media) {
+      w.webContents.send('resolve-status', payload);
+    }
     w.webContents.send('helper-status', payload);
     if (status === 'unavailable') {
       w.webContents.send('helper-message', `${workerName} worker unavailable`);
@@ -157,10 +159,6 @@ function handleWorkerLine(state, line) {
       const eventMessage = typeof normalized.envelope.message === 'string'
         ? normalized.envelope.message
         : String(normalized.envelope.message || normalized.envelope.data || '');
-      const messageEnvelope = {
-        event: 'message',
-        message: eventMessage
-      };
       const logEvent = {
         type: 'log',
         worker: state.name,
@@ -171,9 +169,6 @@ function handleWorkerLine(state, line) {
       BrowserWindow.getAllWindows().forEach(w => {
         w.webContents.send('worker-event', logEvent);
         w.webContents.send('helper-message', eventMessage);
-        if (state.name === WORKERS.media) {
-          w.webContents.send('transcribe-status', messageEnvelope);
-        }
       });
       return;
     }
@@ -196,9 +191,7 @@ function handleWorkerLine(state, line) {
         data: normalized.envelope.data,
         error: normalized.envelope.error
       });
-      if (state.name === WORKERS.media) {
-        w.webContents.send('transcribe-status', normalized.envelope);
-      } else {
+      if (state.name !== WORKERS.media) {
         w.webContents.send('resolve-status', normalized.envelope);
       }
     });
@@ -453,16 +446,6 @@ app.whenReady().then(() => {
   });
   jobEngine.subscribe(event => {
     broadcastJobEvent(event);
-    if (event.type === 'step_progress' && event.worker === WORKERS.media) {
-      BrowserWindow.getAllWindows().forEach(w => {
-        w.webContents.send('transcribe-status', {
-          event: 'progress',
-          code: 'JOB_STEP_PROGRESS',
-          data: event,
-          error: event.error || null
-        });
-      });
-    }
   });
   jobEngine.resumeRecoverableJobs();
 
@@ -481,10 +464,9 @@ app.whenReady().then(() => {
     const folderPath = typeof payload === 'string' ? payload : payload.folderPath;
     const useGpu = Boolean(payload && typeof payload === 'object' ? payload.useGpu : false);
     const engine = typeof payload.engine === 'string' ? payload.engine : undefined;
-    const outputDir = typeof payload.output_dir === 'string' ? payload.output_dir : undefined;
     const runToken = typeof payload.run_token === 'string' ? payload.run_token : undefined;
     const idempotencyKey = payload.idempotency_key
-      || `transcribe:${folderPath}:${useGpu}:${engine || 'default'}:${outputDir || 'default'}:${runToken || 'shared'}`;
+      || `transcribe:${folderPath}:${useGpu}:${engine || 'default'}:source:${runToken || 'shared'}`;
     if (!folderPath) {
       throw new Error('folderPath is required');
     }
@@ -494,7 +476,6 @@ app.whenReady().then(() => {
         folder: folderPath,
         use_gpu: useGpu,
         engine,
-        output_dir: outputDir
       },
       {
         idempotency_key: idempotencyKey,

@@ -25,7 +25,6 @@ SUPPORTED_EXTENSIONS = {
     ".wav",
 }
 
-FFMPEG_REQUIRING_NORMALIZATION = {".mp3", ".mp4"}
 INVALID_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 SUPPORTED_ENGINES = {"local", "openai"}
 DEFAULT_ENGINE = "local"
@@ -524,11 +523,7 @@ def _sanitize_filename(value: str) -> str:
 
 
 def _resolve_output_root(source: Path, output_dir: Optional[str]) -> Path:
-    if output_dir:
-        root = Path(output_dir).expanduser().resolve()
-        if not root.exists() or not root.is_dir():
-            raise ValueError(f"output_dir does not exist or is not a directory: {output_dir}")
-        return root
+    _ = output_dir
     return source.parent.resolve()
 
 
@@ -643,7 +638,7 @@ def handle_transcribe(payload: Dict[str, Any], log_func: Optional[Any] = None) -
     - language (optional): BCP-47 language code or model-specific language hint.
     - model (optional): model identifier used by downstream transcription tooling.
     - output_mode (optional): one of txt, json, srt. Defaults to txt.
-    - output_dir (optional): when provided, write outputs to this directory.
+    - output_dir (optional): accepted for backwards compatibility but ignored.
     - include_txt_header (optional): prepend source/model/timestamp metadata to txt output.
     - overwrite (optional): when false, output filename collisions are resolved by suffixing (_1, _2, ...).
 
@@ -691,7 +686,7 @@ def handle_transcribe(payload: Dict[str, Any], log_func: Optional[Any] = None) -
             "model": model,
             "engine": engine,
             "output_mode": output_mode,
-            "output_dir": str(Path(output_dir).expanduser().resolve()) if output_dir else None,
+            "output_dir": None,
             "include_txt_header": include_txt_header,
             "collision_strategy": "overwrite" if overwrite else "suffix",
             "overwrite": overwrite,
@@ -721,7 +716,7 @@ def handle_transcribe(payload: Dict[str, Any], log_func: Optional[Any] = None) -
         text_output_path = output_paths["txt"]
 
         preprocess_info = {
-            "required": source.suffix.lower() in FFMPEG_REQUIRING_NORMALIZATION,
+            "required": True,
             "status": "not_required",
             "details": "",
         }
@@ -852,7 +847,7 @@ def handle_transcribe(payload: Dict[str, Any], log_func: Optional[Any] = None) -
         "engine": engine,
         "use_gpu": use_gpu,
         "output_mode": output_mode,
-        "output_dir": str(Path(output_dir).expanduser().resolve()) if output_dir else None,
+        "output_dir": None,
         "include_txt_header": include_txt_header,
         "collision_strategy": "overwrite" if overwrite else "suffix",
         "overwrite": overwrite,
