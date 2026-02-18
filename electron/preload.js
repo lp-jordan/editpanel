@@ -40,6 +40,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('job-event', handler);
   },
 
+  onTranscribeStatus(callback) {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('transcribe-status', handler);
+    return () => ipcRenderer.removeListener('transcribe-status', handler);
+  },
+
   transcribeFolder(folderPath, options = {}) {
     return ipcRenderer.invoke('audio:transcribe-folder', { folderPath, ...options });
   },
