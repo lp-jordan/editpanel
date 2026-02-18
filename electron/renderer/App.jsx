@@ -82,13 +82,24 @@ function App() {
     });
 
     const unsubscribeTranscribeStatus = window.electronAPI.onTranscribeStatus?.(payload => {
+      if (payload?.event === 'progress') {
+        const stepState = payload?.data?.state;
+        const stepId = payload?.data?.step_id;
+        if (stepState && stepId) {
+          appendLog(`Transcribe step ${stepId}: ${stepState}`);
+        }
+        return;
+      }
+
       if (payload?.event !== 'message' || typeof payload?.message !== 'string') return;
 
       const message = payload.message;
+      appendLog(message);
       const discoverMatch = message.match(/Transcribe:\s+(?:discovered\s+(\d+)\s+supported files|queued\s+(\d+)\s+files?(?:\s+from\b.*)?)/i);
       const processingMatch = message.match(/Transcribe:\s+\[(\d+)\/(\d+)\]\s+processing\s+(.+)$/i);
       const doneMatch = message.match(/Transcribe:\s+done\s+(.+)$/i);
       const failedMatch = message.match(/Transcribe:\s+failed\s+(.+)\s+\(/i);
+      const completeMatch = message.match(/Transcribe:\s+complete\s+total=(\d+)\s+succeeded=(\d+)\s+failed=(\d+)/i);
 
       if (discoverMatch) {
         const discovered = Number(discoverMatch[1] || discoverMatch[2] || 0);
@@ -136,6 +147,20 @@ function App() {
             lastDurationSeconds: durationSeconds
           };
         });
+        return;
+      }
+
+      if (completeMatch) {
+        const total = Number(completeMatch[1] || 0);
+        const succeeded = Number(completeMatch[2] || 0);
+        const failed = Number(completeMatch[3] || 0);
+        setTranscribeProgress(prev => ({
+          ...prev,
+          total: total || prev.total,
+          completed: Math.min(total || Number.MAX_SAFE_INTEGER, succeeded + failed),
+          failed,
+          updatedAt: Date.now()
+        }));
       }
     });
 
@@ -291,9 +316,12 @@ function App() {
 
   const transcribeJobs = (dashboard.jobs || []).filter(job => job.preset_id === 'transcribe_folder');
   const latestTranscribeJob = transcribeJobs[0] || null;
-  const elapsedMs = transcribeProgress.startedAt
-    ? Date.now() - transcribeProgress.startedAt
-    : (latestTranscribeJob?.started_at ? Date.now() - latestTranscribeJob.started_at : null);
+  const isLatestTranscribeActive = Boolean(latestTranscribeJob && ['queued', 'running'].includes(latestTranscribeJob.state));
+  const elapsedMs = latestTranscribeJob?.started_at
+    ? ((latestTranscribeJob?.finished_at || (isLatestTranscribeActive ? Date.now() : latestTranscribeJob.started_at)) - latestTranscribeJob.started_at)
+    : (transcribeProgress.startedAt
+      ? ((isLatestTranscribeActive ? Date.now() : (transcribeProgress.updatedAt || Date.now())) - transcribeProgress.startedAt)
+      : null);
   const remainingItems = Math.max(0, (transcribeProgress.total || 0) - (transcribeProgress.completed || 0));
   const estimatedRemainingMs = transcribeProgress.completed > 0 && elapsedMs
     ? Math.round((elapsedMs / transcribeProgress.completed) * remainingItems)
@@ -301,6 +329,12 @@ function App() {
   const completedLabel = transcribeProgress.total
     ? `${Math.min(transcribeProgress.completed, transcribeProgress.total)}/${transcribeProgress.total}`
     : '0/0';
+  const transcribeProgressPercent = transcribeProgress.total > 0
+    ? Math.round((Math.min(transcribeProgress.completed, transcribeProgress.total) / transcribeProgress.total) * 100)
+    : (isLatestTranscribeActive ? 1 : 0);
+  const selectedTaskProgressPercent = selectedTaskData?.key === 'transcribe'
+    ? transcribeProgressPercent
+    : (activeJob && ['queued', 'running'].includes(activeJob.state) ? 50 : 0);
 
   const renderTaskDetail = () => {
     if (!selectedTaskData) return null;
@@ -427,7 +461,7 @@ function App() {
           <section className="task-info-panel">
             <div className="task-progress-line">
               <span>{selectedTaskData?.label || 'Task'} Progress</span>
-              <strong>{activeJob && ['queued', 'running'].includes(activeJob.state) ? '45%' : '0%'}</strong>
+              <strong>{selectedTaskProgressPercent}%</strong>
             </div>
             {renderTaskDetail()}
           </section>
