@@ -5,6 +5,15 @@ const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
 const { misspellings, suggestions } = require('./spellcheck');
+const {
+  WORKERS,
+  RetryableError,
+  normalizeError,
+  toRequestEnvelope,
+  validateRequestEnvelope,
+  toWorkerWireMessage,
+  normalizeResponseEnvelope
+} = require('./orchestrator/contracts');
 
 let ffmpegPath = '';
 try {
@@ -13,8 +22,8 @@ try {
   ffmpegPath = '';
 }
 
-const resolvePending = [];
-const transcribePending = [];
+const resolvePending = new Map();
+const transcribePending = new Map();
 
 let resolveHelperProc;
 let resolveHelperReader;
@@ -24,15 +33,20 @@ let win;
 let transcribeInProgress = false;
 
 function flushPendingWithError(queue, message) {
-  while (queue.length) {
-    const request = queue.shift();
+  for (const [id, request] of queue.entries()) {
+    const payload = {
+      id,
+      ok: false,
+      data: null,
+      error: normalizeError(new RetryableError(message)),
+      metrics: {}
+    };
     if (request.event) {
-      request.event.reply('helper-response', { ok: false, error: message });
-      continue;
+      request.event.reply('helper-response', payload);
+    } else if (request.reject) {
+      request.reject(payload);
     }
-    if (request.reject) {
-      request.reject(new Error(message));
-    }
+    queue.delete(id);
   }
 }
 
@@ -47,44 +61,102 @@ function spawnWorker() {
   });
 }
 
+function handleWorkerLine(worker, queue, line) {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch (_error) {
+    parsed = { ok: false, error: 'invalid response' };
+  }
+
+  const requestId = parsed && parsed.id ? parsed.id : null;
+  const pendingRequest = requestId ? queue.get(requestId) : null;
+  const normalized = normalizeResponseEnvelope(
+    parsed,
+    requestId || undefined,
+    pendingRequest ? pendingRequest.startedAt : undefined
+  );
+  if (normalized.kind === 'event') {
+    const eventName = normalized.envelope.event;
+    if (eventName === 'message') {
+      const logEvent = {
+        type: 'log',
+        worker,
+        trace_id: normalized.envelope.trace_id,
+        message: normalized.envelope.message,
+        metrics: normalized.envelope.metrics
+      };
+      BrowserWindow.getAllWindows().forEach(w => {
+        w.webContents.send('worker-event', logEvent);
+        w.webContents.send('helper-message', normalized.envelope.message || normalized.envelope.data);
+      });
+      return;
+    }
+
+    const structuredEvent = {
+      type: eventName === 'status' ? 'status' : 'progress',
+      worker,
+      trace_id: normalized.envelope.trace_id,
+      code: normalized.envelope.code,
+      data: normalized.envelope.data,
+      error: normalized.envelope.error,
+      metrics: normalized.envelope.metrics
+    };
+
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('worker-event', structuredEvent);
+      if (eventName === 'status') {
+        w.webContents.send(worker === WORKERS.media ? 'transcribe-status' : 'resolve-status', {
+          event: 'status',
+          ok: !normalized.envelope.error,
+          code: normalized.envelope.code,
+          data: normalized.envelope.data,
+          error: normalized.envelope.error
+        });
+        w.webContents.send('helper-status', {
+          event: 'status',
+          ok: !normalized.envelope.error,
+          code: normalized.envelope.code,
+          data: normalized.envelope.data,
+          error: normalized.envelope.error
+        });
+      }
+    });
+    return;
+  }
+
+  const request = normalized.envelope.id ? queue.get(normalized.envelope.id) : null;
+  if (!request) {
+    return;
+  }
+  queue.delete(normalized.envelope.id);
+
+  const response = {
+    ok: normalized.envelope.ok,
+    data: normalized.envelope.data,
+    error: normalized.envelope.error,
+    metrics: normalized.envelope.metrics
+  };
+
+  if (request.event) {
+    request.event.reply('helper-response', response);
+    return;
+  }
+
+  if (response.ok) {
+    request.resolve(response);
+  } else {
+    request.reject(response);
+  }
+}
+
 function startResolveHelper() {
   resolveHelperProc = spawnWorker();
   resolveHelperReader = readline.createInterface({ input: resolveHelperProc.stdout });
 
   resolveHelperReader.on('line', line => {
     try {
-      let message;
-      try {
-        message = JSON.parse(line);
-      } catch (e) {
-        message = { ok: false, error: 'invalid response' };
-      }
-
-      if (message.event === 'status') {
-        BrowserWindow.getAllWindows().forEach(w =>
-          w.webContents.send('resolve-status', message)
-        );
-        return;
-      }
-
-      if (message.event === 'message') {
-        BrowserWindow.getAllWindows().forEach(w =>
-          w.webContents.send('helper-message', message.message || message.data)
-        );
-        return;
-      }
-
-      if (resolvePending.length) {
-        const request = resolvePending.shift();
-        message = Object.assign({ ok: !message.error }, message);
-        if (request.event) {
-          request.event.reply('helper-response', message);
-        } else if (message.ok) {
-          request.resolve(message);
-        } else {
-          request.reject(message);
-        }
-      }
+      handleWorkerLine(WORKERS.resolve, resolvePending, line);
     } catch (err) {
       console.error('Error processing resolve helper output:', err);
       BrowserWindow.getAllWindows().forEach(w =>
@@ -109,36 +181,7 @@ function startTranscribeWorker() {
 
   transcribeWorkerReader.on('line', line => {
     try {
-      let message;
-      try {
-        message = JSON.parse(line);
-      } catch (e) {
-        message = { ok: false, error: 'invalid response' };
-      }
-
-      if (message.event === 'status') {
-        BrowserWindow.getAllWindows().forEach(w =>
-          w.webContents.send('transcribe-status', message)
-        );
-        return;
-      }
-
-      if (message.event === 'message') {
-        BrowserWindow.getAllWindows().forEach(w =>
-          w.webContents.send('helper-message', message.message || message.data)
-        );
-        return;
-      }
-
-      if (transcribePending.length) {
-        const request = transcribePending.shift();
-        message = Object.assign({ ok: !message.error }, message);
-        if (message.ok) {
-          request.resolve(message);
-        } else {
-          request.reject(message);
-        }
-      }
+      handleWorkerLine(WORKERS.media, transcribePending, line);
     } catch (err) {
       console.error('Error processing transcribe worker output:', err);
       BrowserWindow.getAllWindows().forEach(w =>
@@ -181,29 +224,40 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
+function dispatchWorkerRequest(rawPayload, expectedWorker, queue, processRef) {
+  const envelope = toRequestEnvelope(rawPayload, expectedWorker);
+  validateRequestEnvelope(envelope);
+
+  if (!processRef()) {
+    throw new RetryableError(`${expectedWorker} worker not running`);
+  }
+
+  const wireMessage = toWorkerWireMessage(envelope);
+
+  return new Promise((resolve, reject) => {
+    queue.set(envelope.id, {
+      resolve,
+      reject,
+      startedAt: Date.now(),
+      traceId: envelope.trace_id
+    });
+    processRef().stdin.write(`${wireMessage}\n`);
+  });
+}
+
 function queueResolveRequest(payload) {
   return new Promise((resolve, reject) => {
-    if (!resolveHelperProc) {
-      reject(new Error('resolve helper not running'));
-      return;
-    }
-
-    const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    resolveHelperProc.stdin.write(`${request}\n`);
-    resolvePending.push({ resolve, reject });
+    dispatchWorkerRequest(payload, WORKERS.resolve, resolvePending, () => resolveHelperProc)
+      .then(resolve)
+      .catch(error => reject({ ok: false, error: normalizeError(error), data: null, metrics: {} }));
   });
 }
 
 function queueTranscribeRequest(payload) {
   return new Promise((resolve, reject) => {
-    if (!transcribeWorkerProc) {
-      reject(new Error('transcribe worker not running'));
-      return;
-    }
-
-    const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    transcribeWorkerProc.stdin.write(`${request}\n`);
-    transcribePending.push({ resolve, reject });
+    dispatchWorkerRequest(payload, WORKERS.media, transcribePending, () => transcribeWorkerProc)
+      .then(resolve)
+      .catch(error => reject({ ok: false, error: normalizeError(error), data: null, metrics: {} }));
   });
 }
 
@@ -228,13 +282,22 @@ app.whenReady().then(() => {
   startTranscribeWorker();
 
   ipcMain.on('helper-request', (event, payload) => {
-    if (!resolveHelperProc) {
-      event.reply('helper-response', { ok: false, error: 'resolve helper not running' });
-      return;
+    try {
+      const envelope = toRequestEnvelope(payload, WORKERS.resolve);
+      validateRequestEnvelope(envelope);
+      if (!resolveHelperProc) {
+        throw new RetryableError('resolve worker not running');
+      }
+      resolvePending.set(envelope.id, { event, startedAt: Date.now(), traceId: envelope.trace_id });
+      resolveHelperProc.stdin.write(`${toWorkerWireMessage(envelope)}\n`);
+    } catch (error) {
+      event.reply('helper-response', {
+        ok: false,
+        data: null,
+        error: normalizeError(error),
+        metrics: {}
+      });
     }
-    const request = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    resolveHelperProc.stdin.write(`${request}\n`);
-    resolvePending.push({ event });
   });
 
   ipcMain.handle('audio:transcribe-folder', async (_, payload = {}) => {
