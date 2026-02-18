@@ -1,5 +1,4 @@
-const { app, BrowserWindow, Menu, dialog } = require('electron');
-const { ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -22,18 +21,85 @@ try {
   ffmpegPath = '';
 }
 
-const resolvePending = new Map();
-const transcribePending = new Map();
+const HEALTH_INTERVAL_MS = 10000;
+const PING_TIMEOUT_MS = 3000;
+const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
 
-let resolveHelperProc;
-let resolveHelperReader;
-let transcribeWorkerProc;
-let transcribeWorkerReader;
 let win;
 let transcribeInProgress = false;
+let healthTimer = null;
 
-function flushPendingWithError(queue, message) {
-  for (const [id, request] of queue.entries()) {
+const workers = {
+  [WORKERS.resolve]: createWorkerState(WORKERS.resolve, {
+    command: 'python',
+    args: ['-m', 'helper.resolve_worker'],
+    cwd: path.join(__dirname, '..'),
+    env: {
+      ...process.env,
+      ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {})
+    }
+  }),
+  [WORKERS.media]: createWorkerState(WORKERS.media, {
+    command: 'python',
+    args: ['-m', 'helper.media_worker'],
+    cwd: path.join(__dirname, '..'),
+    env: {
+      ...process.env,
+      ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {})
+    }
+  }),
+  [WORKERS.platform]: createWorkerState(WORKERS.platform, {
+    command: process.execPath,
+    args: [path.join(__dirname, 'workers', 'platform_worker.js')],
+    cwd: path.join(__dirname, '..'),
+    env: process.env
+  })
+};
+
+function createWorkerState(name, spawnConfig) {
+  return {
+    name,
+    spawnConfig,
+    proc: null,
+    reader: null,
+    pending: new Map(),
+    healthy: false,
+    crashCount: 0,
+    restartTimer: null,
+    startedAt: 0,
+    stopping: false
+  };
+}
+
+function broadcastWorkerStatus(workerName, status) {
+  const payload = {
+    event: 'status',
+    worker: workerName,
+    ok: status === 'available',
+    code: status === 'available' ? 'WORKER_AVAILABLE' : 'WORKER_UNAVAILABLE',
+    data: { worker: workerName },
+    error: status === 'available' ? null : `${workerName} worker unavailable`
+  };
+
+  BrowserWindow.getAllWindows().forEach(w => {
+    w.webContents.send('worker-event', {
+      type: 'status',
+      worker: workerName,
+      code: payload.code,
+      data: payload.data,
+      error: payload.error,
+      metrics: {}
+    });
+    w.webContents.send(workerName === WORKERS.media ? 'transcribe-status' : 'resolve-status', payload);
+    w.webContents.send('helper-status', payload);
+    if (status === 'unavailable') {
+      w.webContents.send('helper-message', `${workerName} worker unavailable`);
+    }
+  });
+}
+
+function flushPendingWithError(state, message) {
+  for (const [id, request] of state.pending.entries()) {
     const payload = {
       id,
       ok: false,
@@ -46,22 +112,17 @@ function flushPendingWithError(queue, message) {
     } else if (request.reject) {
       request.reject(payload);
     }
-    queue.delete(id);
+    state.pending.delete(id);
   }
 }
 
-function spawnWorker() {
-  return spawn('python', ['-m', 'helper.resolve_helper'], {
-    stdio: ['pipe', 'pipe', 'inherit'],
-    cwd: path.join(__dirname, '..'),
-    env: {
-      ...process.env,
-      ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {})
-    }
-  });
+function markUnavailable(state, reason) {
+  state.healthy = false;
+  flushPendingWithError(state, reason);
+  broadcastWorkerStatus(state.name, 'unavailable');
 }
 
-function handleWorkerLine(worker, queue, line) {
+function handleWorkerLine(state, line) {
   let parsed;
   try {
     parsed = JSON.parse(line);
@@ -70,18 +131,19 @@ function handleWorkerLine(worker, queue, line) {
   }
 
   const requestId = parsed && parsed.id ? parsed.id : null;
-  const pendingRequest = requestId ? queue.get(requestId) : null;
+  const pendingRequest = requestId ? state.pending.get(requestId) : null;
   const normalized = normalizeResponseEnvelope(
     parsed,
     requestId || undefined,
     pendingRequest ? pendingRequest.startedAt : undefined
   );
+
   if (normalized.kind === 'event') {
     const eventName = normalized.envelope.event;
     if (eventName === 'message') {
       const logEvent = {
         type: 'log',
-        worker,
+        worker: state.name,
         trace_id: normalized.envelope.trace_id,
         message: normalized.envelope.message,
         metrics: normalized.envelope.metrics
@@ -93,43 +155,38 @@ function handleWorkerLine(worker, queue, line) {
       return;
     }
 
-    const structuredEvent = {
-      type: eventName === 'status' ? 'status' : 'progress',
-      worker,
-      trace_id: normalized.envelope.trace_id,
-      code: normalized.envelope.code,
-      data: normalized.envelope.data,
-      error: normalized.envelope.error,
-      metrics: normalized.envelope.metrics
-    };
-
     BrowserWindow.getAllWindows().forEach(w => {
-      w.webContents.send('worker-event', structuredEvent);
-      if (eventName === 'status') {
-        w.webContents.send(worker === WORKERS.media ? 'transcribe-status' : 'resolve-status', {
-          event: 'status',
-          ok: !normalized.envelope.error,
-          code: normalized.envelope.code,
-          data: normalized.envelope.data,
-          error: normalized.envelope.error
-        });
-        w.webContents.send('helper-status', {
-          event: 'status',
-          ok: !normalized.envelope.error,
-          code: normalized.envelope.code,
-          data: normalized.envelope.data,
-          error: normalized.envelope.error
-        });
+      w.webContents.send('worker-event', {
+        type: eventName === 'status' ? 'status' : 'progress',
+        worker: state.name,
+        trace_id: normalized.envelope.trace_id,
+        code: normalized.envelope.code,
+        data: normalized.envelope.data,
+        error: normalized.envelope.error,
+        metrics: normalized.envelope.metrics
+      });
+      w.webContents.send('helper-status', {
+        event: 'status',
+        worker: state.name,
+        ok: !normalized.envelope.error,
+        code: normalized.envelope.code,
+        data: normalized.envelope.data,
+        error: normalized.envelope.error
+      });
+      if (state.name === WORKERS.media) {
+        w.webContents.send('transcribe-status', normalized.envelope);
+      } else {
+        w.webContents.send('resolve-status', normalized.envelope);
       }
     });
     return;
   }
 
-  const request = normalized.envelope.id ? queue.get(normalized.envelope.id) : null;
+  const request = normalized.envelope.id ? state.pending.get(normalized.envelope.id) : null;
   if (!request) {
     return;
   }
-  queue.delete(normalized.envelope.id);
+  state.pending.delete(normalized.envelope.id);
 
   const response = {
     ok: normalized.envelope.ok,
@@ -150,63 +207,153 @@ function handleWorkerLine(worker, queue, line) {
   }
 }
 
-function startResolveHelper() {
-  resolveHelperProc = spawnWorker();
-  resolveHelperReader = readline.createInterface({ input: resolveHelperProc.stdout });
-
-  resolveHelperReader.on('line', line => {
-    try {
-      handleWorkerLine(WORKERS.resolve, resolvePending, line);
-    } catch (err) {
-      console.error('Error processing resolve helper output:', err);
-      BrowserWindow.getAllWindows().forEach(w =>
-        w.webContents.send('helper-error', { error: err.message })
-      );
-    }
-  });
-
-  resolveHelperProc.on('exit', () => {
-    flushPendingWithError(resolvePending, 'resolve helper process exited');
-    resolveHelperProc = null;
-    if (resolveHelperReader) {
-      resolveHelperReader.close();
-      resolveHelperReader = null;
-    }
-  });
-}
-
-function startTranscribeWorker() {
-  transcribeWorkerProc = spawnWorker();
-  transcribeWorkerReader = readline.createInterface({ input: transcribeWorkerProc.stdout });
-
-  transcribeWorkerReader.on('line', line => {
-    try {
-      handleWorkerLine(WORKERS.media, transcribePending, line);
-    } catch (err) {
-      console.error('Error processing transcribe worker output:', err);
-      BrowserWindow.getAllWindows().forEach(w =>
-        w.webContents.send('helper-error', { error: err.message })
-      );
-    }
-  });
-
-  transcribeWorkerProc.on('exit', () => {
-    flushPendingWithError(transcribePending, 'transcribe worker process exited');
-    transcribeInProgress = false;
-    transcribeWorkerProc = null;
-    if (transcribeWorkerReader) {
-      transcribeWorkerReader.close();
-      transcribeWorkerReader = null;
-    }
-  });
-}
-
-function restartTranscribeWorker(reason = 'transcribe worker restart requested') {
-  if (transcribeWorkerProc) {
-    transcribeWorkerProc.kill('SIGTERM');
+function scheduleWorkerRestart(state, reason) {
+  if (state.restartTimer) {
+    return;
   }
-  flushPendingWithError(transcribePending, reason);
-  startTranscribeWorker();
+  const idx = Math.min(state.crashCount, RESTART_BACKOFF_MS.length - 1);
+  const delay = RESTART_BACKOFF_MS[idx];
+  state.crashCount += 1;
+  state.restartTimer = setTimeout(() => {
+    state.restartTimer = null;
+    startWorker(state);
+  }, delay);
+  console.warn(`${state.name} worker restart in ${delay}ms (${reason})`);
+}
+
+function startWorker(state) {
+  if (state.proc) {
+    return;
+  }
+  const { command, args, cwd, env } = state.spawnConfig;
+  state.stopping = false;
+  state.proc = spawn(command, args, {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    cwd,
+    env
+  });
+  state.startedAt = Date.now();
+
+  state.reader = readline.createInterface({ input: state.proc.stdout });
+  state.reader.on('line', line => {
+    try {
+      handleWorkerLine(state, line);
+    } catch (err) {
+      console.error(`Error processing ${state.name} worker output:`, err);
+    }
+  });
+
+  state.proc.on('spawn', () => {
+    state.healthy = true;
+    state.crashCount = 0;
+    broadcastWorkerStatus(state.name, 'available');
+  });
+
+  state.proc.on('exit', () => {
+    const wasStopping = state.stopping;
+    state.proc = null;
+    if (state.reader) {
+      state.reader.close();
+      state.reader = null;
+    }
+    markUnavailable(state, `${state.name} worker process exited`);
+    if (state.name === WORKERS.media) {
+      transcribeInProgress = false;
+    }
+    if (!wasStopping) {
+      scheduleWorkerRestart(state, 'worker exited');
+    }
+  });
+}
+
+function stopWorker(state) {
+  if (state.restartTimer) {
+    clearTimeout(state.restartTimer);
+    state.restartTimer = null;
+  }
+  if (state.proc) {
+    state.stopping = true;
+    state.proc.kill('SIGTERM');
+    state.proc = null;
+  }
+  if (state.reader) {
+    state.reader.close();
+    state.reader = null;
+  }
+}
+
+function sendWorkerRequest(rawPayload, explicitWorker, event = null) {
+  const envelope = toRequestEnvelope(rawPayload, explicitWorker);
+  validateRequestEnvelope(envelope);
+
+  const state = workers[envelope.worker];
+  if (!state || !state.proc || !state.proc.stdin || state.proc.killed) {
+    throw new RetryableError(`${envelope.worker} worker not running`);
+  }
+
+  const wireMessage = toWorkerWireMessage(envelope);
+
+  return new Promise((resolve, reject) => {
+    state.pending.set(envelope.id, {
+      event,
+      resolve,
+      reject,
+      startedAt: Date.now(),
+      traceId: envelope.trace_id
+    });
+    state.proc.stdin.write(`${wireMessage}\n`);
+  });
+}
+
+async function healthCheckWorker(state) {
+  if (!state.proc || !state.healthy) {
+    return;
+  }
+
+  try {
+    await Promise.race([
+      sendWorkerRequest({ cmd: 'ping' }, state.name),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('ping timeout')), PING_TIMEOUT_MS))
+    ]);
+  } catch (_error) {
+    markUnavailable(state, `${state.name} worker health check failed`);
+    if (state.proc) {
+      state.proc.kill('SIGTERM');
+    }
+  }
+}
+
+function startHealthChecks() {
+  if (healthTimer) {
+    clearInterval(healthTimer);
+  }
+  healthTimer = setInterval(() => {
+    Object.values(workers).forEach(state => {
+      healthCheckWorker(state);
+    });
+  }, HEALTH_INTERVAL_MS);
+}
+
+function spawnResolveWorker() {
+  startWorker(workers[WORKERS.resolve]);
+}
+
+function spawnMediaWorker() {
+  startWorker(workers[WORKERS.media]);
+}
+
+function spawnPlatformWorker() {
+  startWorker(workers[WORKERS.platform]);
+}
+
+function restartMediaWorker(reason = 'media worker restart requested') {
+  const state = workers[WORKERS.media];
+  if (state.proc) {
+    state.stopping = true;
+    state.proc.kill('SIGTERM');
+  }
+  flushPendingWithError(state, reason);
+  startWorker(state);
 }
 
 function createWindow() {
@@ -222,43 +369,6 @@ function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-}
-
-function dispatchWorkerRequest(rawPayload, expectedWorker, queue, processRef) {
-  const envelope = toRequestEnvelope(rawPayload, expectedWorker);
-  validateRequestEnvelope(envelope);
-
-  if (!processRef()) {
-    throw new RetryableError(`${expectedWorker} worker not running`);
-  }
-
-  const wireMessage = toWorkerWireMessage(envelope);
-
-  return new Promise((resolve, reject) => {
-    queue.set(envelope.id, {
-      resolve,
-      reject,
-      startedAt: Date.now(),
-      traceId: envelope.trace_id
-    });
-    processRef().stdin.write(`${wireMessage}\n`);
-  });
-}
-
-function queueResolveRequest(payload) {
-  return new Promise((resolve, reject) => {
-    dispatchWorkerRequest(payload, WORKERS.resolve, resolvePending, () => resolveHelperProc)
-      .then(resolve)
-      .catch(error => reject({ ok: false, error: normalizeError(error), data: null, metrics: {} }));
-  });
-}
-
-function queueTranscribeRequest(payload) {
-  return new Promise((resolve, reject) => {
-    dispatchWorkerRequest(payload, WORKERS.media, transcribePending, () => transcribeWorkerProc)
-      .then(resolve)
-      .catch(error => reject({ ok: false, error: normalizeError(error), data: null, metrics: {} }));
-  });
 }
 
 app.whenReady().then(() => {
@@ -278,26 +388,20 @@ app.whenReady().then(() => {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
-  startResolveHelper();
-  startTranscribeWorker();
+  spawnResolveWorker();
+  spawnMediaWorker();
+  spawnPlatformWorker();
+  startHealthChecks();
 
   ipcMain.on('helper-request', (event, payload) => {
-    try {
-      const envelope = toRequestEnvelope(payload, WORKERS.resolve);
-      validateRequestEnvelope(envelope);
-      if (!resolveHelperProc) {
-        throw new RetryableError('resolve worker not running');
-      }
-      resolvePending.set(envelope.id, { event, startedAt: Date.now(), traceId: envelope.trace_id });
-      resolveHelperProc.stdin.write(`${toWorkerWireMessage(envelope)}\n`);
-    } catch (error) {
+    sendWorkerRequest(payload, WORKERS.resolve, event).catch(error => {
       event.reply('helper-response', {
         ok: false,
         data: null,
         error: normalizeError(error),
         metrics: {}
       });
-    }
+    });
   });
 
   ipcMain.handle('audio:transcribe-folder', async (_, payload = {}) => {
@@ -308,64 +412,50 @@ app.whenReady().then(() => {
     }
     transcribeInProgress = true;
     try {
-      return await queueTranscribeRequest({
+      return await sendWorkerRequest({
         cmd: 'transcribe_folder',
         folder_path: folderPath,
         engine: 'local',
         use_gpu: useGpu
-      });
+      }, WORKERS.media);
     } finally {
       transcribeInProgress = false;
     }
   });
 
-  ipcMain.handle('audio:test-gpu', async () => {
-    return queueTranscribeRequest({ cmd: 'test_cuda' });
-  });
+  ipcMain.handle('audio:test-gpu', async () => sendWorkerRequest({ cmd: 'test_cuda' }, WORKERS.media));
 
   ipcMain.handle('audio:cancel-transcribe', async () => {
     if (!transcribeInProgress) {
       return { ok: true, canceled: false, message: 'No transcription in progress' };
     }
-    restartTranscribeWorker('transcription canceled');
-    BrowserWindow.getAllWindows().forEach(w =>
-      w.webContents.send('helper-message', 'Transcribe: canceled by user')
-    );
+    restartMediaWorker('transcription canceled');
+    BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', 'Transcribe: canceled by user'));
     transcribeInProgress = false;
     return { ok: true, canceled: true, message: 'Transcription canceled' };
   });
 
   ipcMain.handle('dialog:pickFolder', async () => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openDirectory']
-    });
-
+    const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     if (result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
       return { canceled: true };
     }
-
-    return {
-      canceled: false,
-      folderPath: result.filePaths[0]
-    };
+    return { canceled: false, folderPath: result.filePaths[0] };
   });
 
   ipcMain.handle('fs:readFile', (_, p) => fs.promises.readFile(p, 'utf8'));
-  ipcMain.handle('fs:writeFile', (_, p, data) =>
-    fs.promises.writeFile(p, data, 'utf8')
-  );
+  ipcMain.handle('fs:writeFile', (_, p, data) => fs.promises.writeFile(p, data, 'utf8'));
   ipcMain.handle('fs:stat', (_, p) => fs.promises.stat(p));
 
   ipcMain.handle('spellcheck:misspellings', misspellings);
   ipcMain.handle('spellcheck:suggestions', suggestions);
 
-  // Handle generic leaderpass actions invoked from the renderer.
   ipcMain.handle('leaderpass-call', async (_, action = {}) => {
     const payload = typeof action === 'string' ? { cmd: action } : action;
     if (!payload || !payload.cmd) {
       throw new Error('leaderpass action must include cmd');
     }
-    return queueResolveRequest(payload);
+    return sendWorkerRequest(payload);
   });
 
   createWindow();
@@ -378,16 +468,11 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (resolveHelperProc) {
-    resolveHelperProc.kill();
-    resolveHelperProc = null;
-    resolveHelperReader && resolveHelperReader.close();
+  if (healthTimer) {
+    clearInterval(healthTimer);
+    healthTimer = null;
   }
-  if (transcribeWorkerProc) {
-    transcribeWorkerProc.kill();
-    transcribeWorkerProc = null;
-    transcribeWorkerReader && transcribeWorkerReader.close();
-  }
+  Object.values(workers).forEach(stopWorker);
   if (process.platform !== 'darwin') {
     app.quit();
   }

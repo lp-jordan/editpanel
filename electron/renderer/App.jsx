@@ -24,6 +24,11 @@ function App() {
     failed: 0,
     currentFile: ''
   });
+  const [workerAvailability, setWorkerAvailability] = React.useState({
+    resolve: true,
+    media: true,
+    platform: true
+  });
 
   const formatElapsedTime = React.useCallback(milliseconds => {
     if (!Number.isFinite(milliseconds) || milliseconds < 0) {
@@ -93,6 +98,18 @@ function App() {
     }
 
     const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
+      if (status?.code === 'WORKER_AVAILABLE' || status?.code === 'WORKER_UNAVAILABLE') {
+        const worker = status?.worker || 'resolve';
+        setWorkerAvailability(prev => ({
+          ...prev,
+          [worker]: Boolean(status.ok)
+        }));
+      }
+
+      if (status?.worker && status.worker !== 'resolve' && status.code !== 'CONNECTED') {
+        return;
+      }
+
       const msg = `Status: ${status.code}${status.error ? ' - ' + status.error : ''}`;
       appendLog(msg);
       if (status.code === 'CONNECTED' && status.ok) {
@@ -463,7 +480,7 @@ function App() {
             {actions[currentCategory].map(action => {
               const disabled =
                 (action.resolveRequired && !connected) ||
-                (action.label === 'Transcribe Folder' && transcribeBusy);
+                (action.label === 'Transcribe Folder' && (transcribeBusy || !workerAvailability.media));
               const disabledReason = action.resolveRequired && !connected
                 ? 'Connect to Resolve to use this action.'
                 : undefined;
@@ -485,6 +502,9 @@ function App() {
         </div>
       )}
       {!connected ? <div>Resolve-only actions are disabled until connection is established.</div> : null}
+      {!workerAvailability.resolve ? <div>Resolve worker unavailable. Retry in a moment.</div> : null}
+      {!workerAvailability.media ? <div>Media worker unavailable. Transcribe actions are temporarily disabled.</div> : null}
+      {!workerAvailability.platform ? <div>Platform worker unavailable. Some integrations may be unavailable.</div> : null}
       <div className="dashboard">
         <h2>Dashboard</h2>
         <div>Active Timeline: {timeline || 'None'}</div>
@@ -498,7 +518,7 @@ function App() {
             disabled={transcribeBusy}
           />
           <div>
-            <button onClick={handleTranscribe} disabled={transcribeBusy}>
+            <button onClick={handleTranscribe} disabled={transcribeBusy || !workerAvailability.media}>
               {transcribeBusy ? 'Transcribing…' : 'Run Transcribe Folder'}
             </button>
             <button

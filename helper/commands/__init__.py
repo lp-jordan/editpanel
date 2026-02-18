@@ -1,4 +1,4 @@
-"""Command handler package for Resolve helper."""
+"""Command handler package for Resolve/media workers."""
 from .connect import handle_connect
 from .context import handle_context
 from .add_marker import handle_add_marker
@@ -12,8 +12,8 @@ from .update_text import handle_update_text
 from .goto import handle_goto
 from .transcribe import handle_transcribe, handle_test_cuda
 
-# Mapping of command names to handler functions
-HANDLERS = {
+
+RESOLVE_HANDLERS = {
     "context": handle_context,
     "add_marker": handle_add_marker,
     "start_render": handle_start_render,
@@ -25,7 +25,13 @@ HANDLERS = {
     "spellcheck": handle_spellcheck,
     "update_text": handle_update_text,
     "goto": handle_goto,
+}
+
+MEDIA_HANDLERS = {
     "transcribe": handle_transcribe,
     "transcribe_folder": handle_transcribe,
     "test_cuda": handle_test_cuda,
 }
+
+# Backwards compatibility for older entrypoint.
+HANDLERS = {**RESOLVE_HANDLERS, **MEDIA_HANDLERS}
