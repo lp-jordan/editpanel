@@ -4,7 +4,8 @@
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "echo 'No tests'"
+    "test": "echo 'No tests'",
+    "baseline:latency": "node scripts/baseline-latency.js"
   },
   "dependencies": {
     "dictionary-en": "^4.0.0",
