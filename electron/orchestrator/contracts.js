@@ -43,8 +43,8 @@ const COMMAND_SCHEMAS = Object.freeze({
   spellcheck: { required: [] },
   lp_base_export: { required: [] },
   shutdown: { required: [] },
-  leaderpass_auth: { required: [] },
-  leaderpass_upload: { required: [] }
+  leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
+  leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });
 
 class UserError extends Error {
