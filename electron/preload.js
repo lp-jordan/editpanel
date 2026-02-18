@@ -39,6 +39,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('job-event', handler);
     return () => ipcRenderer.removeListener('job-event', handler);
   },
+
+  onWorkerEvent(callback) {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('worker-event', handler);
+    return () => ipcRenderer.removeListener('worker-event', handler);
+  },
+
   transcribeFolder(folderPath, options = {}) {
     return ipcRenderer.invoke('audio:transcribe-folder', { folderPath, ...options });
   },

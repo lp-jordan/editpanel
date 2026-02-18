@@ -1,3 +1,13 @@
+const SESSION_STATUS_CODES = new Set([
+  'CONNECTED',
+  'DISCONNECTED',
+  'PROJECT_CLOSED',
+  'TIMELINE_CLOSED',
+  'ERROR'
+]);
+
+const SESSION_NEGATIVE_STATUS_CODES = new Set(['DISCONNECTED', 'PROJECT_CLOSED', 'TIMELINE_CLOSED', 'ERROR']);
+
 function App() {
   const [project, setProject] = React.useState('');
   const [timeline, setTimeline] = React.useState('');
@@ -74,6 +84,25 @@ function App() {
       appendLog(entry);
     });
 
+    const unsubscribeWorkerEvents = window.electronAPI.onWorkerEvent?.(event => {
+      if (!event || typeof event !== 'object') return;
+
+      if (event.type === 'log' && event.message) {
+        appendLog(`[${event.worker || 'worker'}] ${event.message}`);
+        return;
+      }
+
+      if (event.type === 'status' && (event.code || event.error)) {
+        appendLog(`[${event.worker || 'worker'}] ${event.code || 'STATUS'}${event.error ? ` - ${event.error}` : ''}`);
+        return;
+      }
+
+      if (event.type === 'progress') {
+        const progressText = event.data?.message || event.code || 'progress';
+        appendLog(`[${event.worker || 'worker'}] ${progressText}`);
+      }
+    });
+
     const unsubscribeJobEvents = window.electronAPI.onJobEvent(() => {
       window.electronAPI.dashboardSnapshot()
         .then(result => setDashboard(result?.data || { jobs: [], logs_by_job_step: {} }))
@@ -84,6 +113,7 @@ function App() {
       unsubscribeStatus && unsubscribeStatus();
       unsubscribeMessage && unsubscribeMessage();
       unsubscribeJobEvents && unsubscribeJobEvents();
+      unsubscribeWorkerEvents && unsubscribeWorkerEvents();
     };
   }, [appendLog]);
 
