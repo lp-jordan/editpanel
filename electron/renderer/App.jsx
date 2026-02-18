@@ -42,6 +42,11 @@ function App() {
   React.useEffect(() => {
     if (!window.electronAPI) return;
 
+    // Worker availability logs are canonicalized through onHelperStatus.
+    // If helper messages introduce equivalent availability text (for example,
+    // "<worker> worker unavailable"), filter them here to avoid duplicate UI logs.
+    const workerUnavailableMessagePattern = /worker unavailable$/i;
+
     const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
       if (status?.code === 'WORKER_AVAILABLE' || status?.code === 'WORKER_UNAVAILABLE') {
         setWorkerAvailability(prev => ({ ...prev, [status?.worker || 'resolve']: Boolean(status.ok) }));
@@ -63,6 +68,7 @@ function App() {
 
     const unsubscribeMessage = window.electronAPI.onHelperMessage(payload => {
       const entry = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      if (workerUnavailableMessagePattern.test(entry)) return;
       appendLog(entry);
     });
 
