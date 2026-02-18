@@ -4,25 +4,21 @@ function App() {
   const [log, setLog] = React.useState([]);
   const [connected, setConnected] = React.useState(false);
   const [consoleOpen, setConsoleOpen] = React.useState(false);
-  const [currentCategory, setCurrentCategory] = React.useState(null);
   const [spellReport, setSpellReport] = React.useState([]);
   const [spellTotals, setSpellTotals] = React.useState({ items: 0, words: 0, issues: 0, ignored: 0 });
-  const [spellHistory, setSpellHistory] = React.useState([]);
   const [workerAvailability, setWorkerAvailability] = React.useState({ resolve: true, media: true, platform: true });
-
-  const [recipes, setRecipes] = React.useState([]);
-  const [recipeLaunchBusy, setRecipeLaunchBusy] = React.useState(false);
-  const [selectedRecipeId, setSelectedRecipeId] = React.useState('');
-  const [recipeInputValues, setRecipeInputValues] = React.useState({});
-
   const [dashboard, setDashboard] = React.useState({ jobs: [], logs_by_job_step: {} });
-  const [preferences, setPreferences] = React.useState({
-    recipe_defaults: {},
-    worker_concurrency: { resolve: 1, media: 2, platform: 2 }
-  });
+
+  const [selectedCategory, setSelectedCategory] = React.useState('EDIT');
+  const [selectedTask, setSelectedTask] = React.useState('project-setup');
+  const [footerExpanded, setFooterExpanded] = React.useState(false);
+
+  const [transcribeSource, setTranscribeSource] = React.useState('');
+  const [transcribeOutput, setTranscribeOutput] = React.useState('');
+  const [transcribeBusy, setTranscribeBusy] = React.useState(false);
 
   const appendLog = React.useCallback(msg => {
-    setLog(prev => [...prev, msg].slice(-50));
+    setLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-250));
   }, []);
 
   const formatDuration = React.useCallback(milliseconds => {
@@ -75,31 +71,13 @@ function App() {
   }, [appendLog]);
 
   React.useEffect(() => {
-    if (!window.electronAPI) return;
+    if (!window.electronAPI?.dashboardSnapshot) return;
 
-    Promise.all([
-      window.electronAPI.listRecipes(),
-      window.electronAPI.dashboardSnapshot(),
-      window.electronAPI.getPreferences()
-    ])
-      .then(([recipeResult, dashboardResult, preferenceResult]) => {
-        const catalog = Array.isArray(recipeResult?.data) ? recipeResult.data : [];
-        setRecipes(catalog);
-        if (catalog.length > 0) {
-          setSelectedRecipeId(current => current || catalog[0].id);
-        }
-        setDashboard(dashboardResult?.data || { jobs: [], logs_by_job_step: {} });
-        setPreferences(preferenceResult?.data || {
-          recipe_defaults: {},
-          worker_concurrency: { resolve: 1, media: 2, platform: 2 }
-        });
-      })
-      .catch(err => appendLog(`Bootstrap error: ${err?.error || err?.message || err}`));
-  }, [appendLog]);
+    window.electronAPI.dashboardSnapshot()
+      .then(result => setDashboard(result?.data || { jobs: [], logs_by_job_step: {} }))
+      .catch(() => null);
 
-  React.useEffect(() => {
     const timer = setInterval(() => {
-      if (!window.electronAPI?.dashboardSnapshot) return;
       window.electronAPI.dashboardSnapshot()
         .then(result => setDashboard(result?.data || { jobs: [], logs_by_job_step: {} }))
         .catch(() => null);
@@ -108,53 +86,31 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
-  React.useEffect(() => {
-    if (!selectedRecipeId) {
-      setRecipeInputValues({});
-      return;
-    }
-    const selectedRecipe = recipes.find(recipe => recipe.id === selectedRecipeId);
-    if (!selectedRecipe) return;
-
-    const defaultFromRecipe = selectedRecipe.defaults || {};
-    const defaultFromPrefs = preferences.recipe_defaults?.[selectedRecipeId] || {};
-    setRecipeInputValues({ ...defaultFromRecipe, ...defaultFromPrefs });
-  }, [recipes, preferences, selectedRecipeId]);
-
-  const logAction = action => appendLog(`${action} clicked`);
-
-  const cacheSpellcheck = () => {
-    if (spellReport.length || spellTotals.items || spellTotals.words || spellTotals.issues || spellTotals.ignored) {
-      setSpellHistory(prev => [...prev, { report: spellReport, totals: spellTotals, timestamp: Date.now() }]);
-      appendLog('Spellcheck report cached to history');
-    }
-    setSpellReport([]);
-    setSpellTotals({ items: 0, words: 0, issues: 0, ignored: 0 });
-  };
-
-  const handleConnect = () => {
-    cacheSpellcheck();
+  const handleConnect = React.useCallback(() => {
     if (!window.leaderpassAPI) {
       appendLog('Leaderpass API not available; cannot connect');
       return;
     }
-    window.leaderpassAPI.call('connect').then(() => appendLog('Connect success')).catch(err => appendLog(`Connect error: ${err?.error || err}`));
-  };
+    window.leaderpassAPI.call('connect')
+      .then(() => appendLog('Connect success'))
+      .catch(err => appendLog(`Connect error: ${err?.error || err}`));
+  }, [appendLog]);
 
-  const handleNewProjectBins = () => {
-    cacheSpellcheck();
+  const handleNewProjectBins = React.useCallback(() => {
     if (!window.leaderpassAPI) return appendLog('Leaderpass API not available; cannot create project bins');
-    window.leaderpassAPI.call('create_project_bins').then(() => appendLog('Project bin creation command sent')).catch(err => appendLog(`Project bin creation error: ${err?.error || err}`));
-  };
+    window.leaderpassAPI.call('create_project_bins')
+      .then(() => appendLog('Project bin creation command sent'))
+      .catch(err => appendLog(`Project bin creation error: ${err?.error || err}`));
+  }, [appendLog]);
 
-  const handleLPBaseExport = () => {
-    cacheSpellcheck();
+  const handleLPBaseExport = React.useCallback(() => {
     if (!window.leaderpassAPI) return appendLog('Leaderpass API not available; cannot export LP Base');
-    window.leaderpassAPI.call('lp_base_export').then(() => appendLog('LP Base Export command sent')).catch(err => appendLog(`LP Base Export error: ${err?.error || err}`));
-  };
+    window.leaderpassAPI.call('lp_base_export')
+      .then(() => appendLog('LP Base Export command sent'))
+      .catch(err => appendLog(`LP Base Export error: ${err?.error || err}`));
+  }, [appendLog]);
 
-  const handleSpellcheck = () => {
-    cacheSpellcheck();
+  const handleSpellcheck = React.useCallback(() => {
     if (!window.leaderpassAPI) return appendLog('Leaderpass API not available; cannot run spellcheck');
     const misspell = window.spellcheckAPI?.misspellings;
     window.leaderpassAPI.call('spellcheck').then(async res => {
@@ -165,7 +121,9 @@ function App() {
       let totalIssues = 0;
       let totalIgnored = 0;
       for (const entry of items) {
-        const result = misspell ? await misspell(entry.text) : { words: entry.text.split(/\W+/).filter(Boolean).length, misspelled: [], ignored: 0 };
+        const result = misspell
+          ? await misspell(entry.text)
+          : { words: entry.text.split(/\W+/).filter(Boolean).length, misspelled: [], ignored: 0 };
         totalItems += 1;
         totalWords += result.words;
         totalIssues += result.misspelled.length;
@@ -178,221 +136,232 @@ function App() {
       setSpellTotals({ items: totalItems, words: totalWords, issues: totalIssues, ignored: totalIgnored });
       appendLog('Spellcheck complete');
     }).catch(err => appendLog(`Spellcheck error: ${err?.error || err}`));
-  };
+  }, [appendLog]);
 
-  const selectedRecipe = React.useMemo(
-    () => recipes.find(recipe => recipe.id === selectedRecipeId) || null,
-    [recipes, selectedRecipeId]
-  );
+  const pickFolder = React.useCallback(async setter => {
+    if (!window.dialogAPI?.pickFolder) {
+      appendLog('Folder picker unavailable in this environment');
+      return;
+    }
+    const result = await window.dialogAPI.pickFolder();
+    if (!result?.canceled && result?.folderPath) {
+      setter(result.folderPath);
+    }
+  }, [appendLog]);
 
-  const handleRecipeInputChange = React.useCallback((key, value) => {
-    setRecipeInputValues(prev => ({ ...prev, [key]: value }));
-  }, []);
+  const handleLaunchTranscribe = React.useCallback(async () => {
+    if (!window.electronAPI?.transcribeFolder) return;
+    if (!transcribeSource) {
+      appendLog('Transcribe requires a source folder.');
+      return;
+    }
 
-  const handleLaunchRecipe = React.useCallback(async () => {
-    if (!window.electronAPI?.launchRecipe || !selectedRecipe) return;
     try {
-      setRecipeLaunchBusy(true);
-      const result = await window.electronAPI.launchRecipe(selectedRecipe.id, recipeInputValues);
-      appendLog(`Recipe launched: ${selectedRecipe.id} (job ${result?.data?.job_id || 'unknown'})`);
-      const snap = await window.electronAPI.dashboardSnapshot();
-      setDashboard(snap?.data || { jobs: [], logs_by_job_step: {} });
+      setTranscribeBusy(true);
+      const response = await window.electronAPI.transcribeFolder(transcribeSource, {
+        output_dir: transcribeOutput || undefined,
+        useGpu: false,
+        engine: 'local'
+      });
+      appendLog(`Transcribe completed. Files processed: ${response?.data?.files_processed ?? 'unknown'}`);
     } catch (err) {
-      appendLog(`Recipe launch error: ${err?.error || err?.message || err}`);
+      appendLog(`Transcribe error: ${err?.error?.message || err?.message || JSON.stringify(err)}`);
     } finally {
-      setRecipeLaunchBusy(false);
+      setTranscribeBusy(false);
     }
-  }, [appendLog, recipeInputValues, selectedRecipe]);
+  }, [appendLog, transcribeOutput, transcribeSource]);
 
-  const handlePersistRecipeDefaults = React.useCallback(async () => {
-    if (!selectedRecipe?.id || !window.electronAPI?.updatePreferences) return;
-    try {
-      const result = await window.electronAPI.updatePreferences({
-        recipe_defaults: {
-          [selectedRecipe.id]: recipeInputValues
-        }
-      });
-      setPreferences(result?.data || preferences);
-      appendLog(`Saved defaults for ${selectedRecipe.id}`);
-    } catch (err) {
-      appendLog(`Save defaults error: ${err?.error || err?.message || err}`);
+  const categories = React.useMemo(() => ([
+    {
+      key: 'EDIT',
+      tasks: [
+        { key: 'project-setup', label: 'Project Setup', description: 'Create baseline bins and structure in Resolve.', actionLabel: 'Run Project Setup', onClick: handleNewProjectBins, requiresResolve: true },
+        { key: 'spellcheck', label: 'Spellcheck', description: 'Scan timeline text and review misspellings.', actionLabel: 'Run Spellcheck', onClick: handleSpellcheck, requiresResolve: true },
+        { key: 'deliver-export', label: 'Deliver / Export', description: 'Queue LP base export jobs.', actionLabel: 'Run LP Base Export', onClick: handleLPBaseExport, requiresResolve: true }
+      ]
+    },
+    {
+      key: 'PREP',
+      tasks: [
+        { key: 'transcribe', label: 'Transcribe', description: 'Batch transcribe media files from a source folder.', actionLabel: transcribeBusy ? 'Transcribing…' : 'Start Transcribe', onClick: handleLaunchTranscribe, requiresResolve: false }
+      ]
+    },
+    {
+      key: 'PLATFORM',
+      tasks: [
+        { key: 'platform-status', label: 'Platform Status', description: 'Review workers, job queue, and platform activity.', actionLabel: 'Refresh Status', onClick: () => window.electronAPI.dashboardSnapshot().then(result => setDashboard(result?.data || { jobs: [], logs_by_job_step: {} })), requiresResolve: false }
+      ]
     }
-  }, [appendLog, preferences, recipeInputValues, selectedRecipe]);
+  ]), [handleLaunchTranscribe, handleLPBaseExport, handleNewProjectBins, handleSpellcheck, transcribeBusy]);
 
-  const handleConcurrencyChange = React.useCallback(async (worker, value) => {
-    if (!window.electronAPI?.updatePreferences) return;
-    const parsed = Math.max(1, Number(value || 1));
-    try {
-      const result = await window.electronAPI.updatePreferences({
-        worker_concurrency: {
-          ...preferences.worker_concurrency,
-          [worker]: parsed
-        }
-      });
-      setPreferences(result?.data || preferences);
-      appendLog(`Updated ${worker} concurrency to ${parsed}`);
-    } catch (err) {
-      appendLog(`Concurrency update error: ${err?.error || err?.message || err}`);
+  const selectedCategoryData = categories.find(c => c.key === selectedCategory) || categories[0];
+  const selectedTaskData = selectedCategoryData.tasks.find(t => t.key === selectedTask) || selectedCategoryData.tasks[0];
+
+  React.useEffect(() => {
+    if (!selectedCategoryData.tasks.some(t => t.key === selectedTask)) {
+      setSelectedTask(selectedCategoryData.tasks[0]?.key || '');
     }
-  }, [appendLog, preferences]);
+  }, [selectedCategoryData, selectedTask]);
 
-  const handleJobCancel = React.useCallback(async jobId => {
-    try {
-      await window.electronAPI.cancelJob(jobId);
-      appendLog(`Cancel requested for ${jobId}`);
-      const snap = await window.electronAPI.dashboardSnapshot();
-      setDashboard(snap?.data || { jobs: [], logs_by_job_step: {} });
-    } catch (err) {
-      appendLog(`Cancel job error: ${err?.error || err?.message || err}`);
+  const activeJob = (dashboard.jobs || []).find(job => ['queued', 'running'].includes(job.state)) || dashboard.jobs?.[0] || null;
+  const recentEvents = React.useMemo(() => {
+    return Object.entries(dashboard.logs_by_job_step || {})
+      .flatMap(([jobId, steps]) => Object.entries(steps).flatMap(([stepId, entries]) =>
+        entries.map(entry => ({ jobId, stepId, type: entry.type, state: entry.state || entry.code || 'event' }))))
+      .slice(-12)
+      .reverse();
+  }, [dashboard]);
+
+  const transcribeJobs = (dashboard.jobs || []).filter(job => job.preset_id === 'transcribe_folder');
+  const latestTranscribeJob = transcribeJobs[0] || null;
+  const elapsedMs = latestTranscribeJob?.started_at ? Date.now() - latestTranscribeJob.started_at : null;
+
+  const renderTaskDetail = () => {
+    if (!selectedTaskData) return null;
+
+    if (selectedTaskData.key === 'spellcheck') {
+      return (
+        <div className="task-detail-block">
+          <SpellcheckReport report={spellReport} totals={spellTotals} onLog={appendLog} />
+        </div>
+      );
     }
-  }, [appendLog]);
 
-  const handleJobRetry = React.useCallback(async jobId => {
-    try {
-      await window.electronAPI.retryJob(jobId);
-      appendLog(`Retry requested for ${jobId}`);
-      const snap = await window.electronAPI.dashboardSnapshot();
-      setDashboard(snap?.data || { jobs: [], logs_by_job_step: {} });
-    } catch (err) {
-      appendLog(`Retry job error: ${err?.error || err?.message || err}`);
+    if (selectedTaskData.key === 'transcribe') {
+      return (
+        <div className="task-detail-block transcribe-detail">
+          <div className="path-row">
+            <label>Source folder</label>
+            <div>
+              <input value={transcribeSource} onChange={e => setTranscribeSource(e.target.value)} placeholder="Select source media folder" />
+              <button onClick={() => pickFolder(setTranscribeSource)}>Browse</button>
+            </div>
+          </div>
+          <div className="path-row">
+            <label>Output folder</label>
+            <div>
+              <input value={transcribeOutput} onChange={e => setTranscribeOutput(e.target.value)} placeholder="Optional output folder for .txt files" />
+              <button onClick={() => pickFolder(setTranscribeOutput)}>Browse</button>
+            </div>
+          </div>
+          <div className="transcribe-stats-grid">
+            <div><span>Current item</span><strong>{latestTranscribeJob?.active_step?.step_id || 'Waiting for active media item'}</strong></div>
+            <div><span>Estimated time remaining</span><strong>{formatDuration(latestTranscribeJob?.eta_ms)}</strong></div>
+            <div><span>Total batch progress</span><strong>{transcribeJobs.length ? `${latestTranscribeJob ? 1 : 0}/${transcribeJobs.length}` : '0/0'}</strong></div>
+            <div><span>Process status</span><strong>{latestTranscribeJob?.state || 'Idle'}</strong></div>
+            <div><span>Total elapsed time</span><strong>{formatDuration(elapsedMs)}</strong></div>
+          </div>
+        </div>
+      );
     }
-  }, [appendLog]);
 
-  const categories = ['SETUP', 'EDIT', 'AUDIO', 'DELIVER'];
-  const actions = {
-    SETUP: [{ label: 'New Project Bins', icon: '🗂️', onClick: handleNewProjectBins, resolveRequired: true }],
-    EDIT: [{ label: 'Spellcheck', icon: '📝', onClick: handleSpellcheck, resolveRequired: true }],
-    AUDIO: [{ label: 'Launch Transcribe Recipe', icon: '🎙️', onClick: () => { setCurrentCategory(null); logAction('Use dashboard launch'); } }],
-    DELIVER: [{ label: 'LP Base Export', icon: '📤', onClick: handleLPBaseExport, resolveRequired: true }]
+    if (selectedTaskData.key === 'platform-status') {
+      return (
+        <div className="task-detail-block">
+          <div className="platform-grid">
+            {['resolve', 'media', 'platform'].map(worker => (
+              <div key={worker} className="metric-card">
+                <span>{worker}</span>
+                <strong>{workerAvailability[worker] ? 'Available' : 'Unavailable'}</strong>
+              </div>
+            ))}
+            <div className="metric-card">
+              <span>Jobs in queue</span>
+              <strong>{dashboard.jobs?.filter(job => ['queued', 'running'].includes(job.state)).length || 0}</strong>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="task-detail-block muted-detail">
+        <p>{selectedTaskData.description}</p>
+      </div>
+    );
   };
 
   return (
-    <div className="app-container" style={{ paddingBottom: consoleOpen ? '240px' : '40px' }}>
-      <header>{project || 'No Project'}</header>
-      <div className="connect-container" style={{ justifyContent: 'flex-start', gap: 8 }}>
-        <button className="connect-button" onClick={handleConnect} disabled={!window.leaderpassAPI}>Connect</button>
-        <span>Resolve status: {connected ? 'Connected' : 'Disconnected'}</span>
-      </div>
-
-      {currentCategory === null ? (
-        <div className="function-grid folder-grid">
-          {categories.map(cat => (
-            <button key={cat} className="folder-button" onClick={() => setCurrentCategory(cat)}>{cat}</button>
-          ))}
+    <div className="app-shell">
+      <header className="top-status-bar">
+        <button className="connect-pill" onClick={handleConnect} disabled={!window.leaderpassAPI}>Connect Resolve</button>
+        <div className="status-indicators">
+          <span className={connected ? 'ok' : 'bad'}>● Resolve Connection</span>
+          <span className={project ? 'ok' : 'bad'}>● Project Open</span>
+          <span className={timeline ? 'ok' : 'bad'}>● Timeline Open</span>
         </div>
-      ) : (
-        <div className="category-view">
-          <button className="back-button" onClick={() => { cacheSpellcheck(); setCurrentCategory(null); }}>Back</button>
-          <div className="function-grid">
-            {actions[currentCategory].map(action => {
-              const disabled = (action.resolveRequired && !connected);
+      </header>
+
+      <div className="workspace-layout">
+        <aside className="left-sidebar">
+          <h2>Categories</h2>
+          {categories.map(category => (
+            <button
+              key={category.key}
+              className={`category-link ${selectedCategory === category.key ? 'active' : ''}`}
+              onClick={() => {
+                setSelectedCategory(category.key);
+                setSelectedTask(category.tasks[0]?.key || '');
+              }}
+            >
+              {category.key}
+            </button>
+          ))}
+        </aside>
+
+        <main className="main-panel">
+          <div className="panel-header">
+            <h1>{selectedCategoryData.key}</h1>
+            <p>{project || 'No active project'} {timeline ? `• ${timeline}` : ''}</p>
+          </div>
+
+          <section className="action-cards">
+            {selectedCategoryData.tasks.map(task => {
+              const active = task.key === selectedTask;
+              const disabled = (task.requiresResolve && !connected) || (task.key === 'transcribe' && transcribeBusy);
               return (
-                <button key={action.label} className="task-button" onClick={action.onClick} disabled={disabled}>
-                  <span className="icon">{action.icon}</span>
-                  <span>{action.label}</span>
-                </button>
+                <article key={task.key} className={`action-card ${active ? 'selected' : ''}`} onClick={() => setSelectedTask(task.key)}>
+                  <h3>{task.label}</h3>
+                  <p>{task.description}</p>
+                  <button
+                    disabled={disabled}
+                    onClick={event => {
+                      event.stopPropagation();
+                      task.onClick();
+                    }}
+                  >
+                    {task.actionLabel}
+                  </button>
+                </article>
               );
             })}
-          </div>
+          </section>
+
+          <section className="task-info-panel">
+            <div className="task-progress-line">
+              <span>{selectedTaskData?.label || 'Task'} Progress</span>
+              <strong>{activeJob && ['queued', 'running'].includes(activeJob.state) ? '45%' : '0%'}</strong>
+            </div>
+            {renderTaskDetail()}
+          </section>
+        </main>
+      </div>
+
+      <footer className={`activity-footer ${footerExpanded ? 'expanded' : ''}`}>
+        <div className="footer-summary" onClick={() => setFooterExpanded(value => !value)}>
+          <strong>Active job:</strong>
+          <span>{activeJob ? `${activeJob.job_id} (${activeJob.state})` : 'No active jobs'}</span>
         </div>
-      )}
-
-      <div className="dashboard">
-        <h2>Dashboard</h2>
-        <div>Active Timeline: {timeline || 'None'}</div>
-
-        <div className="dashboard-grid">
-          <div className="panel-block">
-            <h3>Recipe Launch</h3>
-            <select value={selectedRecipeId} onChange={event => setSelectedRecipeId(event.target.value)} disabled={recipeLaunchBusy || recipes.length === 0}>
-              {recipes.map(recipe => <option key={recipe.id} value={recipe.id}>{recipe.id} (v{recipe.version})</option>)}
-            </select>
-            <button onClick={handleLaunchRecipe} disabled={!selectedRecipe || recipeLaunchBusy} style={{ marginLeft: 8 }}>{recipeLaunchBusy ? 'Launching…' : 'Launch Recipe'}</button>
-            {selectedRecipe ? (
-              <div>
-                {Object.entries(selectedRecipe.inputs || {}).map(([key, definition]) => {
-                  const type = definition?.type || 'string';
-                  const value = recipeInputValues[key];
-                  const displayValue = (type === 'object' || type === 'array') ? (typeof value === 'string' ? value : JSON.stringify(value ?? (type === 'array' ? [] : {}))) : (value ?? '');
-                  return (
-                    <div key={key} style={{ marginTop: 6 }}>
-                      <label>{key} ({type})</label>
-                      <input type="text" value={displayValue} onChange={event => handleRecipeInputChange(key, event.target.value)} />
-                    </div>
-                  );
-                })}
-                <button onClick={handlePersistRecipeDefaults} style={{ marginTop: 8 }}>Save as default profile</button>
-              </div>
-            ) : <div>No recipes available.</div>}
-          </div>
-
-          <div className="panel-block">
-            <h3>Worker Preferences</h3>
-            {['resolve', 'media', 'platform'].map(worker => (
-              <div key={worker} style={{ marginTop: 6 }}>
-                <label>{worker} concurrency</label>
-                <input
-                  type="number"
-                  min="1"
-                  value={preferences.worker_concurrency?.[worker] || 1}
-                  onChange={event => handleConcurrencyChange(worker, event.target.value)}
-                />
+        {footerExpanded ? (
+          <div className="footer-history">
+            {recentEvents.length === 0 ? <div>No activity history yet.</div> : recentEvents.map((entry, index) => (
+              <div key={`${entry.jobId}-${entry.stepId}-${index}`}>
+                {entry.jobId} / {entry.stepId}: {entry.type} → {entry.state}
               </div>
             ))}
           </div>
-        </div>
-
-        <div className="panel-block" style={{ marginTop: 12 }}>
-          <h3>Jobs</h3>
-          {(dashboard.jobs || []).length === 0 ? <div>No jobs yet.</div> : (
-            <table className="jobs-table">
-              <thead>
-                <tr>
-                  <th>Job</th><th>State</th><th>Active Step</th><th>ETA</th><th>Controls</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dashboard.jobs.map(job => (
-                  <tr key={job.job_id}>
-                    <td>{job.job_id}</td>
-                    <td>{job.state}</td>
-                    <td>{job.active_step ? `${job.active_step.step_id} (${job.active_step.worker})` : '—'}</td>
-                    <td>{formatDuration(job.eta_ms)}</td>
-                    <td>
-                      <button onClick={() => handleJobRetry(job.job_id)}>Retry</button>
-                      <button onClick={() => handleJobCancel(job.job_id)} style={{ marginLeft: 6 }}>Cancel</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        <div className="panel-block" style={{ marginTop: 12 }}>
-          <h3>Job Logs (job_id + step_id)</h3>
-          {(dashboard.jobs || []).slice(0, 3).map(job => {
-            const stepLogs = dashboard.logs_by_job_step?.[job.job_id] || {};
-            return (
-              <div key={`logs-${job.job_id}`} style={{ marginBottom: 8 }}>
-                <strong>{job.job_id}</strong>
-                {Object.entries(stepLogs).map(([stepId, entries]) => (
-                  <div key={`${job.job_id}-${stepId}`} style={{ marginLeft: 8 }}>
-                    <div>{stepId}</div>
-                    <ul>
-                      {entries.slice(-3).map((entry, index) => (
-                        <li key={`${stepId}-${index}`}>{entry.type}:{entry.state || entry.code || 'event'}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-        </div>
-
-        <SpellcheckReport report={spellReport} totals={spellTotals} onLog={appendLog} />
-      </div>
+        ) : null}
+      </footer>
 
       <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />
     </div>

@@ -63,11 +63,16 @@
       "engine": {
         "type": "string",
         "description": "Transcription engine name."
+      },
+      "output_dir": {
+        "type": "string",
+        "description": "Optional output folder for transcript files."
       }
     },
     "defaults": {
       "use_gpu": false,
-      "engine": "local"
+      "engine": "local",
+      "output_dir": ""
     },
     "steps": [
       {
@@ -77,7 +82,8 @@
         "payload": {
           "folder_path": "${input.folder}",
           "use_gpu": "${input.use_gpu}",
-          "engine": "${input.engine}"
+          "engine": "${input.engine}",
+          "output_dir": "${input.output_dir}"
         },
         "cache_policy": {
           "enabled": true,
