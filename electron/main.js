@@ -14,6 +14,7 @@ const {
   normalizeResponseEnvelope
 } = require('./orchestrator/contracts');
 const { JobEngine } = require('./orchestrator/job_engine');
+const { RecipeCatalog } = require('./orchestrator/recipes');
 
 let ffmpegPath = '';
 try {
@@ -30,6 +31,7 @@ let win;
 let transcribeInProgress = false;
 let healthTimer = null;
 let jobEngine = null;
+let recipeCatalog = null;
 
 const workers = {
   [WORKERS.resolve]: createWorkerState(WORKERS.resolve, {
@@ -380,6 +382,8 @@ function broadcastJobEvent(event) {
 }
 
 app.whenReady().then(() => {
+  recipeCatalog = new RecipeCatalog();
+
   const template = [
     {
       label: 'Edit',
@@ -451,23 +455,19 @@ app.whenReady().then(() => {
     if (!folderPath) {
       throw new Error('folderPath is required');
     }
-    const plan = {
-      preset_id: 'transcribe_folder',
-      idempotency_key: payload.idempotency_key || `transcribe:${folderPath}:${useGpu}`,
-      timeout: Number(payload.timeout_ms || 0),
-      retry_policy: payload.retry_policy || { max_attempts: 1, backoff_ms: 0 },
-      steps: [
-        {
-          worker: WORKERS.media,
-          cmd: 'transcribe_folder',
-          payload: {
-            folder_path: folderPath,
-            engine: 'local',
-            use_gpu: useGpu
-          }
-        }
-      ]
-    };
+    const plan = recipeCatalog.buildPlan(
+      'transcribe_folder',
+      {
+        folder: folderPath,
+        use_gpu: useGpu,
+        engine: typeof payload.engine === 'string' ? payload.engine : undefined
+      },
+      {
+        idempotency_key: payload.idempotency_key || `transcribe:${folderPath}:${useGpu}`,
+        timeout_ms: payload.timeout_ms,
+        retry_policy: payload.retry_policy
+      }
+    );
 
     const job = jobEngine.submit(plan);
     transcribeInProgress = true;
@@ -483,8 +483,11 @@ app.whenReady().then(() => {
           transcribeInProgress = false;
           const completed = jobEngine.getJob(job.job_id);
           if (event.state === 'succeeded') {
-            const stepOutput = completed?.steps?.[0]?.output || null;
-            resolve({ ok: true, data: stepOutput, job_id: job.job_id });
+            resolve({
+              ok: true,
+              data: recipeCatalog.materializeOutputs('transcribe_folder', completed),
+              job_id: job.job_id
+            });
           } else if (event.state === 'canceled') {
             reject({ ok: false, error: { message: 'Transcription canceled' }, job_id: job.job_id });
           } else {
@@ -517,6 +520,16 @@ app.whenReady().then(() => {
   ipcMain.handle('jobs:list', async () => ({ ok: true, data: jobEngine.listJobs() }));
   ipcMain.handle('jobs:get', async (_, jobId) => ({ ok: true, data: jobEngine.getJob(jobId) }));
   ipcMain.handle('jobs:cancel', async (_, jobId) => jobEngine.cancel(jobId));
+  ipcMain.handle('recipes:list', async () => ({ ok: true, data: recipeCatalog.list() }));
+  ipcMain.handle('recipes:launch', async (_, payload = {}) => {
+    const recipeId = payload?.recipeId;
+    if (!recipeId) {
+      throw new Error('recipeId is required');
+    }
+    const plan = recipeCatalog.buildPlan(recipeId, payload.input || {}, payload.options || {});
+    const job = jobEngine.submit(plan);
+    return { ok: true, data: { job_id: job.job_id, preset_id: job.preset_id, state: job.state } };
+  });
 
   ipcMain.handle('dialog:pickFolder', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });

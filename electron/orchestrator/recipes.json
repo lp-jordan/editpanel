@@ -1,0 +1,102 @@
+[
+  {
+    "id": "lp_base_export_round1",
+    "version": "1.0.0",
+    "description": "Queue LP base export jobs from configured export bin and preset.",
+    "inputs": {
+      "preset_name": { "type": "string", "description": "Resolve render preset name." },
+      "export_bin_name": { "type": "string", "description": "Media pool bin used for export matching." }
+    },
+    "defaults": {
+      "preset_name": "General LP Export",
+      "export_bin_name": "EXPORT"
+    },
+    "steps": [
+      {
+        "id": "lp_base_export",
+        "worker": "resolve",
+        "command": "lp_base_export",
+        "payload": {
+          "preset_name": "${input.preset_name}",
+          "export_bin_name": "${input.export_bin_name}"
+        }
+      }
+    ],
+    "outputs": {
+      "jobs": "${steps.lp_base_export.jobs}",
+      "result": "${steps.lp_base_export.result}"
+    }
+  },
+  {
+    "id": "transcribe_folder",
+    "version": "1.0.0",
+    "description": "Transcribe all audio files in a folder.",
+    "inputs": {
+      "folder": { "type": "string", "description": "Absolute folder path containing audio files." },
+      "use_gpu": { "type": "boolean", "description": "Enable GPU/CUDA when available." },
+      "engine": { "type": "string", "description": "Transcription engine name." }
+    },
+    "defaults": {
+      "use_gpu": false,
+      "engine": "local"
+    },
+    "steps": [
+      {
+        "id": "transcribe",
+        "worker": "media",
+        "command": "transcribe_folder",
+        "payload": {
+          "folder_path": "${input.folder}",
+          "use_gpu": "${input.use_gpu}",
+          "engine": "${input.engine}"
+        }
+      }
+    ],
+    "outputs": {
+      "files_processed": "${steps.transcribe.files_processed}",
+      "failures": "${steps.transcribe.failures}",
+      "outputs": "${steps.transcribe.outputs}"
+    }
+  },
+  {
+    "id": "prepare_project",
+    "version": "1.0.0",
+    "description": "Connect to Resolve and create standard project bins.",
+    "inputs": {
+      "bins_structure": { "type": "object", "description": "Optional bin and sub-bin map." }
+    },
+    "defaults": {
+      "bins_structure": {
+        "FOOTAGE": ["BROLL", "ATEM", "4K"],
+        "AUDIO": [],
+        "SEQUENCES": ["MC"],
+        "WORK": [],
+        "MUSIC": [],
+        "SFX": [],
+        "GFX": [],
+        "EXPORT": []
+      }
+    },
+    "steps": [
+      {
+        "id": "connect",
+        "worker": "resolve",
+        "command": "connect",
+        "payload": {}
+      },
+      {
+        "id": "create_bins",
+        "worker": "resolve",
+        "command": "create_project_bins",
+        "depends_on": ["connect"],
+        "payload": {
+          "bins_structure": "${input.bins_structure}"
+        }
+      }
+    ],
+    "outputs": {
+      "connected": "${steps.connect.result}",
+      "bins_result": "${steps.create_bins.result}"
+    }
+  }
+]

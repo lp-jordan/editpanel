@@ -30,6 +30,10 @@ function App() {
     platform: true
   });
   const [activeTranscribeJobId, setActiveTranscribeJobId] = React.useState(null);
+  const [recipes, setRecipes] = React.useState([]);
+  const [recipeLaunchBusy, setRecipeLaunchBusy] = React.useState(false);
+  const [selectedRecipeId, setSelectedRecipeId] = React.useState('');
+  const [recipeInputValues, setRecipeInputValues] = React.useState({});
 
   const formatElapsedTime = React.useCallback(milliseconds => {
     if (!Number.isFinite(milliseconds) || milliseconds < 0) {
@@ -187,6 +191,39 @@ function App() {
     };
   }, [activeTranscribeJobId, applyStructuredTranscribeProgress, appendTranscribeProgress, parseTranscribeProgress]);
 
+
+  React.useEffect(() => {
+    if (!window.electronAPI?.listRecipes) {
+      return;
+    }
+
+    window.electronAPI.listRecipes()
+      .then(result => {
+        const catalog = Array.isArray(result?.data) ? result.data : [];
+        setRecipes(catalog);
+        if (!catalog.length) {
+          return;
+        }
+        setSelectedRecipeId(current => current || catalog[0].id);
+      })
+      .catch(err => appendLog(`Recipe catalog error: ${err?.error || err?.message || err}`));
+  }, []);
+
+  React.useEffect(() => {
+    if (!selectedRecipeId) {
+      setRecipeInputValues({});
+      return;
+    }
+    const selectedRecipe = recipes.find(recipe => recipe.id === selectedRecipeId);
+    if (!selectedRecipe) {
+      setRecipeInputValues({});
+      return;
+    }
+    const defaults = selectedRecipe.defaults && typeof selectedRecipe.defaults === 'object'
+      ? selectedRecipe.defaults
+      : {};
+    setRecipeInputValues(defaults);
+  }, [recipes, selectedRecipeId]);
 
   React.useEffect(() => {
     window.localStorage.setItem('transcribe.gpuEnabled', gpuEnabled ? 'true' : 'false');
@@ -467,6 +504,72 @@ function App() {
     }
   };
 
+  const selectedRecipe = React.useMemo(
+    () => recipes.find(recipe => recipe.id === selectedRecipeId) || null,
+    [recipes, selectedRecipeId]
+  );
+
+  const parseRecipeInputValue = React.useCallback((definition, rawValue) => {
+    const type = definition?.type || 'string';
+    if (type === 'boolean') {
+      return rawValue === true || rawValue === 'true';
+    }
+    if (type === 'number') {
+      const parsed = Number(rawValue);
+      if (Number.isNaN(parsed)) {
+        throw new Error('must be a number');
+      }
+      return parsed;
+    }
+    if (type === 'object' || type === 'array') {
+      if (typeof rawValue !== 'string') {
+        return rawValue;
+      }
+      if (!rawValue.trim()) {
+        return type === 'array' ? [] : {};
+      }
+      return JSON.parse(rawValue);
+    }
+    return rawValue;
+  }, []);
+
+  const handleRecipeInputChange = React.useCallback((key, value) => {
+    setRecipeInputValues(prev => ({ ...prev, [key]: value }));
+  }, []);
+
+  const handleLaunchRecipe = React.useCallback(async () => {
+    if (!window.electronAPI?.launchRecipe) {
+      appendLog('Recipe launch API unavailable');
+      return;
+    }
+    if (!selectedRecipe) {
+      appendLog('No recipe selected');
+      return;
+    }
+
+    const definitions = selectedRecipe.inputs || {};
+    const parsedInput = {};
+    try {
+      Object.entries(definitions).forEach(([key, definition]) => {
+        const raw = recipeInputValues[key];
+        parsedInput[key] = parseRecipeInputValue(definition, raw);
+      });
+    } catch (error) {
+      appendLog(`Recipe input error: ${error.message}`);
+      return;
+    }
+
+    try {
+      setRecipeLaunchBusy(true);
+      const result = await window.electronAPI.launchRecipe(selectedRecipe.id, parsedInput);
+      appendLog(`Recipe launched: ${selectedRecipe.id} (job ${result?.data?.job_id || 'unknown'})`);
+    } catch (err) {
+      appendLog(`Recipe launch error: ${err?.error || err?.message || err}`);
+    } finally {
+      setRecipeLaunchBusy(false);
+    }
+  }, [appendLog, parseRecipeInputValue, recipeInputValues, selectedRecipe]);
+
   const categories = ['SETUP', 'EDIT', 'AUDIO', 'DELIVER'];
 
   const actions = {
@@ -554,6 +657,51 @@ function App() {
       <div className="dashboard">
         <h2>Dashboard</h2>
         <div>Active Timeline: {timeline || 'None'}</div>
+        <div className="transcribe-panel">
+          <h3>Recipe Catalog</h3>
+          <div>
+            <select
+              value={selectedRecipeId}
+              onChange={event => setSelectedRecipeId(event.target.value)}
+              disabled={recipeLaunchBusy || recipes.length === 0}
+            >
+              {recipes.map(recipe => (
+                <option key={recipe.id} value={recipe.id}>{recipe.id} (v{recipe.version})</option>
+              ))}
+            </select>
+            <button
+              onClick={handleLaunchRecipe}
+              disabled={!selectedRecipe || recipeLaunchBusy}
+              style={{ marginLeft: 8 }}
+            >
+              {recipeLaunchBusy ? 'Launching…' : 'Launch Recipe'}
+            </button>
+          </div>
+          {selectedRecipe?.description ? <div>{selectedRecipe.description}</div> : null}
+          {selectedRecipe ? (
+            <div>
+              {Object.entries(selectedRecipe.inputs || {}).map(([key, definition]) => {
+                const type = definition?.type || 'string';
+                const value = recipeInputValues[key];
+                const displayValue = (type === 'object' || type === 'array')
+                  ? (typeof value === 'string' ? value : JSON.stringify(value ?? (type === 'array' ? [] : {})))
+                  : (value ?? '');
+                return (
+                  <div key={key} style={{ marginTop: 6 }}>
+                    <label>{key} ({type})</label>
+                    <input
+                      type="text"
+                      value={displayValue}
+                      onChange={event => handleRecipeInputChange(key, event.target.value)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div>No recipes available.</div>
+          )}
+        </div>
         <div className="transcribe-panel">
           <h3>Transcribe</h3>
           <input
