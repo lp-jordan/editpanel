@@ -34,6 +34,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('helper-status', handler);
   },
 
+  onJobEvent(callback) {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('job-event', handler);
+    return () => ipcRenderer.removeListener('job-event', handler);
+  },
+
   transcribeFolder(folderPath, options = {}) {
     return ipcRenderer.invoke('audio:transcribe-folder', { folderPath, ...options });
   },
@@ -44,6 +50,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   cancelTranscribe() {
     return ipcRenderer.invoke('audio:cancel-transcribe');
+  },
+
+  listJobs() {
+    return ipcRenderer.invoke('jobs:list');
+  },
+
+  getJob(jobId) {
+    return ipcRenderer.invoke('jobs:get', jobId);
+  },
+
+  cancelJob(jobId) {
+    return ipcRenderer.invoke('jobs:cancel', jobId);
   }
 });
 

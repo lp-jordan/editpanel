@@ -13,6 +13,7 @@ const {
   toWorkerWireMessage,
   normalizeResponseEnvelope
 } = require('./orchestrator/contracts');
+const { JobEngine } = require('./orchestrator/job_engine');
 
 let ffmpegPath = '';
 try {
@@ -28,6 +29,7 @@ const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
 let win;
 let transcribeInProgress = false;
 let healthTimer = null;
+let jobEngine = null;
 
 const workers = {
   [WORKERS.resolve]: createWorkerState(WORKERS.resolve, {
@@ -371,6 +373,12 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
+function broadcastJobEvent(event) {
+  BrowserWindow.getAllWindows().forEach(w => {
+    w.webContents.send('job-event', event);
+  });
+}
+
 app.whenReady().then(() => {
   const template = [
     {
@@ -393,6 +401,39 @@ app.whenReady().then(() => {
   spawnPlatformWorker();
   startHealthChecks();
 
+  jobEngine = new JobEngine({
+    sendStepRequest: payload => sendWorkerRequest(payload),
+    forceKillWorker: (worker, reason) => {
+      if (worker === WORKERS.media) {
+        restartMediaWorker(reason);
+      } else {
+        const state = workers[worker];
+        if (state && state.proc) {
+          state.stopping = true;
+          state.proc.kill('SIGTERM');
+          startWorker(state);
+        }
+      }
+    },
+    persistencePath: path.join(app.getPath('userData'), 'jobs.jsonl'),
+    mediaConcurrency: Number(process.env.MEDIA_WORKER_CONCURRENCY || 2),
+    platformConcurrency: Number(process.env.PLATFORM_WORKER_CONCURRENCY || 2)
+  });
+  jobEngine.subscribe(event => {
+    broadcastJobEvent(event);
+    if (event.type === 'step_progress' && event.worker === WORKERS.media) {
+      BrowserWindow.getAllWindows().forEach(w => {
+        w.webContents.send('transcribe-status', {
+          event: 'progress',
+          code: 'JOB_STEP_PROGRESS',
+          data: event,
+          error: event.error || null
+        });
+      });
+    }
+  });
+  jobEngine.resumeRecoverableJobs();
+
   ipcMain.on('helper-request', (event, payload) => {
     sendWorkerRequest(payload, WORKERS.resolve, event).catch(error => {
       event.reply('helper-response', {
@@ -410,30 +451,72 @@ app.whenReady().then(() => {
     if (!folderPath) {
       throw new Error('folderPath is required');
     }
+    const plan = {
+      preset_id: 'transcribe_folder',
+      idempotency_key: payload.idempotency_key || `transcribe:${folderPath}:${useGpu}`,
+      timeout: Number(payload.timeout_ms || 0),
+      retry_policy: payload.retry_policy || { max_attempts: 1, backoff_ms: 0 },
+      steps: [
+        {
+          worker: WORKERS.media,
+          cmd: 'transcribe_folder',
+          payload: {
+            folder_path: folderPath,
+            engine: 'local',
+            use_gpu: useGpu
+          }
+        }
+      ]
+    };
+
+    const job = jobEngine.submit(plan);
     transcribeInProgress = true;
-    try {
-      return await sendWorkerRequest({
-        cmd: 'transcribe_folder',
-        folder_path: folderPath,
-        engine: 'local',
-        use_gpu: useGpu
-      }, WORKERS.media);
-    } finally {
-      transcribeInProgress = false;
-    }
+
+    return new Promise((resolve, reject) => {
+      const unsubscribe = jobEngine.subscribe(event => {
+        if (event.job_id !== job.job_id || event.type !== 'job_state') {
+          return;
+        }
+
+        if (['succeeded', 'failed', 'canceled'].includes(event.state)) {
+          unsubscribe();
+          transcribeInProgress = false;
+          const completed = jobEngine.getJob(job.job_id);
+          if (event.state === 'succeeded') {
+            const stepOutput = completed?.steps?.[0]?.output || null;
+            resolve({ ok: true, data: stepOutput, job_id: job.job_id });
+          } else if (event.state === 'canceled') {
+            reject({ ok: false, error: { message: 'Transcription canceled' }, job_id: job.job_id });
+          } else {
+            reject({ ok: false, error: completed?.errors?.[0]?.error || { message: 'Transcription failed' }, job_id: job.job_id });
+          }
+        }
+      });
+    });
   });
 
   ipcMain.handle('audio:test-gpu', async () => sendWorkerRequest({ cmd: 'test_cuda' }, WORKERS.media));
 
   ipcMain.handle('audio:cancel-transcribe', async () => {
-    if (!transcribeInProgress) {
-      return { ok: true, canceled: false, message: 'No transcription in progress' };
+    const transcribeJob = jobEngine
+      .listJobs()
+      .find(job => job.preset_id === 'transcribe_folder' && ['queued', 'running'].includes(job.state));
+    if (!transcribeJob) {
+      if (!transcribeInProgress) {
+        return { ok: true, canceled: false, message: 'No transcription in progress' };
+      }
+      return { ok: true, canceled: false, message: 'No active job found' };
     }
+    const cancelResult = jobEngine.cancel(transcribeJob.job_id);
     restartMediaWorker('transcription canceled');
     BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', 'Transcribe: canceled by user'));
     transcribeInProgress = false;
-    return { ok: true, canceled: true, message: 'Transcription canceled' };
+    return { ok: true, canceled: true, message: 'Transcription canceled', ...cancelResult };
   });
+
+  ipcMain.handle('jobs:list', async () => ({ ok: true, data: jobEngine.listJobs() }));
+  ipcMain.handle('jobs:get', async (_, jobId) => ({ ok: true, data: jobEngine.getJob(jobId) }));
+  ipcMain.handle('jobs:cancel', async (_, jobId) => jobEngine.cancel(jobId));
 
   ipcMain.handle('dialog:pickFolder', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
