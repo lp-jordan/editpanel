@@ -74,6 +74,19 @@ class JobEngine {
     }
   }
 
+
+  setConcurrency(nextConcurrency = {}) {
+    this.concurrency = {
+      ...this.concurrency,
+      resolve: Math.max(1, Number(nextConcurrency.resolve || this.concurrency.resolve || 1)),
+      media: Math.max(1, Number(nextConcurrency.media || this.concurrency.media || 2)),
+      platform: Math.max(1, Number(nextConcurrency.platform || this.concurrency.platform || 2))
+    };
+
+    Object.keys(this.queuesByOwner).forEach(owner => this.drainOwnerQueue(owner));
+    return { ...this.concurrency };
+  }
+
   subscribe(listener) {
     this.emitter.on('event', listener);
     return () => this.emitter.removeListener('event', listener);
@@ -137,6 +150,7 @@ class JobEngine {
         fingerprint: null,
         retry_policy: step.retry_policy || {}
       })),
+      input: plan.input || {},
       outputs: [],
       errors: []
     };

@@ -256,3 +256,41 @@ header {
 .connect-button:hover {
   background: #2a2a2a;
 }
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.panel-block {
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 10px;
+  background: #181818;
+}
+
+.panel-block input,
+.panel-block select,
+.panel-block button {
+  background: #111;
+  color: #fff;
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 4px 6px;
+  margin-top: 4px;
+}
+
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.jobs-table th,
+.jobs-table td {
+  border: 1px solid #333;
+  padding: 6px;
+  text-align: left;
+  vertical-align: top;
+}

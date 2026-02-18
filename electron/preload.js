@@ -64,12 +64,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('jobs:cancel', jobId);
   },
 
+  retryJob(jobId) {
+    return ipcRenderer.invoke('jobs:retry', jobId);
+  },
+
+  dashboardSnapshot() {
+    return ipcRenderer.invoke('dashboard:snapshot');
+  },
+
   listRecipes() {
     return ipcRenderer.invoke('recipes:list');
   },
 
   launchRecipe(recipeId, input = {}, options = {}) {
     return ipcRenderer.invoke('recipes:launch', { recipeId, input, options });
+  },
+
+  getPreferences() {
+    return ipcRenderer.invoke('preferences:get');
+  },
+
+  updatePreferences(patch = {}) {
+    return ipcRenderer.invoke('preferences:update', patch);
   }
 });
 
