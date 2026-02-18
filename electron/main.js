@@ -469,7 +469,8 @@ app.whenReady().then(() => {
       {
         folder: folderPath,
         use_gpu: useGpu,
-        engine: typeof payload.engine === 'string' ? payload.engine : undefined
+        engine: typeof payload.engine === 'string' ? payload.engine : undefined,
+        output_dir: typeof payload.output_dir === 'string' ? payload.output_dir : undefined
       },
       {
         idempotency_key: payload.idempotency_key || `transcribe:${folderPath}:${useGpu}`,
