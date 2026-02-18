@@ -42,6 +42,9 @@ function App() {
   React.useEffect(() => {
     if (!window.electronAPI) return;
 
+    const SESSION_STATUS_CODES = new Set(['CONNECTED', 'NO_SESSION']);
+    const SESSION_NEGATIVE_STATUS_CODES = new Set(['NO_SESSION', 'RESOLVE_DISCONNECTED', 'RESOLVE_CONNECTION_ERROR']);
+
     const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
       if (status?.code === 'WORKER_AVAILABLE' || status?.code === 'WORKER_UNAVAILABLE') {
         setWorkerAvailability(prev => ({ ...prev, [status?.worker || 'resolve']: Boolean(status.ok) }));
@@ -49,12 +52,15 @@ function App() {
 
       if (status?.worker && status.worker !== 'resolve' && status.code !== 'CONNECTED') return;
 
+      // Worker availability and Resolve session status are distinct channels.
+      if (!SESSION_STATUS_CODES.has(status?.code) && !status?.error) return;
+
       appendLog(`Status: ${status.code}${status.error ? ` - ${status.error}` : ''}`);
       if (status.code === 'CONNECTED' && status.ok) {
         setConnected(true);
         if (status.data?.project) setProject(status.data.project);
         if (status.data?.timeline) setTimeline(status.data.timeline);
-      } else {
+      } else if (SESSION_NEGATIVE_STATUS_CODES.has(status.code) || status?.error) {
         setConnected(false);
         setProject('');
         setTimeline('');
