@@ -154,16 +154,26 @@ function handleWorkerLine(state, line) {
   if (normalized.kind === 'event') {
     const eventName = normalized.envelope.event;
     if (eventName === 'message') {
+      const eventMessage = typeof normalized.envelope.message === 'string'
+        ? normalized.envelope.message
+        : String(normalized.envelope.message || normalized.envelope.data || '');
+      const messageEnvelope = {
+        event: 'message',
+        message: eventMessage
+      };
       const logEvent = {
         type: 'log',
         worker: state.name,
         trace_id: normalized.envelope.trace_id,
-        message: normalized.envelope.message,
+        message: eventMessage,
         metrics: normalized.envelope.metrics
       };
       BrowserWindow.getAllWindows().forEach(w => {
         w.webContents.send('worker-event', logEvent);
-        w.webContents.send('helper-message', normalized.envelope.message || normalized.envelope.data);
+        w.webContents.send('helper-message', eventMessage);
+        if (state.name === WORKERS.media) {
+          w.webContents.send('transcribe-status', messageEnvelope);
+        }
       });
       return;
     }
