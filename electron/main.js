@@ -15,6 +15,7 @@ const {
 } = require('./orchestrator/contracts');
 const { JobEngine } = require('./orchestrator/job_engine');
 const { RecipeCatalog } = require('./orchestrator/recipes');
+const { ControlPlane } = require('./orchestrator/control_plane');
 
 let ffmpegPath = '';
 try {
@@ -32,6 +33,7 @@ let transcribeInProgress = false;
 let healthTimer = null;
 let jobEngine = null;
 let recipeCatalog = null;
+let controlPlane = null;
 
 const workers = {
   [WORKERS.resolve]: createWorkerState(WORKERS.resolve, {
@@ -423,6 +425,13 @@ app.whenReady().then(() => {
     mediaConcurrency: Number(process.env.MEDIA_WORKER_CONCURRENCY || 2),
     platformConcurrency: Number(process.env.PLATFORM_WORKER_CONCURRENCY || 2)
   });
+
+  controlPlane = new ControlPlane({
+    jobEngine,
+    recipeCatalog,
+    preferencesPath: path.join(app.getPath('userData'), 'preferences.json'),
+    maxEvents: 2000
+  });
   jobEngine.subscribe(event => {
     broadcastJobEvent(event);
     if (event.type === 'step_progress' && event.worker === WORKERS.media) {
@@ -518,18 +527,21 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('jobs:list', async () => ({ ok: true, data: jobEngine.listJobs() }));
+  ipcMain.handle('dashboard:snapshot', async () => ({ ok: true, data: controlPlane.buildDashboard() }));
   ipcMain.handle('jobs:get', async (_, jobId) => ({ ok: true, data: jobEngine.getJob(jobId) }));
   ipcMain.handle('jobs:cancel', async (_, jobId) => jobEngine.cancel(jobId));
+  ipcMain.handle('jobs:retry', async (_, jobId) => controlPlane.retryJob(jobId));
   ipcMain.handle('recipes:list', async () => ({ ok: true, data: recipeCatalog.list() }));
   ipcMain.handle('recipes:launch', async (_, payload = {}) => {
     const recipeId = payload?.recipeId;
     if (!recipeId) {
       throw new Error('recipeId is required');
     }
-    const plan = recipeCatalog.buildPlan(recipeId, payload.input || {}, payload.options || {});
-    const job = jobEngine.submit(plan);
-    return { ok: true, data: { job_id: job.job_id, preset_id: job.preset_id, state: job.state } };
+    return { ok: true, data: controlPlane.launchRecipe(recipeId, payload.input || {}, payload.options || {}) };
   });
+
+  ipcMain.handle('preferences:get', async () => ({ ok: true, data: controlPlane.getPreferences() }));
+  ipcMain.handle('preferences:update', async (_, patch = {}) => ({ ok: true, data: controlPlane.setPreferences(patch) }));
 
   ipcMain.handle('dialog:pickFolder', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
@@ -567,6 +579,10 @@ app.on('window-all-closed', () => {
   if (healthTimer) {
     clearInterval(healthTimer);
     healthTimer = null;
+  }
+  if (controlPlane) {
+    controlPlane.dispose();
+    controlPlane = null;
   }
   Object.values(workers).forEach(stopWorker);
   if (process.platform !== 'darwin') {

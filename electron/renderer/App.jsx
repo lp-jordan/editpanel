@@ -6,157 +6,49 @@ function App() {
   const [consoleOpen, setConsoleOpen] = React.useState(false);
   const [currentCategory, setCurrentCategory] = React.useState(null);
   const [spellReport, setSpellReport] = React.useState([]);
-  const [spellTotals, setSpellTotals] = React.useState({
-    items: 0,
-    words: 0,
-    issues: 0,
-    ignored: 0
-  });
+  const [spellTotals, setSpellTotals] = React.useState({ items: 0, words: 0, issues: 0, ignored: 0 });
   const [spellHistory, setSpellHistory] = React.useState([]);
-  const [transcribeFolderPath, setTranscribeFolderPath] = React.useState('');
-  const [transcribeBusy, setTranscribeBusy] = React.useState(false);
-  const [transcribeProgress, setTranscribeProgress] = React.useState([]);
-  const [transcribeSummary, setTranscribeSummary] = React.useState(null);
-  const [gpuEnabled, setGpuEnabled] = React.useState(() => window.localStorage.getItem('transcribe.gpuEnabled') === 'true');
-  const [transcribeStatus, setTranscribeStatus] = React.useState({
-    total: 0,
-    completed: 0,
-    failed: 0,
-    currentFile: ''
-  });
-  const [workerAvailability, setWorkerAvailability] = React.useState({
-    resolve: true,
-    media: true,
-    platform: true
-  });
-  const [activeTranscribeJobId, setActiveTranscribeJobId] = React.useState(null);
+  const [workerAvailability, setWorkerAvailability] = React.useState({ resolve: true, media: true, platform: true });
+
   const [recipes, setRecipes] = React.useState([]);
   const [recipeLaunchBusy, setRecipeLaunchBusy] = React.useState(false);
   const [selectedRecipeId, setSelectedRecipeId] = React.useState('');
   const [recipeInputValues, setRecipeInputValues] = React.useState({});
 
-  const formatElapsedTime = React.useCallback(milliseconds => {
-    if (!Number.isFinite(milliseconds) || milliseconds < 0) {
-      return '0s';
-    }
+  const [dashboard, setDashboard] = React.useState({ jobs: [], logs_by_job_step: {} });
+  const [preferences, setPreferences] = React.useState({
+    recipe_defaults: {},
+    worker_concurrency: { resolve: 1, media: 2, platform: 2 }
+  });
 
-    const totalSeconds = Math.round(milliseconds / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-
-    if (hours > 0) {
-      return `${hours}h ${minutes}m ${seconds}s`;
-    }
-    if (minutes > 0) {
-      return `${minutes}m ${seconds}s`;
-    }
-    return `${seconds}s`;
+  const appendLog = React.useCallback(msg => {
+    setLog(prev => [...prev, msg].slice(-50));
   }, []);
 
-  const appendTranscribeProgress = React.useCallback(message => {
-    setTranscribeProgress(prev => [...prev, message].slice(-200));
+  const formatDuration = React.useCallback(milliseconds => {
+    if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '—';
+    const seconds = Math.round(milliseconds / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const remSeconds = seconds % 60;
+    if (minutes > 0) return `${minutes}m ${remSeconds}s`;
+    return `${remSeconds}s`;
   }, []);
-
-  const parseTranscribeProgress = React.useCallback(entry => {
-    const queuedMatch = entry.match(/Transcribe: queued (\d+) file\(s\)/);
-    if (queuedMatch) {
-      const total = Number(queuedMatch[1]) || 0;
-      setTranscribeStatus(prev => ({ ...prev, total }));
-      return;
-    }
-
-    const processingMatch = entry.match(/Transcribe: \[(\d+)\/(\d+)\] processing (.+)$/);
-    if (processingMatch) {
-      const total = Number(processingMatch[2]) || 0;
-      setTranscribeStatus(prev => ({
-        ...prev,
-        total,
-        currentFile: processingMatch[3]
-      }));
-      return;
-    }
-
-    const doneMatch = entry.match(/Transcribe: done /);
-    if (doneMatch) {
-      setTranscribeStatus(prev => ({ ...prev, completed: prev.completed + 1 }));
-      return;
-    }
-
-    const failedMatch = entry.match(/Transcribe: failed /);
-    if (failedMatch) {
-      setTranscribeStatus(prev => ({ ...prev, failed: prev.failed + 1 }));
-      return;
-    }
-  }, []);
-
-  const applyStructuredTranscribeProgress = React.useCallback(event => {
-    if (!event || event.worker !== 'media') {
-      return;
-    }
-
-    if (event.state === 'running') {
-      appendTranscribeProgress(`Transcribe step running (${event.step_id})`);
-      return;
-    }
-
-    if (event.state === 'succeeded') {
-      const output = event.output || {};
-      const completed = Number(output.files_processed || 0);
-      const failed = Array.isArray(output.failures) ? output.failures.length : 0;
-      const total = completed + failed;
-      setTranscribeStatus(prev => ({ ...prev, total, completed, failed, currentFile: '' }));
-      appendTranscribeProgress(`Transcribe complete: ${completed}/${total} succeeded (${failed} failed)`);
-      return;
-    }
-
-    if (event.state === 'failed') {
-      appendTranscribeProgress(`Transcribe failed: ${event.error?.message || 'unknown error'}`);
-      return;
-    }
-
-    if (event.state === 'canceled') {
-      appendTranscribeProgress('Transcribe canceled');
-    }
-  }, [appendTranscribeProgress]);
-
-  const appendLog = msg => {
-    setLog(prev => {
-      const next = [...prev, msg];
-      return next.slice(-20);
-    });
-  };
 
   React.useEffect(() => {
-    if (!window.electronAPI) {
-      return;
-    }
+    if (!window.electronAPI) return;
 
     const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
       if (status?.code === 'WORKER_AVAILABLE' || status?.code === 'WORKER_UNAVAILABLE') {
-        const worker = status?.worker || 'resolve';
-        setWorkerAvailability(prev => ({
-          ...prev,
-          [worker]: Boolean(status.ok)
-        }));
+        setWorkerAvailability(prev => ({ ...prev, [status?.worker || 'resolve']: Boolean(status.ok) }));
       }
 
-      if (status?.worker && status.worker !== 'resolve' && status.code !== 'CONNECTED') {
-        return;
-      }
+      if (status?.worker && status.worker !== 'resolve' && status.code !== 'CONNECTED') return;
 
-      const msg = `Status: ${status.code}${status.error ? ' - ' + status.error : ''}`;
-      appendLog(msg);
+      appendLog(`Status: ${status.code}${status.error ? ` - ${status.error}` : ''}`);
       if (status.code === 'CONNECTED' && status.ok) {
         setConnected(true);
-        if (status.data) {
-          if (status.data.project) {
-            setProject(status.data.project);
-          }
-          if (status.data.timeline) {
-            setTimeline(status.data.timeline);
-          }
-        }
+        if (status.data?.project) setProject(status.data.project);
+        if (status.data?.timeline) setTimeline(status.data.timeline);
       } else {
         setConnected(false);
         setProject('');
@@ -167,21 +59,12 @@ function App() {
     const unsubscribeMessage = window.electronAPI.onHelperMessage(payload => {
       const entry = typeof payload === 'string' ? payload : JSON.stringify(payload);
       appendLog(entry);
-      if (entry.includes('Transcribe:')) {
-        appendTranscribeProgress(entry);
-        parseTranscribeProgress(entry);
-      }
     });
 
-    const unsubscribeJobEvents = window.electronAPI.onJobEvent(event => {
-      if (event?.type === 'step_progress') {
-        applyStructuredTranscribeProgress(event);
-      }
-      if (event?.type === 'job_state' && event?.job_id === activeTranscribeJobId) {
-        if (['succeeded', 'failed', 'canceled'].includes(event.state)) {
-          setActiveTranscribeJobId(null);
-        }
-      }
+    const unsubscribeJobEvents = window.electronAPI.onJobEvent(() => {
+      window.electronAPI.dashboardSnapshot()
+        .then(result => setDashboard(result?.data || { jobs: [], logs_by_job_step: {} }))
+        .catch(() => null);
     });
 
     return () => {
@@ -189,24 +72,40 @@ function App() {
       unsubscribeMessage && unsubscribeMessage();
       unsubscribeJobEvents && unsubscribeJobEvents();
     };
-  }, [activeTranscribeJobId, applyStructuredTranscribeProgress, appendTranscribeProgress, parseTranscribeProgress]);
-
+  }, [appendLog]);
 
   React.useEffect(() => {
-    if (!window.electronAPI?.listRecipes) {
-      return;
-    }
+    if (!window.electronAPI) return;
 
-    window.electronAPI.listRecipes()
-      .then(result => {
-        const catalog = Array.isArray(result?.data) ? result.data : [];
+    Promise.all([
+      window.electronAPI.listRecipes(),
+      window.electronAPI.dashboardSnapshot(),
+      window.electronAPI.getPreferences()
+    ])
+      .then(([recipeResult, dashboardResult, preferenceResult]) => {
+        const catalog = Array.isArray(recipeResult?.data) ? recipeResult.data : [];
         setRecipes(catalog);
-        if (!catalog.length) {
-          return;
+        if (catalog.length > 0) {
+          setSelectedRecipeId(current => current || catalog[0].id);
         }
-        setSelectedRecipeId(current => current || catalog[0].id);
+        setDashboard(dashboardResult?.data || { jobs: [], logs_by_job_step: {} });
+        setPreferences(preferenceResult?.data || {
+          recipe_defaults: {},
+          worker_concurrency: { resolve: 1, media: 2, platform: 2 }
+        });
       })
-      .catch(err => appendLog(`Recipe catalog error: ${err?.error || err?.message || err}`));
+      .catch(err => appendLog(`Bootstrap error: ${err?.error || err?.message || err}`));
+  }, [appendLog]);
+
+  React.useEffect(() => {
+    const timer = setInterval(() => {
+      if (!window.electronAPI?.dashboardSnapshot) return;
+      window.electronAPI.dashboardSnapshot()
+        .then(result => setDashboard(result?.data || { jobs: [], logs_by_job_step: {} }))
+        .catch(() => null);
+    }, 2000);
+
+    return () => clearInterval(timer);
   }, []);
 
   React.useEffect(() => {
@@ -215,35 +114,18 @@ function App() {
       return;
     }
     const selectedRecipe = recipes.find(recipe => recipe.id === selectedRecipeId);
-    if (!selectedRecipe) {
-      setRecipeInputValues({});
-      return;
-    }
-    const defaults = selectedRecipe.defaults && typeof selectedRecipe.defaults === 'object'
-      ? selectedRecipe.defaults
-      : {};
-    setRecipeInputValues(defaults);
-  }, [recipes, selectedRecipeId]);
+    if (!selectedRecipe) return;
 
-  React.useEffect(() => {
-    window.localStorage.setItem('transcribe.gpuEnabled', gpuEnabled ? 'true' : 'false');
-  }, [gpuEnabled]);
-  const logAction = action => {
-    appendLog(`${action} clicked`);
-  };
+    const defaultFromRecipe = selectedRecipe.defaults || {};
+    const defaultFromPrefs = preferences.recipe_defaults?.[selectedRecipeId] || {};
+    setRecipeInputValues({ ...defaultFromRecipe, ...defaultFromPrefs });
+  }, [recipes, preferences, selectedRecipeId]);
+
+  const logAction = action => appendLog(`${action} clicked`);
 
   const cacheSpellcheck = () => {
-    if (
-      spellReport.length ||
-      spellTotals.items ||
-      spellTotals.words ||
-      spellTotals.issues ||
-      spellTotals.ignored
-    ) {
-      setSpellHistory(prev => [
-        ...prev,
-        { report: spellReport, totals: spellTotals, timestamp: Date.now() }
-      ]);
+    if (spellReport.length || spellTotals.items || spellTotals.words || spellTotals.issues || spellTotals.ignored) {
+      setSpellHistory(prev => [...prev, { report: spellReport, totals: spellTotals, timestamp: Date.now() }]);
       appendLog('Spellcheck report cached to history');
     }
     setSpellReport([]);
@@ -256,252 +138,46 @@ function App() {
       appendLog('Leaderpass API not available; cannot connect');
       return;
     }
-    window.leaderpassAPI
-      .call('connect')
-      .then(() => appendLog('Connect success'))
-      .catch(err => appendLog(`Connect error: ${err?.error || err}`));
+    window.leaderpassAPI.call('connect').then(() => appendLog('Connect success')).catch(err => appendLog(`Connect error: ${err?.error || err}`));
   };
 
   const handleNewProjectBins = () => {
     cacheSpellcheck();
-    appendLog('New Project Bins clicked');
-    if (!window.leaderpassAPI) {
-      appendLog('Leaderpass API not available; cannot create project bins');
-      return;
-    }
-    window.leaderpassAPI
-      .call('create_project_bins')
-      .then(() => appendLog('Project bin creation command sent'))
-      .catch(err => appendLog(`Project bin creation error: ${err?.error || err}`));
+    if (!window.leaderpassAPI) return appendLog('Leaderpass API not available; cannot create project bins');
+    window.leaderpassAPI.call('create_project_bins').then(() => appendLog('Project bin creation command sent')).catch(err => appendLog(`Project bin creation error: ${err?.error || err}`));
   };
 
   const handleLPBaseExport = () => {
     cacheSpellcheck();
-    appendLog('LP Base Export clicked');
-    if (!window.leaderpassAPI) {
-      appendLog('Leaderpass API not available; cannot export LP Base');
-      return;
-    }
-    window.leaderpassAPI
-      .call('lp_base_export')
-      .then(() => appendLog('LP Base Export command sent'))
-      .catch(err =>
-        appendLog(`LP Base Export error: ${err?.error || err}`)
-      );
+    if (!window.leaderpassAPI) return appendLog('Leaderpass API not available; cannot export LP Base');
+    window.leaderpassAPI.call('lp_base_export').then(() => appendLog('LP Base Export command sent')).catch(err => appendLog(`LP Base Export error: ${err?.error || err}`));
   };
 
   const handleSpellcheck = () => {
     cacheSpellcheck();
-    appendLog('Spellcheck started');
-    if (!window.leaderpassAPI) {
-      appendLog('Leaderpass API not available; cannot run spellcheck');
-      return;
-    }
+    if (!window.leaderpassAPI) return appendLog('Leaderpass API not available; cannot run spellcheck');
     const misspell = window.spellcheckAPI?.misspellings;
-    if (!misspell) {
-      appendLog('Spellcheck API not available; using fallback');
-    }
-    window.leaderpassAPI
-      .call('spellcheck')
-      .then(async res => {
-        const items = (res.data && res.data.items) || [];
-        const rows = [];
-        let totalItems = 0;
-        let totalWords = 0;
-        let totalIssues = 0;
-        let totalIgnored = 0;
-        for (const entry of items) {
-          const result = misspell
-            ? await misspell(entry.text)
-            : { words: entry.text.split(/\W+/).filter(Boolean).length, misspelled: [], ignored: 0 };
-          totalItems += 1;
-          totalWords += result.words;
-          totalIssues += result.misspelled.length;
-          totalIgnored += result.ignored;
-          if (result.misspelled.length > 0) {
-            rows.push({
-              track: entry.track,
-              tool: entry.tool,
-              timecode: entry.timecode,
-              text: entry.text,
-              start_frame: entry.start_frame,
-              tool_name: entry.tool_name,
-              misspelled: result.misspelled
-            });
-          }
+    window.leaderpassAPI.call('spellcheck').then(async res => {
+      const items = (res.data && res.data.items) || [];
+      const rows = [];
+      let totalItems = 0;
+      let totalWords = 0;
+      let totalIssues = 0;
+      let totalIgnored = 0;
+      for (const entry of items) {
+        const result = misspell ? await misspell(entry.text) : { words: entry.text.split(/\W+/).filter(Boolean).length, misspelled: [], ignored: 0 };
+        totalItems += 1;
+        totalWords += result.words;
+        totalIssues += result.misspelled.length;
+        totalIgnored += result.ignored;
+        if (result.misspelled.length > 0) {
+          rows.push({ ...entry, misspelled: result.misspelled });
         }
-        setSpellReport(rows);
-        setSpellTotals({
-          items: totalItems,
-          words: totalWords,
-          issues: totalIssues,
-          ignored: totalIgnored
-        });
-        appendLog('Spellcheck complete');
-      })
-      .catch(err => appendLog(`Spellcheck error: ${err?.error || err}`));
-  };
-
-
-  const handleTranscribe = async () => {
-    if (transcribeBusy) {
-      appendLog('Transcribe already running; ignoring duplicate request');
-      return;
-    }
-
-    cacheSpellcheck();
-
-    if (!window.electronAPI?.transcribeFolder) {
-      appendLog('Transcribe API not available; cannot transcribe folder');
-      setTranscribeSummary({
-        success: false,
-        message: 'Transcribe API not available in preload.',
-        failures: []
-      });
-      return;
-    }
-
-    if (!window.dialogAPI?.pickFolder) {
-      appendLog('Folder picker API not available; cannot pick folder');
-      setTranscribeSummary({
-        success: false,
-        message: 'Folder picker API not available in preload.',
-        failures: []
-      });
-      return;
-    }
-
-    const selection = await window.dialogAPI.pickFolder();
-    if (selection?.canceled || !selection?.folderPath) {
-      appendLog('Transcribe canceled: no folder selected');
-      return;
-    }
-
-    const folderPath = selection.folderPath;
-    setTranscribeFolderPath(folderPath);
-
-    setTranscribeBusy(true);
-    setTranscribeSummary(null);
-    setTranscribeStatus({ total: 0, completed: 0, failed: 0, currentFile: '' });
-    setTranscribeProgress([`Transcription started for ${folderPath}`]);
-    appendLog(`Transcribe started: ${folderPath}`);
-    const transcribeStartedAt = Date.now();
-
-    try {
-      const result = await window.electronAPI.transcribeFolder(folderPath, { useGpu: gpuEnabled });
-      if (result?.job_id) {
-        setActiveTranscribeJobId(result.job_id);
       }
-      const outputs = Array.isArray(result?.data?.outputs)
-        ? result.data.outputs
-        : Array.isArray(result?.outputs)
-          ? result.outputs
-          : Array.isArray(result?.data?.files)
-            ? result.data.files
-            : Array.isArray(result?.files)
-              ? result.files
-              : [];
-      const failures = Array.isArray(result?.data?.failures)
-        ? result.data.failures
-        : Array.isArray(result?.failures)
-          ? result.failures
-          : outputs.filter(file => file && (file.error || file.ok === false));
-      const completed = typeof result?.data?.files_processed === 'number'
-        ? result.data.files_processed
-        : typeof result?.data?.completed === 'number'
-          ? result.data.completed
-          : outputs.length - failures.length;
-      const total = typeof result?.data?.files_processed === 'number'
-        ? result.data.files_processed + failures.length
-        : outputs.length + failures.length;
-      const elapsed = formatElapsedTime(Date.now() - transcribeStartedAt);
-
-      const message = `Transcription complete: ${completed}/${total} succeeded, ${failures.length} failed (completed in ${elapsed})`;
-      appendTranscribeProgress(message);
-      setTranscribeSummary({
-        success: true,
-        completed,
-        total,
-        failed: failures.length,
-        elapsed,
-        message,
-        failures
-      });
-      appendLog(message);
-
-      outputs.forEach(entry => {
-        const sourceName = entry?.file || 'unknown source';
-        const textOutput = entry?.text_output;
-        const paths = Array.isArray(entry?.output_paths)
-          ? entry.output_paths
-          : [entry?.output].filter(Boolean);
-        if (textOutput) {
-          appendLog(`Transcript txt for ${sourceName}: ${textOutput}`);
-        }
-        paths.forEach(pathValue => {
-          appendLog(`Transcribe output for ${sourceName}: ${pathValue}`);
-        });
-      });
-
-      failures.forEach(failure => {
-        const name = failure?.file || failure?.path || 'unknown file';
-        const error = failure?.error || failure?.reason || 'unknown error';
-        appendLog(`Transcribe failure (${name}): ${error}`);
-      });
-    } catch (err) {
-      const errorMsg = err?.error || err?.message || String(err);
-      appendLog(`Transcribe error: ${errorMsg}`);
-      appendTranscribeProgress(`Transcription failed: ${errorMsg}`);
-      setTranscribeSummary({
-        success: false,
-        message: `Transcription failed: ${errorMsg}`,
-        failures: []
-      });
-    } finally {
-      setTranscribeBusy(false);
-    }
-  };
-
-  const handleCancelTranscribe = async () => {
-    if (!transcribeBusy) {
-      return;
-    }
-    if (!window.electronAPI?.cancelTranscribe) {
-      appendLog('Cancel API not available; cannot cancel transcription');
-      return;
-    }
-    try {
-      const result = await window.electronAPI.cancelTranscribe();
-      const message = result?.message || 'Transcription canceled';
-      appendLog(message);
-      appendTranscribeProgress(`Transcribe: ${message}`);
-    } catch (err) {
-      appendLog(`Cancel transcription error: ${err?.error || err?.message || err}`);
-    }
-  };
-
-
-  const handleTestGpu = async () => {
-    if (!window.electronAPI?.testGpu) {
-      appendLog('GPU test API not available');
-      return;
-    }
-    appendLog('Testing CUDA/GPU initialization...');
-    try {
-      const result = await window.electronAPI.testGpu();
-      const data = result?.data || result;
-      if (data?.ok) {
-        setGpuEnabled(true);
-        appendLog('GPU test passed. GPU acceleration enabled.');
-      } else {
-        const reason = data?.reason || 'unknown CUDA initialization error';
-        setGpuEnabled(false);
-        appendLog(`GPU test failed: ${reason}`);
-      }
-    } catch (err) {
-      setGpuEnabled(false);
-      appendLog(`GPU test error: ${err?.error || err?.message || err}`);
-    }
+      setSpellReport(rows);
+      setSpellTotals({ items: totalItems, words: totalWords, issues: totalIssues, ignored: totalIgnored });
+      appendLog('Spellcheck complete');
+    }).catch(err => appendLog(`Spellcheck error: ${err?.error || err}`));
   };
 
   const selectedRecipe = React.useMemo(
@@ -509,139 +185,109 @@ function App() {
     [recipes, selectedRecipeId]
   );
 
-  const parseRecipeInputValue = React.useCallback((definition, rawValue) => {
-    const type = definition?.type || 'string';
-    if (type === 'boolean') {
-      return rawValue === true || rawValue === 'true';
-    }
-    if (type === 'number') {
-      const parsed = Number(rawValue);
-      if (Number.isNaN(parsed)) {
-        throw new Error('must be a number');
-      }
-      return parsed;
-    }
-    if (type === 'object' || type === 'array') {
-      if (typeof rawValue !== 'string') {
-        return rawValue;
-      }
-      if (!rawValue.trim()) {
-        return type === 'array' ? [] : {};
-      }
-      return JSON.parse(rawValue);
-    }
-    return rawValue;
-  }, []);
-
   const handleRecipeInputChange = React.useCallback((key, value) => {
     setRecipeInputValues(prev => ({ ...prev, [key]: value }));
   }, []);
 
   const handleLaunchRecipe = React.useCallback(async () => {
-    if (!window.electronAPI?.launchRecipe) {
-      appendLog('Recipe launch API unavailable');
-      return;
-    }
-    if (!selectedRecipe) {
-      appendLog('No recipe selected');
-      return;
-    }
-
-    const definitions = selectedRecipe.inputs || {};
-    const parsedInput = {};
-    try {
-      Object.entries(definitions).forEach(([key, definition]) => {
-        const raw = recipeInputValues[key];
-        parsedInput[key] = parseRecipeInputValue(definition, raw);
-      });
-    } catch (error) {
-      appendLog(`Recipe input error: ${error.message}`);
-      return;
-    }
-
+    if (!window.electronAPI?.launchRecipe || !selectedRecipe) return;
     try {
       setRecipeLaunchBusy(true);
-      const result = await window.electronAPI.launchRecipe(selectedRecipe.id, parsedInput);
+      const result = await window.electronAPI.launchRecipe(selectedRecipe.id, recipeInputValues);
       appendLog(`Recipe launched: ${selectedRecipe.id} (job ${result?.data?.job_id || 'unknown'})`);
+      const snap = await window.electronAPI.dashboardSnapshot();
+      setDashboard(snap?.data || { jobs: [], logs_by_job_step: {} });
     } catch (err) {
       appendLog(`Recipe launch error: ${err?.error || err?.message || err}`);
     } finally {
       setRecipeLaunchBusy(false);
     }
-  }, [appendLog, parseRecipeInputValue, recipeInputValues, selectedRecipe]);
+  }, [appendLog, recipeInputValues, selectedRecipe]);
+
+  const handlePersistRecipeDefaults = React.useCallback(async () => {
+    if (!selectedRecipe?.id || !window.electronAPI?.updatePreferences) return;
+    try {
+      const result = await window.electronAPI.updatePreferences({
+        recipe_defaults: {
+          [selectedRecipe.id]: recipeInputValues
+        }
+      });
+      setPreferences(result?.data || preferences);
+      appendLog(`Saved defaults for ${selectedRecipe.id}`);
+    } catch (err) {
+      appendLog(`Save defaults error: ${err?.error || err?.message || err}`);
+    }
+  }, [appendLog, preferences, recipeInputValues, selectedRecipe]);
+
+  const handleConcurrencyChange = React.useCallback(async (worker, value) => {
+    if (!window.electronAPI?.updatePreferences) return;
+    const parsed = Math.max(1, Number(value || 1));
+    try {
+      const result = await window.electronAPI.updatePreferences({
+        worker_concurrency: {
+          ...preferences.worker_concurrency,
+          [worker]: parsed
+        }
+      });
+      setPreferences(result?.data || preferences);
+      appendLog(`Updated ${worker} concurrency to ${parsed}`);
+    } catch (err) {
+      appendLog(`Concurrency update error: ${err?.error || err?.message || err}`);
+    }
+  }, [appendLog, preferences]);
+
+  const handleJobCancel = React.useCallback(async jobId => {
+    try {
+      await window.electronAPI.cancelJob(jobId);
+      appendLog(`Cancel requested for ${jobId}`);
+      const snap = await window.electronAPI.dashboardSnapshot();
+      setDashboard(snap?.data || { jobs: [], logs_by_job_step: {} });
+    } catch (err) {
+      appendLog(`Cancel job error: ${err?.error || err?.message || err}`);
+    }
+  }, [appendLog]);
+
+  const handleJobRetry = React.useCallback(async jobId => {
+    try {
+      await window.electronAPI.retryJob(jobId);
+      appendLog(`Retry requested for ${jobId}`);
+      const snap = await window.electronAPI.dashboardSnapshot();
+      setDashboard(snap?.data || { jobs: [], logs_by_job_step: {} });
+    } catch (err) {
+      appendLog(`Retry job error: ${err?.error || err?.message || err}`);
+    }
+  }, [appendLog]);
 
   const categories = ['SETUP', 'EDIT', 'AUDIO', 'DELIVER'];
-
   const actions = {
-    SETUP: [
-      { label: 'New Project Bins', icon: '🗂️', onClick: handleNewProjectBins, resolveRequired: true }
-    ],
-    EDIT: [
-      { label: 'Spellcheck', icon: '📝', onClick: handleSpellcheck, resolveRequired: true }
-    ],
-    AUDIO: [
-      { label: 'Transcribe Folder', icon: '🎙️', onClick: handleTranscribe }
-    ],
-    DELIVER: [
-      { label: 'LP Base Export', icon: '📤', onClick: handleLPBaseExport, resolveRequired: true }
-    ]
+    SETUP: [{ label: 'New Project Bins', icon: '🗂️', onClick: handleNewProjectBins, resolveRequired: true }],
+    EDIT: [{ label: 'Spellcheck', icon: '📝', onClick: handleSpellcheck, resolveRequired: true }],
+    AUDIO: [{ label: 'Launch Transcribe Recipe', icon: '🎙️', onClick: () => { setCurrentCategory(null); logAction('Use dashboard launch'); } }],
+    DELIVER: [{ label: 'LP Base Export', icon: '📤', onClick: handleLPBaseExport, resolveRequired: true }]
   };
 
   return (
     <div className="app-container" style={{ paddingBottom: consoleOpen ? '240px' : '40px' }}>
       <header>{project || 'No Project'}</header>
       <div className="connect-container" style={{ justifyContent: 'flex-start', gap: 8 }}>
-        <button
-          className="connect-button"
-          onClick={handleConnect}
-          disabled={!window.leaderpassAPI}
-        >
-          Connect
-        </button>
-        <span>
-          Resolve status: {connected ? 'Connected' : 'Disconnected'}
-        </span>
+        <button className="connect-button" onClick={handleConnect} disabled={!window.leaderpassAPI}>Connect</button>
+        <span>Resolve status: {connected ? 'Connected' : 'Disconnected'}</span>
       </div>
+
       {currentCategory === null ? (
         <div className="function-grid folder-grid">
           {categories.map(cat => (
-            <button
-              key={cat}
-              className="folder-button"
-              onClick={() => setCurrentCategory(cat)}
-            >
-              {cat}
-            </button>
+            <button key={cat} className="folder-button" onClick={() => setCurrentCategory(cat)}>{cat}</button>
           ))}
         </div>
       ) : (
         <div className="category-view">
-          <button
-            className="back-button"
-            onClick={() => {
-              cacheSpellcheck();
-              setCurrentCategory(null);
-            }}
-          >
-            Back
-          </button>
+          <button className="back-button" onClick={() => { cacheSpellcheck(); setCurrentCategory(null); }}>Back</button>
           <div className="function-grid">
             {actions[currentCategory].map(action => {
-              const disabled =
-                (action.resolveRequired && !connected) ||
-                (action.label === 'Transcribe Folder' && (transcribeBusy || !workerAvailability.media));
-              const disabledReason = action.resolveRequired && !connected
-                ? 'Connect to Resolve to use this action.'
-                : undefined;
-
+              const disabled = (action.resolveRequired && !connected);
               return (
-                <button
-                  key={action.label}
-                  className="task-button"
-                  onClick={action.onClick}
-                  disabled={disabled}
-                  title={disabledReason}
-                >
+                <button key={action.label} className="task-button" onClick={action.onClick} disabled={disabled}>
                   <span className="icon">{action.icon}</span>
                   <span>{action.label}</span>
                 </button>
@@ -650,130 +296,104 @@ function App() {
           </div>
         </div>
       )}
-      {!connected ? <div>Resolve-only actions are disabled until connection is established.</div> : null}
-      {!workerAvailability.resolve ? <div>Resolve worker unavailable. Retry in a moment.</div> : null}
-      {!workerAvailability.media ? <div>Media worker unavailable. Transcribe actions are temporarily disabled.</div> : null}
-      {!workerAvailability.platform ? <div>Platform worker unavailable. Some integrations may be unavailable.</div> : null}
+
       <div className="dashboard">
         <h2>Dashboard</h2>
         <div>Active Timeline: {timeline || 'None'}</div>
-        <div className="transcribe-panel">
-          <h3>Recipe Catalog</h3>
-          <div>
-            <select
-              value={selectedRecipeId}
-              onChange={event => setSelectedRecipeId(event.target.value)}
-              disabled={recipeLaunchBusy || recipes.length === 0}
-            >
-              {recipes.map(recipe => (
-                <option key={recipe.id} value={recipe.id}>{recipe.id} (v{recipe.version})</option>
-              ))}
+
+        <div className="dashboard-grid">
+          <div className="panel-block">
+            <h3>Recipe Launch</h3>
+            <select value={selectedRecipeId} onChange={event => setSelectedRecipeId(event.target.value)} disabled={recipeLaunchBusy || recipes.length === 0}>
+              {recipes.map(recipe => <option key={recipe.id} value={recipe.id}>{recipe.id} (v{recipe.version})</option>)}
             </select>
-            <button
-              onClick={handleLaunchRecipe}
-              disabled={!selectedRecipe || recipeLaunchBusy}
-              style={{ marginLeft: 8 }}
-            >
-              {recipeLaunchBusy ? 'Launching…' : 'Launch Recipe'}
-            </button>
+            <button onClick={handleLaunchRecipe} disabled={!selectedRecipe || recipeLaunchBusy} style={{ marginLeft: 8 }}>{recipeLaunchBusy ? 'Launching…' : 'Launch Recipe'}</button>
+            {selectedRecipe ? (
+              <div>
+                {Object.entries(selectedRecipe.inputs || {}).map(([key, definition]) => {
+                  const type = definition?.type || 'string';
+                  const value = recipeInputValues[key];
+                  const displayValue = (type === 'object' || type === 'array') ? (typeof value === 'string' ? value : JSON.stringify(value ?? (type === 'array' ? [] : {}))) : (value ?? '');
+                  return (
+                    <div key={key} style={{ marginTop: 6 }}>
+                      <label>{key} ({type})</label>
+                      <input type="text" value={displayValue} onChange={event => handleRecipeInputChange(key, event.target.value)} />
+                    </div>
+                  );
+                })}
+                <button onClick={handlePersistRecipeDefaults} style={{ marginTop: 8 }}>Save as default profile</button>
+              </div>
+            ) : <div>No recipes available.</div>}
           </div>
-          {selectedRecipe?.description ? <div>{selectedRecipe.description}</div> : null}
-          {selectedRecipe ? (
-            <div>
-              {Object.entries(selectedRecipe.inputs || {}).map(([key, definition]) => {
-                const type = definition?.type || 'string';
-                const value = recipeInputValues[key];
-                const displayValue = (type === 'object' || type === 'array')
-                  ? (typeof value === 'string' ? value : JSON.stringify(value ?? (type === 'array' ? [] : {})))
-                  : (value ?? '');
-                return (
-                  <div key={key} style={{ marginTop: 6 }}>
-                    <label>{key} ({type})</label>
-                    <input
-                      type="text"
-                      value={displayValue}
-                      onChange={event => handleRecipeInputChange(key, event.target.value)}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div>No recipes available.</div>
+
+          <div className="panel-block">
+            <h3>Worker Preferences</h3>
+            {['resolve', 'media', 'platform'].map(worker => (
+              <div key={worker} style={{ marginTop: 6 }}>
+                <label>{worker} concurrency</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={preferences.worker_concurrency?.[worker] || 1}
+                  onChange={event => handleConcurrencyChange(worker, event.target.value)}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="panel-block" style={{ marginTop: 12 }}>
+          <h3>Jobs</h3>
+          {(dashboard.jobs || []).length === 0 ? <div>No jobs yet.</div> : (
+            <table className="jobs-table">
+              <thead>
+                <tr>
+                  <th>Job</th><th>State</th><th>Active Step</th><th>ETA</th><th>Controls</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboard.jobs.map(job => (
+                  <tr key={job.job_id}>
+                    <td>{job.job_id}</td>
+                    <td>{job.state}</td>
+                    <td>{job.active_step ? `${job.active_step.step_id} (${job.active_step.worker})` : '—'}</td>
+                    <td>{formatDuration(job.eta_ms)}</td>
+                    <td>
+                      <button onClick={() => handleJobRetry(job.job_id)}>Retry</button>
+                      <button onClick={() => handleJobCancel(job.job_id)} style={{ marginLeft: 6 }}>Cancel</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
-        <div className="transcribe-panel">
-          <h3>Transcribe</h3>
-          <input
-            type="text"
-            placeholder="Folder path for audio files"
-            value={transcribeFolderPath}
-            onChange={event => setTranscribeFolderPath(event.target.value)}
-            disabled={transcribeBusy}
-          />
-          <div>
-            <button onClick={handleTranscribe} disabled={transcribeBusy || !workerAvailability.media}>
-              {transcribeBusy ? 'Transcribing…' : 'Run Transcribe Folder'}
-            </button>
-            <button
-              onClick={handleCancelTranscribe}
-              disabled={!transcribeBusy}
-              style={{ marginLeft: 8 }}
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleTestGpu}
-              disabled={transcribeBusy}
-              style={{ marginLeft: 8 }}
-            >
-              Test GPU
-            </button>
-            <span style={{ marginLeft: 8 }}>Mode: {gpuEnabled ? 'GPU (CUDA)' : 'CPU (int8)'}</span>
-            {transcribeBusy ? <span style={{ marginLeft: 8 }}>⏳ In progress…</span> : null}
-          </div>
-          {transcribeBusy || transcribeStatus.total > 0 ? (
-            <div>
-              Progress: {transcribeStatus.completed + transcribeStatus.failed}/{transcribeStatus.total || '?'}
-              {' '}({transcribeStatus.completed} succeeded, {transcribeStatus.failed} failed)
-              {transcribeStatus.currentFile ? (
-                <div>Current file: {transcribeStatus.currentFile}</div>
-              ) : null}
-            </div>
-          ) : null}
-          {transcribeProgress.length > 0 ? (
-            <ul>
-              {transcribeProgress.map((line, index) => (
-                <li key={`${line}-${index}`}>{line}</li>
-              ))}
-            </ul>
-          ) : null}
-          {transcribeSummary ? (
-            <div>
-              <strong>{transcribeSummary.message}</strong>
-              {typeof transcribeSummary.total === 'number' ? (
-                <div>
-                  Summary: {transcribeSummary.completed} succeeded / {transcribeSummary.failed} failed / {transcribeSummary.total} total
-                </div>
-              ) : null}
-              {transcribeSummary.failures.length > 0 ? (
-                <ul>
-                  {transcribeSummary.failures.map((failure, index) => {
-                    const name = failure?.file || failure?.path || `file ${index + 1}`;
-                    const error = failure?.error || failure?.reason || 'unknown error';
-                    return <li key={`${name}-${index}`}>{name}: {error}</li>;
-                  })}
-                </ul>
-              ) : null}
-            </div>
-          ) : null}
+
+        <div className="panel-block" style={{ marginTop: 12 }}>
+          <h3>Job Logs (job_id + step_id)</h3>
+          {(dashboard.jobs || []).slice(0, 3).map(job => {
+            const stepLogs = dashboard.logs_by_job_step?.[job.job_id] || {};
+            return (
+              <div key={`logs-${job.job_id}`} style={{ marginBottom: 8 }}>
+                <strong>{job.job_id}</strong>
+                {Object.entries(stepLogs).map(([stepId, entries]) => (
+                  <div key={`${job.job_id}-${stepId}`} style={{ marginLeft: 8 }}>
+                    <div>{stepId}</div>
+                    <ul>
+                      {entries.slice(-3).map((entry, index) => (
+                        <li key={`${stepId}-${index}`}>{entry.type}:{entry.state || entry.code || 'event'}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
         </div>
-        <SpellcheckReport
-          report={spellReport}
-          totals={spellTotals}
-          onLog={appendLog}
-        />
+
+        <SpellcheckReport report={spellReport} totals={spellTotals} onLog={appendLog} />
       </div>
+
       <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />
     </div>
   );

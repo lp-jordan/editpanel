@@ -167,6 +167,7 @@ class RecipeCatalog {
       idempotency_key: options.idempotency_key || null,
       timeout: Number(options.timeout_ms || 0),
       retry_policy: options.retry_policy || { max_attempts: 1, backoff_ms: 0 },
+      input,
       steps
     };
   }
