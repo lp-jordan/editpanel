@@ -42,8 +42,10 @@ function App() {
   React.useEffect(() => {
     if (!window.electronAPI) return;
 
-    const SESSION_STATUS_CODES = new Set(['CONNECTED', 'NO_SESSION']);
-    const SESSION_NEGATIVE_STATUS_CODES = new Set(['NO_SESSION', 'RESOLVE_DISCONNECTED', 'RESOLVE_CONNECTION_ERROR']);
+    // Worker availability logs are canonicalized through onHelperStatus.
+    // If helper messages introduce equivalent availability text (for example,
+    // "<worker> worker unavailable"), filter them here to avoid duplicate UI logs.
+    const workerUnavailableMessagePattern = /worker unavailable$/i;
 
     const unsubscribeStatus = window.electronAPI.onHelperStatus(status => {
       if (status?.code === 'WORKER_AVAILABLE' || status?.code === 'WORKER_UNAVAILABLE') {
@@ -69,6 +71,7 @@ function App() {
 
     const unsubscribeMessage = window.electronAPI.onHelperMessage(payload => {
       const entry = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      if (workerUnavailableMessagePattern.test(entry)) return;
       appendLog(entry);
     });
 
