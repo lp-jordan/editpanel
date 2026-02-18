@@ -4,8 +4,14 @@
     "version": "1.0.0",
     "description": "Queue LP base export jobs from configured export bin and preset.",
     "inputs": {
-      "preset_name": { "type": "string", "description": "Resolve render preset name." },
-      "export_bin_name": { "type": "string", "description": "Media pool bin used for export matching." }
+      "preset_name": {
+        "type": "string",
+        "description": "Resolve render preset name."
+      },
+      "export_bin_name": {
+        "type": "string",
+        "description": "Media pool bin used for export matching."
+      }
     },
     "defaults": {
       "preset_name": "General LP Export",
@@ -19,6 +25,20 @@
         "payload": {
           "preset_name": "${input.preset_name}",
           "export_bin_name": "${input.export_bin_name}"
+        },
+        "retry_policy": {
+          "max_attempts": 1,
+          "safe": false
+        },
+        "cache_policy": {
+          "enabled": false,
+          "ttl_ms": 0
+        },
+        "output_contract": {
+          "type": "non_null"
+        },
+        "tool_versions": {
+          "resolve": "auto"
         }
       }
     ],
@@ -32,9 +52,18 @@
     "version": "1.0.0",
     "description": "Transcribe all audio files in a folder.",
     "inputs": {
-      "folder": { "type": "string", "description": "Absolute folder path containing audio files." },
-      "use_gpu": { "type": "boolean", "description": "Enable GPU/CUDA when available." },
-      "engine": { "type": "string", "description": "Transcription engine name." }
+      "folder": {
+        "type": "string",
+        "description": "Absolute folder path containing audio files."
+      },
+      "use_gpu": {
+        "type": "boolean",
+        "description": "Enable GPU/CUDA when available."
+      },
+      "engine": {
+        "type": "string",
+        "description": "Transcription engine name."
+      }
     },
     "defaults": {
       "use_gpu": false,
@@ -49,6 +78,22 @@
           "folder_path": "${input.folder}",
           "use_gpu": "${input.use_gpu}",
           "engine": "${input.engine}"
+        },
+        "cache_policy": {
+          "enabled": true,
+          "ttl_ms": 86400000
+        },
+        "output_contract": {
+          "type": "transcribe_output"
+        },
+        "tool_versions": {
+          "transcribe": "${input.engine}",
+          "ffmpeg": "auto",
+          "resolve": "n/a"
+        },
+        "retry_policy": {
+          "max_attempts": 3,
+          "backoff_ms": 500
         }
       }
     ],
@@ -63,13 +108,22 @@
     "version": "1.0.0",
     "description": "Connect to Resolve and create standard project bins.",
     "inputs": {
-      "bins_structure": { "type": "object", "description": "Optional bin and sub-bin map." }
+      "bins_structure": {
+        "type": "object",
+        "description": "Optional bin and sub-bin map."
+      }
     },
     "defaults": {
       "bins_structure": {
-        "FOOTAGE": ["BROLL", "ATEM", "4K"],
+        "FOOTAGE": [
+          "BROLL",
+          "ATEM",
+          "4K"
+        ],
         "AUDIO": [],
-        "SEQUENCES": ["MC"],
+        "SEQUENCES": [
+          "MC"
+        ],
         "WORK": [],
         "MUSIC": [],
         "SFX": [],
@@ -82,15 +136,45 @@
         "id": "connect",
         "worker": "resolve",
         "command": "connect",
-        "payload": {}
+        "payload": {},
+        "retry_policy": {
+          "max_attempts": 1,
+          "safe": false
+        },
+        "cache_policy": {
+          "enabled": false,
+          "ttl_ms": 0
+        },
+        "output_contract": {
+          "type": "non_null"
+        },
+        "tool_versions": {
+          "resolve": "auto"
+        }
       },
       {
         "id": "create_bins",
         "worker": "resolve",
         "command": "create_project_bins",
-        "depends_on": ["connect"],
+        "depends_on": [
+          "connect"
+        ],
         "payload": {
           "bins_structure": "${input.bins_structure}"
+        },
+        "retry_policy": {
+          "max_attempts": 1,
+          "safe": false
+        },
+        "cache_policy": {
+          "enabled": false,
+          "ttl_ms": 0
+        },
+        "output_contract": {
+          "type": "non_null"
+        },
+        "tool_versions": {
+          "resolve": "auto"
         }
       }
     ],

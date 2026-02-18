@@ -155,7 +155,11 @@ class RecipeCatalog {
       worker: step.worker,
       cmd: step.command,
       depends_on: Array.isArray(step.depends_on) ? step.depends_on : [],
-      payload: interpolateValue(step.payload || {}, context)
+      payload: interpolateValue(step.payload || {}, context),
+      cache_policy: interpolateValue(step.cache_policy || { enabled: false, ttl_ms: 0 }, context),
+      output_contract: interpolateValue(step.output_contract || { type: 'non_null' }, context),
+      tool_versions: interpolateValue(step.tool_versions || {}, context),
+      retry_policy: interpolateValue(step.retry_policy || {}, context)
     }));
 
     return {
