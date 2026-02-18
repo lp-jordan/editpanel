@@ -2,6 +2,48 @@
 
 ## 1) Command inventory and ownership mapping
 
+## 0) Locked worker RPC contract (JSON over stdio)
+
+All orchestrator-to-worker calls are now normalized to a fixed envelope before dispatch:
+
+```json
+{
+  "id": "uuid",
+  "worker": "resolve|media|platform",
+  "cmd": "command_name",
+  "payload": {},
+  "trace_id": "uuid"
+}
+```
+
+All worker responses are normalized before returning to renderer IPC callers:
+
+```json
+{
+  "ok": true,
+  "data": {},
+  "error": null,
+  "metrics": {
+    "latency_ms": 12,
+    "worker_trace_id": "uuid"
+  }
+}
+```
+
+Structured worker events are forwarded in one envelope shape and categorized as `log`, `progress`, or `status`:
+
+```json
+{
+  "type": "log|progress|status",
+  "worker": "resolve|media|platform",
+  "trace_id": "uuid",
+  "code": "CONNECTED",
+  "data": {},
+  "error": null,
+  "metrics": {}
+}
+```
+
 Single source map of current command ownership:
 
 ```yaml
@@ -127,4 +169,3 @@ Measured using:
 - Startup latency must not regress beyond baseline by agreed threshold.
 - First-command latency must not regress beyond baseline by agreed threshold.
 - Suggested initial threshold (until CI perf harness exists): no worse than **+15% p95** vs baseline.
-
