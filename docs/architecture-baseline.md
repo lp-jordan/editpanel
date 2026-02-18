@@ -52,7 +52,7 @@ ipc_handlers:
   audio:transcribe-folder: {owner: orchestrator, routes_to: media, tag: media}
   audio:test-gpu: {owner: orchestrator, routes_to: media, tag: media}
   audio:cancel-transcribe: {owner: orchestrator, routes_to: media, tag: media}
-  leaderpass-call: {owner: orchestrator, routes_to: resolve, tag: shared}
+  leaderpass-call: {owner: orchestrator, routes_to: platform, tag: platform}
   dialog:pickFolder: {owner: platform, routes_to: main, tag: platform}
   fs:readFile: {owner: platform, routes_to: main, tag: platform}
   fs:writeFile: {owner: platform, routes_to: main, tag: platform}
@@ -182,3 +182,11 @@ Measured using:
   - resolve commands are not retried unless explicitly marked safe,
   - media commands retry transient I/O-style failures only.
 - **Exactly-once semantics** for platform uploads are enforced by injecting deterministic idempotency keys when one is not provided.
+
+
+### LeaderPass platform worker baseline:
+
+- Dedicated client lifecycle runs in `electron/workers/platform_worker.js` with token refresh and request/session signing handled by `leaderpass_client.js`.
+- Upload pipeline is chunked/resumable with checkpoint persistence and throttled throughput controls.
+- Post-upload metadata assignment and verification are reconciled for partial completion.
+- Worker emits observability hooks for API latency, retry counts, and upload progress telemetry.

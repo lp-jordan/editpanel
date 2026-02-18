@@ -8,7 +8,8 @@
     "baseline:latency": "node scripts/baseline-latency.js",
     "test:recipes": "node scripts/validate-recipes.js",
     "test:routing": "node scripts/regression-worker-routing.js",
-    "cache:invalidate": "node scripts/invalidate-step-cache.js"
+    "cache:invalidate": "node scripts/invalidate-step-cache.js",
+    "test:platform-worker": "node scripts/test-platform-worker.js"
   },
   "dependencies": {
     "dictionary-en": "^4.0.0",
