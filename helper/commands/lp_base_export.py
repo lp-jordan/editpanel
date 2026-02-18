@@ -1,10 +1,10 @@
 from typing import Any, Dict, List, Tuple
 import time
 
-EXPORT_PRESET_NAME = "General LP Export"
-EXPORT_BIN_NAME = "EXPORT"
+DEFAULT_EXPORT_PRESET_NAME = "General LP Export"
+DEFAULT_EXPORT_BIN_NAME = "EXPORT"
 
-def handle_lp_base_export(_payload: Dict[str, Any]) -> Dict[str, Any]:
+def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Queue render jobs for timelines matching items in EXPORT bin."""
     from .. import resolve_helper as rh
 
@@ -17,21 +17,24 @@ def handle_lp_base_export(_payload: Dict[str, Any]) -> Dict[str, Any]:
     if not root_folder:
         raise RuntimeError("Could not retrieve the root folder of the Media Pool")
 
+    export_preset_name = payload.get("preset_name") or DEFAULT_EXPORT_PRESET_NAME
+    export_bin_name = payload.get("export_bin_name") or DEFAULT_EXPORT_BIN_NAME
+
     # Find the EXPORT bin
     export_folder = None
     for folder in (root_folder.GetSubFolderList() or []):
-        if folder.GetName() == EXPORT_BIN_NAME:
+        if folder.GetName() == export_bin_name:
             export_folder = folder
             break
     if not export_folder:
-        raise RuntimeError(f"The '{EXPORT_BIN_NAME}' bin was not found in the Media Pool")
+        raise RuntimeError(f"The '{export_bin_name}' bin was not found in the Media Pool")
 
     media_pool.SetCurrentFolder(export_folder)
 
     # Collect names in EXPORT bin
     clip_list = export_folder.GetClipList() or []
     if not clip_list:
-        rh.log(f"No media pool items found in '{EXPORT_BIN_NAME}' bin.")
+        rh.log(f"No media pool items found in '{export_bin_name}' bin.")
         return {"result": False}
 
     export_names: List[str] = []
@@ -56,7 +59,7 @@ def handle_lp_base_export(_payload: Dict[str, Any]) -> Dict[str, Any]:
             rh.log(f"Matched timeline: {tl_name}")
 
     if not matched_timelines:
-        rh.log(f"No matching timelines found based on names in '{EXPORT_BIN_NAME}' bin.")
+        rh.log(f"No matching timelines found based on names in '{export_bin_name}' bin.")
         return {"result": False}
 
     # Load preset and queue jobs
@@ -67,10 +70,10 @@ def handle_lp_base_export(_payload: Dict[str, Any]) -> Dict[str, Any]:
         project.SetCurrentTimeline(timeline)
         time.sleep(1.0)  # brief settle
 
-        preset_loaded = project.LoadRenderPreset(EXPORT_PRESET_NAME)
+        preset_loaded = project.LoadRenderPreset(export_preset_name)
         if not preset_loaded:
             rh.log(
-                f"Error: Failed to load export preset '{EXPORT_PRESET_NAME}' for timeline '{timeline_name}'."
+                f"Error: Failed to load export preset '{export_preset_name}' for timeline '{timeline_name}'."
             )
             continue
 

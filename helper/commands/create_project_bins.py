@@ -1,7 +1,35 @@
 from typing import Any, Dict
 
 
-def handle_create_project_bins(_payload: Dict[str, Any]) -> Dict[str, Any]:
+DEFAULT_BINS_STRUCTURE = {
+    "FOOTAGE": ["BROLL", "ATEM", "4K"],
+    "AUDIO": [],
+    "SEQUENCES": ["MC"],
+    "WORK": [],
+    "MUSIC": [],
+    "SFX": [],
+    "GFX": [],
+    "EXPORT": [],
+}
+
+
+def _normalize_bins_structure(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return DEFAULT_BINS_STRUCTURE
+
+    normalized: Dict[str, Any] = {}
+    for main_bin, sub_bins in raw.items():
+        if not isinstance(main_bin, str):
+            continue
+        if not isinstance(sub_bins, list):
+            normalized[main_bin] = []
+            continue
+        normalized[main_bin] = [name for name in sub_bins if isinstance(name, str)]
+
+    return normalized or DEFAULT_BINS_STRUCTURE
+
+
+def handle_create_project_bins(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Automatically create a standard project bin structure."""
     from .. import resolve_helper as rh
 
@@ -11,16 +39,7 @@ def handle_create_project_bins(_payload: Dict[str, Any]) -> Dict[str, Any]:
     media_pool = rh.project.GetMediaPool()
     root_folder = media_pool.GetRootFolder()
 
-    bins_structure = {
-        "FOOTAGE": ["BROLL", "ATEM", "4K"],
-        "AUDIO": [],
-        "SEQUENCES": ["MC"],
-        "WORK": [],
-        "MUSIC": [],
-        "SFX": [],
-        "GFX": [],
-        "EXPORT": [],
-    }
+    bins_structure = _normalize_bins_structure(payload.get("bins_structure"))
 
     rh.log("Starting project bin generation")
 

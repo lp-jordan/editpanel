@@ -62,6 +62,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   cancelJob(jobId) {
     return ipcRenderer.invoke('jobs:cancel', jobId);
+  },
+
+  listRecipes() {
+    return ipcRenderer.invoke('recipes:list');
+  },
+
+  launchRecipe(recipeId, input = {}, options = {}) {
+    return ipcRenderer.invoke('recipes:launch', { recipeId, input, options });
   }
 });
 
