@@ -70,6 +70,7 @@ function createWorkerState(name, spawnConfig) {
     reader: null,
     pending: new Map(),
     healthy: false,
+    isUnavailableBroadcasted: false,
     crashCount: 0,
     restartTimer: null,
     startedAt: 0,
@@ -123,7 +124,11 @@ function flushPendingWithError(state, message) {
 }
 
 function markUnavailable(state, reason) {
+  if (!state.healthy && state.isUnavailableBroadcasted) {
+    return;
+  }
   state.healthy = false;
+  state.isUnavailableBroadcasted = true;
   flushPendingWithError(state, reason);
   broadcastWorkerStatus(state.name, 'unavailable');
 }
@@ -251,6 +256,7 @@ function startWorker(state) {
 
   state.proc.on('spawn', () => {
     state.healthy = true;
+    state.isUnavailableBroadcasted = false;
     state.crashCount = 0;
     broadcastWorkerStatus(state.name, 'available');
   });
@@ -322,10 +328,11 @@ async function healthCheckWorker(state) {
       new Promise((_, reject) => setTimeout(() => reject(new Error('ping timeout')), PING_TIMEOUT_MS))
     ]);
   } catch (_error) {
-    markUnavailable(state, `${state.name} worker health check failed`);
     if (state.proc) {
       state.proc.kill('SIGTERM');
+      return;
     }
+    markUnavailable(state, `${state.name} worker health check failed`);
   }
 }
 
