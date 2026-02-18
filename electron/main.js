@@ -27,6 +27,8 @@ try {
 const HEALTH_INTERVAL_MS = 10000;
 const PING_TIMEOUT_MS = 3000;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
+const TRANSCRIBE_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
+const TRANSCRIBE_POLL_INTERVAL_MS = 1000;
 
 let win;
 let transcribeInProgress = false;
@@ -468,6 +470,11 @@ app.whenReady().then(() => {
   ipcMain.handle('audio:transcribe-folder', async (_, payload = {}) => {
     const folderPath = typeof payload === 'string' ? payload : payload.folderPath;
     const useGpu = Boolean(payload && typeof payload === 'object' ? payload.useGpu : false);
+    const engine = typeof payload.engine === 'string' ? payload.engine : undefined;
+    const outputDir = typeof payload.output_dir === 'string' ? payload.output_dir : undefined;
+    const runToken = typeof payload.run_token === 'string' ? payload.run_token : undefined;
+    const idempotencyKey = payload.idempotency_key
+      || `transcribe:${folderPath}:${useGpu}:${engine || 'default'}:${outputDir || 'default'}:${runToken || 'shared'}`;
     if (!folderPath) {
       throw new Error('folderPath is required');
     }
@@ -476,42 +483,108 @@ app.whenReady().then(() => {
       {
         folder: folderPath,
         use_gpu: useGpu,
-        engine: typeof payload.engine === 'string' ? payload.engine : undefined,
-        output_dir: typeof payload.output_dir === 'string' ? payload.output_dir : undefined
+        engine,
+        output_dir: outputDir
       },
       {
-        idempotency_key: payload.idempotency_key || `transcribe:${folderPath}:${useGpu}`,
+        idempotency_key: idempotencyKey,
         timeout_ms: payload.timeout_ms,
         retry_policy: payload.retry_policy
       }
     );
 
     const job = jobEngine.submit(plan);
+    const terminalStates = ['succeeded', 'failed', 'canceled'];
+    const currentJob = jobEngine.getJob(job.job_id) || job;
+
+    const resolveFromJobState = stateSnapshot => {
+      if (stateSnapshot.state === 'succeeded') {
+        return {
+          ok: true,
+          data: recipeCatalog.materializeOutputs('transcribe_folder', stateSnapshot),
+          job_id: stateSnapshot.job_id
+        };
+      }
+      if (stateSnapshot.state === 'canceled') {
+        throw { ok: false, error: { message: 'Transcription canceled' }, job_id: stateSnapshot.job_id };
+      }
+      throw {
+        ok: false,
+        error: stateSnapshot?.errors?.[0]?.error || { message: 'Transcription failed' },
+        job_id: stateSnapshot.job_id
+      };
+    };
+
+    if (terminalStates.includes(currentJob.state)) {
+      transcribeInProgress = false;
+      return resolveFromJobState(currentJob);
+    }
+
     transcribeInProgress = true;
 
     return new Promise((resolve, reject) => {
+      const waitTimeoutMs = Math.max(1000, Number(payload.wait_timeout_ms || TRANSCRIBE_WAIT_TIMEOUT_MS));
+      let settled = false;
+      let pollHandle = null;
+      let timeoutHandle = null;
+
+      const finish = callback => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (pollHandle) {
+          clearInterval(pollHandle);
+        }
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
+        unsubscribe();
+        callback();
+      };
+
+      const evaluateSnapshot = snapshot => {
+        if (!snapshot || !terminalStates.includes(snapshot.state)) {
+          return false;
+        }
+        finish(() => {
+          transcribeInProgress = false;
+          try {
+            resolve(resolveFromJobState(snapshot));
+          } catch (errorPayload) {
+            reject(errorPayload);
+          }
+        });
+        return true;
+      };
+
       const unsubscribe = jobEngine.subscribe(event => {
         if (event.job_id !== job.job_id || event.type !== 'job_state') {
           return;
         }
-
-        if (['succeeded', 'failed', 'canceled'].includes(event.state)) {
-          unsubscribe();
-          transcribeInProgress = false;
-          const completed = jobEngine.getJob(job.job_id);
-          if (event.state === 'succeeded') {
-            resolve({
-              ok: true,
-              data: recipeCatalog.materializeOutputs('transcribe_folder', completed),
-              job_id: job.job_id
-            });
-          } else if (event.state === 'canceled') {
-            reject({ ok: false, error: { message: 'Transcription canceled' }, job_id: job.job_id });
-          } else {
-            reject({ ok: false, error: completed?.errors?.[0]?.error || { message: 'Transcription failed' }, job_id: job.job_id });
-          }
-        }
+        evaluateSnapshot(jobEngine.getJob(job.job_id) || { job_id: job.job_id, state: event.state });
       });
+
+      pollHandle = setInterval(() => {
+        evaluateSnapshot(jobEngine.getJob(job.job_id));
+      }, TRANSCRIBE_POLL_INTERVAL_MS);
+
+      timeoutHandle = setTimeout(() => {
+        finish(() => {
+          const latest = jobEngine.getJob(job.job_id) || job;
+          transcribeInProgress = !terminalStates.includes(latest.state);
+          reject({
+            ok: false,
+            error: {
+              message: `Timed out waiting for transcription completion after ${waitTimeoutMs}ms`,
+              state: latest.state
+            },
+            job_id: job.job_id
+          });
+        });
+      }, waitTimeoutMs);
+
+      evaluateSnapshot(jobEngine.getJob(job.job_id) || job);
     });
   });
 
