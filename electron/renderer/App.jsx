@@ -29,6 +29,7 @@ function App() {
     media: true,
     platform: true
   });
+  const [activeTranscribeJobId, setActiveTranscribeJobId] = React.useState(null);
 
   const formatElapsedTime = React.useCallback(milliseconds => {
     if (!Number.isFinite(milliseconds) || milliseconds < 0) {
@@ -85,6 +86,36 @@ function App() {
     }
   }, []);
 
+  const applyStructuredTranscribeProgress = React.useCallback(event => {
+    if (!event || event.worker !== 'media') {
+      return;
+    }
+
+    if (event.state === 'running') {
+      appendTranscribeProgress(`Transcribe step running (${event.step_id})`);
+      return;
+    }
+
+    if (event.state === 'succeeded') {
+      const output = event.output || {};
+      const completed = Number(output.files_processed || 0);
+      const failed = Array.isArray(output.failures) ? output.failures.length : 0;
+      const total = completed + failed;
+      setTranscribeStatus(prev => ({ ...prev, total, completed, failed, currentFile: '' }));
+      appendTranscribeProgress(`Transcribe complete: ${completed}/${total} succeeded (${failed} failed)`);
+      return;
+    }
+
+    if (event.state === 'failed') {
+      appendTranscribeProgress(`Transcribe failed: ${event.error?.message || 'unknown error'}`);
+      return;
+    }
+
+    if (event.state === 'canceled') {
+      appendTranscribeProgress('Transcribe canceled');
+    }
+  }, [appendTranscribeProgress]);
+
   const appendLog = msg => {
     setLog(prev => {
       const next = [...prev, msg];
@@ -138,11 +169,23 @@ function App() {
       }
     });
 
+    const unsubscribeJobEvents = window.electronAPI.onJobEvent(event => {
+      if (event?.type === 'step_progress') {
+        applyStructuredTranscribeProgress(event);
+      }
+      if (event?.type === 'job_state' && event?.job_id === activeTranscribeJobId) {
+        if (['succeeded', 'failed', 'canceled'].includes(event.state)) {
+          setActiveTranscribeJobId(null);
+        }
+      }
+    });
+
     return () => {
       unsubscribeStatus && unsubscribeStatus();
       unsubscribeMessage && unsubscribeMessage();
+      unsubscribeJobEvents && unsubscribeJobEvents();
     };
-  }, []);
+  }, [activeTranscribeJobId, applyStructuredTranscribeProgress, appendTranscribeProgress, parseTranscribeProgress]);
 
 
   React.useEffect(() => {
@@ -309,6 +352,9 @@ function App() {
 
     try {
       const result = await window.electronAPI.transcribeFolder(folderPath, { useGpu: gpuEnabled });
+      if (result?.job_id) {
+        setActiveTranscribeJobId(result.job_id);
+      }
       const outputs = Array.isArray(result?.data?.outputs)
         ? result.data.outputs
         : Array.isArray(result?.outputs)
