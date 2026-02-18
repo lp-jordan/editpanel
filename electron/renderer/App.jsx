@@ -85,13 +85,13 @@ function App() {
       if (payload?.event !== 'message' || typeof payload?.message !== 'string') return;
 
       const message = payload.message;
-      const discoverMatch = message.match(/Transcribe: discovered\s+(\d+)\s+supported files/i);
+      const discoverMatch = message.match(/Transcribe:\s+(?:discovered\s+(\d+)\s+supported files|queued\s+(\d+)\s+files?(?:\s+from\b.*)?)/i);
       const processingMatch = message.match(/Transcribe:\s+\[(\d+)\/(\d+)\]\s+processing\s+(.+)$/i);
       const doneMatch = message.match(/Transcribe:\s+done\s+(.+)$/i);
       const failedMatch = message.match(/Transcribe:\s+failed\s+(.+)\s+\(/i);
 
       if (discoverMatch) {
-        const discovered = Number(discoverMatch[1] || 0);
+        const discovered = Number(discoverMatch[1] || discoverMatch[2] || 0);
         setTranscribeProgress({
           total: discovered,
           completed: 0,
@@ -105,11 +105,17 @@ function App() {
       }
 
       if (processingMatch) {
+        const processingIndex = Number(processingMatch[1] || 0);
+        const processingTotal = Number(processingMatch[2] || 0);
         setTranscribeProgress(prev => ({
           ...prev,
-          total: Number(processingMatch[2] || prev.total || 0),
+          total: processingTotal || prev.total || 0,
+          completed: processingIndex === 1
+            ? 0
+            : (processingIndex > 0 ? Math.max(prev.completed, processingIndex - 1) : prev.completed),
+          failed: processingIndex === 1 ? 0 : prev.failed,
           currentSource: processingMatch[3] || prev.currentSource,
-          startedAt: prev.startedAt || Date.now(),
+          startedAt: processingIndex === 1 ? Date.now() : (prev.startedAt || Date.now()),
           updatedAt: Date.now()
         }));
         return;
