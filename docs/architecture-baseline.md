@@ -169,3 +169,16 @@ Measured using:
 - Startup latency must not regress beyond baseline by agreed threshold.
 - First-command latency must not regress beyond baseline by agreed threshold.
 - Suggested initial threshold (until CI perf harness exists): no worse than **+15% p95** vs baseline.
+
+
+## 5) Workflow reliability guarantees
+
+- **Step fingerprinting** is computed from command + normalized payload, source signatures (mtime/size/checksum), and tool versions (`ffmpeg`, transcribe engine, resolve worker version).
+- **Output validation contracts** are per-step and enforced before success is accepted and before cached outputs are reused.
+  - `transcribe_output` requires non-empty outputs and existing non-empty transcript artifacts.
+- **Step cache store** persists `fingerprint -> output metadata` with TTL support and a manual invalidation command (`npm run cache:invalidate`).
+- **Retry policy matrix** is worker-aware:
+  - platform upload commands use exponential backoff + jitter,
+  - resolve commands are not retried unless explicitly marked safe,
+  - media commands retry transient I/O-style failures only.
+- **Exactly-once semantics** for platform uploads are enforced by injecting deterministic idempotency keys when one is not provided.

@@ -2,6 +2,7 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
+const { StepCacheStore, buildStepFingerprint, validateOutputContract } = require('./step_cache');
 
 const JOB_STATES = Object.freeze({
   queued: 'queued',
@@ -46,6 +47,7 @@ class JobEngine {
     this.sendStepRequest = options.sendStepRequest;
     this.forceKillWorker = options.forceKillWorker;
     this.persistence = createPersistence(options.persistencePath);
+    this.stepCache = new StepCacheStore(options.stepCachePath || path.join(path.dirname(options.persistencePath), 'step-cache.json'));
     this.emitter = new EventEmitter();
     this.jobs = this.persistence.hydrate();
     this.idempotencyIndex = new Map();
@@ -128,7 +130,12 @@ class JobEngine {
         finished_at: null,
         output: null,
         error: null,
-        cancellation: { requested: false }
+        cancellation: { requested: false },
+        cache_policy: step.cache_policy || { enabled: false, ttl_ms: 0 },
+        output_contract: step.output_contract || { type: 'non_null' },
+        tool_versions: step.tool_versions || {},
+        fingerprint: null,
+        retry_policy: step.retry_policy || {}
       })),
       outputs: [],
       errors: []
@@ -194,6 +201,35 @@ class JobEngine {
     }
   }
 
+  async sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  classifyRetry(step, errorMessage) {
+    const msg = String(errorMessage || '').toLowerCase();
+    if (step.worker === 'resolve') {
+      const safe = Boolean(step.retry_policy?.safe);
+      return { retryable: safe, reason: safe ? 'explicitly-safe-resolve-command' : 'resolve-no-blind-retries' };
+    }
+    if (step.worker === 'platform' && /upload/.test(step.cmd)) {
+      return { retryable: true, reason: 'platform-upload-backoff' };
+    }
+    if (step.worker === 'media') {
+      const transient = /(eio|ebusy|enfile|emfile|eagain|timed out|timeout|temporar|econnreset|io error)/.test(msg);
+      return { retryable: transient, reason: transient ? 'transient-media-io' : 'non-transient-media-error' };
+    }
+    return { retryable: false, reason: 'default-no-retry' };
+  }
+
+  backoffDelay(step) {
+    const attempt = Math.max(1, Number(step.attempt || 1));
+    const base = Math.max(50, Number(step.retry_policy?.backoff_ms || 250));
+    const exp = Math.min(8, attempt - 1);
+    const raw = base * (2 ** exp);
+    const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(raw * 0.3)));
+    return raw + jitter;
+  }
+
   async runStep(jobId, stepId) {
     const job = this.jobs.get(jobId);
     if (!job) return;
@@ -208,15 +244,35 @@ class JobEngine {
     this.emitJobEvent({ type: 'step_progress', job_id: jobId, step_id: stepId, worker: step.worker, state: 'running' });
 
     const timeoutMs = job.timeout > 0 ? job.timeout : 0;
-    const maxAttempts = Math.max(1, Number(job.retry_policy?.max_attempts || 1));
+    const fingerprint = buildStepFingerprint(step, step.tool_versions || {});
+    step.fingerprint = fingerprint.digest;
+    const ttlMs = Math.max(0, Number(step.cache_policy?.ttl_ms || 0));
+    const cached = step.cache_policy?.enabled ? this.stepCache.get(fingerprint.digest, ttlMs) : null;
+    if (cached && validateOutputContract(step, cached.output)) {
+      step.state = JOB_STATES.succeeded;
+      step.finished_at = Date.now();
+      step.output = cached.output;
+      job.outputs.push({ step_id: step.step_id, output: step.output, finished_at: step.finished_at, cached: true });
+      this.persist(job);
+      this.emitJobEvent({ type: 'step_progress', job_id: jobId, step_id: stepId, worker: step.worker, state: 'succeeded', output: step.output, cached: true, timing_ms: step.finished_at - step.started_at });
+      this.activeCounts[step.worker] = Math.max(0, this.activeCounts[step.worker] - 1);
+      this.drainOwnerQueue(step.worker);
+      this.scheduleRunnableSteps(job);
+      return;
+    }
+    const maxAttempts = Math.max(1, Number(step.retry_policy?.max_attempts || job.retry_policy?.max_attempts || 1));
     let timeoutHandle = null;
     let forcedKillHandle = null;
 
     try {
+      const platformIdempotency = step.worker === 'platform' && /upload/.test(step.cmd)
+        ? { idempotency_key: step.payload.idempotency_key || `${job.job_id}:${step.step_id}:${fingerprint.digest}` }
+        : {};
       const requestPromise = this.sendStepRequest({
         worker: step.worker,
         cmd: step.cmd,
         ...step.payload,
+        ...platformIdempotency,
         trace_id: `${job.job_id}:${step.step_id}:${step.attempt}`
       });
 
@@ -234,9 +290,21 @@ class JobEngine {
         throw new Error(response?.error?.message || response?.error || 'step failed');
       }
 
+      if (!validateOutputContract(step, response.data)) {
+        throw new Error('output validation failed for step contract');
+      }
       step.state = JOB_STATES.succeeded;
       step.finished_at = Date.now();
       step.output = response.data;
+      if (step.cache_policy?.enabled) {
+        this.stepCache.set(fingerprint.digest, {
+          output: step.output,
+          step_id: step.step_id,
+          command: step.cmd,
+          source_signatures: fingerprint.sourceSignatures,
+          tool_versions: fingerprint.toolVersions
+        });
+      }
       job.outputs.push({ step_id: step.step_id, output: step.output, finished_at: step.finished_at });
       this.emitJobEvent({
         type: 'step_progress',
@@ -252,13 +320,18 @@ class JobEngine {
       if (isCancelled) {
         step.state = JOB_STATES.canceled;
         step.error = { message: 'canceled' };
-      } else if (step.attempt < maxAttempts) {
-        step.state = JOB_STATES.queued;
-        step.error = { message: error.message };
       } else {
-        step.state = JOB_STATES.failed;
-        step.error = { message: error.message };
-        job.errors.push({ step_id: step.step_id, error: step.error, failed_at: Date.now() });
+        const retryDecision = this.classifyRetry(step, error.message);
+        if (step.attempt < maxAttempts && retryDecision.retryable) {
+          const delayMs = this.backoffDelay(step);
+          await this.sleep(delayMs);
+          step.state = JOB_STATES.queued;
+          step.error = { message: error.message, retry_reason: retryDecision.reason, retry_delay_ms: delayMs };
+        } else {
+          step.state = JOB_STATES.failed;
+          step.error = { message: error.message, retry_reason: retryDecision.reason };
+          job.errors.push({ step_id: step.step_id, error: step.error, failed_at: Date.now() });
+        }
       }
       step.finished_at = Date.now();
       this.emitJobEvent({

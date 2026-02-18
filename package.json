@@ -7,7 +7,8 @@
     "test": "echo 'No tests'",
     "baseline:latency": "node scripts/baseline-latency.js",
     "test:recipes": "node scripts/validate-recipes.js",
-    "test:routing": "node scripts/regression-worker-routing.js"
+    "test:routing": "node scripts/regression-worker-routing.js",
+    "cache:invalidate": "node scripts/invalidate-step-cache.js"
   },
   "dependencies": {
     "dictionary-en": "^4.0.0",
