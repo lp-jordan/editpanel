@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, screen } = require('electron');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -379,9 +379,16 @@ function restartMediaWorker(reason = 'media worker restart requested') {
 }
 
 function createWindow() {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const workAreaSize = primaryDisplay?.workAreaSize || { width: 1440, height: 900 };
+  const width = Math.max(1100, Math.min(1440, Math.round(workAreaSize.width * 0.72)));
+  const height = Math.max(760, Math.min(960, Math.round(workAreaSize.height * 0.82)));
+
   win = new BrowserWindow({
-    width: 800,
-    height: 600,
+    width,
+    height,
+    minWidth: 980,
+    minHeight: 700,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
