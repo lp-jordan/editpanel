@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, screen, Tray, nativeImage } = require('electron');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -29,6 +29,8 @@ const PING_TIMEOUT_MS = 3000;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
 
 let win;
+let tray = null;
+let isQuitting = false;
 let healthTimer = null;
 let jobEngine = null;
 let recipeCatalog = null;
@@ -368,6 +370,54 @@ function restartMediaWorker(reason = 'media worker restart requested') {
   startWorker(state);
 }
 
+function createTray() {
+  const iconPath = path.join(__dirname, '..', 'assets', 'tray-icon.png');
+  let icon;
+  try {
+    icon = nativeImage.createFromPath(iconPath);
+    if (process.platform === 'darwin') {
+      icon.setTemplateImage(true);
+    }
+  } catch (_err) {
+    icon = nativeImage.createEmpty();
+  }
+
+  tray = new Tray(icon);
+  tray.setToolTip('EditPanel');
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Show EditPanel',
+      click: () => {
+        if (win) {
+          win.show();
+          win.focus();
+        } else {
+          createWindow();
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit EditPanel',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+  tray.setContextMenu(contextMenu);
+
+  tray.on('click', () => {
+    if (win) {
+      win.show();
+      win.focus();
+    } else {
+      createWindow();
+    }
+  });
+}
+
 function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay();
   const workAreaSize = primaryDisplay?.workAreaSize || { width: 1440, height: 900 };
@@ -388,6 +438,13 @@ function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  win.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      win.hide();
+    }
+  });
 }
 
 function broadcastJobEvent(event) {
@@ -493,6 +550,11 @@ app.whenReady().then(() => {
   ipcMain.handle('spellcheck:misspellings', misspellings);
   ipcMain.handle('spellcheck:suggestions', suggestions);
 
+  ipcMain.on('app:quit', () => {
+    isQuitting = true;
+    app.quit();
+  });
+
   ipcMain.handle('leaderpass-call', async (_, action = {}) => {
     const payload = typeof action === 'string' ? { cmd: action } : action;
     if (!payload || !payload.cmd) {
@@ -501,26 +563,29 @@ app.whenReady().then(() => {
     return sendWorkerRequest(payload);
   });
 
+  createTray();
   createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (win) {
+      win.show();
+      win.focus();
+    } else {
       createWindow();
     }
   });
 });
 
 app.on('window-all-closed', () => {
-  if (healthTimer) {
-    clearInterval(healthTimer);
-    healthTimer = null;
-  }
-  if (controlPlane) {
-    controlPlane.dispose();
-    controlPlane = null;
-  }
+  // Keep the main process alive in the background.
+  // Workers, job engine, and background tasks continue running.
+  // User can reopen the window from the tray icon.
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
+  if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+  if (controlPlane) { controlPlane.dispose(); controlPlane = null; }
   Object.values(workers).forEach(stopWorker);
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  if (tray) { tray.destroy(); tray = null; }
 });

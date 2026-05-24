@@ -80,6 +80,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   updatePreferences(patch = {}) {
     return ipcRenderer.invoke('preferences:update', patch);
+  },
+
+  quit() {
+    ipcRenderer.send('app:quit');
   }
 });
 
