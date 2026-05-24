@@ -16,10 +16,6 @@ const COMMAND_OWNER = Object.freeze({
   update_text: WORKERS.resolve,
   goto: WORKERS.resolve,
 
-  transcribe: WORKERS.media,
-  transcribe_folder: WORKERS.media,
-  test_cuda: WORKERS.media,
-
   spellcheck: WORKERS.resolve,
   lp_base_export: WORKERS.resolve,
   shutdown: WORKERS.resolve,
@@ -37,9 +33,6 @@ const COMMAND_SCHEMAS = Object.freeze({
   create_project_bins: { required: [] },
   update_text: { required: [] },
   goto: { required: [] },
-  transcribe: { required: [] },
-  transcribe_folder: { required: ['folder_path'], types: { folder_path: 'string', use_gpu: 'boolean', engine: 'string' } },
-  test_cuda: { required: [] },
   spellcheck: { required: [] },
   lp_base_export: { required: [] },
   shutdown: { required: [] },

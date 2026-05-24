@@ -48,68 +48,6 @@
     }
   },
   {
-    "id": "transcribe_folder",
-    "version": "1.0.0",
-    "description": "Transcribe all audio files in a folder.",
-    "inputs": {
-      "folder": {
-        "type": "string",
-        "description": "Absolute folder path containing audio files."
-      },
-      "use_gpu": {
-        "type": "boolean",
-        "description": "Enable GPU/CUDA when available."
-      },
-      "engine": {
-        "type": "string",
-        "description": "Transcription engine name."
-      },
-      "output_dir": {
-        "type": "string",
-        "description": "Optional output folder for transcript files."
-      }
-    },
-    "defaults": {
-      "use_gpu": false,
-      "engine": "local",
-      "output_dir": ""
-    },
-    "steps": [
-      {
-        "id": "transcribe",
-        "worker": "media",
-        "command": "transcribe_folder",
-        "payload": {
-          "folder_path": "${input.folder}",
-          "use_gpu": "${input.use_gpu}",
-          "engine": "${input.engine}",
-          "output_dir": "${input.output_dir}"
-        },
-        "cache_policy": {
-          "enabled": true,
-          "ttl_ms": 86400000
-        },
-        "output_contract": {
-          "type": "transcribe_output"
-        },
-        "tool_versions": {
-          "transcribe": "${input.engine}",
-          "ffmpeg": "auto",
-          "resolve": "n/a"
-        },
-        "retry_policy": {
-          "max_attempts": 3,
-          "backoff_ms": 500
-        }
-      }
-    ],
-    "outputs": {
-      "files_processed": "${steps.transcribe.files_processed}",
-      "failures": "${steps.transcribe.failures}",
-      "outputs": "${steps.transcribe.outputs}"
-    }
-  },
-  {
     "id": "prepare_project",
     "version": "1.0.0",
     "description": "Connect to Resolve and create standard project bins.",

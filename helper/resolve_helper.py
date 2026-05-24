@@ -178,11 +178,7 @@ def main() -> None:
                 raise ValueError(f"unknown command: {cmd!r}")
 
             handler = HANDLERS[cmd]
-            # Handlers receive the entire request so they can read params freely.
-            if cmd in {"transcribe", "transcribe_folder", "test_cuda"}:
-                data = handler(request, log_func=log)
-            else:
-                data = handler(request)
+            data = handler(request)
             _print(_resp_ok(req_id, data))
         except Exception as exc:
             # Best-effort error response; include id if present so caller can match it.

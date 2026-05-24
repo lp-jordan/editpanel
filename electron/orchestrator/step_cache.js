@@ -101,7 +101,6 @@ function detectFfmpegVersion() {
 function resolveToolVersions(explicit = {}) {
   return {
     ffmpeg: explicit.ffmpeg || detectFfmpegVersion(),
-    transcribe: explicit.transcribe || (explicit.engine || 'unknown'),
     resolve: explicit.resolve || process.env.RESOLVE_WORKER_VERSION || 'unknown'
   };
 }
@@ -182,25 +181,6 @@ function validateOutputContract(step, output) {
 
   if (contract.type === 'non_null') {
     return output !== null && output !== undefined;
-  }
-
-  if (contract.type === 'transcribe_output') {
-    if (!output || typeof output !== 'object') return false;
-    if (!Array.isArray(output.outputs) || output.outputs.length === 0) return false;
-
-    for (const entry of output.outputs) {
-      if (!entry || !entry.file || !Array.isArray(entry.output_paths) || entry.output_paths.length === 0) {
-        return false;
-      }
-      if (!fs.existsSync(entry.file)) return false;
-      for (const outputPath of entry.output_paths) {
-        if (!fs.existsSync(outputPath)) return false;
-        const stat = fs.statSync(outputPath);
-        if (!stat.isFile() || stat.size <= 0) return false;
-      }
-    }
-
-    return true;
   }
 
   return true;

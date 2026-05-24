@@ -46,18 +46,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('worker-event', handler);
   },
 
-  transcribeFolder(folderPath, options = {}) {
-    return ipcRenderer.invoke('audio:transcribe-folder', { folderPath, ...options });
-  },
-
-  testGpu() {
-    return ipcRenderer.invoke('audio:test-gpu');
-  },
-
-  cancelTranscribe() {
-    return ipcRenderer.invoke('audio:cancel-transcribe');
-  },
-
   listJobs() {
     return ipcRenderer.invoke('jobs:list');
   },

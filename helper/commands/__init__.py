@@ -10,7 +10,6 @@ from .shutdown import handle_shutdown
 from .spellcheck import handle_spellcheck
 from .update_text import handle_update_text
 from .goto import handle_goto
-from .transcribe import handle_transcribe, handle_test_cuda
 
 
 RESOLVE_HANDLERS = {
@@ -27,11 +26,8 @@ RESOLVE_HANDLERS = {
     "goto": handle_goto,
 }
 
-MEDIA_HANDLERS = {
-    "transcribe": handle_transcribe,
-    "transcribe_folder": handle_transcribe,
-    "test_cuda": handle_test_cuda,
-}
+# Reserved for future media worker commands (audit mode, etc.)
+MEDIA_HANDLERS = {}
 
 # Backwards compatibility for older entrypoint.
 HANDLERS = {**RESOLVE_HANDLERS, **MEDIA_HANDLERS}
