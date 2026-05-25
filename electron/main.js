@@ -7,6 +7,7 @@ const readline = require('readline');
 const { misspellings, suggestions } = require('./spellcheck');
 const { LposClient } = require('./workers/lpos_client');
 const { JobsDb } = require('./store/jobs-db');
+const { listSessions: atemListSessions, ingestSessions: atemIngestSessions } = require('./workers/atem_ftp');
 const {
   WORKERS,
   RetryableError,
@@ -42,6 +43,7 @@ let controlPlane = null;
 let lposClient = null;
 let lposHeartbeatTimer = null;
 let jobsDb = null;
+let atemCancelToken = null; // { canceled: boolean }
 
 // Resolve connection state — updated by worker events, read by heartbeat
 let resolveConnected = false;
@@ -550,6 +552,7 @@ app.whenReady().then(() => {
   // --- Result items DB ---
   try {
     jobsDb = new JobsDb(path.join(app.getPath('userData'), 'jobs-history.db'));
+    jobsDb.clearStaleAtemLogs(); // mark any interrupted ingest runs from prior session
   } catch (err) {
     console.error('Failed to open jobs-history.db:', err.message);
   }
@@ -762,6 +765,110 @@ app.whenReady().then(() => {
     try {
       const data = await lposClient.getAssetComments(projectId, assetId);
       return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // --- ATEM FTP IPC ---
+
+  ipcMain.handle('atem:list-sessions', async (_, host) => {
+    const prefs = controlPlane ? controlPlane.getPreferences() : {};
+    const ftpHost = host || prefs.atemFtpHost || '172.20.10.241';
+    return atemListSessions(ftpHost);
+  });
+
+  ipcMain.handle('atem:start-ingest', (_, { host, sessions, destination }) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    if (!host || !sessions?.length || !destination) {
+      return { ok: false, error: 'host, sessions, and destination are required' };
+    }
+
+    // Create DB log entries for each session up-front, then fire ingest async.
+    const logIds = {};
+    for (const session of sessions) {
+      try {
+        logIds[session.name] = jobsDb.createAtemLog(session.name, host, destination, session.fileCount);
+      } catch (err) {
+        console.error('atem:start-ingest createAtemLog error:', err.message);
+      }
+    }
+
+    // Cancel any prior ingest
+    if (atemCancelToken) atemCancelToken.canceled = true;
+    atemCancelToken = { canceled: false };
+    const token = atemCancelToken;
+
+    function broadcastAtem(event) {
+      BrowserWindow.getAllWindows().forEach(w => w.webContents.send('atem-progress', event));
+    }
+
+    // Fire and forget — progress arrives via 'atem-progress' events
+    atemIngestSessions(
+      host,
+      21,
+      sessions,
+      destination,
+      logIds,
+      (event) => {
+        // Mirror DB writes here
+        if (event.type === 'file-done' && jobsDb) {
+          try {
+            jobsDb.markAtemFileDone(
+              event.logId, event.file, event.destPath,
+              event.camInfo?.camNumber ?? null,
+              event.camInfo?.takeNumber ?? null,
+              event.size ?? 0
+            );
+            // Increment files_done on the log
+            const log = jobsDb.listAtemLogs(1, event.session)[0];
+            if (log) jobsDb.updateAtemLog(event.logId, { filesDone: log.files_done + 1 });
+          } catch (_) {}
+        }
+        if ((event.type === 'file-error' || event.type === 'file-skipped') && jobsDb) {
+          try {
+            if (event.type === 'file-error') {
+              jobsDb.markAtemFileFailed(event.logId, event.file, event.error);
+            } else {
+              // Skipped = already on disk; count as done
+              const log = jobsDb.listAtemLogs(1, event.session)[0];
+              if (log) jobsDb.updateAtemLog(event.logId, { filesDone: log.files_done + 1 });
+            }
+          } catch (_) {}
+        }
+        broadcastAtem(event);
+      },
+      token
+    ).then(result => {
+      // Finalize all log entries
+      for (const session of sessions) {
+        if (!jobsDb) break;
+        try {
+          const state = result.ok ? 'completed' : (result.error === 'canceled' ? 'canceled' : 'failed');
+          jobsDb.updateAtemLog(logIds[session.name], {
+            state,
+            finishedAt: Date.now(),
+            error: result.error || null
+          });
+        } catch (_) {}
+      }
+      broadcastAtem({ type: 'ingest-complete', ok: result.ok, error: result.error });
+    }).catch(err => {
+      broadcastAtem({ type: 'ingest-error', error: err.message });
+    });
+
+    return { ok: true, logIds };
+  });
+
+  ipcMain.handle('atem:cancel-ingest', () => {
+    if (atemCancelToken) atemCancelToken.canceled = true;
+    return { ok: true };
+  });
+
+  ipcMain.handle('atem:ingest-logs', async (_, limit = 30) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return { ok: true, data: jobsDb.listAtemLogs(limit) };
     } catch (err) {
       return { ok: false, error: err.message };
     }

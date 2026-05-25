@@ -105,6 +105,26 @@ contextBridge.exposeInMainWorld('lposAPI', {
   }
 });
 
+contextBridge.exposeInMainWorld('atemAPI', {
+  listSessions(host) {
+    return ipcRenderer.invoke('atem:list-sessions', host);
+  },
+  startIngest(payload) {
+    return ipcRenderer.invoke('atem:start-ingest', payload);
+  },
+  cancelIngest() {
+    return ipcRenderer.invoke('atem:cancel-ingest');
+  },
+  getIngestLogs(limit = 30) {
+    return ipcRenderer.invoke('atem:ingest-logs', limit);
+  },
+  onProgress(callback) {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('atem-progress', handler);
+    return () => ipcRenderer.removeListener('atem-progress', handler);
+  }
+});
+
 contextBridge.exposeInMainWorld('resultsAPI', {
   init(jobId, itemType, label, items) {
     return ipcRenderer.invoke('results:init', jobId, itemType, label, items);

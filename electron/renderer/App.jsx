@@ -137,9 +137,10 @@ function App() {
   const [dashboard, setDashboard] = React.useState({ jobs: [], logs_by_job_step: {} });
   const [jobPanelOpen, setJobPanelOpen] = React.useState(false);
   const [activeResultJobId, setActiveResultJobId] = React.useState(null);
+  const [atemIngestOpen, setAtemIngestOpen] = React.useState(false);
 
   // Settings state
-  const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '' });
+  const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '', atemHost: '' });
   const [settingsSaved, setSettingsSaved] = React.useState(false);
   const [lposUrl, setLposUrl] = React.useState('');
   // 'unconfigured' | 'ok' | 'error' | 'no-secret'
@@ -167,7 +168,8 @@ function App() {
         const name = prefs.displayName || '';
         // Stored under lposBaseUrl (the canonical key written on save)
         const url = prefs.lposBaseUrl || 'https://lpos.tail856ed3.ts.net';
-        setSettingsDraft({ displayName: name, lposUrl: url });
+        const atem = prefs.atemFtpHost || '172.20.10.241';
+        setSettingsDraft({ displayName: name, lposUrl: url, atemHost: atem });
         setLposUrl(url);
       })
       .catch(() => null);
@@ -380,7 +382,8 @@ function App() {
     if (!window.electronAPI?.updatePreferences) return;
     window.electronAPI.updatePreferences({
       displayName: settingsDraft.displayName,
-      lposBaseUrl: settingsDraft.lposUrl   // canonical key expected by main.js
+      lposBaseUrl: settingsDraft.lposUrl,
+      atemFtpHost: settingsDraft.atemHost
     }).then(() => {
       setLposUrl(settingsDraft.lposUrl);
       setLposStatus('unconfigured');        // will re-check on next poll cycle
@@ -395,11 +398,11 @@ function App() {
         {
           key: 'atem-ingest',
           label: 'ATEM Footage',
-          description: 'Ingest footage from ATEM ISO Extreme SDI over FTP, with automatic folder organisation and naming.',
-          actionLabel: 'Coming Soon',
-          onClick: () => {},
+          description: 'Ingest footage from ATEM ISO Extreme SDI over FTP, organised by session and camera.',
+          actionLabel: 'Browse ATEM',
+          onClick: () => setAtemIngestOpen(true),
           requiresResolve: false,
-          comingSoon: true
+          comingSoon: false
         },
         {
           key: 'r2-manager',
@@ -610,6 +613,26 @@ function App() {
               </div>
             </section>
 
+            <section className="panel settings-section">
+              <div className="list-header">
+                <p className="eyebrow">Ingest</p>
+                <h2 className="section-title">ATEM</h2>
+                <p className="section-copy">Connection settings for the ATEM ISO Extreme SDI FTP server.</p>
+              </div>
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="atem-host">FTP IP Address</label>
+                <input
+                  id="atem-host"
+                  type="text"
+                  className="settings-input"
+                  placeholder="172.20.10.241"
+                  value={settingsDraft.atemHost}
+                  onChange={(e) => setSettingsDraft((prev) => ({ ...prev, atemHost: e.target.value }))}
+                />
+                <p className="settings-hint">The local IP address of the ATEM ISO Extreme SDI. Only needs changing if your network layout differs.</p>
+              </div>
+            </section>
+
             <div className="settings-actions">
               <button type="button" className="btn" onClick={handleSaveSettings}>
                 {settingsSaved ? 'Saved' : 'Save Settings'}
@@ -690,6 +713,15 @@ function App() {
         <ResultOverlay
           jobId={activeResultJobId}
           onClose={() => setActiveResultJobId(null)}
+        />
+      )}
+      {atemIngestOpen && (
+        <AtemIngestOverlay
+          open={atemIngestOpen}
+          onClose={() => setAtemIngestOpen(false)}
+          atemHost={settingsDraft.atemHost || '172.20.10.241'}
+          resolveConnected={connected}
+          resolveProject={project}
         />
       )}
       <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />

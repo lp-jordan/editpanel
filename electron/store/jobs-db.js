@@ -41,6 +41,35 @@ class JobsDb {
       );
 
       CREATE INDEX IF NOT EXISTS idx_result_items_job_id ON result_items(job_id);
+
+      CREATE TABLE IF NOT EXISTS atem_ingest_log (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session     TEXT    NOT NULL,
+        ftp_host    TEXT    NOT NULL,
+        dest        TEXT    NOT NULL,
+        file_count  INTEGER NOT NULL DEFAULT 0,
+        files_done  INTEGER NOT NULL DEFAULT 0,
+        state       TEXT    NOT NULL DEFAULT 'running',
+        started_at  INTEGER NOT NULL,
+        finished_at INTEGER,
+        error       TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS atem_ingest_files (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        log_id      INTEGER NOT NULL,
+        session     TEXT    NOT NULL,
+        filename    TEXT    NOT NULL,
+        dest_path   TEXT    NOT NULL DEFAULT '',
+        cam_number  INTEGER,
+        take_number INTEGER,
+        size_bytes  INTEGER NOT NULL DEFAULT 0,
+        state       TEXT    NOT NULL DEFAULT 'pending',
+        error       TEXT,
+        UNIQUE(log_id, filename)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_atem_log_session ON atem_ingest_log(session);
     `);
   }
 
@@ -148,6 +177,72 @@ class JobsDb {
     );
     stmt.run(jobId);
     return { ok: true };
+  }
+
+  // ─── ATEM ingest log ──────────────────────────────────────
+
+  /** Create a log entry for a new ingest run. Returns the new row id. */
+  createAtemLog(session, ftpHost, dest, fileCount) {
+    const stmt = this.db.prepare(
+      `INSERT INTO atem_ingest_log (session, ftp_host, dest, file_count, state, started_at)
+       VALUES (?, ?, ?, ?, 'running', ?)`
+    );
+    const result = stmt.run(session, ftpHost, dest, fileCount, Date.now());
+    return result.lastInsertRowid;
+  }
+
+  /** Update a log entry (partial update — only provided keys are written). */
+  updateAtemLog(id, { state, filesDone, error, finishedAt } = {}) {
+    const fields = [];
+    const values = [];
+    if (state      !== undefined) { fields.push('state = ?');       values.push(state); }
+    if (filesDone  !== undefined) { fields.push('files_done = ?');  values.push(filesDone); }
+    if (error      !== undefined) { fields.push('error = ?');       values.push(error); }
+    if (finishedAt !== undefined) { fields.push('finished_at = ?'); values.push(finishedAt); }
+    if (fields.length === 0) return;
+    values.push(id);
+    this.db.prepare(`UPDATE atem_ingest_log SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  }
+
+  /** Mark an individual file as done. */
+  markAtemFileDone(logId, filename, destPath, camNumber, takeNumber, sizeBytes) {
+    this.db.prepare(
+      `INSERT INTO atem_ingest_files (log_id, session, filename, dest_path, cam_number, take_number, size_bytes, state)
+       SELECT ?, session, ?, ?, ?, ?, ?, 'done' FROM atem_ingest_log WHERE id = ?
+       ON CONFLICT(log_id, filename) DO UPDATE SET state='done', dest_path=excluded.dest_path`
+    ).run(logId, filename, destPath, camNumber ?? null, takeNumber ?? null, sizeBytes ?? 0, logId);
+  }
+
+  /** Mark an individual file as failed. */
+  markAtemFileFailed(logId, filename, error) {
+    this.db.prepare(
+      `INSERT INTO atem_ingest_files (log_id, session, filename, dest_path, state, error)
+       SELECT ?, session, ?, '', 'failed', ? FROM atem_ingest_log WHERE id = ?
+       ON CONFLICT(log_id, filename) DO UPDATE SET state='failed', error=excluded.error`
+    ).run(logId, filename, error, logId);
+  }
+
+  /**
+   * Return recent ingest logs, newest first.
+   * Optionally filter by session name to check prior ingest status.
+   */
+  listAtemLogs(limit = 30, session = null) {
+    if (session) {
+      return this.db.prepare(
+        `SELECT * FROM atem_ingest_log WHERE session = ? ORDER BY started_at DESC LIMIT ?`
+      ).all(session, limit);
+    }
+    return this.db.prepare(
+      `SELECT * FROM atem_ingest_log ORDER BY started_at DESC LIMIT ?`
+    ).all(limit);
+  }
+
+  /** Mark any stale 'running' logs (e.g. from a crashed session) as interrupted. */
+  clearStaleAtemLogs() {
+    this.db.prepare(
+      `UPDATE atem_ingest_log SET state = 'interrupted', finished_at = ?
+       WHERE state = 'running'`
+    ).run(Date.now());
   }
 
   close() {
