@@ -24,6 +24,20 @@ const COMMAND_OWNER = Object.freeze({
   leaderpass_upload: WORKERS.platform
 });
 
+// Meta-commands are universal — every worker handles them in worker_runtime.py
+// regardless of MEDIA_HANDLERS/RESOLVE_HANDLERS contents. They bypass owner
+// validation in toRequestEnvelope/validateRequestEnvelope so the caller can
+// route them to any worker via explicitWorker.
+//
+// HISTORY: 'ping' was previously missing from COMMAND_OWNER, which caused
+// validateRequestEnvelope to throw "unknown command: ping" for every health
+// check. That synchronous throw was caught in healthCheckWorker and triggered
+// SIGTERM on the healthy worker, producing an endless ~10s SIGTERM/restart
+// loop for both the resolve and media workers — manifesting in the UI as
+// "constant connection problems with Resolve". Do not remove this set
+// without first making healthCheckWorker bypass envelope validation.
+const META_COMMANDS = Object.freeze(new Set(['ping']));
+
 const COMMAND_SCHEMAS = Object.freeze({
   connect: { required: [] },
   context: { required: [] },
@@ -84,6 +98,10 @@ function commandOwner(cmd) {
   return COMMAND_OWNER[cmd] || null;
 }
 
+function isMetaCommand(cmd) {
+  return META_COMMANDS.has(cmd);
+}
+
 function toRequestEnvelope(rawRequest = {}, explicitWorker = undefined) {
   const request = typeof rawRequest === 'string' ? { cmd: rawRequest } : { ...rawRequest };
   const worker = explicitWorker || request.worker || commandOwner(request.cmd);
@@ -121,15 +139,24 @@ function validateRequestEnvelope(envelope) {
   if (!envelope.cmd || typeof envelope.cmd !== 'string') {
     throw new UserError('cmd must be a non-empty string');
   }
+  if (!envelope.payload || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) {
+    throw new UserError('payload must be an object');
+  }
+
+  // Meta-commands (e.g. ping) skip owner/schema checks — any worker handles
+  // them. Without this branch, sending ping to a worker would throw
+  // "unknown command: ping" synchronously from healthCheckWorker and SIGTERM
+  // a healthy worker on every health-check tick.
+  if (isMetaCommand(envelope.cmd)) {
+    return;
+  }
+
   const owner = commandOwner(envelope.cmd);
   if (!owner) {
     throw new UserError(`unknown command: ${envelope.cmd}`);
   }
   if (owner !== envelope.worker) {
     throw new UserError(`misrouted command ${envelope.cmd}: expected worker=${owner}, got worker=${envelope.worker}`);
-  }
-  if (!envelope.payload || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) {
-    throw new UserError('payload must be an object');
   }
 
   const schema = COMMAND_SCHEMAS[envelope.cmd];
@@ -208,11 +235,13 @@ module.exports = {
   WORKERS,
   COMMAND_OWNER,
   COMMAND_SCHEMAS,
+  META_COMMANDS,
   UserError,
   RetryableError,
   FatalError,
   normalizeError,
   commandOwner,
+  isMetaCommand,
   toRequestEnvelope,
   validateRequestEnvelope,
   toWorkerWireMessage,

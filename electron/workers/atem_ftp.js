@@ -44,17 +44,16 @@ function camFolderName(camNumber) {
   return `CAM ${camNumber}`;
 }
 
-function makeClient(onLog) {
+function makeClient() {
   const client = new Client(10000); // 10-second socket timeout
-  // basic-ftp accepts a function for `verbose`; route it through onLog so the
-  // raw FTP dialogue (220 banner, USER/PASS, PASV reply, LIST, …) ends up in
-  // the SlideoutConsole. Previously this was hard-off, which made every FTP
-  // hang look identical and indistinguishable from "nothing happened".
-  if (typeof onLog === 'function') {
-    client.ftp.verbose = (msg) => onLog(`ftp> ${msg}`);
-  } else {
-    client.ftp.verbose = false;
-  }
+  // NOTE: do NOT route basic-ftp `verbose` into the console. The library
+  // dumps the entire LIST reply (every file on the drive) for each
+  // directory walked, which on a multi-session ATEM drive is tens of
+  // thousands of lines — enough to fill the SlideoutConsole and the
+  // launching terminal in seconds. If you need protocol-level FTP
+  // debugging, set `client.ftp.verbose = console.log` locally; do not
+  // forward it to the renderer.
+  client.ftp.verbose = false;
   return client;
 }
 
@@ -76,26 +75,25 @@ function makeClient(onLog) {
  */
 async function listSessions(host, port = DEFAULT_PORT, onLog = null) {
   const log = typeof onLog === 'function' ? onLog : () => {};
-  const client = makeClient(onLog);
+  const client = makeClient();
   try {
-    log(`access() → ${host}:${port} (anonymous)`);
+    log(`access → ${host}:${port}`);
     await client.access({ host, port, user: '', password: '' });
-    log('access() OK — listing root');
+    log('access ok, scanning sessions');
 
     // Root contains drive folder(s) — name is irrelevant, use first one found.
     const rootItems = await client.list('/');
     const drives = rootItems.filter(i => i.isDirectory);
-    log(`root has ${rootItems.length} entries, ${drives.length} directories`);
     if (drives.length === 0) {
       return { ok: false, error: 'No drive folder found on ATEM FTP root.' };
     }
 
     const drivePath = `/${drives[0].name}`;
-    log(`drive: ${drivePath} — listing sessions`);
     const sessionItems = await client.list(drivePath);
     const sessionDirs = sessionItems.filter(i => i.isDirectory);
-    log(`found ${sessionDirs.length} session directories`);
 
+    let kept = 0;
+    let skipped = 0;
     const sessions = [];
     for (const dir of sessionDirs) {
       const sessionPath = `${drivePath}/${dir.name}`;
@@ -111,15 +109,16 @@ async function listSessions(host, port = DEFAULT_PORT, onLog = null) {
         totalBytes = files.reduce((s, f) => s + f.size, 0);
       } catch (_err) {
         // No Video ISO Files folder — skip this session.
-        log(`session "${dir.name}" — no Video ISO Files folder, skipping`);
+        skipped++;
         continue;
       }
 
       if (files.length === 0) {
-        log(`session "${dir.name}" — 0 .mov files, skipping`);
+        skipped++;
         continue;
       }
 
+      kept++;
       sessions.push({
         name:           dir.name,
         ftpSessionPath: sessionPath,
@@ -130,6 +129,7 @@ async function listSessions(host, port = DEFAULT_PORT, onLog = null) {
       });
     }
 
+    log(`scanned ${sessionDirs.length} dirs: ${kept} sessions, ${skipped} skipped`);
     return { ok: true, data: sessions };
   } catch (err) {
     log(`error: ${err.code ? `[${err.code}] ` : ''}${err.message || err}`);
