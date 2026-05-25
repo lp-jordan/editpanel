@@ -12,7 +12,7 @@
  *   resolveConnected — boolean (future Resolve import toggle)
  *   resolveProject   — string  (future Resolve import toggle)
  */
-function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveProject }) {
+function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveProject, onLog }) {
   const DEFAULT_HOST = atemHost || '172.20.10.241';
 
   // ── Stage ──────────────────────────────────────────────
@@ -87,6 +87,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     setConnecting(true);
     setBrowseError(null);
     setSessions([]);
+    onLog?.(`[ATEM] Connecting to ${host}…`);
 
     try {
       // Load prior ingest logs for status badges
@@ -94,14 +95,29 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
       setIngestLogs(logsRes?.data ?? []);
     } catch (_) {}
 
-    const result = await window.atemAPI.listSessions(host);
+    let result;
+    try {
+      result = await window.atemAPI.listSessions(host);
+    } catch (err) {
+      setConnecting(false);
+      const msg = err?.message || String(err);
+      setBrowseError(`FTP error: ${msg}`);
+      onLog?.(`[ATEM] Error: ${msg}`);
+      return;
+    }
+
     setConnecting(false);
 
     if (!result?.ok) {
-      setBrowseError(result?.error || 'Could not connect to ATEM FTP');
+      const errMsg = result?.error || 'Could not connect to ATEM FTP';
+      setBrowseError(errMsg);
+      onLog?.(`[ATEM] Connect failed: ${errMsg}`);
       return;
     }
+
+    const count = result.data?.length ?? 0;
     setSessions(result.data ?? []);
+    onLog?.(`[ATEM] Connected — ${count} session${count !== 1 ? 's' : ''} found`);
   }
 
   function toggleSession(name) {

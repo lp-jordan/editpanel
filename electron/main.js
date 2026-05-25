@@ -484,6 +484,7 @@ function createWindow() {
     height,
     minWidth: 980,
     minHeight: 700,
+    frame: false,          // remove OS title bar and traffic-light buttons
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,

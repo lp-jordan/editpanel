@@ -45,7 +45,7 @@ function camFolderName(camNumber) {
 }
 
 function makeClient() {
-  const client = new Client();
+  const client = new Client(10000); // 10-second socket timeout
   client.ftp.verbose = false;
   return client;
 }

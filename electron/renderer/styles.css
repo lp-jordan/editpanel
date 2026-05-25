@@ -135,6 +135,33 @@ textarea:focus-visible {
   min-height: 100vh;
 }
 
+/* ─── Frameless window drag handle ───────────────────────── */
+/* Thin strip at the very top — OS uses it to move the window.
+   z-index 49 sits below overlays (80) so it never blocks their headers,
+   but above most content. Home page uses this handle; other pages rely
+   on the navbar background drag region defined below. */
+.window-drag-handle {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 14px;
+  -webkit-app-region: drag;
+  z-index: 49;
+}
+
+/* Make the navbar background area draggable (catches grabs above the pill).
+   The pill and all its buttons are explicitly no-drag so they stay clickable. */
+.navbar {
+  -webkit-app-region: drag;
+}
+.navbar-pill,
+.navbar-home,
+.navbar-link,
+.navbar-gear {
+  -webkit-app-region: no-drag;
+}
+
 .app-home,
 .app-inner {
   min-height: 100vh;

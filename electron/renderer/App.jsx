@@ -704,6 +704,9 @@ function App() {
 
   return (
     <div className="app-shell">
+      {/* Thin drag strip at the top — lets the user move the frameless window.
+          Kept below the overlay z-index so it never blocks overlay headers. */}
+      <div className="window-drag-handle" aria-hidden="true" />
       <div key={route} className="page-enter">
         {pageContent}
       </div>
@@ -730,6 +733,7 @@ function App() {
           atemHost={settingsDraft.atemHost || '172.20.10.241'}
           resolveConnected={connected}
           resolveProject={project}
+          onLog={appendLog}
         />
       )}
       <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />
