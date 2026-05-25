@@ -66,7 +66,7 @@ function makeClient() {
 async function listSessions(host, port = DEFAULT_PORT) {
   const client = makeClient();
   try {
-    await client.access({ host, port });
+    await client.access({ host, port, user: '', password: '' });
 
     // Root contains drive folder(s) — name is irrelevant, use first one found.
     const rootItems = await client.list('/');
@@ -134,7 +134,7 @@ async function ingestSessions(host, port = DEFAULT_PORT, sessions, destination, 
   });
 
   try {
-    await client.access({ host, port });
+    await client.access({ host, port, user: '', password: '' });
 
     for (const session of sessions) {
       const logId = logIds[session.name];
