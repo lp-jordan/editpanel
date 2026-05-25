@@ -133,7 +133,7 @@ function App() {
   const [log, setLog] = React.useState([]);
   const [connected, setConnected] = React.useState(false);
   const [consoleOpen, setConsoleOpen] = React.useState(false);
-  const [workerAvailability, setWorkerAvailability] = React.useState({ resolve: true, media: true, platform: true });
+  const [workerAvailability, setWorkerAvailability] = React.useState({ resolve: true, media: true });
   const [dashboard, setDashboard] = React.useState({ jobs: [], logs_by_job_step: {} });
   const [jobPanelOpen, setJobPanelOpen] = React.useState(false);
   const [activeResultJobId, setActiveResultJobId] = React.useState(null);

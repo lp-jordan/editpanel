@@ -71,14 +71,7 @@ const workers = {
       ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {})
     }
   }),
-  [WORKERS.platform]: createWorkerState(WORKERS.platform, {
-    command: process.execPath,
-    args: [path.join(__dirname, 'workers', 'platform_worker.js')],
-    cwd: path.join(__dirname, '..'),
-    // ELECTRON_RUN_AS_NODE: run the Electron binary as plain Node —
-    // prevents a spurious Dock icon / window flash on Electron 20+
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
-  })
+  // platform worker removed — editpanel uploads only to LPOS, never Frame.io directly
 };
 
 function createWorkerState(name, spawnConfig) {
@@ -293,6 +286,13 @@ function startWorker(state) {
     }
   });
 
+  // Suppress stdin write errors. When we try to send a command to a worker that
+  // has already exited, stdin.write() fails and Node.js emits an 'error' event
+  // on the Writable stream. Without a listener this becomes an uncaught exception
+  // in the Electron main process — which breaks ALL child process pipes at once,
+  // causing every worker to die and restart in an infinite 500 ms loop.
+  state.proc.stdin.on('error', () => {});
+
   state.proc.on('error', (err) => {
     console.error(`${state.name} worker spawn error:`, err.message);
     markUnavailable(state, `${state.name} worker failed to start: ${err.message}`);
@@ -320,7 +320,11 @@ function startWorker(state) {
     }
   });
 
-  state.proc.on('exit', () => {
+  state.proc.on('exit', (code, signal) => {
+    const exitInfo = signal ? `signal=${signal}` : `code=${code ?? '?'}`;
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('helper-message', `[${state.name}] process exited (${exitInfo})`);
+    });
     const wasStopping = state.stopping;
     state.proc = null;
     if (state.reader) {
@@ -329,7 +333,7 @@ function startWorker(state) {
     }
     markUnavailable(state, `${state.name} worker process exited`);
     if (!wasStopping) {
-      scheduleWorkerRestart(state, 'worker exited');
+      scheduleWorkerRestart(state, `worker exited (${exitInfo})`);
     }
   });
 }
@@ -409,10 +413,6 @@ function spawnResolveWorker() {
 
 function spawnMediaWorker() {
   startWorker(workers[WORKERS.media]);
-}
-
-function spawnPlatformWorker() {
-  startWorker(workers[WORKERS.platform]);
 }
 
 function restartMediaWorker(reason = 'media worker restart requested') {
@@ -530,7 +530,6 @@ app.whenReady().then(() => {
 
   spawnResolveWorker();
   spawnMediaWorker();
-  spawnPlatformWorker();
   startHealthChecks();
 
   jobEngine = new JobEngine({
@@ -800,7 +799,21 @@ app.whenReady().then(() => {
   ipcMain.handle('atem:list-sessions', async (_, host) => {
     const prefs = controlPlane ? controlPlane.getPreferences() : {};
     const ftpHost = host || prefs.atemFtpHost || '172.20.10.241';
-    return atemListSessions(ftpHost);
+
+    // Broadcast connection attempt and result through helper-message so they
+    // always appear in the SlideoutConsole regardless of overlay onLog state.
+    function atemLog(msg) {
+      BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', `[ATEM] ${msg}`));
+    }
+
+    atemLog(`Connecting to ${ftpHost}…`);
+    const result = await atemListSessions(ftpHost);
+    if (result.ok) {
+      atemLog(`FTP OK — ${result.data?.length ?? 0} session(s) found`);
+    } else {
+      atemLog(`FTP error: ${result.error || 'unknown'}`);
+    }
+    return result;
   });
 
   ipcMain.handle('atem:start-ingest', (_, { host, sessions, destination }) => {
@@ -897,14 +910,6 @@ app.whenReady().then(() => {
     } catch (err) {
       return { ok: false, error: err.message };
     }
-  });
-
-  ipcMain.handle('leaderpass-call', async (_, action = {}) => {
-    const payload = typeof action === 'string' ? { cmd: action } : action;
-    if (!payload || !payload.cmd) {
-      throw new Error('leaderpass action must include cmd');
-    }
-    return sendWorkerRequest(payload);
   });
 
   createTray();

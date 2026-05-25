@@ -148,6 +148,10 @@ textarea:focus-visible {
   height: 14px;
   -webkit-app-region: drag;
   z-index: 49;
+  /* pointer-events: none lets clicks fall through to underlying elements
+     (e.g. breadcrumb bar at z-index 40, page content at z-index auto)
+     while still registering the region for OS-level window dragging. */
+  pointer-events: none;
 }
 
 /* Make the navbar background area draggable (catches grabs above the pill).
