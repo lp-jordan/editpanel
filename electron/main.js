@@ -306,6 +306,12 @@ function startWorker(state) {
     state.isUnavailableBroadcasted = false;
     state.crashCount = 0;
     broadcastWorkerStatus(state.name, 'available');
+    // Auto-connect Resolve after the worker is ready to receive commands
+    if (state.name === WORKERS.resolve) {
+      setTimeout(() => {
+        sendWorkerRequest({ cmd: 'connect' }, WORKERS.resolve).catch(() => {});
+      }, 500);
+    }
   });
 
   state.proc.on('exit', () => {

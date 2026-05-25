@@ -479,7 +479,14 @@ function App() {
               {timeline && <span className="status-bar-chip dim">{timeline}</span>}
             </>
           ) : (
-            <span className="status-bar-chip bad">Offline</span>
+            <button
+              type="button"
+              className="status-bar-chip bad status-bar-chip-btn"
+              onClick={handleConnect}
+              title="Click to retry Resolve connection"
+            >
+              Offline
+            </button>
           )}
         </div>
 

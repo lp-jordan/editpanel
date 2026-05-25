@@ -785,6 +785,20 @@ textarea:focus-visible {
 .status-bar-chip.bad { color: var(--danger); }
 .status-bar-chip.dim { color: var(--muted-soft); }
 
+/* Clickable chip variant (e.g. Resolve Offline retry) */
+button.status-bar-chip-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+button.status-bar-chip-btn:hover {
+  opacity: 0.75;
+}
+
 /* ─── Settings page ───────────────────────────────────────── */
 
 .settings-stack {
