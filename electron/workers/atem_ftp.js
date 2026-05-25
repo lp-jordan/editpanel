@@ -5,18 +5,24 @@
  *
  * Used directly in main.js (not a worker subprocess).
  *
- * ATEM FTP folder structure:
+ * ATEM FTP folder structure (verified against live LEADERPASS2 drive,
+ * 2026-05-25):
  *   /
  *   └── <drive-name>/                     ← one drive, name irrelevant
- *       └── <SessionName>/                ← e.g. "ProjectName 2026-05-22"
+ *       └── <SessionName>/                ← e.g. "ACM_ACM_Shorts_05-22-26"
  *           ├── <Session>.drp             ← ignored
- *           ├── *_Program_*.mp4           ← ignored
+ *           ├── *_Program_*.mp4           ← ignored (program mix)
  *           ├── Audio Source Files/       ← ignored
  *           └── Video ISO Files/
- *               ├── SessionName_CAM 1 1.mov   ← CAM {n} {take}
- *               ├── SessionName_CAM 1 2.mov
- *               ├── SessionName_CAM 2 1.mov
+ *               ├── <SessionName> CAM 1 01.mp4   ← CAM {n} {take}
+ *               ├── <SessionName> CAM 1 02.mp4
+ *               ├── <SessionName> CAM 2 01.mp4
+ *               ├── ._<SessionName> CAM 1 01.mp4 ← AppleDouble metadata, skip
  *               └── ...
+ *
+ * NOTE on naming: the live drive produces `.mp4` files with a SPACE before
+ * "CAM" and zero-padded take numbers. Earlier docs in this file assumed
+ * `.mov` with underscore-CAM — that was wrong, never matched anything.
  */
 
 const { Client } = require('basic-ftp');
@@ -25,14 +31,24 @@ const path = require('path');
 
 const VIDEO_ISO_FOLDER = 'Video ISO Files';
 const DEFAULT_PORT = 21;
+// Both .mov and .mp4 in case ATEM firmware/format changes; current real
+// drive emits .mp4 exclusively, the previous .mov-only filter dropped
+// every file silently and made the overlay claim "No sessions found".
+const VIDEO_EXT_RE = /\.(mov|mp4)$/i;
+// macOS metadata sidecars ("._FileName.mp4") — never video, always skip.
+const APPLE_DOUBLE_RE = /^\._/;
 
 /**
  * Parse camera number and take number from an ATEM video filename.
- * Pattern: anything + "_CAM {camNum} {takeNum}.ext"
- * e.g. "Session_CAM 1 2.mov" → { camNumber: 1, takeNumber: 2 }
+ * Pattern: anything + [space-or-underscore] + "CAM {camNum} {takeNum}.ext"
+ * e.g. "Session_05-20-26 CAM 1 01.mp4" → { camNumber: 1, takeNumber: 1 }
+ *      "Session_CAM 2 02.mov"          → { camNumber: 2, takeNumber: 2 }
+ *
+ * The live drive uses space-CAM with zero-padded take numbers; the old
+ * `_CAM` regex assumed an underscore separator and missed every file.
  */
 function parseCameraInfo(filename) {
-  const match = filename.match(/_CAM (\d+) (\d+)\./i);
+  const match = filename.match(/[\s_]CAM (\d+) (\d+)\./i);
   if (!match) return null;
   return {
     camNumber: parseInt(match[1], 10),
@@ -89,32 +105,38 @@ async function listSessions(host, port = DEFAULT_PORT, onLog = null) {
     }
 
     const drivePath = `/${drives[0].name}`;
+    log(`drive: ${drivePath}`);
     const sessionItems = await client.list(drivePath);
     const sessionDirs = sessionItems.filter(i => i.isDirectory);
 
     let kept = 0;
-    let skipped = 0;
+    let skippedNoFolder = 0;
+    let skippedNoVideos = 0;
     const sessions = [];
     for (const dir of sessionDirs) {
       const sessionPath = `${drivePath}/${dir.name}`;
       const videoPath   = `${sessionPath}/${VIDEO_ISO_FOLDER}`;
 
-      let files = [];
-      let totalBytes = 0;
+      let videoItems;
       try {
-        const videoItems = await client.list(videoPath);
-        files = videoItems
-          .filter(i => i.isFile && /\.mov$/i.test(i.name))
-          .map(i => ({ name: i.name, size: i.size || 0 }));
-        totalBytes = files.reduce((s, f) => s + f.size, 0);
+        videoItems = await client.list(videoPath);
       } catch (_err) {
         // No Video ISO Files folder — skip this session.
-        skipped++;
+        skippedNoFolder++;
         continue;
       }
 
+      const videoFiles = videoItems.filter(i => i.isFile);
+      const files = videoFiles
+        .filter(i => VIDEO_EXT_RE.test(i.name) && !APPLE_DOUBLE_RE.test(i.name))
+        .map(i => ({ name: i.name, size: i.size || 0 }));
+      const totalBytes = files.reduce((s, f) => s + f.size, 0);
+
       if (files.length === 0) {
-        skipped++;
+        // Log what we DID see so the user can debug filename mismatches
+        // without having to flip on protocol-level FTP verbose mode.
+        log(`session "${dir.name}": 0 matching videos (${videoFiles.length} non-video entries in folder)`);
+        skippedNoVideos++;
         continue;
       }
 
@@ -129,7 +151,10 @@ async function listSessions(host, port = DEFAULT_PORT, onLog = null) {
       });
     }
 
-    log(`scanned ${sessionDirs.length} dirs: ${kept} sessions, ${skipped} skipped`);
+    const skipDetail = (skippedNoFolder || skippedNoVideos)
+      ? ` (${skippedNoFolder} no Video ISO Files folder, ${skippedNoVideos} no matching videos)`
+      : '';
+    log(`scanned ${sessionDirs.length} dirs: ${kept} sessions${skipDetail}`);
     return { ok: true, data: sessions };
   } catch (err) {
     log(`error: ${err.code ? `[${err.code}] ` : ''}${err.message || err}`);

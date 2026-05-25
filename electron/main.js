@@ -823,16 +823,19 @@ app.whenReady().then(() => {
     const prefs = controlPlane ? controlPlane.getPreferences() : {};
     const ftpHost = host || prefs.atemFtpHost || '172.20.10.241';
 
-    // Broadcast connection attempt and result through helper-message so they
-    // always appear in the SlideoutConsole regardless of overlay onLog state.
+    // Mirror ATEM logs to BOTH the launching terminal (console.log) and the
+    // in-app SlideoutConsole (helper-message). basic-ftp's own `verbose` mode
+    // writes directly to console.log and ignores function callbacks, so the
+    // previous "I see FTP output in my terminal" behaviour you may remember
+    // was that — not our stage logs. Mirroring both keeps the user covered
+    // regardless of which window they're watching.
     function atemLog(msg) {
-      BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', `[ATEM] ${msg}`));
+      const line = `[ATEM] ${msg}`;
+      console.log(line);
+      BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', line));
     }
 
     atemLog(`Connecting to ${ftpHost}:21 (anonymous)…`);
-    // Pass atemLog down so each FTP stage (access, list, etc.) and the
-    // raw protocol dialogue surface in the console — a silent 10-second
-    // hang is otherwise indistinguishable from "nothing happened".
     const result = await atemListSessions(ftpHost, 21, atemLog);
     if (result.ok) {
       atemLog(`FTP OK — ${result.data?.length ?? 0} session(s) found`);
