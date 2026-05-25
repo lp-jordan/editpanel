@@ -464,70 +464,71 @@ function App() {
   function renderStatusBar() {
     const runningJobs = dashboard.jobs.filter(j => j.state === 'running');
     const runningJob  = runningJobs[0] ?? null;
-    const hasJobs     = runningJobs.length > 0 || dashboard.jobs.length > 0;
 
     return (
-      <footer className="status-bar">
-        {/* Left: Resolve */}
-        <div className="status-bar-group">
-          <span className={`status-dot ${connected ? 'ok' : 'bad'}`} />
-          <span className="status-bar-label">Resolve</span>
-          {connected ? (
-            <>
-              <span className="status-bar-chip ok">Connected</span>
-              {project && <span className="status-bar-chip">{project}</span>}
-              {timeline && <span className="status-bar-chip dim">{timeline}</span>}
-            </>
-          ) : (
+      <React.Fragment>
+        {/* Floating Jobs pill — bottom-right, above status bar */}
+        <div className="floating-jobs-area">
+          <button
+            className={`floating-jobs-btn${runningJob ? ' running' : ''}`}
+            onClick={() => setJobPanelOpen(prev => !prev)}
+          >
+            {runningJob && <span className="status-bar-spinner" />}
+            <span className="floating-jobs-label">
+              {runningJob
+                ? `${runningJob.preset_id || 'Job'}${runningJob.steps_total > 0 ? ` ${runningJob.steps_done}/${runningJob.steps_total}` : ''}`
+                : 'Jobs'}
+            </span>
+          </button>
+        </div>
+
+        <footer className="status-bar">
+          {/* Left: Resolve */}
+          <div className="status-bar-group">
+            <span className={`status-dot ${connected ? 'ok' : 'bad'}`} />
+            <span className="status-bar-label">Resolve</span>
+            {connected ? (
+              <>
+                <span className="status-bar-chip ok">Connected</span>
+                {project && <span className="status-bar-chip">{project}</span>}
+                {timeline && <span className="status-bar-chip dim">{timeline}</span>}
+              </>
+            ) : (
+              <button
+                type="button"
+                className="status-bar-chip bad status-bar-chip-btn"
+                onClick={handleConnect}
+                title="Click to retry Resolve connection"
+              >
+                Offline
+              </button>
+            )}
+          </div>
+
+          <div className="status-bar-divider" />
+
+          {/* LPOS */}
+          <div className="status-bar-group">
+            <span className={`status-dot ${lposStatus === 'ok' ? 'ok' : lposStatus === 'error' ? 'bad' : 'neutral'}`} />
+            <span className="status-bar-label">LPOS</span>
+            {lposStatus === 'ok' && <span className="status-bar-chip ok">Connected</span>}
+            {lposStatus === 'error' && <span className="status-bar-chip bad">Unreachable</span>}
+            {lposStatus === 'no-secret' && <span className="status-bar-chip bad">No secret</span>}
+            {lposStatus === 'unconfigured' && <span className="status-bar-chip">{lposUrl ? 'Connecting…' : 'Not configured'}</span>}
+          </div>
+
+          {/* Right: Console toggle */}
+          <div className="status-bar-right">
             <button
               type="button"
-              className="status-bar-chip bad status-bar-chip-btn"
-              onClick={handleConnect}
-              title="Click to retry Resolve connection"
+              className="status-bar-console-btn"
+              onClick={() => setConsoleOpen(v => !v)}
             >
-              Offline
+              {consoleOpen ? 'Hide' : 'Console'}
             </button>
-          )}
-        </div>
-
-        <div className="status-bar-divider" />
-
-        {/* LPOS */}
-        <div className="status-bar-group">
-          <span className={`status-dot ${lposStatus === 'ok' ? 'ok' : lposStatus === 'error' ? 'bad' : 'neutral'}`} />
-          <span className="status-bar-label">LPOS</span>
-          {lposStatus === 'ok' && <span className="status-bar-chip ok">Connected</span>}
-          {lposStatus === 'error' && <span className="status-bar-chip bad">Unreachable</span>}
-          {lposStatus === 'no-secret' && <span className="status-bar-chip bad">No secret</span>}
-          {lposStatus === 'unconfigured' && <span className="status-bar-chip">{lposUrl ? 'Connecting…' : 'Not configured'}</span>}
-        </div>
-
-        {/* Right: Job widget */}
-        <div className="status-bar-right">
-          {runningJob && (
-            <button
-              className="status-bar-jobs-btn running"
-              onClick={() => setJobPanelOpen(true)}
-            >
-              <span className="status-bar-spinner" />
-              <span className="status-bar-job-label">
-                {runningJob.preset_id || 'Job'}
-                {runningJob.steps_total > 0
-                  ? ` ${runningJob.steps_done}/${runningJob.steps_total}`
-                  : ''}
-              </span>
-            </button>
-          )}
-          {!runningJob && hasJobs && (
-            <button
-              className="status-bar-jobs-btn"
-              onClick={() => setJobPanelOpen(true)}
-            >
-              Jobs
-            </button>
-          )}
-        </div>
-      </footer>
+          </div>
+        </footer>
+      </React.Fragment>
     );
   }
 
