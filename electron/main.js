@@ -45,6 +45,7 @@ let lposClient = null;
 let lposHeartbeatTimer = null;
 let jobsDb = null;
 let atemCancelToken = null; // { canceled: boolean }
+let resolveAutoConnectDone = false; // attempt auto-connect once per app session only
 
 // Resolve connection state — updated by worker events, read by heartbeat
 let resolveConnected = false;
@@ -306,10 +307,15 @@ function startWorker(state) {
     state.isUnavailableBroadcasted = false;
     state.crashCount = 0;
     broadcastWorkerStatus(state.name, 'available');
-    // Auto-connect Resolve after the worker is ready to receive commands
-    if (state.name === WORKERS.resolve) {
+    // Auto-connect Resolve once per app session (not on every worker restart).
+    // sendWorkerRequest can throw synchronously if the proc dies in the 500ms
+    // window, so we wrap in try-catch to prevent a main-process crash dialog.
+    if (state.name === WORKERS.resolve && !resolveAutoConnectDone) {
+      resolveAutoConnectDone = true;
       setTimeout(() => {
-        sendWorkerRequest({ cmd: 'connect' }, WORKERS.resolve).catch(() => {});
+        try {
+          sendWorkerRequest({ cmd: 'connect' }, WORKERS.resolve).catch(() => {});
+        } catch (_) {}
       }, 500);
     }
   });
@@ -599,14 +605,25 @@ app.whenReady().then(() => {
   }, 10_000);
 
   ipcMain.on('helper-request', (event, payload) => {
-    sendWorkerRequest(payload, WORKERS.resolve, event).catch(error => {
+    // sendWorkerRequest throws synchronously when the worker isn't running,
+    // so we need try-catch here — .catch() alone won't cover synchronous throws.
+    try {
+      sendWorkerRequest(payload, WORKERS.resolve, event).catch(error => {
+        event.reply('helper-response', {
+          ok: false,
+          data: null,
+          error: normalizeError(error),
+          metrics: {}
+        });
+      });
+    } catch (error) {
       event.reply('helper-response', {
         ok: false,
         data: null,
         error: normalizeError(error),
         metrics: {}
       });
-    });
+    }
   });
 
   ipcMain.handle('jobs:list', async () => ({ ok: true, data: jobEngine.listJobs() }));
