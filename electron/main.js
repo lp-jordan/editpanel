@@ -32,6 +32,7 @@ const HEALTH_INTERVAL_MS = 10000;
 const PING_TIMEOUT_MS = 3000;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
+const PYTHON_CMD = process.platform === 'win32' ? 'python' : 'python3';
 
 let win;
 let tray = null;
@@ -52,7 +53,7 @@ let resolveTimeline = '';
 
 const workers = {
   [WORKERS.resolve]: createWorkerState(WORKERS.resolve, {
-    command: 'python3',
+    command: PYTHON_CMD,
     args: ['-m', 'helper.resolve_worker'],
     cwd: path.join(__dirname, '..'),
     env: {
@@ -61,7 +62,7 @@ const workers = {
     }
   }),
   [WORKERS.media]: createWorkerState(WORKERS.media, {
-    command: 'python3',
+    command: PYTHON_CMD,
     args: ['-m', 'helper.media_worker'],
     cwd: path.join(__dirname, '..'),
     env: {
