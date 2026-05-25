@@ -105,6 +105,27 @@ contextBridge.exposeInMainWorld('lposAPI', {
   }
 });
 
+contextBridge.exposeInMainWorld('resultsAPI', {
+  init(jobId, itemType, label, items) {
+    return ipcRenderer.invoke('results:init', jobId, itemType, label, items);
+  },
+  listRuns(limit = 20) {
+    return ipcRenderer.invoke('results:list-runs', limit);
+  },
+  getItems(jobId) {
+    return ipcRenderer.invoke('results:get-items', jobId);
+  },
+  resolveItem(jobId, itemKey, resolution) {
+    return ipcRenderer.invoke('results:resolve-item', jobId, itemKey, resolution);
+  },
+  skipItem(jobId, itemKey) {
+    return ipcRenderer.invoke('results:skip-item', jobId, itemKey);
+  },
+  resetRun(jobId) {
+    return ipcRenderer.invoke('results:reset-run', jobId);
+  }
+});
+
 contextBridge.exposeInMainWorld('dialogAPI', {
   pickFolder() {
     return ipcRenderer.invoke('dialog:pickFolder');

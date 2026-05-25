@@ -128,9 +128,11 @@ class ControlPlane {
   }
 
   buildDashboard() {
+    const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
     const jobs = this.jobEngine.listJobs()
       .map(job => {
         const activeStep = job.steps.find(step => step.state === 'running') || null;
+        const stepsDone = job.steps.filter(s => TERMINAL.has(s.state)).length;
         return {
           job_id: job.job_id,
           preset_id: job.preset_id,
@@ -138,6 +140,8 @@ class ControlPlane {
           created_at: job.created_at,
           started_at: job.started_at,
           finished_at: job.finished_at,
+          steps_total: job.steps.length,
+          steps_done: stepsDone,
           active_step: activeStep
             ? {
               step_id: activeStep.step_id,

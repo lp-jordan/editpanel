@@ -6,6 +6,7 @@ const path = require('path');
 const readline = require('readline');
 const { misspellings, suggestions } = require('./spellcheck');
 const { LposClient } = require('./workers/lpos_client');
+const { JobsDb } = require('./store/jobs-db');
 const {
   WORKERS,
   RetryableError,
@@ -40,6 +41,7 @@ let recipeCatalog = null;
 let controlPlane = null;
 let lposClient = null;
 let lposHeartbeatTimer = null;
+let jobsDb = null;
 
 // Resolve connection state — updated by worker events, read by heartbeat
 let resolveConnected = false;
@@ -545,6 +547,13 @@ app.whenReady().then(() => {
   });
   jobEngine.resumeRecoverableJobs();
 
+  // --- Result items DB ---
+  try {
+    jobsDb = new JobsDb(path.join(app.getPath('userData'), 'jobs-history.db'));
+  } catch (err) {
+    console.error('Failed to open jobs-history.db:', err.message);
+  }
+
   // --- LPOS connectivity ---
   // Initialise client from stored preferences; secret comes from env (Doppler).
   try {
@@ -631,6 +640,63 @@ app.whenReady().then(() => {
 
   ipcMain.handle('spellcheck:misspellings', misspellings);
   ipcMain.handle('spellcheck:suggestions', suggestions);
+
+  // --- Result items IPC ---
+  // Stores per-item reviewable state in SQLite so reviews survive restarts.
+
+  ipcMain.handle('results:init', (_event, jobId, itemType, label, items) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return jobsDb.initRun(jobId, itemType, label, Array.isArray(items) ? items : []);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('results:list-runs', (_event, limit = 20) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return { ok: true, data: jobsDb.listRuns(Number(limit)) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('results:get-items', (_event, jobId) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return { ok: true, data: jobsDb.getItems(jobId) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('results:resolve-item', (_event, jobId, itemKey, resolution) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return jobsDb.resolveItem(jobId, itemKey, resolution);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('results:skip-item', (_event, jobId, itemKey) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return jobsDb.skipItem(jobId, itemKey);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('results:reset-run', (_event, jobId) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return jobsDb.resetRun(jobId);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
 
   ipcMain.on('app:quit', () => {
     isQuitting = true;
@@ -733,6 +799,7 @@ app.on('before-quit', () => {
   if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
   if (lposHeartbeatTimer) { clearInterval(lposHeartbeatTimer); lposHeartbeatTimer = null; }
   lposClient = null;
+  if (jobsDb) { jobsDb.close(); jobsDb = null; }
   if (controlPlane) { controlPlane.dispose(); controlPlane = null; }
   Object.values(workers).forEach(stopWorker);
   if (tray) { tray.destroy(); tray = null; }

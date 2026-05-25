@@ -133,15 +133,10 @@ function App() {
   const [log, setLog] = React.useState([]);
   const [connected, setConnected] = React.useState(false);
   const [consoleOpen, setConsoleOpen] = React.useState(false);
-  const [spellReport, setSpellReport] = React.useState([]);
-  const [spellTotals, setSpellTotals] = React.useState({ items: 0, words: 0, issues: 0, ignored: 0 });
   const [workerAvailability, setWorkerAvailability] = React.useState({ resolve: true, media: true, platform: true });
   const [dashboard, setDashboard] = React.useState({ jobs: [], logs_by_job_step: {} });
-  const [selectedTaskByRoute, setSelectedTaskByRoute] = React.useState({
-    '/prep': 'atem-ingest',
-    '/edit': 'project-setup',
-    '/deliver': 'deliver-export'
-  });
+  const [jobPanelOpen, setJobPanelOpen] = React.useState(false);
+  const [activeResultJobId, setActiveResultJobId] = React.useState(null);
 
   // Settings state
   const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '' });
@@ -342,28 +337,42 @@ function App() {
     }
 
     const misspell = window.spellcheckAPI?.misspellings;
-    window.leaderpassAPI.call('spellcheck').then(async (res) => {
-      const items = (res.data && res.data.items) || [];
-      const rows = [];
-      let totalItems = 0;
-      let totalWords = 0;
-      let totalIssues = 0;
-      let totalIgnored = 0;
+    appendLog('Spellcheck started…');
 
-      for (const entry of items) {
+    window.leaderpassAPI.call('spellcheck').then(async (res) => {
+      const clips = (res.data && res.data.items) || [];
+      const resultItems = [];
+
+      for (const [clipIdx, entry] of clips.entries()) {
         const result = misspell
           ? await misspell(entry.text)
-          : { words: entry.text.split(/\W+/).filter(Boolean).length, misspelled: [], ignored: 0 };
-        totalItems += 1;
-        totalWords += result.words;
-        totalIssues += result.misspelled.length;
-        totalIgnored += result.ignored;
-        if (result.misspelled.length > 0) rows.push({ ...entry, misspelled: result.misspelled });
+          : { misspelled: [] };
+
+        for (const [wordIdx, word] of (result.misspelled || []).entries()) {
+          resultItems.push({
+            key: `${clipIdx}_${wordIdx}_${word}`,
+            data: {
+              word,
+              clipText:    entry.text,
+              track:       entry.track       ?? null,
+              tool:        entry.tool        ?? null,
+              timecode:    entry.timecode    ?? null,
+              start_frame: entry.start_frame ?? null,
+              tool_name:   entry.tool_name   ?? null
+            }
+          });
+        }
       }
 
-      setSpellReport(rows);
-      setSpellTotals({ items: totalItems, words: totalWords, issues: totalIssues, ignored: totalIgnored });
-      appendLog('Spellcheck complete');
+      appendLog(`Spellcheck complete — ${resultItems.length} issue(s) found`);
+
+      if (resultItems.length === 0) return;
+
+      // Store result items and open the result overlay
+      const runId = crypto.randomUUID();
+      await window.resultsAPI?.init(runId, 'spellcheck', 'Spellcheck', resultItems).catch(() => {});
+      setActiveResultJobId(runId);
+
     }).catch((err) => appendLog(`Spellcheck error: ${err?.error || err}`));
   }, [appendLog]);
 
@@ -382,9 +391,6 @@ function App() {
 
   const workspaceConfig = React.useMemo(() => ({
     '/prep': {
-      eyebrow: 'Pre-Production',
-      title: 'Prep',
-      copy: 'Footage ingest, backup management, and project setup.',
       tasks: [
         {
           key: 'atem-ingest',
@@ -407,9 +413,6 @@ function App() {
       ]
     },
     '/edit': {
-      eyebrow: 'Resolve Workspace',
-      title: 'Edit',
-      copy: 'Operator setup and timeline QA in a stripped-back Resolve companion shell.',
       tasks: [
         {
           key: 'project-setup',
@@ -430,9 +433,6 @@ function App() {
       ]
     },
     '/deliver': {
-      eyebrow: 'Output Workspace',
-      title: 'Deliver',
-      copy: 'Export operations and platform visibility for finishing and handoff.',
       tasks: [
         {
           key: 'deliver-export',
@@ -456,34 +456,16 @@ function App() {
     }
   }), [handleLPBaseExport, handleNewProjectBins, handleSpellcheck]);
 
-  const activeJob = (dashboard.jobs || []).find((job) => ['queued', 'running'].includes(job.state)) || dashboard.jobs?.[0] || null;
-
-  const recentEvents = React.useMemo(() => {
-    return Object.entries(dashboard.logs_by_job_step || {})
-      .flatMap(([jobId, steps]) => Object.entries(steps).flatMap(([stepId, entries]) =>
-        entries.map((entry) => ({ jobId, stepId, type: entry.type, state: entry.state || entry.code || 'event' }))))
-      .slice(-8)
-      .reverse();
-  }, [dashboard]);
-
   const currentWorkspace = workspaceConfig[route];
-  const selectedTaskKey = currentWorkspace ? selectedTaskByRoute[route] || currentWorkspace.tasks[0].key : null;
-  const selectedTask = currentWorkspace ? currentWorkspace.tasks.find((task) => task.key === selectedTaskKey) || currentWorkspace.tasks[0] : null;
-
-  React.useEffect(() => {
-    if (!currentWorkspace || !selectedTask) return;
-    if (!currentWorkspace.tasks.some((task) => task.key === selectedTask.key)) {
-      setSelectedTaskByRoute((prev) => ({ ...prev, [route]: currentWorkspace.tasks[0].key }));
-    }
-  }, [currentWorkspace, selectedTask, route]);
-
-  function setSelectedTask(routeKey, taskKey) {
-    setSelectedTaskByRoute((prev) => ({ ...prev, [routeKey]: taskKey }));
-  }
 
   function renderStatusBar() {
+    const runningJobs = dashboard.jobs.filter(j => j.state === 'running');
+    const runningJob  = runningJobs[0] ?? null;
+    const hasJobs     = runningJobs.length > 0 || dashboard.jobs.length > 0;
+
     return (
       <footer className="status-bar">
+        {/* Left: Resolve */}
         <div className="status-bar-group">
           <span className={`status-dot ${connected ? 'ok' : 'bad'}`} />
           <span className="status-bar-label">Resolve</span>
@@ -497,7 +479,10 @@ function App() {
             <span className="status-bar-chip bad">Offline</span>
           )}
         </div>
+
         <div className="status-bar-divider" />
+
+        {/* LPOS */}
         <div className="status-bar-group">
           <span className={`status-dot ${lposStatus === 'ok' ? 'ok' : lposStatus === 'error' ? 'bad' : 'neutral'}`} />
           <span className="status-bar-label">LPOS</span>
@@ -506,142 +491,65 @@ function App() {
           {lposStatus === 'no-secret' && <span className="status-bar-chip bad">No secret</span>}
           {lposStatus === 'unconfigured' && <span className="status-bar-chip">{lposUrl ? 'Connecting…' : 'Not configured'}</span>}
         </div>
+
+        {/* Right: Job widget */}
+        <div className="status-bar-right">
+          {runningJob && (
+            <button
+              className="status-bar-jobs-btn running"
+              onClick={() => setJobPanelOpen(true)}
+            >
+              <span className="status-bar-spinner" />
+              <span className="status-bar-job-label">
+                {runningJob.preset_id || 'Job'}
+                {runningJob.steps_total > 0
+                  ? ` ${runningJob.steps_done}/${runningJob.steps_total}`
+                  : ''}
+              </span>
+            </button>
+          )}
+          {!runningJob && hasJobs && (
+            <button
+              className="status-bar-jobs-btn"
+              onClick={() => setJobPanelOpen(true)}
+            >
+              Jobs
+            </button>
+          )}
+        </div>
       </footer>
     );
   }
 
-  function renderTaskDetail() {
-    if (!selectedTask) return null;
-
-    if (selectedTask.comingSoon) {
-      return (
-        <div className="detail-stack">
-          <p className="section-copy">{selectedTask.description}</p>
-          <div className="coming-soon-note">
-            <span className="coming-soon-badge">Coming Soon</span>
-            <p className="section-copy">This feature is planned and will be available in a future build.</p>
-          </div>
-        </div>
-      );
-    }
-
-    if (selectedTask.key === 'spellcheck') {
-      return <SpellcheckReport report={spellReport} totals={spellTotals} onLog={appendLog} />;
-    }
-
-    if (selectedTask.key === 'platform-status') {
-      return (
-        <div className="detail-stack">
-          <div className="stats-grid">
-            {['resolve', 'media', 'platform'].map((worker) => (
-              <div key={worker} className="stat-card">
-                <span className="stat-label">{worker}</span>
-                <strong className="stat-value">{workerAvailability[worker] ? 'Available' : 'Unavailable'}</strong>
-              </div>
-            ))}
-            <div className="stat-card">
-              <span className="stat-label">Active Jobs</span>
-              <strong className="stat-value">{dashboard.jobs?.filter((job) => ['queued', 'running'].includes(job.state)).length || 0}</strong>
-            </div>
-          </div>
-          <div className="panel-list">
-            <div className="list-header">
-              <h3 className="section-title">Recent Activity</h3>
-              <p className="section-copy">Latest platform events from the current job queue.</p>
-            </div>
-            {recentEvents.length === 0 ? (
-              <div className="list-item muted">No activity history yet.</div>
-            ) : recentEvents.map((entry, index) => (
-              <div key={`${entry.jobId}-${entry.stepId}-${index}`} className="list-item">
-                <strong>{entry.jobId}</strong>
-                <span>{entry.stepId}</span>
-                <span>{entry.type}</span>
-                <span>{entry.state}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="detail-stack">
-        <p className="section-copy">{selectedTask.description}</p>
-        <div className="panel-note">
-          <strong>Session</strong>
-          <span>{project || 'No active project'}{timeline ? ` | ${timeline}` : ''}</span>
-        </div>
-        {activeJob ? (
-          <div className="panel-note">
-            <strong>Active Job</strong>
-            <span>{activeJob.job_id} ({activeJob.state})</span>
-          </div>
-        ) : null}
-      </div>
-    );
-  }
-
   function renderWorkspacePage() {
-    if (!currentWorkspace || !selectedTask) return null;
+    if (!currentWorkspace) return null;
 
     return (
       <div className="app-inner">
         <HoverNav route={route} onNavigate={navigateTo} />
-        <Breadcrumbs route={route} onNavigate={navigateTo} />
 
         <main className="app-content">
-          <div className="page-stack">
-            <section className="panel page-hero">
-              <p className="eyebrow">{currentWorkspace.eyebrow}</p>
-              <h1 className="page-title">{currentWorkspace.title}</h1>
-              <p className="page-copy">{currentWorkspace.copy}</p>
-              {!connected && (
-                <div className="actions-row">
-                  <button type="button" className="btn-secondary" onClick={handleConnect} disabled={!window.leaderpassAPI}>
-                    Reconnect Resolve
-                  </button>
-                </div>
-              )}
-            </section>
-
-            <section className="task-grid">
-              {currentWorkspace.tasks.map((task) => {
-                const disabled = (task.requiresResolve && !connected) || task.comingSoon;
-                return (
-                  <article
-                    key={task.key}
-                    className={`task-card${selectedTask.key === task.key ? ' active' : ''}${task.comingSoon ? ' soon' : ''}`}
-                    onClick={() => setSelectedTask(route, task.key)}
+          <div className="task-grid">
+            {currentWorkspace.tasks.map((task) => {
+              const disabled = (task.requiresResolve && !connected) || task.comingSoon;
+              return (
+                <article
+                  key={task.key}
+                  className={`task-card${task.comingSoon ? ' soon' : ''}`}
+                >
+                  <h3 className="task-card-title">{task.label}</h3>
+                  <p className="task-card-desc">{task.description}</p>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={disabled}
+                    onClick={() => { if (!task.comingSoon) task.onClick(); }}
                   >
-                    <div>
-                      <p className="eyebrow">{task.comingSoon ? 'Planned' : 'Task'}</p>
-                      <h3 className="section-title">{task.label}</h3>
-                      <p className="section-copy">{task.description}</p>
-                    </div>
-                    <button
-                      type="button"
-                      className={task.key === 'platform-status' ? 'btn-secondary' : 'btn'}
-                      disabled={disabled}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (!task.comingSoon) task.onClick();
-                      }}
-                    >
-                      {task.actionLabel}
-                    </button>
-                  </article>
-                );
-              })}
-            </section>
-
-            <section className="panel detail-panel">
-              <div className="list-header">
-                <p className="eyebrow">Detail</p>
-                <h2 className="section-title">{selectedTask.label}</h2>
-                <p className="section-copy">{selectedTask.description}</p>
-              </div>
-              {renderTaskDetail()}
-            </section>
+                    {task.actionLabel}
+                  </button>
+                </article>
+              );
+            })}
           </div>
         </main>
       </div>
@@ -760,8 +668,8 @@ function App() {
   const pageContent = route === '/'
     ? renderHomePage()
     : route === '/settings'
-      ? renderSettingsPage()
-      : renderWorkspacePage();
+    ? renderSettingsPage()
+    : renderWorkspacePage();
 
   return (
     <div className="app-shell">
@@ -769,6 +677,21 @@ function App() {
         {pageContent}
       </div>
       {renderStatusBar()}
+      <JobPanel
+        open={jobPanelOpen}
+        onClose={() => setJobPanelOpen(false)}
+        dashboard={dashboard}
+        onViewResults={(runId) => {
+          setJobPanelOpen(false);
+          setActiveResultJobId(runId);
+        }}
+      />
+      {activeResultJobId && (
+        <ResultOverlay
+          jobId={activeResultJobId}
+          onClose={() => setActiveResultJobId(null)}
+        />
+      )}
       <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />
     </div>
   );
