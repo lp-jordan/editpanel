@@ -48,6 +48,9 @@ class ControlPlane {
       const raw = fs.readFileSync(this.preferencesPath, 'utf8');
       const parsed = JSON.parse(raw);
       return {
+        // Pass unknown keys through (e.g. lposBaseUrl, displayName)
+        ...parsed,
+        // Structured keys get their own validation/defaults
         recipe_defaults: typeof parsed?.recipe_defaults === 'object' && parsed.recipe_defaults
           ? parsed.recipe_defaults
           : {},
@@ -87,6 +90,10 @@ class ControlPlane {
     };
 
     this.preferences = {
+      // Preserve existing unknown keys, apply patch unknown keys on top
+      ...this.preferences,
+      ...patch,
+      // Structured keys always win
       recipe_defaults: nextRecipeDefaults,
       worker_concurrency: nextConcurrency
     };

@@ -1,9 +1,11 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, screen, Tray, nativeImage } = require('electron');
 const fs = require('fs');
+const os = require('os');
 const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
 const { misspellings, suggestions } = require('./spellcheck');
+const { LposClient } = require('./workers/lpos_client');
 const {
   WORKERS,
   RetryableError,
@@ -27,6 +29,7 @@ try {
 const HEALTH_INTERVAL_MS = 10000;
 const PING_TIMEOUT_MS = 3000;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
+const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
 
 let win;
 let tray = null;
@@ -35,10 +38,17 @@ let healthTimer = null;
 let jobEngine = null;
 let recipeCatalog = null;
 let controlPlane = null;
+let lposClient = null;
+let lposHeartbeatTimer = null;
+
+// Resolve connection state — updated by worker events, read by heartbeat
+let resolveConnected = false;
+let resolveProject = '';
+let resolveTimeline = '';
 
 const workers = {
   [WORKERS.resolve]: createWorkerState(WORKERS.resolve, {
-    command: 'python',
+    command: 'python3',
     args: ['-m', 'helper.resolve_worker'],
     cwd: path.join(__dirname, '..'),
     env: {
@@ -47,7 +57,7 @@ const workers = {
     }
   }),
   [WORKERS.media]: createWorkerState(WORKERS.media, {
-    command: 'python',
+    command: 'python3',
     args: ['-m', 'helper.media_worker'],
     cwd: path.join(__dirname, '..'),
     env: {
@@ -59,7 +69,9 @@ const workers = {
     command: process.execPath,
     args: [path.join(__dirname, 'workers', 'platform_worker.js')],
     cwd: path.join(__dirname, '..'),
-    env: process.env
+    // ELECTRON_RUN_AS_NODE: run the Electron binary as plain Node —
+    // prevents a spurious Dock icon / window flash on Electron 20+
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
   })
 };
 
@@ -172,6 +184,23 @@ function handleWorkerLine(state, line) {
       return;
     }
 
+    // Track Resolve connection state so the heartbeat can report it
+    if (state.name === WORKERS.resolve) {
+      const code = normalized.envelope.code;
+      if (code === 'CONNECTED') {
+        resolveConnected = true;
+        resolveProject = normalized.envelope.data?.project || '';
+        resolveTimeline = normalized.envelope.data?.timeline || '';
+      } else if (code === 'DISCONNECTED') {
+        resolveConnected = false;
+        resolveProject = '';
+        resolveTimeline = '';
+      } else if (code === 'CONTEXT_UPDATE' && normalized.envelope.data) {
+        resolveProject = normalized.envelope.data.project || resolveProject;
+        resolveTimeline = normalized.envelope.data.timeline || resolveTimeline;
+      }
+    }
+
     BrowserWindow.getAllWindows().forEach(w => {
       w.webContents.send('worker-event', {
         type: eventName === 'status' ? 'status' : 'progress',
@@ -255,6 +284,15 @@ function startWorker(state) {
       handleWorkerLine(state, line);
     } catch (err) {
       console.error(`Error processing ${state.name} worker output:`, err);
+    }
+  });
+
+  state.proc.on('error', (err) => {
+    console.error(`${state.name} worker spawn error:`, err.message);
+    markUnavailable(state, `${state.name} worker failed to start: ${err.message}`);
+    state.proc = null;
+    if (!state.stopping) {
+      scheduleWorkerRestart(state, `spawn error: ${err.message}`);
     }
   });
 
@@ -507,6 +545,40 @@ app.whenReady().then(() => {
   });
   jobEngine.resumeRecoverableJobs();
 
+  // --- LPOS connectivity ---
+  // Initialise client from stored preferences; secret comes from env (Doppler).
+  try {
+    const prefs = controlPlane.getPreferences();
+    lposClient = new LposClient({
+      baseUrl: prefs?.lposBaseUrl || LPOS_DEFAULT_BASE_URL,
+      secret: process.env.EP_SHARED_SECRET || ''
+    });
+  } catch (_err) {
+    lposClient = new LposClient({ baseUrl: LPOS_DEFAULT_BASE_URL });
+  }
+
+  // 10-second heartbeat — pushes current machine state to LPOS.
+  // Failures are intentionally silent; LPOS marks us offline after 30s.
+  lposHeartbeatTimer = setInterval(async () => {
+    if (!lposClient || !lposClient.isConfigured()) return;
+    try {
+      const prefs = controlPlane ? controlPlane.getPreferences() : {};
+      const instanceId = os.hostname();
+      const jobs = jobEngine ? jobEngine.listJobs() : [];
+      await lposClient.pushStatus({
+        instance_id: instanceId,
+        display_name: prefs?.displayName || instanceId,
+        resolve_connected: resolveConnected,
+        resolve_project: resolveProject || null,
+        resolve_timeline: resolveTimeline || null,
+        jobs_queued: jobs.filter(j => j.state === 'queued').length,
+        jobs_running: jobs.filter(j => j.state === 'running').length
+      });
+    } catch (_err) {
+      // silent — transient network failures are expected
+    }
+  }, 10_000);
+
   ipcMain.on('helper-request', (event, payload) => {
     sendWorkerRequest(payload, WORKERS.resolve, event).catch(error => {
       event.reply('helper-response', {
@@ -533,7 +605,17 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('preferences:get', async () => ({ ok: true, data: controlPlane.getPreferences() }));
-  ipcMain.handle('preferences:update', async (_, patch = {}) => ({ ok: true, data: controlPlane.setPreferences(patch) }));
+  ipcMain.handle('preferences:update', async (_, patch = {}) => {
+    const prefs = controlPlane.setPreferences(patch);
+    // Reinitialise LPOS client whenever the base URL is changed in Settings
+    if (patch.lposBaseUrl !== undefined) {
+      lposClient = new LposClient({
+        baseUrl: prefs.lposBaseUrl || LPOS_DEFAULT_BASE_URL,
+        secret: process.env.EP_SHARED_SECRET || ''
+      });
+    }
+    return { ok: true, data: prefs };
+  });
 
   ipcMain.handle('dialog:pickFolder', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
@@ -553,6 +635,70 @@ app.whenReady().then(() => {
   ipcMain.on('app:quit', () => {
     isQuitting = true;
     app.quit();
+  });
+
+  // --- LPOS IPC handlers ---
+  // Used by the renderer to query LPOS data (projects, notes, comments, health).
+  // All calls proxy through LposClient which adds the X-EP-Secret header.
+
+  ipcMain.handle('lpos:health', async () => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    try {
+      const data = await lposClient.checkHealth();
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('lpos:projects', async () => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    try {
+      const data = await lposClient.listProjects();
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('lpos:project', async (_, projectId) => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    try {
+      const data = await lposClient.getProject(projectId);
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('lpos:project-notes', async (_, projectId) => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    try {
+      const data = await lposClient.getProjectNotes(projectId);
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('lpos:asset-comments', async (_, projectId, assetId) => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    try {
+      const data = await lposClient.getAssetComments(projectId, assetId);
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
   });
 
   ipcMain.handle('leaderpass-call', async (_, action = {}) => {
@@ -585,6 +731,8 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+  if (lposHeartbeatTimer) { clearInterval(lposHeartbeatTimer); lposHeartbeatTimer = null; }
+  lposClient = null;
   if (controlPlane) { controlPlane.dispose(); controlPlane = null; }
   Object.values(workers).forEach(stopWorker);
   if (tray) { tray.destroy(); tray = null; }

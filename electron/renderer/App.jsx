@@ -147,6 +147,8 @@ function App() {
   const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '' });
   const [settingsSaved, setSettingsSaved] = React.useState(false);
   const [lposUrl, setLposUrl] = React.useState('');
+  // 'unconfigured' | 'ok' | 'error' | 'no-secret'
+  const [lposStatus, setLposStatus] = React.useState('unconfigured');
 
   const appendLog = React.useCallback((msg) => {
     setLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-250));
@@ -168,12 +170,41 @@ function App() {
       .then((result) => {
         const prefs = result?.data || {};
         const name = prefs.displayName || '';
-        const url = prefs.lposUrl || '';
+        // Stored under lposBaseUrl (the canonical key written on save)
+        const url = prefs.lposBaseUrl || 'https://lpos.tail856ed3.ts.net';
         setSettingsDraft({ displayName: name, lposUrl: url });
         setLposUrl(url);
       })
       .catch(() => null);
   }, []);
+
+  // Poll LPOS health every 30 s — drives the status bar indicator
+  React.useEffect(() => {
+    if (!window.lposAPI) return;
+
+    async function checkLpos() {
+      if (!lposUrl) {
+        setLposStatus('unconfigured');
+        return;
+      }
+      try {
+        const result = await window.lposAPI.health();
+        if (result?.ok) {
+          setLposStatus('ok');
+        } else if (result?.error === 'LPOS not configured') {
+          setLposStatus('no-secret');
+        } else {
+          setLposStatus('error');
+        }
+      } catch {
+        setLposStatus('error');
+      }
+    }
+
+    checkLpos();
+    const timer = setInterval(checkLpos, 30_000);
+    return () => clearInterval(timer);
+  }, [lposUrl]);
 
   React.useEffect(() => {
     const onHashChange = () => setRoute(getRouteFromHash());
@@ -340,9 +371,10 @@ function App() {
     if (!window.electronAPI?.updatePreferences) return;
     window.electronAPI.updatePreferences({
       displayName: settingsDraft.displayName,
-      lposUrl: settingsDraft.lposUrl
+      lposBaseUrl: settingsDraft.lposUrl   // canonical key expected by main.js
     }).then(() => {
       setLposUrl(settingsDraft.lposUrl);
+      setLposStatus('unconfigured');        // will re-check on next poll cycle
       setSettingsSaved(true);
       setTimeout(() => setSettingsSaved(false), 2000);
     }).catch(() => null);
@@ -467,9 +499,12 @@ function App() {
         </div>
         <div className="status-bar-divider" />
         <div className="status-bar-group">
-          <span className="status-dot neutral" />
+          <span className={`status-dot ${lposStatus === 'ok' ? 'ok' : lposStatus === 'error' ? 'bad' : 'neutral'}`} />
           <span className="status-bar-label">LPOS</span>
-          <span className="status-bar-chip">{lposUrl ? 'Connecting…' : 'Not configured'}</span>
+          {lposStatus === 'ok' && <span className="status-bar-chip ok">Connected</span>}
+          {lposStatus === 'error' && <span className="status-bar-chip bad">Unreachable</span>}
+          {lposStatus === 'no-secret' && <span className="status-bar-chip bad">No secret</span>}
+          {lposStatus === 'unconfigured' && <span className="status-bar-chip">{lposUrl ? 'Connecting…' : 'Not configured'}</span>}
         </div>
       </footer>
     );

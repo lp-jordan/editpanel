@@ -87,6 +87,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }
 });
 
+contextBridge.exposeInMainWorld('lposAPI', {
+  health() {
+    return ipcRenderer.invoke('lpos:health');
+  },
+  listProjects() {
+    return ipcRenderer.invoke('lpos:projects');
+  },
+  getProject(projectId) {
+    return ipcRenderer.invoke('lpos:project', projectId);
+  },
+  getProjectNotes(projectId) {
+    return ipcRenderer.invoke('lpos:project-notes', projectId);
+  },
+  getAssetComments(projectId, assetId) {
+    return ipcRenderer.invoke('lpos:asset-comments', projectId, assetId);
+  }
+});
+
 contextBridge.exposeInMainWorld('dialogAPI', {
   pickFolder() {
     return ipcRenderer.invoke('dialog:pickFolder');
