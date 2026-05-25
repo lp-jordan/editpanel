@@ -39,14 +39,14 @@ import threading
 from typing import Any, Dict, Optional
 
 
-if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-    try:
-        import nvidia.cublas
-
-        _cuda_dll_dir = os.path.join(os.path.dirname(nvidia.cublas.__file__), "bin")
-        os.add_dll_directory(_cuda_dll_dir)
-    except Exception as exc:
-        print(f"CUDA DLL dir not added: {exc}", file=sys.stderr)
+# NOTE: Phase 0 (2026-05-24) removed transcription from editpanel scope.
+# The Windows CUDA DLL bootstrap that used to live here was for Whisper
+# and is no longer needed. The previous block could also crash noisily on
+# Windows machines where `nvidia.cublas` was installed as a namespace
+# package without a real __file__ — producing the misleading
+# "CUDA DLL dir not added: expected str, bytes or os.PathLike object,
+# not NoneType" warning that suggested Resolve itself was broken.
+# Do not re-introduce CUDA bootstrap here; transcription is out of scope.
 
 # ---------- Logging ----------
 logging.basicConfig(

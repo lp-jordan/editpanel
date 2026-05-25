@@ -270,8 +270,12 @@ function startWorker(state) {
   }
   const { command, args, cwd, env } = state.spawnConfig;
   state.stopping = false;
+  // Pipe stderr (was 'inherit') so Python tracebacks, logger output, and
+  // any pre-SIGTERM clues are visible inside the app's SlideoutConsole.
+  // Without this, workers dying mid-flight produce silence in the UI and
+  // diagnostics require tailing the terminal that launched Electron.
   state.proc = spawn(command, args, {
-    stdio: ['pipe', 'pipe', 'inherit'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     cwd,
     env
   });
@@ -284,6 +288,17 @@ function startWorker(state) {
     } catch (err) {
       console.error(`Error processing ${state.name} worker output:`, err);
     }
+  });
+
+  state.stderrReader = readline.createInterface({ input: state.proc.stderr });
+  state.stderrReader.on('line', line => {
+    if (!line) return;
+    // Mirror to terminal so existing log capture keeps working
+    console.error(`[${state.name}:stderr] ${line}`);
+    // Surface in the renderer so connection issues are debuggable in-app
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('helper-message', `[${state.name}:stderr] ${line}`);
+    });
   });
 
   // Suppress stdin write errors. When we try to send a command to a worker that
@@ -332,6 +347,10 @@ function startWorker(state) {
       state.reader = null;
     }
     markUnavailable(state, `${state.name} worker process exited`);
+    if (state.stderrReader) {
+      state.stderrReader.close();
+      state.stderrReader = null;
+    }
     if (!wasStopping) {
       scheduleWorkerRestart(state, `worker exited (${exitInfo})`);
     }
@@ -351,6 +370,10 @@ function stopWorker(state) {
   if (state.reader) {
     state.reader.close();
     state.reader = null;
+  }
+  if (state.stderrReader) {
+    state.stderrReader.close();
+    state.stderrReader = null;
   }
 }
 
@@ -806,8 +829,11 @@ app.whenReady().then(() => {
       BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', `[ATEM] ${msg}`));
     }
 
-    atemLog(`Connecting to ${ftpHost}…`);
-    const result = await atemListSessions(ftpHost);
+    atemLog(`Connecting to ${ftpHost}:21 (anonymous)…`);
+    // Pass atemLog down so each FTP stage (access, list, etc.) and the
+    // raw protocol dialogue surface in the console — a silent 10-second
+    // hang is otherwise indistinguishable from "nothing happened".
+    const result = await atemListSessions(ftpHost, 21, atemLog);
     if (result.ok) {
       atemLog(`FTP OK — ${result.data?.length ?? 0} session(s) found`);
     } else {
