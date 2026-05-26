@@ -102,7 +102,13 @@ contextBridge.exposeInMainWorld('lposAPI', {
   },
   getAssetComments(projectId, assetId) {
     return ipcRenderer.invoke('lpos:asset-comments', projectId, assetId);
-  }
+  },
+  b2SyncStatus() {
+    return ipcRenderer.invoke('lpos:b2-sync-status');
+  },
+  b2SyncTrigger() {
+    return ipcRenderer.invoke('lpos:b2-sync-trigger');
+  },
 });
 
 contextBridge.exposeInMainWorld('atemAPI', {

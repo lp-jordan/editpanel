@@ -818,6 +818,35 @@ app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle('lpos:b2-sync-status', async () => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    try {
+      return await lposClient.getB2SyncStatus();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('lpos:b2-sync-trigger', async () => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    try {
+      const result = await lposClient.triggerB2Sync();
+      BrowserWindow.getAllWindows().forEach(w => {
+        w.webContents.send('helper-message', result.ok
+          ? '[B2] Manual sync triggered on LPOS'
+          : `[B2] Trigger failed: ${result.error}`
+        );
+      });
+      return result;
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   // --- ATEM FTP IPC ---
 
   ipcMain.handle('atem:list-sessions', async (_, host) => {

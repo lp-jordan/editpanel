@@ -2138,6 +2138,97 @@ button.status-bar-chip-btn:hover {
   padding: 0 24px 24px;
 }
 
+/* ── Sync status strip ── */
+
+.r2-sync-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+}
+
+.r2-sync-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.r2-sync-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.r2-sync-dot-idle    { background: var(--line-strong); }
+.r2-sync-dot-ok      { background: #5cb85c; }
+.r2-sync-dot-running { background: var(--accent); animation: r2-pulse 1.2s ease-in-out infinite; }
+.r2-sync-dot-error   { background: var(--danger); }
+
+@keyframes r2-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.r2-sync-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.r2-sync-meta {
+  font-size: 0.75rem;
+  color: var(--muted-soft);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.r2-sync-ok  { color: #5cb85c; }
+.r2-sync-err { color: var(--danger); }
+.r2-sync-uncfg { font-style: italic; }
+
+.r2-sync-trigger-btn {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.r2-sync-trigger-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: rgba(219, 175, 95, 0.4);
+  background: var(--accent-soft);
+}
+
+.r2-sync-trigger-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ── Stats bar ── */
 
 .r2-stats-bar {

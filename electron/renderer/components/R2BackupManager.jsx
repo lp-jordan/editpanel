@@ -20,6 +20,10 @@ function R2BackupManager({ open, onClose, onLog }) {
   const [confirmDelete, setConfirmDelete] = React.useState(null); // { type, key, name }
   const [deleting, setDeleting]       = React.useState(null); // key or prefix being deleted
 
+  // Sync status (from LPOS)
+  const [syncStatus, setSyncStatus]   = React.useState(null);  // null = not loaded
+  const [syncTriggering, setSyncTriggering] = React.useState(false);
+
   // ── Lifecycle ──────────────────────────────────────────────
 
   React.useEffect(() => {
@@ -30,7 +34,9 @@ function R2BackupManager({ open, onClose, onLog }) {
     setStats(null);
     setConfirmDelete(null);
     setDeleting(null);
+    setSyncStatus(null);
     checkConfig();
+    loadSyncStatus();
   }, [open]);
 
   async function checkConfig() {
@@ -39,6 +45,28 @@ function R2BackupManager({ open, onClose, onLog }) {
     const cfg = res?.data ?? false;
     setConfigured(cfg);
     if (cfg) loadDirectory('');
+  }
+
+  // ── Sync status ────────────────────────────────────────────
+
+  async function loadSyncStatus() {
+    const result = await window.lposAPI?.b2SyncStatus();
+    if (result?.ok) setSyncStatus(result.data ?? null);
+    // Silently ignore errors (LPOS may not be connected)
+  }
+
+  async function triggerSync() {
+    setSyncTriggering(true);
+    onLog?.('[B2] Triggering sync on LPOS…');
+    const result = await window.lposAPI?.b2SyncTrigger();
+    setSyncTriggering(false);
+    if (!result?.ok) {
+      onLog?.(`[B2] Trigger failed: ${result?.error ?? 'unknown'}`);
+      return;
+    }
+    onLog?.('[B2] Sync started on LPOS — check back in a few minutes');
+    // Optimistically mark as running
+    setSyncStatus(prev => prev ? { ...prev, running: true } : null);
   }
 
   // ── Data loading ───────────────────────────────────────────
@@ -117,6 +145,86 @@ function R2BackupManager({ open, onClose, onLog }) {
     } catch { return ''; }
   }
 
+  function formatRelative(isoStr) {
+    if (!isoStr) return '';
+    try {
+      const diff = Date.now() - new Date(isoStr).getTime();
+      const h = Math.floor(diff / 3_600_000);
+      if (h < 1)  return 'just now';
+      if (h < 24) return `${h}h ago`;
+      const d = Math.floor(h / 24);
+      return `${d}d ago`;
+    } catch { return ''; }
+  }
+
+  function renderSyncStrip() {
+    // Always render — shows LPOS-not-connected state gracefully
+    const s = syncStatus;
+    const isRunning   = s?.running ?? false;
+    const configured  = s?.configured ?? null;  // null = not loaded yet
+    const lastRun     = s?.lastRun ?? null;
+    const nextHour    = s?.nextRunHour ?? 2;
+    const syncDirs    = s?.syncDirs ?? [];
+
+    let dot = 'r2-sync-dot-idle';
+    if (isRunning)               dot = 'r2-sync-dot-running';
+    else if (lastRun?.failed > 0) dot = 'r2-sync-dot-error';
+    else if (lastRun)            dot = 'r2-sync-dot-ok';
+
+    return (
+      <div className="r2-sync-strip">
+        <div className="r2-sync-left">
+          <span className={`r2-sync-dot ${dot}`} />
+          <span className="r2-sync-label">LPOS Sync</span>
+          {s === null && (
+            <span className="r2-sync-meta">Loading…</span>
+          )}
+          {s !== null && configured === false && (
+            <span className="r2-sync-meta r2-sync-uncfg">not configured on LPOS</span>
+          )}
+          {s !== null && configured === null && syncStatus === null && (
+            <span className="r2-sync-meta">LPOS not connected</span>
+          )}
+          {s !== null && configured === true && isRunning && (
+            <span className="r2-sync-meta">
+              <span className="status-bar-spinner" style={{ width: 10, height: 10 }} />
+              {' '}Running…
+            </span>
+          )}
+          {s !== null && configured === true && !isRunning && lastRun && (
+            <span className="r2-sync-meta">
+              Last: {formatRelative(lastRun.timestamp)}
+              {' · '}
+              <span className="r2-sync-ok">{lastRun.uploaded} uploaded</span>
+              {lastRun.failed > 0 && (
+                <span className="r2-sync-err"> · {lastRun.failed} failed</span>
+              )}
+              {lastRun.swept > 0 && (
+                <span> · {lastRun.swept} swept</span>
+              )}
+            </span>
+          )}
+          {s !== null && configured === true && !isRunning && !lastRun && (
+            <span className="r2-sync-meta">No runs yet · scheduled {nextHour}:00</span>
+          )}
+        </div>
+        {s !== null && configured === true && (
+          <button
+            className="r2-sync-trigger-btn"
+            onClick={triggerSync}
+            disabled={isRunning || syncTriggering}
+            title="Trigger a manual sync now"
+          >
+            {syncTriggering
+              ? <><span className="status-bar-spinner" style={{ width: 10, height: 10 }} />{' '}Starting…</>
+              : 'Sync Now'
+            }
+          </button>
+        )}
+      </div>
+    );
+  }
+
   function buildCrumbs() {
     const crumbs = [{ label: 'Root', prefix: '' }];
     if (!prefix) return crumbs;
@@ -158,6 +266,9 @@ function R2BackupManager({ open, onClose, onLog }) {
 
       {/* Body */}
       <div className="r2-overlay-body">
+
+        {/* Sync status strip — always visible regardless of B2 config */}
+        {renderSyncStrip()}
 
         {/* Checking config */}
         {configured === null && (

@@ -117,6 +117,16 @@ class LposClient {
   async resolveUpload(uploadId) {
     return this._request('GET', `/api/ep/uploads/${encodeURIComponent(uploadId)}/asset`);
   }
+
+  /** Get the current B2 media sync status from LPOS. */
+  async getB2SyncStatus() {
+    return this._request('GET', '/api/ep/b2-sync');
+  }
+
+  /** Trigger a manual B2 media sync run on LPOS. */
+  async triggerB2Sync() {
+    return this._request('POST', '/api/ep/b2-sync');
+  }
 }
 
 module.exports = { LposClient };
