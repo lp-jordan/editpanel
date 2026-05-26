@@ -1,20 +1,21 @@
 'use strict';
 
 /**
- * r2_client.js — Cloudflare R2 access layer for the editpanel backup manager.
+ * b2_client.js — Backblaze B2 access layer for the editpanel backup manager.
  *
+ * Uses B2's S3-compatible API via @aws-sdk/client-s3.
  * Runs in the Electron main process only (not a worker subprocess).
  *
- * R2 object key structure (mirrors backup-service.ts in lpos-dashboard):
+ * Expected object key structure:
  *   backups/YYYY-MM-DD/<dbname>.gz          — SQLite snapshots
  *   backups/YYYY-MM-DD/state/<file>.gz      — top-level JSON config files
  *   backups/YYYY-MM-DD/projects/<id>/<path>.gz — per-project JSON state
  *
  * Required env vars (via Doppler):
- *   CLOUDFLARE_ACCOUNT_ID
- *   R2_BACKUP_ACCESS_KEY_ID
- *   R2_BACKUP_SECRET_ACCESS_KEY
- *   R2_BACKUP_BUCKET
+ *   B2_ENDPOINT          — full S3-compatible URL, e.g. https://s3.us-west-004.backblazeb2.com
+ *   B2_KEY_ID            — Backblaze Application Key ID
+ *   B2_APPLICATION_KEY   — Backblaze Application Key
+ *   B2_BUCKET            — bucket name
  */
 
 const {
@@ -32,26 +33,26 @@ const MAX_PREVIEW_BYTES = 512 * 1024; // 512 KB — refuse to load larger files 
 
 function isConfigured() {
   return !!(
-    process.env.CLOUDFLARE_ACCOUNT_ID &&
-    process.env.R2_BACKUP_ACCESS_KEY_ID &&
-    process.env.R2_BACKUP_SECRET_ACCESS_KEY &&
-    process.env.R2_BACKUP_BUCKET
+    process.env.B2_ENDPOINT &&
+    process.env.B2_KEY_ID &&
+    process.env.B2_APPLICATION_KEY &&
+    process.env.B2_BUCKET
   );
 }
 
 function makeClient() {
   return new S3Client({
     region: 'auto',
-    endpoint: `https://${process.env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    endpoint: process.env.B2_ENDPOINT,
     credentials: {
-      accessKeyId:     process.env.R2_BACKUP_ACCESS_KEY_ID,
-      secretAccessKey: process.env.R2_BACKUP_SECRET_ACCESS_KEY
+      accessKeyId:     process.env.B2_KEY_ID,
+      secretAccessKey: process.env.B2_APPLICATION_KEY
     }
   });
 }
 
 function getBucket() {
-  return process.env.R2_BACKUP_BUCKET || '';
+  return process.env.B2_BUCKET || '';
 }
 
 /** Paginated list of all objects under a given prefix. */
@@ -75,7 +76,7 @@ async function listAllObjects(client, bucket, prefix) {
  * Returns { ok, data: Array<{ date, fileCount, totalBytes, lastModified }> }
  */
 async function listDates() {
-  if (!isConfigured()) return { ok: false, error: 'R2 credentials not configured' };
+  if (!isConfigured()) return { ok: false, error: 'B2 credentials not configured' };
   try {
     const client = makeClient();
     const bucket = getBucket();
@@ -110,7 +111,7 @@ async function listDates() {
  * Returns { ok, data: Array<{ key, name, size, lastModified, previewable, isSqlite }> }
  */
 async function listDateFiles(date) {
-  if (!isConfigured()) return { ok: false, error: 'R2 credentials not configured' };
+  if (!isConfigured()) return { ok: false, error: 'B2 credentials not configured' };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'Invalid date format' };
   try {
     const client = makeClient();
@@ -123,12 +124,12 @@ async function listDateFiles(date) {
       const isSqlite = name.includes('.sqlite');
       const isJson = name.endsWith('.json.gz');
       return {
-        key:         obj.Key,
+        key:          obj.Key,
         name,
-        size:        obj.Size || 0,
+        size:         obj.Size || 0,
         lastModified: obj.LastModified,
-        previewable: isJson && (obj.Size || 0) <= MAX_PREVIEW_BYTES,
-        tooBig:      isJson && (obj.Size || 0) > MAX_PREVIEW_BYTES,
+        previewable:  isJson && (obj.Size || 0) <= MAX_PREVIEW_BYTES,
+        tooBig:       isJson && (obj.Size || 0) > MAX_PREVIEW_BYTES,
         isSqlite,
         isJson
       };
@@ -141,12 +142,11 @@ async function listDateFiles(date) {
 }
 
 /**
- * Download and decompress a .gz file from R2.
+ * Download and decompress a .gz file from B2.
  * Returns { ok, data: string } — pretty-printed JSON or raw text.
- * Only works for .json.gz files under the preview size limit.
  */
 async function getFileContent(key) {
-  if (!isConfigured()) return { ok: false, error: 'R2 credentials not configured' };
+  if (!isConfigured()) return { ok: false, error: 'B2 credentials not configured' };
   if (!key.endsWith('.gz')) return { ok: false, error: 'Only .gz files are previewable' };
 
   try {
@@ -154,24 +154,21 @@ async function getFileContent(key) {
     const bucket = getBucket();
     const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
 
-    // Collect Node.js Readable stream
     const chunks = [];
     let totalBytes = 0;
     for await (const chunk of res.Body) {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       totalBytes += buf.length;
       if (totalBytes > MAX_PREVIEW_BYTES * 3) {
-        // Compressed size unexpectedly large — bail early
         return { ok: false, error: 'File too large to preview' };
       }
       chunks.push(buf);
     }
 
-    const compressed  = Buffer.concat(chunks);
+    const compressed   = Buffer.concat(chunks);
     const decompressed = await gunzip(compressed);
     const text = decompressed.toString('utf8');
 
-    // Pretty-print if valid JSON
     try {
       return { ok: true, data: JSON.stringify(JSON.parse(text), null, 2) };
     } catch {
@@ -187,7 +184,7 @@ async function getFileContent(key) {
  * Returns { ok, data: { deleted: number } }
  */
 async function deleteDate(date) {
-  if (!isConfigured()) return { ok: false, error: 'R2 credentials not configured' };
+  if (!isConfigured()) return { ok: false, error: 'B2 credentials not configured' };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'Invalid date format' };
   try {
     const client = makeClient();
@@ -206,11 +203,11 @@ async function deleteDate(date) {
 }
 
 /**
- * Delete a single R2 object by key.
+ * Delete a single B2 object by key.
  * Returns { ok }
  */
 async function deleteFile(key) {
-  if (!isConfigured()) return { ok: false, error: 'R2 credentials not configured' };
+  if (!isConfigured()) return { ok: false, error: 'B2 credentials not configured' };
   try {
     const client = makeClient();
     const bucket = getBucket();

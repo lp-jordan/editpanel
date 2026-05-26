@@ -407,8 +407,8 @@ function App() {
         },
         {
           key: 'r2-manager',
-          label: 'R2 Backup Manager',
-          description: 'Browse, preview, and delete LPOS backups stored on Cloudflare R2.',
+          label: 'B2 Backup Manager',
+          description: 'Browse, preview, and delete LPOS backups stored on Backblaze B2.',
           actionLabel: 'Open Backups',
           onClick: () => setR2ManagerOpen(true),
           requiresResolve: false,

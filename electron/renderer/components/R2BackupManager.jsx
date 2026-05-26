@@ -1,5 +1,5 @@
 /**
- * R2BackupManager — Browse, preview, and delete LPOS R2 backups.
+ * R2BackupManager — Browse, preview, and delete LPOS Backblaze B2 backups.
  *
  * Three-stage flow:
  *   dates   — list of backup dates (newest first)
@@ -68,17 +68,17 @@ function R2BackupManager({ open, onClose, onLog }) {
   async function loadDates() {
     setLoading(true);
     setError(null);
-    onLog?.('[R2] Loading backup dates…');
+    onLog?.('[B2] Loading backup dates…');
     const result = await window.r2API?.listDates();
     setLoading(false);
     if (!result?.ok) {
       const msg = result?.error || 'Failed to list backup dates';
       setError(msg);
-      onLog?.(`[R2] Error: ${msg}`);
+      onLog?.(`[B2] Error: ${msg}`);
       return;
     }
     setDates(result.data ?? []);
-    onLog?.(`[R2] ${result.data.length} backup date(s) found`);
+    onLog?.(`[B2] ${result.data.length} backup date(s) found`);
   }
 
   async function loadFiles(date) {
@@ -87,13 +87,13 @@ function R2BackupManager({ open, onClose, onLog }) {
     setLoading(true);
     setError(null);
     setFiles([]);
-    onLog?.(`[R2] Loading files for ${date}…`);
+    onLog?.(`[B2] Loading files for ${date}…`);
     const result = await window.r2API?.listDateFiles(date);
     setLoading(false);
     if (!result?.ok) {
       const msg = result?.error || 'Failed to list files';
       setError(msg);
-      onLog?.(`[R2] Error: ${msg}`);
+      onLog?.(`[B2] Error: ${msg}`);
       return;
     }
     setFiles(result.data ?? []);
@@ -104,12 +104,12 @@ function R2BackupManager({ open, onClose, onLog }) {
     setPreviewContent(null);
     setPreviewLoading(true);
     setStage('preview');
-    onLog?.(`[R2] Loading ${file.name}…`);
+    onLog?.(`[B2] Loading ${file.name}…`);
     const result = await window.r2API?.getFileContent(file.key);
     setPreviewLoading(false);
     if (!result?.ok) {
       setPreviewContent(`Error: ${result?.error || 'Unknown error'}`);
-      onLog?.(`[R2] Preview error: ${result?.error}`);
+      onLog?.(`[B2] Preview error: ${result?.error}`);
       return;
     }
     setPreviewContent(result.data);
@@ -121,14 +121,14 @@ function R2BackupManager({ open, onClose, onLog }) {
   async function confirmAndDeleteDate(date) {
     setConfirmDeleteDate(null);
     setDeletingDate(date);
-    onLog?.(`[R2] Deleting backup ${date}…`);
+    onLog?.(`[B2] Deleting backup ${date}…`);
     const result = await window.r2API?.deleteDate(date);
     setDeletingDate(null);
     if (!result?.ok) {
       onLog?.(`[R2] Delete failed: ${result?.error}`);
       return;
     }
-    onLog?.(`[R2] Deleted ${result.data?.deleted ?? 0} file(s) from ${date}`);
+    onLog?.(`[B2] Deleted ${result.data?.deleted ?? 0} file(s) from ${date}`);
     // Refresh date list
     await loadDates();
     // If we were viewing this date's files, go back
@@ -138,7 +138,7 @@ function R2BackupManager({ open, onClose, onLog }) {
   async function confirmAndDeleteFile(file) {
     setConfirmDeleteFile(null);
     setDeletingFile(file.key);
-    onLog?.(`[R2] Deleting ${file.name}…`);
+    onLog?.(`[B2] Deleting ${file.name}…`);
     const result = await window.r2API?.deleteFile(file.key);
     setDeletingFile(null);
     if (!result?.ok) {
@@ -354,15 +354,15 @@ function R2BackupManager({ open, onClose, onLog }) {
   function renderUnconfigured() {
     return (
       <div className="r2-unconfigured">
-        <p className="r2-unconfigured-title">R2 not configured</p>
+        <p className="r2-unconfigured-title">Backblaze B2 not configured</p>
         <p className="r2-unconfigured-body">
           Set the following env vars via Doppler on this machine to enable the backup browser:
         </p>
         <ul className="r2-unconfigured-vars">
-          <li><code>CLOUDFLARE_ACCOUNT_ID</code></li>
-          <li><code>R2_BACKUP_ACCESS_KEY_ID</code></li>
-          <li><code>R2_BACKUP_SECRET_ACCESS_KEY</code></li>
-          <li><code>R2_BACKUP_BUCKET</code></li>
+          <li><code>B2_ENDPOINT</code> — e.g. https://s3.us-west-004.backblazeb2.com</li>
+          <li><code>B2_KEY_ID</code> — Application Key ID</li>
+          <li><code>B2_APPLICATION_KEY</code> — Application Key</li>
+          <li><code>B2_BUCKET</code> — bucket name</li>
         </ul>
       </div>
     );
@@ -371,10 +371,10 @@ function R2BackupManager({ open, onClose, onLog }) {
   // ── Header helpers ─────────────────────────────────────────
 
   function headerTitle() {
-    if (stage === 'dates')   return 'R2 Backups';
+    if (stage === 'dates')   return 'B2 Backups';
     if (stage === 'files')   return selectedDate || 'Files';
     if (stage === 'preview') return previewFile?.name?.split('/').pop() || 'Preview';
-    return 'R2 Backups';
+    return 'B2 Backups';
   }
 
   // ── Main render ────────────────────────────────────────────

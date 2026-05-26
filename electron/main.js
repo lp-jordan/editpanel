@@ -8,7 +8,7 @@ const { misspellings, suggestions } = require('./spellcheck');
 const { LposClient } = require('./workers/lpos_client');
 const { JobsDb } = require('./store/jobs-db');
 const { listSessions: atemListSessions, ingestSessions: atemIngestSessions } = require('./workers/atem_ftp');
-const r2 = require('./workers/r2_client');
+const r2 = require('./workers/b2_client');
 const {
   WORKERS,
   RetryableError,
