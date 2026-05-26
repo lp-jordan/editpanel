@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell, Tray, nativeImage } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
@@ -34,6 +34,8 @@ const PING_TIMEOUT_MS = 3000;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
 const PYTHON_CMD = process.platform === 'win32' ? 'python' : 'python3';
+const EP_LINK_SCHEME = 'lpos-editpanel';
+const EP_LINK_CALLBACK = `${EP_LINK_SCHEME}://callback`;
 
 let win;
 let tray = null;
@@ -47,6 +49,7 @@ let lposHeartbeatTimer = null;
 let jobsDb = null;
 let atemCancelToken = null; // { canceled: boolean }
 let resolveAutoConnectDone = false; // attempt auto-connect once per app session only
+let pendingEpLinkUrl = null; // captured before whenReady if the OS hands us a callback URL at cold start
 
 // Resolve connection state — updated by worker events, read by heartbeat
 let resolveConnected = false;
@@ -533,6 +536,116 @@ function broadcastJobEvent(event) {
   });
 }
 
+// ── EditPanel ↔ LPOS sign-in (custom URL scheme handling) ──────────────────────
+//
+// After the user approves on /ep/link in their browser, LPOS redirects to
+// `lpos-editpanel://callback#token=...&user=...&machine=...`. The OS routes
+// that to this app (we registered the scheme below). The token is delivered
+// in the URL hash fragment, not the query string, so it never lands in any
+// server access log or browser history.
+
+function handleEpLinkCallback(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    console.error('[ep-link] malformed callback URL:', url);
+    return;
+  }
+
+  if (parsed.protocol !== `${EP_LINK_SCHEME}:`) return;
+
+  const fragment = parsed.hash.startsWith('#') ? parsed.hash.slice(1) : '';
+  const params   = new URLSearchParams(fragment);
+
+  const error   = params.get('error');
+  const token   = params.get('token');
+  const user    = params.get('user') || '';
+  const machine = params.get('machine') || '';
+
+  // Emit a renderer event regardless of outcome — Settings UI listens for this.
+  const notify = (payload) => {
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('ep-link-result', payload);
+    });
+    if (win) {
+      win.show();
+      win.focus();
+    }
+  };
+
+  if (error) {
+    console.log('[ep-link] approval denied:', error);
+    notify({ ok: false, error });
+    return;
+  }
+  if (!token) {
+    console.warn('[ep-link] callback missing token');
+    notify({ ok: false, error: 'no_token' });
+    return;
+  }
+
+  // Persist + reinitialise the LPOS client with the new token.
+  if (controlPlane) {
+    controlPlane.setPreferences({ epToken: token, epUserEmail: user, epMachineName: machine });
+    const prefs = controlPlane.getPreferences();
+    lposClient = new LposClient({
+      baseUrl: prefs.lposBaseUrl || LPOS_DEFAULT_BASE_URL,
+      token:   prefs.epToken     || '',
+    });
+    console.log(`[ep-link] signed in as ${user} on ${machine}`);
+    notify({ ok: true, user, machine });
+  } else {
+    // Cold-start path: controlPlane not constructed yet — queue and let
+    // whenReady drain it once everything is wired.
+    pendingEpLinkUrl = url;
+  }
+}
+
+// Single-instance lock — required on Windows/Linux to receive callback URLs
+// via the `second-instance` argv. A no-op on macOS where open-url is used.
+const gotInstanceLock = app.requestSingleInstanceLock();
+if (!gotInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = argv.find(a => typeof a === 'string' && a.startsWith(`${EP_LINK_SCHEME}://`));
+    if (url) handleEpLinkCallback(url);
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    }
+  });
+}
+
+// Register the URL scheme. In development under Electron the `defaultApp` arg
+// is needed so the OS associates the script path + electron binary correctly.
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient(EP_LINK_SCHEME, process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient(EP_LINK_SCHEME);
+}
+
+// macOS: the OS delivers callback URLs via this event whether the app is cold-
+// starting or already running.
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  if (controlPlane) {
+    handleEpLinkCallback(url);
+  } else {
+    pendingEpLinkUrl = url;
+  }
+});
+
+// Windows/Linux: at cold start the URL is the last argv entry.
+{
+  const argvUrl = process.argv.find(a => typeof a === 'string' && a.startsWith(`${EP_LINK_SCHEME}://`));
+  if (argvUrl) pendingEpLinkUrl = argvUrl;
+}
+
 app.whenReady().then(() => {
   recipeCatalog = new RecipeCatalog();
 
@@ -595,15 +708,25 @@ app.whenReady().then(() => {
   }
 
   // --- LPOS connectivity ---
-  // Initialise client from stored preferences; secret comes from env (Doppler).
+  // baseUrl + per-machine token both come from stored preferences. The token
+  // is delivered via the lpos-editpanel:// URL scheme after the user completes
+  // the /ep/link approval flow. If absent, calls fail with a "not signed in"
+  // error until the user signs in from Settings.
   try {
     const prefs = controlPlane.getPreferences();
     lposClient = new LposClient({
       baseUrl: prefs?.lposBaseUrl || LPOS_DEFAULT_BASE_URL,
-      secret: process.env.EP_SHARED_SECRET || ''
+      token:   prefs?.epToken     || ''
     });
   } catch (_err) {
     lposClient = new LposClient({ baseUrl: LPOS_DEFAULT_BASE_URL });
+  }
+
+  // Drain any callback URL the OS delivered before controlPlane existed.
+  if (pendingEpLinkUrl) {
+    const url = pendingEpLinkUrl;
+    pendingEpLinkUrl = null;
+    handleEpLinkCallback(url);
   }
 
   // 10-second heartbeat — pushes current machine state to LPOS.
@@ -667,11 +790,11 @@ app.whenReady().then(() => {
   ipcMain.handle('preferences:get', async () => ({ ok: true, data: controlPlane.getPreferences() }));
   ipcMain.handle('preferences:update', async (_, patch = {}) => {
     const prefs = controlPlane.setPreferences(patch);
-    // Reinitialise LPOS client whenever the base URL is changed in Settings
-    if (patch.lposBaseUrl !== undefined) {
+    // Reinitialise LPOS client whenever baseUrl or token changes
+    if (patch.lposBaseUrl !== undefined || patch.epToken !== undefined) {
       lposClient = new LposClient({
         baseUrl: prefs.lposBaseUrl || LPOS_DEFAULT_BASE_URL,
-        secret: process.env.EP_SHARED_SECRET || ''
+        token:   prefs.epToken     || ''
       });
     }
     return { ok: true, data: prefs };
@@ -756,7 +879,38 @@ app.whenReady().then(() => {
 
   // --- LPOS IPC handlers ---
   // Used by the renderer to query LPOS data (projects, notes, comments, health).
-  // All calls proxy through LposClient which adds the X-EP-Secret header.
+  // All calls proxy through LposClient which adds the X-EP-Token header.
+
+  ipcMain.handle('lpos:signin-start', async () => {
+    try {
+      const prefs    = controlPlane.getPreferences();
+      const baseUrl  = (prefs.lposBaseUrl || LPOS_DEFAULT_BASE_URL).replace(/\/$/, '');
+      const machine  = prefs.displayName || os.hostname();
+      const url = `${baseUrl}/ep/link`
+        + `?machine=${encodeURIComponent(machine)}`
+        + `&callback=${encodeURIComponent(EP_LINK_CALLBACK)}`;
+      await shell.openExternal(url);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('lpos:signout', async () => {
+    try {
+      controlPlane.setPreferences({ epToken: '', epUserEmail: '', epMachineName: '' });
+      const prefs = controlPlane.getPreferences();
+      lposClient = new LposClient({
+        baseUrl: prefs.lposBaseUrl || LPOS_DEFAULT_BASE_URL,
+        token: ''
+      });
+      // Drop any cached B2 creds — they were tied to the user that just signed out.
+      r2.invalidateCache();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
 
   ipcMain.handle('lpos:health', async () => {
     if (!lposClient || !lposClient.isConfigured()) {
@@ -972,18 +1126,20 @@ app.whenReady().then(() => {
   });
 
   // --- B2 Media Manager IPC ---
+  // b2_client fetches its credentials from LPOS via /api/ep/b2-creds and caches
+  // them for ~1h, so every call needs the current lposClient to refresh.
 
   ipcMain.handle('r2:is-configured', () => ({
     ok: true,
-    data: r2.isConfigured()
+    data: r2.isConfigured(lposClient)
   }));
 
-  ipcMain.handle('r2:list-directory', async (_, prefix) => r2.listDirectory(prefix || ''));
+  ipcMain.handle('r2:list-directory', async (_, prefix) => r2.listDirectory(prefix || '', lposClient));
 
-  ipcMain.handle('r2:get-stats', async () => r2.getBucketStats());
+  ipcMain.handle('r2:get-stats', async () => r2.getBucketStats(lposClient));
 
   ipcMain.handle('r2:delete-file', async (_, key) => {
-    const result = await r2.deleteFile(key);
+    const result = await r2.deleteFile(key, lposClient);
     BrowserWindow.getAllWindows().forEach(w => {
       w.webContents.send('helper-message', result.ok
         ? `[B2] Deleted ${key}`
@@ -994,7 +1150,7 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('r2:delete-folder', async (_, prefix) => {
-    const result = await r2.deleteFolder(prefix);
+    const result = await r2.deleteFolder(prefix, lposClient);
     BrowserWindow.getAllWindows().forEach(w => {
       w.webContents.send('helper-message', result.ok
         ? `[B2] Deleted ${result.data?.deleted ?? 0} file(s) from ${prefix}`

@@ -1,36 +1,38 @@
 'use strict';
 
 /**
- * LposClient — lightweight read client for the lpos-dashboard /api/ep/ namespace.
+ * LposClient — read/write client for the lpos-dashboard /api/ep/ namespace.
  *
- * Auth: shared secret sent as X-EP-Secret header (set in Doppler as EP_SHARED_SECRET
- * on both the editpanel machine and the lpos-dashboard server).
+ * Auth: per-machine opaque token in the X-EP-Token header. The token is minted
+ * by the LPOS /ep/link approval flow and delivered to editpanel via the
+ * lpos-editpanel:// URL scheme callback. It is persisted in the editpanel
+ * preferences file (see ControlPlane).
  *
- * Config: baseUrl comes from preferences (Settings page → LPOS Base URL).
- *         secret comes from EP_SHARED_SECRET env var.
+ * Config: baseUrl + token come from preferences. No env fallback — if either
+ * is missing, the user must complete Sign in to LPOS in Settings.
  */
 class LposClient {
   constructor(options = {}) {
     this.baseUrl = (options.baseUrl || '').replace(/\/$/, '');
-    this.secret = options.secret || process.env.EP_SHARED_SECRET || '';
+    this.token   = options.token || '';
     this.timeout = Number(options.timeout || 10_000);
   }
 
   isConfigured() {
-    return Boolean(this.baseUrl && this.secret);
+    return Boolean(this.baseUrl && this.token);
   }
 
   async _request(method, endpoint, options = {}) {
     if (!this.baseUrl) {
       throw new Error('LPOS base URL not configured — set it in EditPanel Settings');
     }
-    if (!this.secret) {
-      throw new Error('EP_SHARED_SECRET not set — configure it in Doppler');
+    if (!this.token) {
+      throw new Error('Not signed in to LPOS — open Settings and click Sign in to LPOS');
     }
 
     const url = `${this.baseUrl}${endpoint}`;
     const headers = {
-      'x-ep-secret': this.secret,
+      'x-ep-token': this.token,
       'content-type': 'application/json'
     };
 
@@ -62,7 +64,7 @@ class LposClient {
     }
   }
 
-  /** Lightweight ping — confirms connectivity and auth. */
+  /** Lightweight ping — confirms connectivity and auth. Also returns the user payload. */
   async checkHealth() {
     return this._request('GET', '/api/ep/health');
   }
@@ -126,6 +128,15 @@ class LposClient {
   /** Trigger a manual B2 media sync run on LPOS. */
   async triggerB2Sync() {
     return this._request('POST', '/api/ep/b2-sync');
+  }
+
+  /**
+   * Fetch a short-lived, bucket-scoped Backblaze B2 application key.
+   * Returns { keyId, applicationKey, endpoint, bucket, expiresAt }.
+   * The caller is responsible for caching + refreshing before expiry.
+   */
+  async getB2Creds() {
+    return this._request('GET', '/api/ep/b2-creds');
   }
 }
 

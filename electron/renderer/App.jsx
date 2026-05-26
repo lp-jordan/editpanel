@@ -144,8 +144,13 @@ function App() {
   const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '', atemHost: '' });
   const [settingsSaved, setSettingsSaved] = React.useState(false);
   const [lposUrl, setLposUrl] = React.useState('');
-  // 'unconfigured' | 'ok' | 'error' | 'no-secret'
+  // 'unconfigured' | 'ok' | 'error' | 'signed-out'
   const [lposStatus, setLposStatus] = React.useState('unconfigured');
+  // Identity of the currently signed-in LPOS user on this machine
+  const [epUserEmail, setEpUserEmail] = React.useState('');
+  const [epMachineName, setEpMachineName] = React.useState('');
+  const [signinBusy, setSigninBusy] = React.useState(false);
+  const [signinMessage, setSigninMessage] = React.useState('');
 
   const appendLog = React.useCallback((msg) => {
     setLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-250));
@@ -160,8 +165,8 @@ function App() {
     return `${remSeconds}s`;
   }, []);
 
-  // Load preferences
-  React.useEffect(() => {
+  // Load preferences (including ep sign-in identity)
+  const loadPreferences = React.useCallback(() => {
     if (!window.electronAPI?.getPreferences) return;
     window.electronAPI.getPreferences()
       .then((result) => {
@@ -172,9 +177,68 @@ function App() {
         const atem = prefs.atemFtpHost || '172.20.10.241';
         setSettingsDraft({ displayName: name, lposUrl: url, atemHost: atem });
         setLposUrl(url);
+        setEpUserEmail(prefs.epUserEmail || '');
+        setEpMachineName(prefs.epMachineName || '');
       })
       .catch(() => null);
   }, []);
+
+  React.useEffect(() => {
+    loadPreferences();
+  }, [loadPreferences]);
+
+  // Listen for the SSO callback result — fires after the user approves on /ep/link.
+  React.useEffect(() => {
+    if (!window.lposAPI?.onLinkResult) return;
+    const unsubscribe = window.lposAPI.onLinkResult((payload) => {
+      setSigninBusy(false);
+      if (payload?.ok) {
+        setSigninMessage(`Signed in as ${payload.user || 'LPOS user'}`);
+        appendLog(`LPOS sign-in succeeded for ${payload.user || 'user'}`);
+        loadPreferences();
+        // Force an immediate health re-check
+        setLposStatus('unconfigured');
+      } else {
+        const err = payload?.error || 'unknown';
+        setSigninMessage(`Sign-in ${err === 'denied' ? 'cancelled' : 'failed'} (${err})`);
+        appendLog(`LPOS sign-in failed: ${err}`);
+      }
+      setTimeout(() => setSigninMessage(''), 4000);
+    });
+    return unsubscribe;
+  }, [appendLog, loadPreferences]);
+
+  const handleSigninStart = React.useCallback(async () => {
+    if (!window.lposAPI?.signinStart) return;
+    setSigninBusy(true);
+    setSigninMessage('Opening browser…');
+    try {
+      const result = await window.lposAPI.signinStart();
+      if (!result?.ok) {
+        setSigninBusy(false);
+        setSigninMessage(`Could not open browser: ${result?.error || 'unknown'}`);
+      }
+      // Otherwise stay busy until onLinkResult fires
+    } catch (err) {
+      setSigninBusy(false);
+      setSigninMessage(`Could not open browser: ${err?.message || err}`);
+    }
+  }, []);
+
+  const handleSignout = React.useCallback(async () => {
+    if (!window.lposAPI?.signout) return;
+    try {
+      await window.lposAPI.signout();
+      setEpUserEmail('');
+      setEpMachineName('');
+      setSigninMessage('Signed out');
+      setLposStatus('signed-out');
+      setTimeout(() => setSigninMessage(''), 3000);
+      appendLog('LPOS signed out');
+    } catch (err) {
+      setSigninMessage(`Sign-out failed: ${err?.message || err}`);
+    }
+  }, [appendLog]);
 
   // Poll LPOS health every 30 s — drives the status bar indicator
   React.useEffect(() => {
@@ -189,8 +253,8 @@ function App() {
         const result = await window.lposAPI.health();
         if (result?.ok) {
           setLposStatus('ok');
-        } else if (result?.error === 'LPOS not configured') {
-          setLposStatus('no-secret');
+        } else if (result?.error && /not signed in|not configured/i.test(result.error)) {
+          setLposStatus('signed-out');
         } else {
           setLposStatus('error');
         }
@@ -618,7 +682,48 @@ function App() {
                   value={settingsDraft.lposUrl}
                   onChange={(e) => setSettingsDraft((prev) => ({ ...prev, lposUrl: e.target.value }))}
                 />
-                <p className="settings-hint">Client credentials are managed via Doppler and are not configurable here.</p>
+                <p className="settings-hint">Save the URL before signing in. The token below is bound to whichever instance you sign in against.</p>
+              </div>
+
+              <div className="settings-field">
+                <label className="settings-label">Sign-in</label>
+                {epUserEmail ? (
+                  <>
+                    <p className="settings-hint" style={{ marginTop: 0 }}>
+                      Signed in as <strong>{epUserEmail}</strong>
+                      {epMachineName ? <> on <strong>{epMachineName}</strong></> : null}.
+                      {' '}This machine has a long-lived token; revoke from LPOS Settings → Connected EditPanel devices.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={handleSignout}
+                      style={{ marginTop: 8, alignSelf: 'flex-start' }}
+                    >
+                      Sign out of LPOS
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="settings-hint" style={{ marginTop: 0 }}>
+                      Not signed in. Click below to open LPOS in your browser and approve this machine.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={handleSigninStart}
+                      disabled={signinBusy}
+                      style={{ marginTop: 8, alignSelf: 'flex-start' }}
+                    >
+                      {signinBusy ? 'Waiting for browser…' : 'Sign in to LPOS'}
+                    </button>
+                  </>
+                )}
+                {signinMessage && (
+                  <p className="settings-hint" style={{ marginTop: 8, color: 'var(--accent)' }}>
+                    {signinMessage}
+                  </p>
+                )}
               </div>
             </section>
 

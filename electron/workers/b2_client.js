@@ -6,14 +6,13 @@
  * Uses B2's S3-compatible API via @aws-sdk/client-s3.
  * Files are stored as individual S3 objects (NOT Synology HyperBackup format).
  *
- * Supports prefix-based folder navigation with a '/' delimiter, so any
- * key structure (e.g. projects/PROJ-001/footage.mov) is browsable naturally.
+ * Credentials are fetched at runtime from LPOS via /api/ep/b2-creds — LPOS
+ * mints a bucket-scoped Backblaze key with a 1h TTL using the master key
+ * (which never leaves LPOS Doppler). Editpanel caches the creds in-memory
+ * and refreshes them ~5 minutes before they expire.
  *
- * Required env vars (via Doppler):
- *   B2_MEDIA_ENDPOINT          — full S3-compatible URL, e.g. https://s3.us-west-004.backblazeb2.com
- *   B2_MEDIA_KEY_ID            — Backblaze Application Key ID
- *   B2_MEDIA_APPLICATION_KEY   — Backblaze Application Key
- *   B2_MEDIA_BUCKET            — bucket name
+ * Each exported function accepts the LposClient as its last argument so the
+ * caller (IPC handlers in main.js) can wire whichever client is current.
  */
 
 const {
@@ -22,33 +21,64 @@ const {
   DeleteObjectCommand,
 } = require('@aws-sdk/client-s3');
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ── Creds cache ───────────────────────────────────────────────────────────────
 
-function isConfigured() {
-  return !!(
-    process.env.B2_MEDIA_ENDPOINT &&
-    process.env.B2_MEDIA_KEY_ID &&
-    process.env.B2_MEDIA_APPLICATION_KEY &&
-    process.env.B2_MEDIA_BUCKET
-  );
+const REFRESH_LEAD_MS = 5 * 60 * 1000;  // refresh 5 min before expiresAt
+
+let cached = null;  // { keyId, applicationKey, endpoint, bucket, expiresAt: number }
+let cachedClient = null;  // S3Client built from cached
+let inflight = null;  // de-dupe concurrent refreshes
+
+function isCachedFresh() {
+  return Boolean(cached && cached.expiresAt - REFRESH_LEAD_MS > Date.now());
 }
 
-function makeClient() {
-  return new S3Client({
-    region: 'auto',
-    endpoint: process.env.B2_MEDIA_ENDPOINT,
-    credentials: {
-      accessKeyId:     process.env.B2_MEDIA_KEY_ID,
-      secretAccessKey: process.env.B2_MEDIA_APPLICATION_KEY,
-    },
-  });
+/** Build (or return cached) S3 client. Refreshes creds via LPOS if needed. */
+async function getClient(lposClient) {
+  if (!lposClient || !lposClient.isConfigured()) {
+    throw new Error('Not signed in to LPOS — sign in from Settings to access B2');
+  }
+  if (cachedClient && isCachedFresh()) return cachedClient;
+
+  if (!inflight) {
+    inflight = (async () => {
+      const result = await lposClient.getB2Creds();
+      if (!result?.ok || !result.data) {
+        throw new Error(result?.error || 'LPOS did not return B2 credentials');
+      }
+      const d = result.data;
+      cached = {
+        keyId:          d.keyId,
+        applicationKey: d.applicationKey,
+        endpoint:       d.endpoint,
+        bucket:         d.bucket,
+        expiresAt:      new Date(d.expiresAt).getTime(),
+      };
+      cachedClient = new S3Client({
+        region: 'auto',
+        endpoint: cached.endpoint,
+        credentials: {
+          accessKeyId:     cached.keyId,
+          secretAccessKey: cached.applicationKey,
+        },
+      });
+      return cachedClient;
+    })().finally(() => { inflight = null; });
+  }
+  return inflight;
 }
 
 function getBucket() {
-  return process.env.B2_MEDIA_BUCKET || '';
+  return cached?.bucket || '';
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+/** Clear the cache — call after sign-out so a fresh sign-in fetches new creds. */
+function invalidateCache() {
+  cached = null;
+  cachedClient = null;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Paginate through all objects under a prefix (no delimiter — flat scan). */
 async function listAllObjects(client, bucket, prefix) {
@@ -69,16 +99,22 @@ async function listAllObjects(client, bucket, prefix) {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
+ * Whether the LPOS connection is signed in. This is the new "configured" signal —
+ * B2 creds themselves are fetched on demand, so the gating question becomes
+ * "can we reach LPOS to mint a key?".
+ */
+function isConfigured(lposClient) {
+  return Boolean(lposClient && lposClient.isConfigured());
+}
+
+/**
  * List one "directory" level using the '/' delimiter.
  * Returns { ok, data: { folders: [{ prefix, name }], files: [{ key, name, size, lastModified }] } }
- *
- * - folders: S3 CommonPrefixes — virtual folders; navigate into with listDirectory(folder.prefix)
- * - files:   S3 Contents at this level only (direct children, not recursive)
  */
-async function listDirectory(prefix = '') {
-  if (!isConfigured()) return { ok: false, error: 'B2 credentials not configured' };
+async function listDirectory(prefix = '', lposClient) {
+  if (!isConfigured(lposClient)) return { ok: false, error: 'Not signed in to LPOS' };
   try {
-    const client  = makeClient();
+    const client  = await getClient(lposClient);
     const bucket  = getBucket();
     const folders = [];
     const files   = [];
@@ -92,14 +128,12 @@ async function listDirectory(prefix = '') {
         ContinuationToken: continuationToken,
       }));
 
-      // CommonPrefixes → virtual "folders"
       for (const cp of res.CommonPrefixes ?? []) {
         if (!cp.Prefix) continue;
         const name = cp.Prefix.slice(prefix.length).replace(/\/$/, '');
         folders.push({ prefix: cp.Prefix, name });
       }
 
-      // Contents → files at this level (skip the prefix "folder" placeholder if present)
       for (const obj of res.Contents ?? []) {
         if (!obj.Key || obj.Key === prefix) continue;
         files.push({
@@ -121,13 +155,12 @@ async function listDirectory(prefix = '') {
 
 /**
  * Get aggregate stats for the entire bucket (full paginated scan).
- * This can be slow for large buckets — call on demand, not automatically.
- * Returns { ok, data: { fileCount, totalBytes, lastModified } }
+ * Call on demand — can be slow for large buckets.
  */
-async function getBucketStats() {
-  if (!isConfigured()) return { ok: false, error: 'B2 credentials not configured' };
+async function getBucketStats(lposClient) {
+  if (!isConfigured(lposClient)) return { ok: false, error: 'Not signed in to LPOS' };
   try {
-    const client  = makeClient();
+    const client  = await getClient(lposClient);
     const bucket  = getBucket();
     const objects = await listAllObjects(client, bucket, '');
 
@@ -146,15 +179,12 @@ async function getBucketStats() {
   }
 }
 
-/**
- * Delete a single object by key.
- * Returns { ok }
- */
-async function deleteFile(key) {
-  if (!isConfigured()) return { ok: false, error: 'B2 credentials not configured' };
-  if (!key)            return { ok: false, error: 'No key provided' };
+/** Delete a single object by key. */
+async function deleteFile(key, lposClient) {
+  if (!isConfigured(lposClient)) return { ok: false, error: 'Not signed in to LPOS' };
+  if (!key)                     return { ok: false, error: 'No key provided' };
   try {
-    const client = makeClient();
+    const client = await getClient(lposClient);
     const bucket = getBucket();
     await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     return { ok: true };
@@ -163,15 +193,12 @@ async function deleteFile(key) {
   }
 }
 
-/**
- * Delete all objects under a prefix (folder deletion).
- * Returns { ok, data: { deleted: number } }
- */
-async function deleteFolder(prefix) {
-  if (!isConfigured()) return { ok: false, error: 'B2 credentials not configured' };
-  if (!prefix)         return { ok: false, error: 'Cannot delete root — specify a folder prefix' };
+/** Delete all objects under a prefix (folder deletion). */
+async function deleteFolder(prefix, lposClient) {
+  if (!isConfigured(lposClient)) return { ok: false, error: 'Not signed in to LPOS' };
+  if (!prefix)                  return { ok: false, error: 'Cannot delete root — specify a folder prefix' };
   try {
-    const client  = makeClient();
+    const client  = await getClient(lposClient);
     const bucket  = getBucket();
     const objects = await listAllObjects(client, bucket, prefix);
 
@@ -186,4 +213,11 @@ async function deleteFolder(prefix) {
   }
 }
 
-module.exports = { isConfigured, listDirectory, getBucketStats, deleteFile, deleteFolder };
+module.exports = {
+  isConfigured,
+  listDirectory,
+  getBucketStats,
+  deleteFile,
+  deleteFolder,
+  invalidateCache,
+};

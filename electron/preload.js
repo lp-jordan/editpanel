@@ -109,6 +109,20 @@ contextBridge.exposeInMainWorld('lposAPI', {
   b2SyncTrigger() {
     return ipcRenderer.invoke('lpos:b2-sync-trigger');
   },
+  /** Open the user's default browser to /ep/link for approval. */
+  signinStart() {
+    return ipcRenderer.invoke('lpos:signin-start');
+  },
+  /** Clear the locally-stored ep_token (does not revoke server-side). */
+  signout() {
+    return ipcRenderer.invoke('lpos:signout');
+  },
+  /** Subscribe to ep-link callback results (token saved / denied / errored). */
+  onLinkResult(callback) {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('ep-link-result', handler);
+    return () => ipcRenderer.removeListener('ep-link-result', handler);
+  },
 });
 
 contextBridge.exposeInMainWorld('atemAPI', {
