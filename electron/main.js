@@ -8,6 +8,7 @@ const { misspellings, suggestions } = require('./spellcheck');
 const { LposClient } = require('./workers/lpos_client');
 const { JobsDb } = require('./store/jobs-db');
 const { listSessions: atemListSessions, ingestSessions: atemIngestSessions } = require('./workers/atem_ftp');
+const r2 = require('./workers/r2_client');
 const {
   WORKERS,
   RetryableError,
@@ -939,6 +940,41 @@ app.whenReady().then(() => {
     } catch (err) {
       return { ok: false, error: err.message };
     }
+  });
+
+  // --- R2 Backup Manager IPC ---
+
+  ipcMain.handle('r2:is-configured', () => ({
+    ok: true,
+    data: r2.isConfigured()
+  }));
+
+  ipcMain.handle('r2:list-dates', async () => r2.listDates());
+
+  ipcMain.handle('r2:list-date-files', async (_, date) => r2.listDateFiles(date));
+
+  ipcMain.handle('r2:get-file-content', async (_, key) => r2.getFileContent(key));
+
+  ipcMain.handle('r2:delete-date', async (_, date) => {
+    const result = await r2.deleteDate(date);
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('helper-message', result.ok
+        ? `[R2] Deleted ${result.data.deleted} file(s) from ${date}`
+        : `[R2] Delete failed: ${result.error}`
+      );
+    });
+    return result;
+  });
+
+  ipcMain.handle('r2:delete-file', async (_, key) => {
+    const result = await r2.deleteFile(key);
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('helper-message', result.ok
+        ? `[R2] Deleted ${key}`
+        : `[R2] Delete failed: ${result.error}`
+      );
+    });
+    return result;
   });
 
   createTray();

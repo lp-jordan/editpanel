@@ -137,7 +137,8 @@ function App() {
   const [dashboard, setDashboard] = React.useState({ jobs: [], logs_by_job_step: {} });
   const [jobPanelOpen, setJobPanelOpen] = React.useState(false);
   const [activeResultJobId, setActiveResultJobId] = React.useState(null);
-  const [atemIngestOpen, setAtemIngestOpen] = React.useState(false);
+  const [atemIngestOpen, setAtemIngestOpen]   = React.useState(false);
+  const [r2ManagerOpen, setR2ManagerOpen]     = React.useState(false);
 
   // Settings state
   const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '', atemHost: '' });
@@ -407,11 +408,11 @@ function App() {
         {
           key: 'r2-manager',
           label: 'R2 Backup Manager',
-          description: 'Browse, preview, and manage project backups stored on Cloudflare R2.',
-          actionLabel: 'Coming Soon',
-          onClick: () => {},
+          description: 'Browse, preview, and delete LPOS backups stored on Cloudflare R2.',
+          actionLabel: 'Open Backups',
+          onClick: () => setR2ManagerOpen(true),
           requiresResolve: false,
-          comingSoon: true
+          comingSoon: false
         }
       ]
     },
@@ -733,6 +734,13 @@ function App() {
           atemHost={settingsDraft.atemHost || '172.20.10.241'}
           resolveConnected={connected}
           resolveProject={project}
+          onLog={appendLog}
+        />
+      )}
+      {r2ManagerOpen && (
+        <R2BackupManager
+          open={r2ManagerOpen}
+          onClose={() => setR2ManagerOpen(false)}
           onLog={appendLog}
         />
       )}
