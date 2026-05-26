@@ -1383,6 +1383,22 @@ button.status-bar-chip-btn:hover {
   justify-content: center;
   flex-shrink: 0;
   transition: background 140ms ease, color 140ms ease;
+  /* Explicitly opt out of the OS window-drag region. The frameless window
+     uses -webkit-app-region: drag on the navbar background and the top
+     drag strip; on Windows in particular, drag regions can consume clicks
+     for nested interactive elements that visually sit on top of them.
+     Forcing no-drag here keeps the close button clickable in every
+     overlay regardless of what's underneath. */
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 1;
+}
+
+/* SVGs inside the close button: clicks on the X strokes should bubble
+   straight to the button. Without this, hit-testing on a thin stroke
+   can miss between strokes — especially on high-DPI Windows displays. */
+.result-overlay-back svg {
+  pointer-events: none;
 }
 
 .result-overlay-back:hover {

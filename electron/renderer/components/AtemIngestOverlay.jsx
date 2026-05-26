@@ -54,6 +54,21 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     setHost(DEFAULT_HOST);
   }, [open]);
 
+  // Escape-to-close — second escape route in case the X button gets eaten
+  // by an OS drag region or some other Electron quirk. ResultOverlay has
+  // the same handler; matching the pattern for consistency.
+  React.useEffect(() => {
+    if (!open) return;
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose?.();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
   // Auto-connect when browse stage is shown
   React.useEffect(() => {
     if (!open || stage !== 'browse' || sessions.length > 0 || connecting) return;
