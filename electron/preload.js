@@ -159,10 +159,9 @@ contextBridge.exposeInMainWorld('fsAPI', {
 });
 
 contextBridge.exposeInMainWorld('r2API', {
-  isConfigured:   ()      => ipcRenderer.invoke('r2:is-configured'),
-  listDates:      ()      => ipcRenderer.invoke('r2:list-dates'),
-  listDateFiles:  date    => ipcRenderer.invoke('r2:list-date-files', date),
-  getFileContent: key     => ipcRenderer.invoke('r2:get-file-content', key),
-  deleteDate:     date    => ipcRenderer.invoke('r2:delete-date', date),
-  deleteFile:     key     => ipcRenderer.invoke('r2:delete-file', key)
+  isConfigured:  ()       => ipcRenderer.invoke('r2:is-configured'),
+  listDirectory: prefix   => ipcRenderer.invoke('r2:list-directory', prefix),
+  getStats:      ()       => ipcRenderer.invoke('r2:get-stats'),
+  deleteFile:    key      => ipcRenderer.invoke('r2:delete-file', key),
+  deleteFolder:  prefix   => ipcRenderer.invoke('r2:delete-folder', prefix),
 });

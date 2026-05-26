@@ -942,36 +942,34 @@ app.whenReady().then(() => {
     }
   });
 
-  // --- R2 Backup Manager IPC ---
+  // --- B2 Media Manager IPC ---
 
   ipcMain.handle('r2:is-configured', () => ({
     ok: true,
     data: r2.isConfigured()
   }));
 
-  ipcMain.handle('r2:list-dates', async () => r2.listDates());
+  ipcMain.handle('r2:list-directory', async (_, prefix) => r2.listDirectory(prefix || ''));
 
-  ipcMain.handle('r2:list-date-files', async (_, date) => r2.listDateFiles(date));
-
-  ipcMain.handle('r2:get-file-content', async (_, key) => r2.getFileContent(key));
-
-  ipcMain.handle('r2:delete-date', async (_, date) => {
-    const result = await r2.deleteDate(date);
-    BrowserWindow.getAllWindows().forEach(w => {
-      w.webContents.send('helper-message', result.ok
-        ? `[R2] Deleted ${result.data.deleted} file(s) from ${date}`
-        : `[R2] Delete failed: ${result.error}`
-      );
-    });
-    return result;
-  });
+  ipcMain.handle('r2:get-stats', async () => r2.getBucketStats());
 
   ipcMain.handle('r2:delete-file', async (_, key) => {
     const result = await r2.deleteFile(key);
     BrowserWindow.getAllWindows().forEach(w => {
       w.webContents.send('helper-message', result.ok
-        ? `[R2] Deleted ${key}`
-        : `[R2] Delete failed: ${result.error}`
+        ? `[B2] Deleted ${key}`
+        : `[B2] Delete failed: ${result.error}`
+      );
+    });
+    return result;
+  });
+
+  ipcMain.handle('r2:delete-folder', async (_, prefix) => {
+    const result = await r2.deleteFolder(prefix);
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('helper-message', result.ok
+        ? `[B2] Deleted ${result.data?.deleted ?? 0} file(s) from ${prefix}`
+        : `[B2] Delete failed: ${result.error}`
       );
     });
     return result;

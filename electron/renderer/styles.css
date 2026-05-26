@@ -2125,7 +2125,7 @@ button.status-bar-chip-btn:hover {
   flex-shrink: 0;
 }
 
-/* ─── R2 Backup Manager ───────────────────────────────────── */
+/* ─── B2 Media Browser ────────────────────────────────────── */
 
 .r2-overlay {
   display: flex;
@@ -2138,94 +2138,149 @@ button.status-bar-chip-btn:hover {
   padding: 0 24px 24px;
 }
 
-/* ── Date list ── */
+/* ── Stats bar ── */
 
-.r2-date-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 4px;
-}
-
-.r2-date-row {
+.r2-stats-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.025);
-  transition: border-color 140ms ease, background 140ms ease;
+  padding: 8px 0 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 10px;
 }
 
-.r2-date-row:hover {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
+.r2-stats-text {
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
-.r2-date-row.deleting {
-  opacity: 0.45;
-}
-
-.r2-date-main {
-  flex: 1;
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  padding: 13px 14px;
-  background: none;
+.r2-stats-load-btn {
+  appearance: none;
   border: none;
-  color: var(--text);
+  background: none;
   cursor: pointer;
-  text-align: left;
-}
-
-.r2-date-label {
-  font-size: 0.9rem;
-  font-weight: 600;
-}
-
-.r2-date-meta {
   font-size: 0.75rem;
   color: var(--muted-soft);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  transition: color 140ms ease;
 }
 
-/* ── File list ── */
+.r2-stats-load-btn:hover {
+  color: var(--muted);
+}
 
-.r2-file-list {
+.r2-stats-load-btn:disabled {
+  cursor: default;
+}
+
+/* ── Breadcrumb ── */
+
+.r2-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 0 12px;
+}
+
+.r2-breadcrumb-sep {
+  font-size: 0.78rem;
+  color: var(--line-strong);
+  padding: 0 2px;
+}
+
+.r2-breadcrumb-link {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--muted);
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.r2-breadcrumb-link:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.r2-breadcrumb-current {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+  padding: 2px 4px;
+}
+
+/* ── Browser rows ── */
+
+.r2-browser {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding-top: 4px;
+  gap: 4px;
 }
 
-.r2-file-section-label {
-  margin: 0 0 6px;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted-soft);
-}
-
-.r2-file-row {
+.r2-browser-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 10px;
-  border-radius: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.02);
+  transition: border-color 140ms ease, background 140ms ease;
 }
 
-.r2-file-row.deleting {
+.r2-browser-row:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.r2-browser-row.deleting {
   opacity: 0.45;
 }
 
-.r2-file-icon {
+.r2-row-icon {
   color: var(--muted-soft);
   flex-shrink: 0;
   line-height: 0;
 }
+
+.r2-folder-row .r2-row-icon {
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+.r2-row-main {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.r2-row-main:hover {
+  color: var(--accent);
+}
+
+.r2-browser-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 6px 0;
+}
+
+/* ── File info ── */
 
 .r2-file-info {
   flex: 1;
@@ -2236,49 +2291,17 @@ button.status-bar-chip-btn:hover {
 }
 
 .r2-file-name {
-  font-size: 0.82rem;
+  font-size: 0.83rem;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.r2-file-size {
+.r2-file-meta {
   font-size: 0.72rem;
   color: var(--muted-soft);
   flex-shrink: 0;
-}
-
-.r2-file-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.r2-preview-btn {
-  appearance: none;
-  border: 1px solid var(--line-strong);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 3px 9px;
-  border-radius: 5px;
-  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
-}
-
-.r2-preview-btn:hover {
-  color: var(--accent);
-  border-color: rgba(219, 175, 95, 0.4);
-  background: var(--accent-soft);
-}
-
-.r2-too-big {
-  font-size: 0.7rem;
-  color: var(--muted-soft);
-  font-style: italic;
 }
 
 /* ── Common icon buttons ── */
@@ -2296,6 +2319,7 @@ button.status-bar-chip-btn:hover {
   border-radius: 6px;
   color: var(--muted-soft);
   transition: color 140ms ease, background 140ms ease;
+  flex-shrink: 0;
 }
 
 .r2-icon-btn:hover {
@@ -2310,28 +2334,6 @@ button.status-bar-chip-btn:hover {
 
 .r2-refresh-btn {
   margin-left: auto;
-}
-
-/* ── Preview ── */
-
-.r2-preview-view {
-  min-height: 0;
-}
-
-.r2-preview-content {
-  margin: 0;
-  padding: 14px 16px;
-  font-size: 0.75rem;
-  line-height: 1.55;
-  color: var(--muted);
-  background: var(--surface-inset);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 60vh;
-  font-family: 'SF Mono', 'Consolas', 'Cascadia Code', monospace;
 }
 
 /* ── States ── */
