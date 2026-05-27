@@ -8,7 +8,6 @@ const { misspellings, suggestions } = require('./spellcheck');
 const { LposClient } = require('./workers/lpos_client');
 const { JobsDb } = require('./store/jobs-db');
 const { listSessions: atemListSessions, ingestSessions: atemIngestSessions } = require('./workers/atem_ftp');
-const r2 = require('./workers/b2_client');
 const {
   WORKERS,
   RetryableError,
@@ -904,8 +903,6 @@ app.whenReady().then(() => {
         baseUrl: prefs.lposBaseUrl || LPOS_DEFAULT_BASE_URL,
         token: ''
       });
-      // Drop any cached B2 creds — they were tied to the user that just signed out.
-      r2.invalidateCache();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
@@ -972,34 +969,7 @@ app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('lpos:b2-sync-status', async () => {
-    if (!lposClient || !lposClient.isConfigured()) {
-      return { ok: false, error: 'LPOS not configured' };
-    }
-    try {
-      return await lposClient.getB2SyncStatus();
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  });
-
-  ipcMain.handle('lpos:b2-sync-trigger', async () => {
-    if (!lposClient || !lposClient.isConfigured()) {
-      return { ok: false, error: 'LPOS not configured' };
-    }
-    try {
-      const result = await lposClient.triggerB2Sync();
-      BrowserWindow.getAllWindows().forEach(w => {
-        w.webContents.send('helper-message', result.ok
-          ? '[B2] Manual sync triggered on LPOS'
-          : `[B2] Trigger failed: ${result.error}`
-        );
-      });
-      return result;
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  });
+  // lpos:b2-sync-* IPC handlers removed 2026-05-27 — see LPOS /settings/storage.
 
   // --- ATEM FTP IPC ---
 
@@ -1125,40 +1095,9 @@ app.whenReady().then(() => {
     }
   });
 
-  // --- B2 Media Manager IPC ---
-  // b2_client fetches its credentials from LPOS via /api/ep/b2-creds and caches
-  // them for ~1h, so every call needs the current lposClient to refresh.
-
-  ipcMain.handle('r2:is-configured', () => ({
-    ok: true,
-    data: r2.isConfigured(lposClient)
-  }));
-
-  ipcMain.handle('r2:list-directory', async (_, prefix) => r2.listDirectory(prefix || '', lposClient));
-
-  ipcMain.handle('r2:get-stats', async () => r2.getBucketStats(lposClient));
-
-  ipcMain.handle('r2:delete-file', async (_, key) => {
-    const result = await r2.deleteFile(key, lposClient);
-    BrowserWindow.getAllWindows().forEach(w => {
-      w.webContents.send('helper-message', result.ok
-        ? `[B2] Deleted ${key}`
-        : `[B2] Delete failed: ${result.error}`
-      );
-    });
-    return result;
-  });
-
-  ipcMain.handle('r2:delete-folder', async (_, prefix) => {
-    const result = await r2.deleteFolder(prefix, lposClient);
-    BrowserWindow.getAllWindows().forEach(w => {
-      w.webContents.send('helper-message', result.ok
-        ? `[B2] Deleted ${result.data?.deleted ?? 0} file(s) from ${prefix}`
-        : `[B2] Delete failed: ${result.error}`
-      );
-    });
-    return result;
-  });
+  // B2 Media Manager IPC removed 2026-05-27 — cold-storage management is now
+  // LPOS-side (see lpos-dashboard /settings/storage). EditPanel no longer
+  // ships an S3 SDK or holds B2 credentials.
 
   createTray();
   createWindow();

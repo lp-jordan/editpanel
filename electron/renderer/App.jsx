@@ -138,7 +138,7 @@ function App() {
   const [jobPanelOpen, setJobPanelOpen] = React.useState(false);
   const [activeResultJobId, setActiveResultJobId] = React.useState(null);
   const [atemIngestOpen, setAtemIngestOpen]   = React.useState(false);
-  const [r2ManagerOpen, setR2ManagerOpen]     = React.useState(false);
+  // r2ManagerOpen removed 2026-05-27 — cold-storage management lives in LPOS now.
 
   // Settings state
   const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '', atemHost: '' });
@@ -469,15 +469,7 @@ function App() {
           requiresResolve: false,
           comingSoon: false
         },
-        {
-          key: 'r2-manager',
-          label: 'B2 Backup Manager',
-          description: 'Browse, preview, and delete LPOS backups stored on Backblaze B2.',
-          actionLabel: 'Open Backups',
-          onClick: () => setR2ManagerOpen(true),
-          requiresResolve: false,
-          comingSoon: false
-        }
+        // B2 Backup Manager task card removed 2026-05-27 — see LPOS /settings/storage.
       ]
     },
     '/edit': {
@@ -839,13 +831,6 @@ function App() {
           atemHost={settingsDraft.atemHost || '172.20.10.241'}
           resolveConnected={connected}
           resolveProject={project}
-          onLog={appendLog}
-        />
-      )}
-      {r2ManagerOpen && (
-        <R2BackupManager
-          open={r2ManagerOpen}
-          onClose={() => setR2ManagerOpen(false)}
           onLog={appendLog}
         />
       )}

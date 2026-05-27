@@ -12,7 +12,6 @@
     "test:platform-worker": "node scripts/test-platform-worker.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1053.0",
     "basic-ftp": "5.0.5",
     "dictionary-en": "4.0.0",
     "electron": "42.2.0",

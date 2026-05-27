@@ -103,12 +103,6 @@ contextBridge.exposeInMainWorld('lposAPI', {
   getAssetComments(projectId, assetId) {
     return ipcRenderer.invoke('lpos:asset-comments', projectId, assetId);
   },
-  b2SyncStatus() {
-    return ipcRenderer.invoke('lpos:b2-sync-status');
-  },
-  b2SyncTrigger() {
-    return ipcRenderer.invoke('lpos:b2-sync-trigger');
-  },
   /** Open the user's default browser to /ep/link for approval. */
   signinStart() {
     return ipcRenderer.invoke('lpos:signin-start');
@@ -178,10 +172,5 @@ contextBridge.exposeInMainWorld('fsAPI', {
   stat: p => ipcRenderer.invoke('fs:stat', p)
 });
 
-contextBridge.exposeInMainWorld('r2API', {
-  isConfigured:  ()       => ipcRenderer.invoke('r2:is-configured'),
-  listDirectory: prefix   => ipcRenderer.invoke('r2:list-directory', prefix),
-  getStats:      ()       => ipcRenderer.invoke('r2:get-stats'),
-  deleteFile:    key      => ipcRenderer.invoke('r2:delete-file', key),
-  deleteFolder:  prefix   => ipcRenderer.invoke('r2:delete-folder', prefix),
-});
+// r2API and lposAPI.b2Sync* removed 2026-05-27 — B2 cold-storage management is now
+// LPOS-side only (see lpos-dashboard /settings/storage). Editpanel doesn't touch B2.

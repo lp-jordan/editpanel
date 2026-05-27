@@ -120,24 +120,9 @@ class LposClient {
     return this._request('GET', `/api/ep/uploads/${encodeURIComponent(uploadId)}/asset`);
   }
 
-  /** Get the current B2 media sync status from LPOS. */
-  async getB2SyncStatus() {
-    return this._request('GET', '/api/ep/b2-sync');
-  }
-
-  /** Trigger a manual B2 media sync run on LPOS. */
-  async triggerB2Sync() {
-    return this._request('POST', '/api/ep/b2-sync');
-  }
-
-  /**
-   * Fetch a short-lived, bucket-scoped Backblaze B2 application key.
-   * Returns { keyId, applicationKey, endpoint, bucket, expiresAt }.
-   * The caller is responsible for caching + refreshing before expiry.
-   */
-  async getB2Creds() {
-    return this._request('GET', '/api/ep/b2-creds');
-  }
+  // B2-related methods removed 2026-05-27. Cold-storage monitoring &
+  // bucket management moved entirely LPOS-side — see lpos-dashboard
+  // /settings/storage. EditPanel no longer touches B2.
 }
 
 module.exports = { LposClient };
