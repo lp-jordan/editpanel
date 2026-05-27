@@ -365,14 +365,25 @@ function App() {
   }, []);
 
   const handleConnect = React.useCallback(() => {
-    if (!window.leaderpassAPI) {
-      appendLog('Leaderpass API not available; cannot connect');
+    // Click on the Offline chip respawns the resolve worker rather than
+    // re-sending `cmd: connect` to the existing one. The Python-side
+    // DaVinciResolveScript module can cache a failed scriptapp() state in
+    // a way that subsequent connect calls in the same process keep failing —
+    // killing the worker forces a clean module reload, which is the only
+    // recovery short of restarting Resolve itself. The main-process IPC
+    // handler resets resolveAutoConnectDone before killing, so the new
+    // worker's spawn event auto-fires connect against the fresh process.
+    if (!window.electronAPI?.reconnectResolve) {
+      appendLog('Reconnect API not available');
       return;
     }
-
-    window.leaderpassAPI.call('connect')
-      .then(() => appendLog('Connect success'))
-      .catch((err) => appendLog(`Connect error: ${err?.error || err}`));
+    appendLog('Reconnecting to Resolve…');
+    window.electronAPI.reconnectResolve()
+      .then((res) => {
+        if (res?.ok) appendLog('Resolve worker respawned; reattaching…');
+        else         appendLog(`Reconnect failed: ${res?.error || 'unknown error'}`);
+      })
+      .catch((err) => appendLog(`Reconnect error: ${err?.error || err}`));
   }, [appendLog]);
 
   const handleNewProjectBins = React.useCallback(() => {

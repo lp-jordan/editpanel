@@ -70,6 +70,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('jobs:prune', olderThanMs);
   },
 
+  /**
+   * Manual Resolve reconnect: respawns the Python worker so the next attach
+   * starts from a freshly-loaded DaVinciResolveScript module. Use this when
+   * the Offline chip's normal connect doesn't recover (sticky-failure case
+   * where the in-process module has cached a bad scriptapp() state).
+   */
+  reconnectResolve() {
+    return ipcRenderer.invoke('resolve:reconnect');
+  },
+
   dashboardSnapshot() {
     return ipcRenderer.invoke('dashboard:snapshot');
   },

@@ -31,13 +31,6 @@ try {
 const HEALTH_INTERVAL_MS = 10000;
 const PING_TIMEOUT_MS = 3000;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
-// Initial Resolve auto-connect retry schedule. A single 500ms shot was too
-// brittle when Resolve was already open at EditPanel launch: DaVinciResolveScript
-// attachment to a warm Resolve can take several seconds, so the first connect
-// would fail, NO_SESSION would fire, and the user was stuck on Offline until
-// they manually clicked the chip. Retry up to 5 times spanning ~15s; if a
-// CONNECTED status arrives mid-sequence, we short-circuit on the resolveConnected flag.
-const RESOLVE_AUTOCONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
 const PYTHON_CMD = process.platform === 'win32' ? 'python' : 'python3';
 const EP_LINK_SCHEME = 'lpos-editpanel';
@@ -260,49 +253,6 @@ function handleWorkerLine(state, line) {
   }
 }
 
-// Send `cmd: connect` to the resolve worker on a backoff schedule, stopping as
-// soon as a CONNECTED status event arrives (which flips resolveConnected via
-// the listener around line 192) or we exhaust RESOLVE_AUTOCONNECT_DELAYS_MS.
-// sendWorkerRequest can throw synchronously if the worker proc has died, so
-// every call is wrapped in try-catch to avoid main-process crash dialogs.
-function scheduleResolveAutoConnect() {
-  let attempt = 0;
-  const broadcast = (msg) => {
-    BrowserWindow.getAllWindows().forEach(w => {
-      w.webContents.send('helper-message', `[resolve:auto-connect] ${msg}`);
-    });
-  };
-  const tryConnect = () => {
-    if (resolveConnected) return; // status event beat us to it
-    if (attempt >= RESOLVE_AUTOCONNECT_DELAYS_MS.length) {
-      broadcast('gave up after all retries; click Offline to retry manually');
-      return;
-    }
-    const delay = RESOLVE_AUTOCONNECT_DELAYS_MS[attempt];
-    attempt += 1;
-    setTimeout(() => {
-      if (resolveConnected) return;
-      const resolveState = workers[WORKERS.resolve];
-      if (!resolveState || !resolveState.proc) {
-        // Worker died; the restart logic will bring it back, but the
-        // resolveAutoConnectDone gate means it won't trigger us again. Keep
-        // retrying — when the worker comes back, the next attempt will land.
-        tryConnect();
-        return;
-      }
-      broadcast(`attempt ${attempt}/${RESOLVE_AUTOCONNECT_DELAYS_MS.length}`);
-      try {
-        sendWorkerRequest({ cmd: 'connect' }, WORKERS.resolve)
-          .then(() => { /* CONNECTED status broadcast handles UI update */ })
-          .catch(() => { tryConnect(); });
-      } catch (_) {
-        tryConnect();
-      }
-    }, delay);
-  };
-  tryConnect();
-}
-
 function scheduleWorkerRestart(state, reason) {
   if (state.restartTimer) {
     return;
@@ -376,9 +326,20 @@ function startWorker(state) {
     state.crashCount = 0;
     broadcastWorkerStatus(state.name, 'available');
     // Auto-connect Resolve once per app session (not on every worker restart).
+    // The manual reconnect path (Offline chip → resolve:reconnect IPC) resets
+    // resolveAutoConnectDone before killing the worker, so the next spawn
+    // re-triggers this auto-connect against a fresh Python process. That's
+    // intentional — DaVinciResolveScript's native module can cache a failed
+    // attach in-process, so retrying connect in the same worker is useless.
+    // sendWorkerRequest can throw synchronously if the proc dies in the 500ms
+    // window, so we wrap in try-catch to prevent a main-process crash dialog.
     if (state.name === WORKERS.resolve && !resolveAutoConnectDone) {
       resolveAutoConnectDone = true;
-      scheduleResolveAutoConnect();
+      setTimeout(() => {
+        try {
+          sendWorkerRequest({ cmd: 'connect' }, WORKERS.resolve).catch(() => {});
+        } catch (_) {}
+      }, 500);
     }
   });
 
@@ -819,6 +780,32 @@ app.whenReady().then(() => {
   ipcMain.handle('jobs:list', async () => ({ ok: true, data: jobEngine.listJobs() }));
   ipcMain.handle('dashboard:snapshot', async () => ({ ok: true, data: controlPlane.buildDashboard() }));
   ipcMain.handle('jobs:get', async (_, jobId) => ({ ok: true, data: jobEngine.getJob(jobId) }));
+  // Manual reconnect: tear down the resolve worker so the restart logic
+  // brings up a fresh Python process. DaVinciResolveScript's native module
+  // can cache a bad scriptapp("Resolve") state in-process — re-sending
+  // `cmd: connect` to the same worker hits the same cached failure. Killing
+  // the worker forces a clean module reload, which is the only thing short
+  // of restarting Resolve that recovers from the sticky state.
+  // We reset resolveAutoConnectDone first so the spawn handler re-fires the
+  // initial connect against the new process.
+  ipcMain.handle('resolve:reconnect', async () => {
+    const state = workers[WORKERS.resolve];
+    if (!state) return { ok: false, error: 'resolve worker not configured' };
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('helper-message', '[resolve:reconnect] respawning worker');
+    });
+    resolveAutoConnectDone = false;
+    if (state.proc) {
+      // Don't set state.stopping — we WANT the restart machinery to bring
+      // it back. The exit handler will call scheduleWorkerRestart for us.
+      try { state.proc.kill('SIGTERM'); } catch (_) {}
+    } else {
+      // Worker isn't running for some reason — start it directly.
+      startWorker(state);
+    }
+    return { ok: true };
+  });
+
   ipcMain.handle('jobs:cancel', async (_, jobId) => jobEngine.cancel(jobId));
   ipcMain.handle('jobs:retry', async (_, jobId) => controlPlane.retryJob(jobId));
   ipcMain.handle('jobs:delete', async (_, jobId) => jobEngine.deleteJob(jobId));
