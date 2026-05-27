@@ -27,6 +27,22 @@ class JobsDb {
         label      TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
+    `);
+
+    // 2026-05-27 — capture the Resolve project + timeline at enqueue time so
+    // we can refuse to apply a saved resolution against a different project.
+    // ALTER TABLE ADD COLUMN is idempotent-guarded via PRAGMA table_info.
+    const cols = new Set(
+      this.db.prepare(`PRAGMA table_info(result_runs)`).all().map(r => r.name)
+    );
+    if (!cols.has('project_name')) {
+      this.db.exec(`ALTER TABLE result_runs ADD COLUMN project_name TEXT`);
+    }
+    if (!cols.has('timeline_name')) {
+      this.db.exec(`ALTER TABLE result_runs ADD COLUMN timeline_name TEXT`);
+    }
+
+    this.db.exec(`
 
       CREATE TABLE IF NOT EXISTS result_items (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,12 +94,19 @@ class JobsDb {
    * Items that already exist (same job_id + item_key) are left untouched,
    * so re-running after a partial completion resumes cleanly.
    */
-  initRun(jobId, itemType, label, items) {
+  initRun(jobId, itemType, label, items, scope = {}) {
     const upsertRun = this.db.prepare(
-      `INSERT OR IGNORE INTO result_runs (job_id, item_type, label, created_at)
-       VALUES (?, ?, ?, ?)`
+      `INSERT OR IGNORE INTO result_runs (job_id, item_type, label, created_at, project_name, timeline_name)
+       VALUES (?, ?, ?, ?, ?, ?)`
     );
-    upsertRun.run(jobId, itemType, label || itemType, Date.now());
+    upsertRun.run(
+      jobId,
+      itemType,
+      label || itemType,
+      Date.now(),
+      scope.projectName || null,
+      scope.timelineName || null
+    );
 
     const insertItem = this.db.prepare(
       `INSERT OR IGNORE INTO result_items (job_id, item_key, item_type, item_data_json, state)
@@ -105,6 +128,8 @@ class JobsDb {
         r.item_type,
         r.label,
         r.created_at,
+        r.project_name,
+        r.timeline_name,
         COUNT(i.id)                                      AS total,
         SUM(CASE WHEN i.state = 'resolved' THEN 1 ELSE 0 END) AS resolved,
         SUM(CASE WHEN i.state = 'skipped'  THEN 1 ELSE 0 END) AS skipped,
@@ -177,6 +202,36 @@ class JobsDb {
     );
     stmt.run(jobId);
     return { ok: true };
+  }
+
+  /**
+   * Delete a single run and all of its items. Used by the per-row "×" in the
+   * Jobs panel so users can clear stuck or stale entries.
+   */
+  deleteRun(jobId) {
+    this.db.prepare(`DELETE FROM result_items WHERE job_id = ?`).run(jobId);
+    this.db.prepare(`DELETE FROM result_runs  WHERE job_id = ?`).run(jobId);
+    return { ok: true };
+  }
+
+  /**
+   * Delete all runs older than `olderThanMs`. Drives the "Clear older than N days"
+   * sweep so the SQLite file doesn't grow unbounded over a user's lifetime.
+   * Returns the count of deleted runs.
+   */
+  pruneRuns(olderThanMs) {
+    const cutoff = Date.now() - Math.max(0, Number(olderThanMs) || 0);
+    const targets = this.db
+      .prepare(`SELECT job_id FROM result_runs WHERE created_at < ?`)
+      .all(cutoff);
+    if (targets.length === 0) return { ok: true, data: { deleted: 0 } };
+    const deleteItems = this.db.prepare(`DELETE FROM result_items WHERE job_id = ?`);
+    const deleteRun   = this.db.prepare(`DELETE FROM result_runs  WHERE job_id = ?`);
+    for (const row of targets) {
+      deleteItems.run(row.job_id);
+      deleteRun.run(row.job_id);
+    }
+    return { ok: true, data: { deleted: targets.length } };
   }
 
   // ─── ATEM ingest log ──────────────────────────────────────

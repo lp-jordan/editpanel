@@ -2,8 +2,10 @@
  * JobPanel — slide-up drawer above the status bar.
  *
  * Shows:
- *  • Any currently running job engine jobs with step progress
- *  • Recent result runs (spellcheck, audit, etc.) with a "Review" button
+ *  • Any currently running job engine jobs with step progress + Cancel
+ *  • Recent result runs (spellcheck, audit, etc.) with Review + Delete
+ *  • Recent (terminal) engine jobs with Delete
+ *  • A footer action to clear everything older than 30 days
  *
  * Props:
  *  open          — boolean, whether the panel is visible
@@ -14,8 +16,10 @@
 function JobPanel({ open, onClose, dashboard, onViewResults }) {
   const [runs, setRuns] = React.useState([]);
   const [loadingRuns, setLoadingRuns] = React.useState(false);
+  // Bumps each time we delete/prune so the dashboard reload picks up the change
+  const [reloadTick, setReloadTick] = React.useState(0);
 
-  // Reload result runs whenever panel opens
+  // Reload result runs whenever panel opens or after a delete/prune
   React.useEffect(() => {
     if (!open || !window.resultsAPI) return;
     setLoadingRuns(true);
@@ -23,7 +27,7 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
       .then(res => setRuns(res?.data ?? []))
       .catch(() => setRuns([]))
       .finally(() => setLoadingRuns(false));
-  }, [open]);
+  }, [open, reloadTick]);
 
   const runningJobs = (dashboard?.jobs ?? []).filter(j => j.state === 'running');
   const recentJobs  = (dashboard?.jobs ?? []).filter(j => j.state !== 'running').slice(0, 5);
@@ -57,6 +61,40 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
     return { done, total, pct: Math.round((done / total) * 100) };
   }
 
+  async function handleCancelJob(jobId) {
+    try { await window.electronAPI.cancelJob(jobId); } catch (_) {}
+    setReloadTick(t => t + 1);
+  }
+
+  async function handleDeleteJob(jobId) {
+    try { await window.electronAPI.deleteJob(jobId); } catch (_) {}
+    setReloadTick(t => t + 1);
+  }
+
+  async function handleDeleteRun(jobId) {
+    try { await window.resultsAPI.deleteRun(jobId); } catch (_) {}
+    setReloadTick(t => t + 1);
+  }
+
+  async function handleClearOld() {
+    // 30 days. Engine jobs use ms; result runs use ms.
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    try {
+      await Promise.all([
+        window.electronAPI.pruneJobs(THIRTY_DAYS_MS),
+        window.resultsAPI.pruneRuns(THIRTY_DAYS_MS)
+      ]);
+    } catch (_) {}
+    setReloadTick(t => t + 1);
+  }
+
+  const xIcon = (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+
   return (
     <div className={`job-panel${open ? ' open' : ''}`} role="dialog" aria-label="Jobs">
       <div className="job-panel-inner">
@@ -82,9 +120,18 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
                   <div key={job.job_id} className="job-panel-row active">
                     <div className="job-panel-row-top">
                       <span className="job-panel-name">{job.preset_id || job.job_id.slice(0, 8)}</span>
-                      {prog && (
-                        <span className="job-panel-step-badge">{prog.done}/{prog.total}</span>
-                      )}
+                      <div className="job-panel-row-actions">
+                        {prog && (
+                          <span className="job-panel-step-badge">{prog.done}/{prog.total}</span>
+                        )}
+                        <button
+                          className="job-panel-cancel-btn"
+                          onClick={() => handleCancelJob(job.job_id)}
+                          title="Cancel job"
+                        >
+                          Cancel
+                        </button>
+                      </div>
                     </div>
                     {prog && (
                       <div className="job-panel-progress-track">
@@ -122,12 +169,22 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
                         <span className="job-panel-name">{run.label}</span>
                         <span className="job-panel-age">{formatAge(run.created_at)}</span>
                       </div>
-                      <button
-                        className={`job-panel-review-btn${isDone ? ' done' : ''}`}
-                        onClick={() => onViewResults(run.job_id)}
-                      >
-                        {isDone ? 'Done' : run.pending > 0 ? `Resume (${run.pending})` : 'Review'}
-                      </button>
+                      <div className="job-panel-row-actions">
+                        <button
+                          className={`job-panel-review-btn${isDone ? ' done' : ''}`}
+                          onClick={() => onViewResults(run.job_id)}
+                        >
+                          {isDone ? 'Done' : run.pending > 0 ? `Resume (${run.pending})` : 'Review'}
+                        </button>
+                        <button
+                          className="job-panel-delete-btn"
+                          onClick={() => handleDeleteRun(run.job_id)}
+                          title="Delete this run"
+                          aria-label="Delete this run"
+                        >
+                          {xIcon}
+                        </button>
+                      </div>
                     </div>
                     <div className="job-panel-progress-track">
                       <div
@@ -160,6 +217,14 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
                     </span>
                   )}
                   <span className="job-panel-age">{formatAge(job.finished_at || job.created_at)}</span>
+                  <button
+                    className="job-panel-delete-btn"
+                    onClick={() => handleDeleteJob(job.job_id)}
+                    title="Delete this job"
+                    aria-label="Delete this job"
+                  >
+                    {xIcon}
+                  </button>
                 </div>
               ))}
             </section>
@@ -170,6 +235,14 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
           )}
 
         </div>
+
+        {(runs.length > 0 || recentJobs.length > 0) && (
+          <footer className="job-panel-footer">
+            <button className="job-panel-clear-old-btn" onClick={handleClearOld}>
+              Clear older than 30 days
+            </button>
+          </footer>
+        )}
       </div>
     </div>
   );

@@ -30,7 +30,15 @@ function createPersistence(filePath) {
     lines.forEach(line => {
       try {
         const record = JSON.parse(line);
-        if (!record?.job_id || !record?.snapshot) return;
+        if (!record?.job_id) return;
+        // Tombstone records mark a job as deleted by the user. They appear
+        // after the snapshot record(s) for that job, so processing in append
+        // order naturally removes the job from the rebuilt map.
+        if (record.tombstone) {
+          jobs.delete(record.job_id);
+          return;
+        }
+        if (!record.snapshot) return;
         jobs.set(record.job_id, record.snapshot);
       } catch (_error) {
         // ignore malformed historic lines
@@ -108,6 +116,47 @@ class JobEngine {
 
   listJobs() {
     return Array.from(this.jobs.values());
+  }
+
+  /**
+   * Remove a job from the in-memory map and append a tombstone to the
+   * persistence journal so the deletion survives restarts. Only jobs in a
+   * terminal state (succeeded / failed / canceled) can be deleted — for
+   * still-running jobs the caller should `cancel()` first.
+   */
+  deleteJob(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) return { ok: false, message: 'job not found' };
+    const terminal = [JOB_STATES.succeeded, JOB_STATES.failed, JOB_STATES.canceled];
+    if (!terminal.includes(job.state)) {
+      return { ok: false, message: `cannot delete a job in state ${job.state}` };
+    }
+    this.jobs.delete(jobId);
+    if (job.idempotency_key) {
+      this.idempotencyIndex.delete(job.idempotency_key);
+    }
+    this.persistence.writeRecord({ ts: Date.now(), job_id: jobId, tombstone: true });
+    this.emitJobEvent({ type: 'job_deleted', job_id: jobId });
+    return { ok: true };
+  }
+
+  /**
+   * Delete every terminal job whose finished_at (or created_at fallback) is
+   * older than `olderThanMs`. Used by the "Clear older than N days" sweep in
+   * the JobPanel. Returns the number of jobs removed.
+   */
+  pruneOldJobs(olderThanMs) {
+    const cutoff = Date.now() - Math.max(0, Number(olderThanMs) || 0);
+    const terminal = [JOB_STATES.succeeded, JOB_STATES.failed, JOB_STATES.canceled];
+    let deleted = 0;
+    for (const job of Array.from(this.jobs.values())) {
+      if (!terminal.includes(job.state)) continue;
+      const ts = job.finished_at || job.created_at || 0;
+      if (ts >= cutoff) continue;
+      const result = this.deleteJob(job.job_id);
+      if (result.ok) deleted += 1;
+    }
+    return { ok: true, data: { deleted } };
   }
 
   getJob(jobId) {

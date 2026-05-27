@@ -62,6 +62,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('jobs:retry', jobId);
   },
 
+  deleteJob(jobId) {
+    return ipcRenderer.invoke('jobs:delete', jobId);
+  },
+
+  pruneJobs(olderThanMs) {
+    return ipcRenderer.invoke('jobs:prune', olderThanMs);
+  },
+
   dashboardSnapshot() {
     return ipcRenderer.invoke('dashboard:snapshot');
   },
@@ -140,8 +148,8 @@ contextBridge.exposeInMainWorld('atemAPI', {
 });
 
 contextBridge.exposeInMainWorld('resultsAPI', {
-  init(jobId, itemType, label, items) {
-    return ipcRenderer.invoke('results:init', jobId, itemType, label, items);
+  init(jobId, itemType, label, items, scope = {}) {
+    return ipcRenderer.invoke('results:init', jobId, itemType, label, items, scope);
   },
   listRuns(limit = 20) {
     return ipcRenderer.invoke('results:list-runs', limit);
@@ -157,6 +165,12 @@ contextBridge.exposeInMainWorld('resultsAPI', {
   },
   resetRun(jobId) {
     return ipcRenderer.invoke('results:reset-run', jobId);
+  },
+  deleteRun(jobId) {
+    return ipcRenderer.invoke('results:delete-run', jobId);
+  },
+  pruneRuns(olderThanMs) {
+    return ipcRenderer.invoke('results:prune-runs', olderThanMs);
   }
 });
 

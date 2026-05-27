@@ -10,6 +10,31 @@ def handle_update_text(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not rh.timeline:
         raise RuntimeError("No active timeline")
 
+    # Project/timeline scope guard. The renderer captures the project +
+    # timeline at the time a result run is created (e.g. the spellcheck scan)
+    # and passes them back on every apply-action. If Resolve has been switched
+    # to a different project/timeline since, refuse rather than silently
+    # writing into the wrong project. The result item stays pending so the
+    # user can switch back and retry. See lp-app-ecosystem CLAUDE.md scoping
+    # notes (task 2026-05-27).
+    expect_project  = payload.get("expect_project")
+    expect_timeline = payload.get("expect_timeline")
+    if expect_project or expect_timeline:
+        current_project  = rh.project.GetName()  if rh.project  else None
+        current_timeline = rh.timeline.GetName() if rh.timeline else None
+        if expect_project and current_project and expect_project != current_project:
+            raise RuntimeError(
+                f"Project mismatch: this change was queued against "
+                f"“{expect_project}” but Resolve is on “{current_project}”. "
+                f"Switch back to apply."
+            )
+        if expect_timeline and current_timeline and expect_timeline != current_timeline:
+            raise RuntimeError(
+                f"Timeline mismatch: this change was queued against "
+                f"“{expect_timeline}” but Resolve is on “{current_timeline}”. "
+                f"Switch back to apply."
+            )
+
     track = int(payload.get("track", 0))
     start_frame = int(payload.get("start_frame", 0))
     tool_name = payload.get("tool_name")

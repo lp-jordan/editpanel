@@ -404,7 +404,12 @@ function App() {
     }
 
     const misspell = window.spellcheckAPI?.misspellings;
-    appendLog('Spellcheck started…');
+    // Capture the Resolve context at the moment the user kicks off the scan.
+    // This pins the resulting run to a specific project/timeline so later
+    // resolution actions can refuse to apply against a different project.
+    const scopeProject  = project;
+    const scopeTimeline = timeline;
+    appendLog(`Spellcheck started — project=${scopeProject || '?'} / timeline=${scopeTimeline || '?'}`);
 
     window.leaderpassAPI.call('spellcheck').then(async (res) => {
       const clips = (res.data && res.data.items) || [];
@@ -437,11 +442,14 @@ function App() {
 
       // Store result items and open the result overlay
       const runId = crypto.randomUUID();
-      await window.resultsAPI?.init(runId, 'spellcheck', 'Spellcheck', resultItems).catch(() => {});
+      await window.resultsAPI?.init(runId, 'spellcheck', 'Spellcheck', resultItems, {
+        projectName:  scopeProject  || null,
+        timelineName: scopeTimeline || null
+      }).catch(() => {});
       setActiveResultJobId(runId);
 
     }).catch((err) => appendLog(`Spellcheck error: ${err?.error || err}`));
-  }, [appendLog]);
+  }, [appendLog, project, timeline]);
 
   const handleSaveSettings = React.useCallback(() => {
     if (!window.electronAPI?.updatePreferences) return;

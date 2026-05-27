@@ -31,6 +31,13 @@ try {
 const HEALTH_INTERVAL_MS = 10000;
 const PING_TIMEOUT_MS = 3000;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
+// Initial Resolve auto-connect retry schedule. A single 500ms shot was too
+// brittle when Resolve was already open at EditPanel launch: DaVinciResolveScript
+// attachment to a warm Resolve can take several seconds, so the first connect
+// would fail, NO_SESSION would fire, and the user was stuck on Offline until
+// they manually clicked the chip. Retry up to 5 times spanning ~15s; if a
+// CONNECTED status arrives mid-sequence, we short-circuit on the resolveConnected flag.
+const RESOLVE_AUTOCONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
 const PYTHON_CMD = process.platform === 'win32' ? 'python' : 'python3';
 const EP_LINK_SCHEME = 'lpos-editpanel';
@@ -253,6 +260,49 @@ function handleWorkerLine(state, line) {
   }
 }
 
+// Send `cmd: connect` to the resolve worker on a backoff schedule, stopping as
+// soon as a CONNECTED status event arrives (which flips resolveConnected via
+// the listener around line 192) or we exhaust RESOLVE_AUTOCONNECT_DELAYS_MS.
+// sendWorkerRequest can throw synchronously if the worker proc has died, so
+// every call is wrapped in try-catch to avoid main-process crash dialogs.
+function scheduleResolveAutoConnect() {
+  let attempt = 0;
+  const broadcast = (msg) => {
+    BrowserWindow.getAllWindows().forEach(w => {
+      w.webContents.send('helper-message', `[resolve:auto-connect] ${msg}`);
+    });
+  };
+  const tryConnect = () => {
+    if (resolveConnected) return; // status event beat us to it
+    if (attempt >= RESOLVE_AUTOCONNECT_DELAYS_MS.length) {
+      broadcast('gave up after all retries; click Offline to retry manually');
+      return;
+    }
+    const delay = RESOLVE_AUTOCONNECT_DELAYS_MS[attempt];
+    attempt += 1;
+    setTimeout(() => {
+      if (resolveConnected) return;
+      const resolveState = workers[WORKERS.resolve];
+      if (!resolveState || !resolveState.proc) {
+        // Worker died; the restart logic will bring it back, but the
+        // resolveAutoConnectDone gate means it won't trigger us again. Keep
+        // retrying — when the worker comes back, the next attempt will land.
+        tryConnect();
+        return;
+      }
+      broadcast(`attempt ${attempt}/${RESOLVE_AUTOCONNECT_DELAYS_MS.length}`);
+      try {
+        sendWorkerRequest({ cmd: 'connect' }, WORKERS.resolve)
+          .then(() => { /* CONNECTED status broadcast handles UI update */ })
+          .catch(() => { tryConnect(); });
+      } catch (_) {
+        tryConnect();
+      }
+    }, delay);
+  };
+  tryConnect();
+}
+
 function scheduleWorkerRestart(state, reason) {
   if (state.restartTimer) {
     return;
@@ -326,15 +376,9 @@ function startWorker(state) {
     state.crashCount = 0;
     broadcastWorkerStatus(state.name, 'available');
     // Auto-connect Resolve once per app session (not on every worker restart).
-    // sendWorkerRequest can throw synchronously if the proc dies in the 500ms
-    // window, so we wrap in try-catch to prevent a main-process crash dialog.
     if (state.name === WORKERS.resolve && !resolveAutoConnectDone) {
       resolveAutoConnectDone = true;
-      setTimeout(() => {
-        try {
-          sendWorkerRequest({ cmd: 'connect' }, WORKERS.resolve).catch(() => {});
-        } catch (_) {}
-      }, 500);
+      scheduleResolveAutoConnect();
     }
   });
 
@@ -777,6 +821,8 @@ app.whenReady().then(() => {
   ipcMain.handle('jobs:get', async (_, jobId) => ({ ok: true, data: jobEngine.getJob(jobId) }));
   ipcMain.handle('jobs:cancel', async (_, jobId) => jobEngine.cancel(jobId));
   ipcMain.handle('jobs:retry', async (_, jobId) => controlPlane.retryJob(jobId));
+  ipcMain.handle('jobs:delete', async (_, jobId) => jobEngine.deleteJob(jobId));
+  ipcMain.handle('jobs:prune', async (_, olderThanMs) => jobEngine.pruneOldJobs(olderThanMs));
   ipcMain.handle('recipes:list', async () => ({ ok: true, data: recipeCatalog.list() }));
   ipcMain.handle('recipes:launch', async (_, payload = {}) => {
     const recipeId = payload?.recipeId;
@@ -817,10 +863,10 @@ app.whenReady().then(() => {
   // --- Result items IPC ---
   // Stores per-item reviewable state in SQLite so reviews survive restarts.
 
-  ipcMain.handle('results:init', (_event, jobId, itemType, label, items) => {
+  ipcMain.handle('results:init', (_event, jobId, itemType, label, items, scope = {}) => {
     if (!jobsDb) return { ok: false, error: 'DB not available' };
     try {
-      return jobsDb.initRun(jobId, itemType, label, Array.isArray(items) ? items : []);
+      return jobsDb.initRun(jobId, itemType, label, Array.isArray(items) ? items : [], scope || {});
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -866,6 +912,24 @@ app.whenReady().then(() => {
     if (!jobsDb) return { ok: false, error: 'DB not available' };
     try {
       return jobsDb.resetRun(jobId);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('results:delete-run', (_event, jobId) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return jobsDb.deleteRun(jobId);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('results:prune-runs', (_event, olderThanMs) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return jobsDb.pruneRuns(olderThanMs);
     } catch (err) {
       return { ok: false, error: err.message };
     }

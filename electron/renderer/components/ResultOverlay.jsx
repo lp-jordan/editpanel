@@ -17,6 +17,9 @@ function ResultOverlay({ jobId, onClose }) {
   const [selectedSuggestion, setSelectedSuggestion] = React.useState(null);
   const [saving, setSaving] = React.useState(false);
   const [runLabel, setRunLabel] = React.useState('');
+  const [scopeProject, setScopeProject] = React.useState('');
+  const [scopeTimeline, setScopeTimeline] = React.useState('');
+  const [applyError, setApplyError] = React.useState('');
   const customInputRef = React.useRef(null);
 
   // Load items on mount
@@ -26,7 +29,11 @@ function ResultOverlay({ jobId, onClose }) {
     window.resultsAPI.listRuns(50)
       .then(res => {
         const run = (res?.data ?? []).find(r => r.job_id === jobId);
-        if (run) setRunLabel(run.label || run.item_type);
+        if (run) {
+          setRunLabel(run.label || run.item_type);
+          setScopeProject(run.project_name || '');
+          setScopeTimeline(run.timeline_name || '');
+        }
       })
       .catch(() => {});
 
@@ -108,8 +115,12 @@ function ResultOverlay({ jobId, onClose }) {
     if (!correction) return;
 
     setSaving(true);
+    setApplyError('');
 
-    // For spellcheck: push the text update to Resolve
+    // For spellcheck: push the text update to Resolve, but only if the live
+    // Resolve context still matches what this run was captured against. The
+    // worker enforces this — passing expect_project / expect_timeline causes
+    // it to refuse and return a clear error if the user has switched projects.
     if (currentItem.item_type === 'spellcheck') {
       const d = currentItem.item_data;
       if (window.leaderpassAPI && d?.track != null && d?.start_frame != null) {
@@ -122,9 +133,19 @@ function ResultOverlay({ jobId, onClose }) {
             track: d.track,
             start_frame: d.start_frame,
             tool_name: d.tool_name,
-            text: newText
+            text: newText,
+            expect_project:  scopeProject  || null,
+            expect_timeline: scopeTimeline || null
           });
-        } catch (_err) { /* non-fatal */ }
+        } catch (err) {
+          // Refuse-on-mismatch surfaces here. Show the message and bail
+          // without writing a resolution row — the item stays pending so
+          // the user can switch projects and try again.
+          const msg = err?.error || err?.message || String(err);
+          setApplyError(msg);
+          setSaving(false);
+          return;
+        }
       }
     }
 
@@ -280,6 +301,11 @@ function ResultOverlay({ jobId, onClose }) {
           </svg>
         </button>
         <span className="result-overlay-title">{runLabel || 'Results'}</span>
+        {(scopeProject || scopeTimeline) && (
+          <span className="result-overlay-scope" title="This run is scoped to a specific Resolve project + timeline">
+            {scopeProject || '?'}{scopeTimeline ? ` · ${scopeTimeline}` : ''}
+          </span>
+        )}
         <span className="result-overlay-counter">{done} / {total}</span>
       </header>
 
@@ -287,6 +313,17 @@ function ResultOverlay({ jobId, onClose }) {
       <div className="result-overlay-progress-track">
         <div className="result-overlay-progress-fill" style={{ width: `${pct}%` }} />
       </div>
+
+      {applyError && (
+        <div className="result-overlay-error" role="alert">
+          {applyError}
+          <button
+            className="result-overlay-error-dismiss"
+            onClick={() => setApplyError('')}
+            aria-label="Dismiss"
+          >×</button>
+        </div>
+      )}
 
       {/* Item navigation */}
       {total > 0 && (
