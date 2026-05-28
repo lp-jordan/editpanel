@@ -138,6 +138,7 @@ function App() {
   const [jobPanelOpen, setJobPanelOpen] = React.useState(false);
   const [activeResultJobId, setActiveResultJobId] = React.useState(null);
   const [atemIngestOpen, setAtemIngestOpen]   = React.useState(false);
+  const [exportOpen, setExportOpen]           = React.useState(false);
   // r2ManagerOpen removed 2026-05-27 — cold-storage management lives in LPOS now.
 
   // Settings state
@@ -402,10 +403,9 @@ function App() {
       appendLog('Leaderpass API not available; cannot export LP Base');
       return;
     }
-
-    window.leaderpassAPI.call('lp_base_export')
-      .then(() => appendLog('LP Base Export command sent'))
-      .catch((err) => appendLog(`LP Base Export error: ${err?.error || err}`));
+    // Opens the destination picker; the overlay drives lp_base_export +
+    // start_render once the operator has chosen a target folder.
+    setExportOpen(true);
   }, [appendLog]);
 
   const handleSpellcheck = React.useCallback(() => {
@@ -516,8 +516,8 @@ function App() {
         {
           key: 'deliver-export',
           label: 'LP Base Export',
-          description: 'Queue LP Base export jobs from the active Resolve session.',
-          actionLabel: 'Run LP Base Export',
+          description: 'Choose a destination, set up the render queue from the EXPORT bin, and start the export.',
+          actionLabel: 'Set Up Export',
           onClick: handleLPBaseExport,
           requiresResolve: true
         },
@@ -779,6 +779,14 @@ function App() {
   function renderHomePage() {
     return (
       <div className="app-home">
+        <button
+          type="button"
+          className="home-settings-btn"
+          aria-label="Settings"
+          onClick={() => navigateTo('/settings')}
+        >
+          <GearIcon />
+        </button>
         <div className="home-hero">
           <div className="home-brand">
             <h1 className="home-title">EditPanel</h1>
@@ -850,6 +858,16 @@ function App() {
           atemHost={settingsDraft.atemHost || '172.20.10.241'}
           resolveConnected={connected}
           resolveProject={project}
+          onLog={appendLog}
+        />
+      )}
+      {exportOpen && (
+        <ExportDeliverOverlay
+          open={exportOpen}
+          onClose={() => setExportOpen(false)}
+          connected={connected}
+          resolveProject={project}
+          lposReady={lposStatus === 'ok'}
           onLog={appendLog}
         />
       )}

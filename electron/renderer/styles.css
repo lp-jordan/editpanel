@@ -133,6 +133,23 @@ textarea:focus-visible {
 
 .app-shell {
   min-height: 100vh;
+  /* Treat the app chrome like a native window: dragging or click-dragging in
+     empty space should never rubber-band-select the UI text. Selection is
+     re-enabled below for the surfaces where copying/editing is the point. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Opt text selection back in for genuinely textual / editable surfaces. */
+input,
+textarea,
+select,
+[contenteditable="true"],
+.slideout-console,
+.spell-report,
+.result-overlay-body {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* ─── Frameless window drag handle ───────────────────────── */
@@ -152,6 +169,22 @@ textarea:focus-visible {
      (e.g. breadcrumb bar at z-index 40, page content at z-index auto)
      while still registering the region for OS-level window dragging. */
   pointer-events: none;
+}
+
+/* Subtle visible grabber — gives users an obvious place to put the cursor to
+   move the window. Sits in the very top margin (≈5px), above where the navbar
+   pill starts (~18px down), so it never competes with the nav. Drawn purely as
+   a visual hint; the OS drag region is the whole strip regardless of this. */
+.window-drag-handle::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
 }
 
 /* Make the navbar background area draggable (catches grabs above the pill).
@@ -177,6 +210,36 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* Settings shortcut on the home page — home has no navbar, so this gives a
+   direct route to /settings. Subtle by default, full-strength on hover.
+   no-drag keeps it clickable even though it sits within the top drag strip. */
+.home-settings-btn {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 60;
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  opacity: 0.4;
+  cursor: pointer;
+  transition: opacity 160ms ease, background 160ms ease;
+}
+
+.home-settings-btn:hover,
+.home-settings-btn:focus-visible {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .home-hero {
@@ -2706,4 +2769,102 @@ button.status-bar-chip-btn:hover {
   .floating-jobs-area {
     right: 12px;
   }
+}
+
+/* ── Export Deliver overlay ───────────────────────────────── */
+
+.export-field-row {
+  display: flex;
+  gap: 16px;
+}
+
+.export-clear-btn {
+  background: none;
+  border: none;
+  color: var(--muted-soft);
+  font-size: 0.74rem;
+  cursor: pointer;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+
+.export-clear-btn:hover {
+  color: var(--text-strong);
+}
+
+/* On/off switch for the Upload-to-LPOS toggle */
+.export-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.export-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.export-switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.export-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.18s ease;
+}
+
+.export-switch.on .export-switch-knob {
+  transform: translateX(18px);
+}
+
+.export-project-area {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.export-project-list {
+  max-height: 240px;
+}
+
+.export-project-group + .export-project-group {
+  margin-top: 8px;
+}
+
+.export-client-name {
+  margin: 6px 0 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-soft);
+}
+
+.export-lpos-note {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--muted-soft);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-blue-soft);
+  border: 1px solid rgba(91, 155, 213, 0.18);
+}
+
+.export-lpos-note strong {
+  color: var(--text-strong);
 }

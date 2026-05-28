@@ -48,7 +48,15 @@ const COMMAND_SCHEMAS = Object.freeze({
   update_text: { required: [] },
   goto: { required: [] },
   spellcheck: { required: [] },
-  lp_base_export: { required: [] },
+  lp_base_export: {
+    required: [],
+    types: {
+      preset_name: 'string',
+      export_bin_name: 'string',
+      target_dir: 'string',
+      unique_filename: 'boolean'
+    }
+  },
   shutdown: { required: [] },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }

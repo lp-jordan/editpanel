@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Tuple
+import os
 import time
 
 DEFAULT_EXPORT_PRESET_NAME = "General LP Export"
@@ -19,6 +20,24 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     export_preset_name = payload.get("preset_name") or DEFAULT_EXPORT_PRESET_NAME
     export_bin_name = payload.get("export_bin_name") or DEFAULT_EXPORT_BIN_NAME
+
+    # Optional destination override. When EditPanel passes a target_dir, we push
+    # it (plus a per-timeline CustomName) into Resolve's render settings so the
+    # operator no longer has to set the Deliver-page location by hand. When it's
+    # absent we leave the preset's saved destination untouched (back-compat).
+    target_dir = (payload.get("target_dir") or "").strip()
+    unique_filename = payload.get("unique_filename", True)
+
+    if target_dir:
+        # Resolve silently falls back / fails if TargetDir doesn't exist. The
+        # folder picker only yields existing paths, but create it defensively
+        # in case a saved/typed path no longer resolves.
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not create or access target directory '{target_dir}': {exc}"
+            )
 
     # Find the EXPORT bin
     export_folder = None
@@ -77,6 +96,24 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
             continue
 
+        # Override the destination AFTER the preset loads (the preset restores
+        # its own saved TargetDir) but BEFORE AddRenderJob, which snapshots the
+        # current render settings into the queued job. Doing it per-timeline
+        # means each job carries its own TargetDir + CustomName.
+        if target_dir:
+            applied = project.SetRenderSettings({
+                "TargetDir": target_dir,
+                "CustomName": timeline_name,
+                "UniqueFilename": bool(unique_filename),
+            })
+            if applied:
+                rh.log(f"Render destination set for '{timeline_name}' -> {target_dir}")
+            else:
+                rh.log(
+                    f"Warning: SetRenderSettings was rejected for timeline "
+                    f"'{timeline_name}'; using the preset's saved destination."
+                )
+
         job_id = project.AddRenderJob()
         if job_id:
             rh.log(f"Added timeline '{timeline_name}' to render queue. Job ID: {job_id}.")
@@ -91,4 +128,4 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
         rh.log("No render jobs were added.")
 
     rh.log("Finished processing all matched timelines.")
-    return {"result": True, "jobs": render_jobs}
+    return {"result": True, "jobs": render_jobs, "target_dir": target_dir or None}

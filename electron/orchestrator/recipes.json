@@ -11,11 +11,16 @@
       "export_bin_name": {
         "type": "string",
         "description": "Media pool bin used for export matching."
+      },
+      "target_dir": {
+        "type": "string",
+        "description": "Optional destination folder pushed into Resolve render settings (TargetDir). When omitted, the preset's saved location is used."
       }
     },
     "defaults": {
       "preset_name": "General LP Export",
-      "export_bin_name": "EXPORT"
+      "export_bin_name": "EXPORT",
+      "target_dir": ""
     },
     "steps": [
       {
@@ -24,7 +29,8 @@
         "command": "lp_base_export",
         "payload": {
           "preset_name": "${input.preset_name}",
-          "export_bin_name": "${input.export_bin_name}"
+          "export_bin_name": "${input.export_bin_name}",
+          "target_dir": "${input.target_dir}"
         },
         "retry_policy": {
           "max_attempts": 1,
