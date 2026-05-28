@@ -190,6 +190,37 @@ contextBridge.exposeInMainWorld('dialogAPI', {
   }
 });
 
+contextBridge.exposeInMainWorld('exportsAPI', {
+  /** Queue + (optionally) start a render, tracked in the background. */
+  start(opts = {}) {
+    return ipcRenderer.invoke('export:start', opts);
+  },
+  /** Current in-flight export snapshot, or null. */
+  getActive() {
+    return ipcRenderer.invoke('export:active');
+  },
+  /** Recent export runs (newest first). */
+  getRecent(limit = 10) {
+    return ipcRenderer.invoke('export:recent', limit);
+  },
+  /** Stop the current render. */
+  cancel() {
+    return ipcRenderer.invoke('export:cancel');
+  },
+  /** Progress ticks while an export renders. */
+  onProgress(callback) {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('export-progress', handler);
+    return () => ipcRenderer.removeListener('export-progress', handler);
+  },
+  /** Fires once when an export reaches a terminal state. */
+  onComplete(callback) {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('export-complete', handler);
+    return () => ipcRenderer.removeListener('export-complete', handler);
+  }
+});
+
 contextBridge.exposeInMainWorld('fsAPI', {
   readFile: p => ipcRenderer.invoke('fs:readFile', p),
   writeFile: (p, data) => ipcRenderer.invoke('fs:writeFile', p, data),

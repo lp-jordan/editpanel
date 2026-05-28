@@ -86,6 +86,23 @@ class JobsDb {
       );
 
       CREATE INDEX IF NOT EXISTS idx_atem_log_session ON atem_ingest_log(session);
+
+      CREATE TABLE IF NOT EXISTS export_runs (
+        export_id    TEXT    PRIMARY KEY,
+        target_dir   TEXT,
+        project_id   TEXT,
+        project_name TEXT,
+        job_count    INTEGER NOT NULL DEFAULT 0,
+        jobs_done    INTEGER NOT NULL DEFAULT 0,
+        percent      INTEGER NOT NULL DEFAULT 0,
+        state        TEXT    NOT NULL DEFAULT 'rendering',
+        jobs_json    TEXT,
+        started_at   INTEGER NOT NULL,
+        finished_at  INTEGER,
+        error        TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_export_runs_started ON export_runs(started_at);
     `);
   }
 
@@ -297,6 +314,61 @@ class JobsDb {
     this.db.prepare(
       `UPDATE atem_ingest_log SET state = 'interrupted', finished_at = ?
        WHERE state = 'running'`
+    ).run(Date.now());
+  }
+
+  // ─── Export / render runs ─────────────────────────────────
+
+  /** Record a new export run (one render queue dispatched by EditPanel). */
+  createExportRun({ exportId, targetDir, projectId, projectName, jobs }) {
+    const list = Array.isArray(jobs) ? jobs : [];
+    this.db.prepare(
+      `INSERT OR REPLACE INTO export_runs
+         (export_id, target_dir, project_id, project_name, job_count, jobs_done, percent, state, jobs_json, started_at)
+       VALUES (?, ?, ?, ?, ?, 0, 0, 'rendering', ?, ?)`
+    ).run(
+      exportId,
+      targetDir || null,
+      projectId || null,
+      projectName || null,
+      list.length,
+      JSON.stringify(list),
+      Date.now()
+    );
+    return exportId;
+  }
+
+  /** Partial update of an export run (only provided keys are written). */
+  updateExportRun(exportId, { state, jobsDone, percent, jobs, error, finishedAt } = {}) {
+    const fields = [];
+    const values = [];
+    if (state      !== undefined) { fields.push('state = ?');       values.push(state); }
+    if (jobsDone   !== undefined) { fields.push('jobs_done = ?');   values.push(jobsDone); }
+    if (percent    !== undefined) { fields.push('percent = ?');     values.push(percent); }
+    if (jobs       !== undefined) { fields.push('jobs_json = ?');   values.push(JSON.stringify(jobs)); }
+    if (error      !== undefined) { fields.push('error = ?');       values.push(error); }
+    if (finishedAt !== undefined) { fields.push('finished_at = ?'); values.push(finishedAt); }
+    if (fields.length === 0) return;
+    values.push(exportId);
+    this.db.prepare(`UPDATE export_runs SET ${fields.join(', ')} WHERE export_id = ?`).run(...values);
+  }
+
+  /** Recent export runs, newest first, with jobs parsed back into an array. */
+  listExportRuns(limit = 10) {
+    return this.db
+      .prepare(`SELECT * FROM export_runs ORDER BY started_at DESC LIMIT ?`)
+      .all(limit)
+      .map(row => ({
+        ...row,
+        jobs: row.jobs_json ? JSON.parse(row.jobs_json) : []
+      }));
+  }
+
+  /** Mark any export still 'rendering' from a prior session as interrupted. */
+  clearStaleExportRuns() {
+    this.db.prepare(
+      `UPDATE export_runs SET state = 'interrupted', finished_at = ?
+       WHERE state = 'rendering'`
     ).run(Date.now());
   }
 

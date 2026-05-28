@@ -1367,6 +1367,43 @@ button.status-bar-chip-btn:hover {
   background: linear-gradient(90deg, var(--accent-blue), var(--accent-blue-strong));
 }
 
+/* Per-timeline rows inside an active export */
+.job-panel-export-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+
+.job-panel-export-job {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.job-panel-export-job.done {
+  color: var(--text);
+}
+
+.job-panel-export-job-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-panel-export-job-mark {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-soft);
+}
+
+.job-panel-export-job.done .job-panel-export-job-mark {
+  color: var(--success);
+}
+
 .job-panel-review-btn {
   appearance: none;
   border: 1px solid var(--line-strong);

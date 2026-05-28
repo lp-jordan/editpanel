@@ -139,6 +139,8 @@ function App() {
   const [activeResultJobId, setActiveResultJobId] = React.useState(null);
   const [atemIngestOpen, setAtemIngestOpen]   = React.useState(false);
   const [exportOpen, setExportOpen]           = React.useState(false);
+  const [activeExport, setActiveExport]       = React.useState(null);
+  const [exportVersion, setExportVersion]     = React.useState(0);
   // r2ManagerOpen removed 2026-05-27 — cold-storage management lives in LPOS now.
 
   // Settings state
@@ -275,6 +277,23 @@ function App() {
     onHashChange();
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
+
+  // Background export tracking — drives the Jobs panel "Exports" section and
+  // the floating Jobs pill. The render runs in the main process, so progress
+  // keeps flowing even after the picker overlay is closed.
+  React.useEffect(() => {
+    if (!window.exportsAPI) return;
+    window.exportsAPI.getActive().then((r) => setActiveExport(r?.data || null)).catch(() => {});
+    const offProgress = window.exportsAPI.onProgress((snap) => setActiveExport(snap));
+    const offComplete = window.exportsAPI.onComplete((snap) => {
+      setActiveExport(null);
+      setExportVersion((v) => v + 1);
+      if (snap?.state) {
+        appendLog(`[export] ${snap.state}${snap.error ? ` — ${snap.error}` : ''} · ${snap.jobs?.length || 0} timeline(s)`);
+      }
+    });
+    return () => { offProgress && offProgress(); offComplete && offComplete(); };
+  }, [appendLog]);
 
   React.useEffect(() => {
     if (!window.electronAPI) return;
@@ -540,18 +559,22 @@ function App() {
   function renderStatusBar() {
     const runningJobs = dashboard.jobs.filter(j => j.state === 'running');
     const runningJob  = runningJobs[0] ?? null;
+    const exportRunning = activeExport && activeExport.state === 'rendering';
+    const showBusy = Boolean(runningJob) || exportRunning;
 
     return (
       <React.Fragment>
         {/* Floating Jobs pill — bottom-right, above status bar */}
         <div className="floating-jobs-area">
           <button
-            className={`floating-jobs-btn${runningJob ? ' running' : ''}`}
+            className={`floating-jobs-btn${showBusy ? ' running' : ''}`}
             onClick={() => setJobPanelOpen(prev => !prev)}
           >
-            {runningJob && <span className="status-bar-spinner" />}
+            {showBusy && <span className="status-bar-spinner" />}
             <span className="floating-jobs-label">
-              {runningJob
+              {exportRunning
+                ? `Export ${activeExport.percent}%`
+                : runningJob
                 ? `${runningJob.preset_id || 'Job'}${runningJob.steps_total > 0 ? ` ${runningJob.steps_done}/${runningJob.steps_total}` : ''}`
                 : 'Jobs'}
             </span>
@@ -840,6 +863,8 @@ function App() {
         open={jobPanelOpen}
         onClose={() => setJobPanelOpen(false)}
         dashboard={dashboard}
+        activeExport={activeExport}
+        exportVersion={exportVersion}
         onViewResults={(runId) => {
           setJobPanelOpen(false);
           setActiveResultJobId(runId);
@@ -869,6 +894,7 @@ function App() {
           resolveProject={project}
           lposReady={lposStatus === 'ok'}
           onLog={appendLog}
+          onOpenJobs={() => { setExportOpen(false); setJobPanelOpen(true); }}
         />
       )}
       <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />

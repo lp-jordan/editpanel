@@ -45,12 +45,42 @@ the render. The operator no longer has to set the Deliver-page location by hand.
 preset's saved location. The helper `os.makedirs(target_dir, exist_ok=True)`
 defensively (Resolve falls back / fails on a missing TargetDir).
 
+### Background tracking + progress (added 2026-05-28)
+Queue & Render runs as a **background job owned by the main process**, so it keeps
+going (and reporting) after the picker overlay is closed.
+
+- `export:start` (main IPC) does `lp_base_export` → `start_render` → registers a
+  tracker. The overlay calls it and immediately hands off ("View in Jobs").
+- A **main-process poller** calls the new `render_status` resolve command every
+  ~2.5s (`GetRenderJobStatus` per queued job ID) and emits `export-progress` /
+  `export-complete`. Polling — not a blocking worker step — keeps the single
+  resolve worker (shared with every direct renderer call) responsive; the
+  health-check forgives missed pings only while a command is *inflight*, and a
+  blocking render would have frozen all Resolve interaction for the whole render.
+- The **Jobs panel** has an "Exports" section: active render with an overall %
+  bar + per-timeline status, a Stop button, and a list of recent exports. The
+  floating Jobs pill shows `Export NN%` while rendering.
+- Export runs persist to the `export_runs` table (jobs-db). On startup any run
+  left `rendering` from a prior session is marked `interrupted`.
+- Poller safety nets: gives up after ~20s of lost contact with Resolve, and
+  finalizes if Resolve reports it has stopped rendering for several consecutive
+  polls (covers a job deleted from the queue, or a render stopped externally).
+
+Key files: `helper/commands/render_status.py`, the export tracker + `export:*`
+IPC in `electron/main.js`, `exportsAPI` in `electron/preload.js`, the Exports
+section in `electron/renderer/components/JobPanel.jsx`, `export_runs` in
+`electron/store/jobs-db.js`.
+
 ### Current status / known gaps
-- No render-**completion** detection yet — `start_render` is fire-and-forget.
 - The **Upload to LPOS** toggle is UI-complete (project picker populated from
   `window.lposAPI.listProjects()`, grouped by client) but the actual post-render
-  upload is Phase 2. The chosen project is persisted as intent; the summary makes
-  the deferred behaviour explicit.
+  upload is Phase 2. The chosen project is persisted as intent (and carried into
+  the export tracker as `projectName`); the summary makes the deferred behaviour
+  explicit. Phase 2 will hook the `export-complete` event to kick off the upload.
+- **Queue only** (no render) is not tracked — those jobs sit in Resolve's own
+  render queue with nothing to poll.
+- `export_runs` is not pruned by the "Clear older than 30 days" sweep yet
+  (low volume; follow-up).
 - Last-used target dir / preset / bin / project are persisted in EditPanel
   preferences (`lastExportDir`, `lastExportPreset`, `lastExportBin`,
   `lastExportProjectId`).
@@ -62,10 +92,10 @@ folder — once the render finishes, EditPanel uploads the rendered files into t
 selected LPOS project and registers them as assets.
 
 ### What needs building
-1. **Render-completion detection** (editpanel + helper): a `render_status`
-   command polling `GetRenderJobStatus` for the queued job IDs, driven by a
-   main-process interval (like the LPOS heartbeat). Keeps the resolve worker
-   free (concurrency is pinned to 1). Emits progress/complete events to the UI.
+1. ~~**Render-completion detection**~~ — DONE (2026-05-28). The `render_status`
+   command + main-process poller + `export-complete` event already exist (see
+   the Phase-1 "Background tracking" section). Phase 2 hooks `export-complete`
+   to trigger the upload for exports whose `projectId` is set.
 2. **EP-token chunked upload endpoint** (lpos-dashboard, production): a new
    `POST /api/ep/projects/:projectId/media/upload` (+ chunk `PATCH` + `finalize`)
    authenticated via `requireEpToken`, reusing the existing

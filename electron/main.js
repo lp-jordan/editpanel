@@ -575,6 +575,170 @@ function broadcastJobEvent(event) {
   });
 }
 
+// ── Export / render tracking ───────────────────────────────────────────────
+//
+// EditPanel queues the render (lp_base_export), optionally starts it
+// (start_render), then this main-process tracker polls render_status every few
+// seconds and reports progress to the Jobs panel. Polling (rather than a
+// blocking "wait for render" worker command) keeps the single resolve worker —
+// shared with every direct renderer call — responsive during a long render.
+
+const EXPORT_POLL_INTERVAL_MS = 2500;
+const EXPORT_POLL_MAX_FAILURES = 8; // ~20s of lost contact before giving up
+
+let activeExport = null;
+let exportPollTimer = null;
+let exportPollFailures = 0;
+let exportSawRendering = false; // becomes true once Resolve reports active rendering
+let exportIdlePolls = 0;        // consecutive polls where Resolve isn't rendering
+
+function broadcastExport(channel, payload) {
+  BrowserWindow.getAllWindows().forEach(w => w.webContents.send(channel, payload));
+}
+
+function exportSnapshot() {
+  if (!activeExport) return null;
+  return { ...activeExport, jobs: activeExport.jobs.map(j => ({ ...j })) };
+}
+
+function stopExportPoll() {
+  if (exportPollTimer) {
+    clearInterval(exportPollTimer);
+    exportPollTimer = null;
+  }
+}
+
+function persistActiveExport() {
+  if (!jobsDb || !activeExport) return;
+  try {
+    jobsDb.updateExportRun(activeExport.exportId, {
+      state: activeExport.state,
+      jobsDone: activeExport.jobsDone,
+      percent: activeExport.percent,
+      jobs: activeExport.jobs,
+      error: activeExport.error || null,
+      finishedAt: activeExport.finishedAt || undefined
+    });
+  } catch (_) { /* non-fatal */ }
+}
+
+function finalizeExport(state, error = null) {
+  stopExportPoll();
+  if (!activeExport) return;
+  activeExport.state = state;
+  activeExport.finishedAt = Date.now();
+  if (error) activeExport.error = error;
+  persistActiveExport();
+  broadcastExport('export-complete', exportSnapshot());
+  activeExport = null;
+}
+
+async function pollRenderStatus() {
+  if (!activeExport) {
+    stopExportPoll();
+    return;
+  }
+  const jobIds = activeExport.jobs.map(j => j.job_id);
+  let res;
+  try {
+    res = await sendWorkerRequest({ cmd: 'render_status', job_ids: jobIds }, WORKERS.resolve);
+  } catch (_err) {
+    exportPollFailures += 1;
+    if (exportPollFailures >= EXPORT_POLL_MAX_FAILURES) {
+      finalizeExport('interrupted', 'Lost contact with Resolve while rendering');
+    }
+    return;
+  }
+  exportPollFailures = 0;
+
+  const data = res?.data || {};
+  const byId = new Map((data.jobs || []).map(s => [String(s.job_id), s]));
+  let done = 0;
+  let sum = 0;
+  for (const j of activeExport.jobs) {
+    const s = byId.get(String(j.job_id));
+    if (s) {
+      j.status = s.status;
+      j.percent = Number(s.percent) || 0;
+      j.terminal = Boolean(s.terminal);
+    }
+    if (j.terminal) done += 1;
+    sum += (j.terminal && j.status === 'Complete') ? 100 : (Number(j.percent) || 0);
+  }
+  activeExport.jobsDone = done;
+  activeExport.percent = activeExport.jobs.length ? Math.round(sum / activeExport.jobs.length) : 0;
+  activeExport.state = 'rendering';
+  persistActiveExport();
+  broadcastExport('export-progress', exportSnapshot());
+
+  if (data.all_terminal) {
+    const anyFailed = activeExport.jobs.some(j => j.status === 'Failed');
+    const anyCancelled = activeExport.jobs.some(j => j.status === 'Cancelled');
+    finalizeExport(anyFailed ? 'failed' : anyCancelled ? 'canceled' : 'completed');
+    return;
+  }
+
+  // Safety net for cases all_terminal can't catch: a job removed from the queue
+  // (status never resolves) or a render stopped/never-started outside EditPanel.
+  // If Resolve reports it isn't rendering for several consecutive polls, stop.
+  if (data.rendering) {
+    exportSawRendering = true;
+    exportIdlePolls = 0;
+  } else {
+    exportIdlePolls += 1;
+    const threshold = exportSawRendering ? 3 : 6; // ~7.5s after a render, ~15s if it never started
+    if (exportIdlePolls >= threshold) {
+      const allDone = activeExport.jobsDone === activeExport.jobs.length;
+      if (allDone) {
+        finalizeExport('completed');
+      } else if (exportSawRendering) {
+        finalizeExport('failed', 'Rendering stopped before all jobs finished');
+      } else {
+        finalizeExport('interrupted', 'Render did not start');
+      }
+    }
+  }
+}
+
+function startExportTracking({ exportId, jobs, targetDir, projectId, projectName, started }) {
+  stopExportPoll();
+  activeExport = {
+    exportId,
+    jobs: jobs.map(j => ({
+      job_id: String(j.job_id),
+      name: j.name || j.job_id,
+      status: started ? 'Ready' : 'Queued',
+      percent: 0,
+      terminal: false
+    })),
+    targetDir: targetDir || null,
+    projectId: projectId || null,
+    projectName: projectName || null,
+    started: Boolean(started),
+    startedAt: Date.now(),
+    finishedAt: null,
+    state: started ? 'rendering' : 'queued',
+    percent: 0,
+    jobsDone: 0,
+    error: null
+  };
+  if (jobsDb) {
+    try {
+      jobsDb.createExportRun({ exportId, targetDir, projectId, projectName, jobs: activeExport.jobs });
+    } catch (_) { /* non-fatal */ }
+  }
+  exportPollFailures = 0;
+  exportSawRendering = false;
+  exportIdlePolls = 0;
+  broadcastExport('export-progress', exportSnapshot());
+
+  if (started) {
+    exportPollTimer = setInterval(() => { pollRenderStatus().catch(() => {}); }, EXPORT_POLL_INTERVAL_MS);
+    // First poll shortly after StartRendering so the bar moves off zero quickly.
+    setTimeout(() => { pollRenderStatus().catch(() => {}); }, 800);
+  }
+}
+
 // ── EditPanel ↔ LPOS sign-in (custom URL scheme handling) ──────────────────────
 //
 // After the user approves on /ep/link in their browser, LPOS redirects to
@@ -741,7 +905,8 @@ app.whenReady().then(() => {
   // --- Result items DB ---
   try {
     jobsDb = new JobsDb(path.join(app.getPath('userData'), 'jobs-history.db'));
-    jobsDb.clearStaleAtemLogs(); // mark any interrupted ingest runs from prior session
+    jobsDb.clearStaleAtemLogs();   // mark any interrupted ingest runs from prior session
+    jobsDb.clearStaleExportRuns(); // mark any export still 'rendering' from prior session as interrupted
   } catch (err) {
     console.error('Failed to open jobs-history.db:', err.message);
   }
@@ -1179,6 +1344,69 @@ app.whenReady().then(() => {
     } catch (err) {
       return { ok: false, error: err.message };
     }
+  });
+
+  // ── Export / render ─────────────────────────────────────────
+  // Queue the render (lp_base_export), optionally start it, and hand it to the
+  // main-process tracker so it runs in the background and reports progress to
+  // the Jobs panel — independent of whether the picker overlay stays open.
+  ipcMain.handle('export:start', async (_e, opts = {}) => {
+    const { targetDir, presetName, exportBin, startRender = true, projectId, projectName } = opts;
+    try {
+      const payload = { cmd: 'lp_base_export' };
+      if (presetName) payload.preset_name = presetName;
+      if (exportBin)  payload.export_bin_name = exportBin;
+      if (targetDir)  payload.target_dir = targetDir;
+
+      const res = await sendWorkerRequest(payload, WORKERS.resolve);
+      const data = res?.data || {};
+      if (data.result === false) return { ok: true, empty: true };
+
+      const rawJobs = Array.isArray(data.jobs) ? data.jobs : [];
+      const jobs = rawJobs.map(j =>
+        Array.isArray(j) ? { name: j[0], job_id: j[1] } : { name: j?.name, job_id: j?.id }
+      ).filter(j => j.job_id != null);
+      if (jobs.length === 0) return { ok: true, empty: true };
+
+      // Only the Queue & Render path becomes a tracked background export. A
+      // queue-only dispatch leaves the jobs in Resolve's own render queue with
+      // nothing to poll, so we don't spin up a tracker that could never finish.
+      if (startRender) {
+        await sendWorkerRequest({ cmd: 'start_render' }, WORKERS.resolve);
+        const exportId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        startExportTracking({
+          exportId,
+          jobs,
+          targetDir: data.target_dir || targetDir,
+          projectId,
+          projectName,
+          started: true
+        });
+        return { ok: true, exportId, jobs, started: true };
+      }
+
+      return { ok: true, jobs, started: false };
+    } catch (err) {
+      const msg = err?.error?.message || err?.error || err?.message || String(err);
+      return { ok: false, error: msg };
+    }
+  });
+
+  ipcMain.handle('export:active', async () => ({ ok: true, data: exportSnapshot() }));
+
+  ipcMain.handle('export:recent', async (_e, limit = 10) => {
+    if (!jobsDb) return { ok: true, data: [] };
+    try {
+      return { ok: true, data: jobsDb.listExportRuns(Number(limit) || 10) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('export:cancel', async () => {
+    try { await sendWorkerRequest({ cmd: 'stop_render' }, WORKERS.resolve); } catch (_) { /* best effort */ }
+    if (activeExport) finalizeExport('canceled');
+    return { ok: true };
   });
 
   // B2 Media Manager IPC removed 2026-05-27 — cold-storage management is now

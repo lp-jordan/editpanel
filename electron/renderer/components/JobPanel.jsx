@@ -11,11 +11,14 @@
  *  open          — boolean, whether the panel is visible
  *  onClose       — () => void
  *  dashboard     — { jobs: [], logs_by_job_step: {} }  from controlPlane.buildDashboard()
+ *  activeExport  — current in-flight export snapshot, or null
+ *  exportVersion — bumps when an export completes, to refresh the recent list
  *  onViewResults — (jobId: string) => void  called when user clicks Review
  */
-function JobPanel({ open, onClose, dashboard, onViewResults }) {
+function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onViewResults }) {
   const [runs, setRuns] = React.useState([]);
   const [loadingRuns, setLoadingRuns] = React.useState(false);
+  const [recentExports, setRecentExports] = React.useState([]);
   // Bumps each time we delete/prune so the dashboard reload picks up the change
   const [reloadTick, setReloadTick] = React.useState(0);
 
@@ -28,6 +31,14 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
       .catch(() => setRuns([]))
       .finally(() => setLoadingRuns(false));
   }, [open, reloadTick]);
+
+  // Reload recent exports on open, on delete/prune, and when one completes
+  React.useEffect(() => {
+    if (!open || !window.exportsAPI) return;
+    window.exportsAPI.getRecent(8)
+      .then(res => setRecentExports(res?.data ?? []))
+      .catch(() => setRecentExports([]));
+  }, [open, reloadTick, exportVersion]);
 
   const runningJobs = (dashboard?.jobs ?? []).filter(j => j.state === 'running');
   const recentJobs  = (dashboard?.jobs ?? []).filter(j => j.state !== 'running').slice(0, 5);
@@ -59,6 +70,33 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
     const done  = job.steps_done  ?? 0;
     if (total === 0) return null;
     return { done, total, pct: Math.round((done / total) * 100) };
+  }
+
+  function formatExportState(state) {
+    if (state === 'completed')   return '✓';
+    if (state === 'failed')      return '✗';
+    if (state === 'canceled')    return '–';
+    if (state === 'interrupted') return '!';
+    return state;
+  }
+
+  // Map export states onto the existing state-icon CSS classes for colour reuse.
+  function exportRowState(state) {
+    if (state === 'completed')                         return 'succeeded';
+    if (state === 'failed' || state === 'interrupted') return 'failed';
+    if (state === 'canceled')                          return 'canceled';
+    return state;
+  }
+
+  function exportJobMark(job) {
+    if (job.status === 'Complete')  return '✓';
+    if (job.status === 'Failed')    return '✗';
+    if (job.status === 'Cancelled') return '–';
+    return `${job.percent ?? 0}%`;
+  }
+
+  async function handleCancelExport() {
+    try { await window.exportsAPI.cancel(); } catch (_) {}
   }
 
   async function handleCancelJob(jobId) {
@@ -109,6 +147,74 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
         </header>
 
         <div className="job-panel-body">
+
+          {/* ── Exports / renders ── */}
+          {(activeExport || recentExports.some(e => e.export_id !== activeExport?.exportId)) && (
+            <section className="job-panel-section">
+              <p className="job-panel-section-label">Exports</p>
+
+              {activeExport && (
+                <div className="job-panel-row active">
+                  <div className="job-panel-row-top">
+                    <span className="job-panel-name">
+                      {activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
+                    </span>
+                    <div className="job-panel-row-actions">
+                      <span className="job-panel-step-badge">
+                        {activeExport.jobsDone}/{activeExport.jobs.length}
+                        {activeExport.state === 'rendering' ? ` · ${activeExport.percent}%` : ''}
+                      </span>
+                      {activeExport.state === 'rendering' && (
+                        <button
+                          className="job-panel-cancel-btn"
+                          onClick={handleCancelExport}
+                          title="Stop render"
+                        >
+                          Stop
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="job-panel-progress-track">
+                    <div
+                      className="job-panel-progress-fill"
+                      style={{ width: `${activeExport.percent}%` }}
+                    />
+                  </div>
+                  <div className="job-panel-export-jobs">
+                    {activeExport.jobs.map(job => (
+                      <div
+                        key={job.job_id}
+                        className={`job-panel-export-job${job.terminal ? ' done' : ''}`}
+                      >
+                        <span className="job-panel-export-job-name">{job.name}</span>
+                        <span className="job-panel-export-job-mark">{exportJobMark(job)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {activeExport.targetDir && (
+                    <p className="job-panel-substep">{activeExport.targetDir}</p>
+                  )}
+                </div>
+              )}
+
+              {recentExports
+                .filter(e => e.export_id !== activeExport?.exportId)
+                .map(e => (
+                  <div key={e.export_id} className={`job-panel-row compact ${exportRowState(e.state)}`}>
+                    <span className={`job-panel-state-icon ${exportRowState(e.state)}`}>
+                      {formatExportState(e.state)}
+                    </span>
+                    <span className="job-panel-name">{e.project_name || 'Render'}</span>
+                    <span className="job-panel-age">{e.jobs_done}/{e.job_count}</span>
+                    {e.finished_at && e.started_at && (
+                      <span className="job-panel-age">{formatDuration(e.finished_at - e.started_at)}</span>
+                    )}
+                    <span className="job-panel-age">{formatAge(e.finished_at || e.started_at)}</span>
+                  </div>
+                ))}
+            </section>
+          )}
 
           {/* ── Active jobs ── */}
           {runningJobs.length > 0 && (
@@ -230,7 +336,8 @@ function JobPanel({ open, onClose, dashboard, onViewResults }) {
             </section>
           )}
 
-          {runningJobs.length === 0 && runs.length === 0 && recentJobs.length === 0 && !loadingRuns && (
+          {runningJobs.length === 0 && runs.length === 0 && recentJobs.length === 0
+            && !activeExport && recentExports.length === 0 && !loadingRuns && (
             <p className="job-panel-empty">No jobs yet.</p>
           )}
 

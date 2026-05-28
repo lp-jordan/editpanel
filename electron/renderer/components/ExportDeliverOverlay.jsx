@@ -22,8 +22,9 @@
  *   resolveProject  — string
  *   lposReady       — boolean (signed in + reachable; gates the upload toggle)
  *   onLog           — (msg: string) => void
+ *   onOpenJobs      — () => void  (close overlay + open the Jobs panel)
  */
-function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposReady, onLog }) {
+function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposReady, onLog, onOpenJobs }) {
   const DEFAULT_PRESET = 'General LP Export';
   const DEFAULT_BIN = 'EXPORT';
 
@@ -158,7 +159,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     if (busy) return;
     setBusy(true);
     setStage('running');
-    onLog?.(`[export] Queuing LP Base Export${targetDir ? ` → ${targetDir}` : ' (preset location)'}…`);
+    onLog?.(`[export] ${startRender ? 'Queue & render' : 'Queue'}${targetDir ? ` → ${targetDir}` : ' (preset location)'}…`);
 
     // Save selections for next time
     persistPrefs({
@@ -169,13 +170,24 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     });
 
     try {
-      const payload = { preset_name: presetName, export_bin_name: exportBin };
-      if (targetDir) payload.target_dir = targetDir;
+      // The main process owns the queue + render + status polling, so the
+      // export keeps running (and reporting to the Jobs panel) even if this
+      // overlay is closed.
+      const res = await window.exportsAPI.start({
+        targetDir: targetDir || undefined,
+        presetName,
+        exportBin,
+        startRender,
+        projectId:   uploadToLpos && selectedProjectId ? selectedProjectId : undefined,
+        projectName: uploadToLpos && selectedProject  ? selectedProject.name : undefined
+      });
 
-      const res = await window.leaderpassAPI.call('lp_base_export', payload);
-      const data = res?.data || {};
-
-      if (data.result === false) {
+      if (!res?.ok) {
+        setResult({ error: res?.error || 'Export failed to start' });
+        setStage('done');
+        return;
+      }
+      if (res.empty) {
         setResult({
           warning: `No matching timelines found. Check that the "${exportBin}" bin contains clips whose names match your timelines.`
         });
@@ -184,20 +196,13 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         return;
       }
 
-      const jobs = Array.isArray(data.jobs) ? data.jobs : [];
-      onLog?.(`[export] Queued ${jobs.length} render job${jobs.length !== 1 ? 's' : ''}.`);
-
-      let started = false;
-      if (startRender) {
-        const startRes = await window.leaderpassAPI.call('start_render');
-        started = Boolean(startRes?.data?.result ?? startRes?.ok);
-        onLog?.(started ? '[export] Render started.' : '[export] Render start returned no confirmation.');
-      }
+      const jobs = Array.isArray(res.jobs) ? res.jobs : [];
+      onLog?.(`[export] Queued ${jobs.length} render job${jobs.length !== 1 ? 's' : ''}${res.started ? ' and started rendering.' : '.'}`);
 
       setResult({
         jobs,
-        targetDir: data.target_dir || targetDir || null,
-        started,
+        targetDir: targetDir || null,
+        started: Boolean(res.started),
         project: uploadToLpos ? selectedProject : null
       });
       setStage('done');
@@ -360,9 +365,11 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
             <polyline points="22 4 12 14.01 9 11.01" />
           </svg>
-          <p className="atem-done-title">{result?.started ? 'Render started' : 'Jobs queued'}</p>
+          <p className="atem-done-title">{result?.started ? 'Export started' : 'Jobs queued'}</p>
           <p className="atem-done-sub">
-            {jobs.length} timeline{jobs.length !== 1 ? 's' : ''} {result?.started ? 'rendering' : 'in the queue'}
+            {result?.started
+              ? `${jobs.length} timeline${jobs.length !== 1 ? 's' : ''} rendering in the background — track progress in Jobs.`
+              : `${jobs.length} timeline${jobs.length !== 1 ? 's' : ''} queued in Resolve (not started).`}
           </p>
         </div>
 
@@ -379,7 +386,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           <div className="atem-file-list">
             {jobs.map((job, i) => {
               const name = Array.isArray(job) ? job[0] : (job?.name || job);
-              const id = Array.isArray(job) ? job[1] : (job?.id || '');
+              const id = Array.isArray(job) ? job[1] : (job?.job_id || job?.id || '');
               return (
                 <div key={i} className="atem-file-row done">
                   <span className="atem-file-state-icon">✓</span>
@@ -445,7 +452,14 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           </>
         )}
         {stage === 'done' && (
-          <button className="btn" onClick={onClose}>Done</button>
+          <>
+            {result?.started && onOpenJobs && (
+              <button className="btn" onClick={onOpenJobs}>View in Jobs</button>
+            )}
+            <button className={result?.started && onOpenJobs ? 'btn-secondary' : 'btn'} onClick={onClose}>
+              Done
+            </button>
+          </>
         )}
       </footer>
     </div>
