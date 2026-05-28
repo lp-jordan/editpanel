@@ -30,6 +30,16 @@ try {
 
 const HEALTH_INTERVAL_MS = 10000;
 const PING_TIMEOUT_MS = 3000;
+// Consecutive missed health-check pings before an otherwise-idle worker is
+// treated as hung and restarted. The Python workers are single-threaded —
+// they read one command from stdin, run it to completion, then read the next.
+// A slow Resolve op (connect/render/export) or a GIL-holding poll in the
+// background _monitor_resolve thread can delay a single ping by >PING_TIMEOUT_MS
+// without the worker being dead. SIGTERMing on the first miss was the root
+// cause of the constant Resolve disconnect/restart loop; tolerating a few
+// consecutive misses (≈MAX_MISSED_PINGS × HEALTH_INTERVAL_MS of true silence)
+// only kills a genuinely wedged, idle worker.
+const MAX_MISSED_PINGS = 3;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
 const PYTHON_CMD = process.platform === 'win32' ? 'python' : 'python3';
@@ -87,6 +97,7 @@ function createWorkerState(name, spawnConfig) {
     healthy: false,
     isUnavailableBroadcasted: false,
     crashCount: 0,
+    missedPings: 0,
     restartTimer: null,
     startedAt: 0,
     stopping: false
@@ -324,6 +335,7 @@ function startWorker(state) {
     state.healthy = true;
     state.isUnavailableBroadcasted = false;
     state.crashCount = 0;
+    state.missedPings = 0;
     broadcastWorkerStatus(state.name, 'available');
     // Auto-connect Resolve once per app session (not on every worker restart).
     // The manual reconnect path (Offline chip → resolve:reconnect IPC) resets
@@ -401,6 +413,7 @@ function sendWorkerRequest(rawPayload, explicitWorker, event = null) {
       event,
       resolve,
       reject,
+      cmd: envelope.cmd,
       startedAt: Date.now(),
       traceId: envelope.trace_id
     });
@@ -418,12 +431,34 @@ async function healthCheckWorker(state) {
       sendWorkerRequest({ cmd: 'ping' }, state.name),
       new Promise((_, reject) => setTimeout(() => reject(new Error('ping timeout')), PING_TIMEOUT_MS))
     ]);
+    state.missedPings = 0;
   } catch (_error) {
-    if (state.proc) {
-      state.proc.kill('SIGTERM');
+    if (!state.proc) {
+      markUnavailable(state, `${state.name} worker health check failed`);
       return;
     }
-    markUnavailable(state, `${state.name} worker health check failed`);
+
+    // A real command (connect/render/export/bins) blocks the worker's
+    // single-threaded stdin loop, so the queued ping legitimately can't be
+    // answered until that work finishes. That's a busy worker, not a dead
+    // one — don't accrue a strike. The queued ping resolves harmlessly once
+    // the command completes. Long-running jobs are independently watched by
+    // the JobEngine's forceKillWorker path.
+    const hasInflightCommand = [...state.pending.values()].some(p => p.cmd && p.cmd !== 'ping');
+    if (hasInflightCommand) {
+      state.missedPings = 0;
+      return;
+    }
+
+    // Idle worker that won't answer ping — likely a transient GIL stall in
+    // the background monitor poll. Tolerate a few in a row before restarting.
+    state.missedPings += 1;
+    if (state.missedPings < MAX_MISSED_PINGS) {
+      return;
+    }
+    state.missedPings = 0;
+    console.warn(`${state.name} worker unresponsive after ${MAX_MISSED_PINGS} consecutive pings — restarting`);
+    state.proc.kill('SIGTERM');
   }
 }
 
