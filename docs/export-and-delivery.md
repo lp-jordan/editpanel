@@ -130,30 +130,42 @@ uploaded into that LPOS project automatically: the export tracker transitions
    Key functions: `maybeEnqueueUploads`, `kickUploadWorker`, `uploadOneFile`,
    `verifyFileReady`, `maybeFinalizeExport`.
 
-### Pre-export version warning (added 2026-05-29)
-When **Upload to LPOS** is on, clicking Queue & Render first runs a name-based
-pre-check (before anything renders): EditPanel asks Resolve which timelines would
-export (`export_preflight` — read-only, mirrors the EXPORT-bin→timeline match in
-`lp_base_export`) and lists the chosen project's existing assets
-(`GET /api/ep/projects/:id/media/assets`, X-EP-Token). If any planned output name
-matches an existing asset, a confirm step lists them ("these will upload as new
-versions — Continue / Back"). It's an advisory heads-up so you don't burn render
-time on a known conflict; it's **name-only** (can't detect exact duplicates until
-the file exists) and **fails open** (a flaky pre-check never blocks the export).
-The authoritative version/duplicate decision still happens at finalize.
+### Version handling — pre-export sign-off, no post-ingest prompt (updated 2026-05-29)
+The pre-export confirm screen **is** the version sign-off; LPOS never re-prompts.
+
+- **Pre-export check (sign-off):** when **Upload to LPOS** is on, Queue & Render
+  first asks Resolve which timelines would export (`export_preflight` — read-only,
+  mirrors the EXPORT-bin→timeline match in `lp_base_export`) and lists the chosen
+  project's existing assets (`GET /api/ep/projects/:id/media/assets`, X-EP-Token).
+  Name matching **mirrors LPOS's canonical key** (`normalizeAssetKey` +
+  `stripVersionSuffix`: strip ext, upper-case, collapse `_`/space/`-`, drop
+  punctuation, strip trailing `_V<n>`), so it catches the same collisions LPOS
+  would version (e.g. "Episode 12" vs "Episode_12"). If any match, a confirm step
+  lists them — **Continue is the sign-off**, Back lets you change project / turn
+  off upload. Fails open (a flaky pre-check never blocks the export).
+- **EP upload never awaits confirmation:** the EP-token finalize route
+  (`app/api/ep/.../media/upload/[uploadId]/finalize`) auto-resolves a version
+  candidate by **re-finalizing with the candidate's `replaceAssetId`** → registers
+  a new version directly (non-destructive; old version retained in the stack). A
+  byte-identical file is a clean **no-op** (`no_change_needed`), not a failure.
+  So EP uploads only ever end as *registered* (new asset or new version) or
+  *no-change* — they never park at `awaiting_confirmation`, and the operator never
+  has to confirm in the LPOS IngestTray. LPOS's `findCanonicalVersionCandidate`
+  picks which asset to version (authoritative); EditPanel just provides the
+  heads-up + sign-off.
+
 Key files: `helper/commands/export_preflight.py`, `LposClient.listProjectAssets`,
-`app/api/ep/projects/[projectId]/media/assets/route.ts` (lpos-dashboard), and the
-`preflight`/`confirm` stages in `ExportDeliverOverlay.jsx`.
+`app/api/ep/projects/[projectId]/media/assets/route.ts` + the auto-resolve in
+`.../media/upload/[uploadId]/finalize/route.ts` (lpos-dashboard), and the
+`preflight`/`confirm` stages + `canonicalKey` in `ExportDeliverOverlay.jsx`.
 
 ### Notes / gaps
-- The pre-export warning is name-based and advisory; the binding check is still
-  at finalize. A version conflict that slips through (e.g. a rename) surfaces
-  there as a failed file (export → `partial`), resolved in the LPOS IngestTray.
+- The pre-export screen is advisory (catches what it can pre-render); the EP
+  finalize auto-resolve is the guarantee that nothing parks. A collision the
+  screen misses (e.g. an asset added between check and upload) still auto-versions
+  silently rather than prompting — acceptable since versioning is non-destructive
+  and the workflow is intentional re-exports.
 - Auth attribution: uploads are recorded against the EP token's user.
-- A render whose canonical name/hash matches an existing asset returns
-  `version_confirmation_required` / `duplicate_version`; EditPanel marks that
-  file's upload failed (export → `partial`) and the operator resolves the version
-  in the LPOS IngestTray. (No EP-side confirm UI.)
 - If the operator isn't signed in to LPOS at completion time, the render still
   finalizes but nothing uploads.
 - `export_runs` still isn't pruned by the 30-day sweep (follow-up).

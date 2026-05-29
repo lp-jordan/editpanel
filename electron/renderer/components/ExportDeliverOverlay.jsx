@@ -162,18 +162,29 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     }
   }
 
-  // Strip extension + normalise for a forgiving name comparison.
-  function baseName(s) {
-    return String(s || '').replace(/\.[^.]+$/, '').trim().toLowerCase();
+  // Mirror LPOS's canonical-asset key (lib/store/canonical-asset-store.ts:
+  // normalizeAssetKey + stripVersionSuffix) so the pre-export check flags the
+  // same name collisions LPOS would version, e.g. "Episode 12" vs "Episode_12"
+  // vs "Episode_12_v2". Version-stripping both sides errs toward flagging, which
+  // is the safe default for an advisory heads-up.
+  function canonicalKey(s) {
+    const noExt = String(s || '').replace(/\.[^.]+$/, '');
+    const norm = noExt
+      .trim()
+      .toUpperCase()
+      .replace(/[_\s-]+/g, '_')
+      .replace(/[^A-Z0-9_]/g, '');
+    return norm.replace(/_?V\d+$/, '');
   }
 
   function computeConflicts(names, assets) {
     const existing = new Set();
     for (const a of (assets || [])) {
-      if (a.originalFilename) existing.add(baseName(a.originalFilename));
-      if (a.name) existing.add(baseName(a.name));
+      if (a.originalFilename) existing.add(canonicalKey(a.originalFilename));
+      if (a.name) existing.add(canonicalKey(a.name));
     }
-    return (names || []).filter(n => existing.has(baseName(n)));
+    existing.delete('');
+    return (names || []).filter(n => existing.has(canonicalKey(n)));
   }
 
   // Entry point for both footer buttons. When uploading to LPOS, run a
@@ -447,8 +458,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           <p className="atem-summary-line">in <strong>{selectedProject?.name || 'the project'}</strong></p>
         </div>
         <p className="atem-dest-hint" style={{ fontSize: '0.84rem', color: 'var(--text)' }}>
-          These will upload as <strong>new versions</strong> of existing assets when their renders finish.
-          LPOS makes the final call at upload time (new version, or skipped if identical).
+          These will upload as <strong>new versions</strong> of existing assets when their renders finish —
+          continuing is your sign-off, so LPOS won't ask again. (Identical files are skipped.)
         </p>
         <div className="atem-session-list export-project-list">
           {conflicts.map((n) => (
@@ -462,7 +473,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           ))}
         </div>
         <p className="export-lpos-note">
-          This is a name match only — nothing has rendered or uploaded yet. Continue to export anyway, or go back to change the project or toggle off upload.
+          This is a name match only — nothing has rendered or uploaded yet. Continuing signs off on creating these new versions; go back to change the project or turn off upload.
         </p>
       </div>
     );
