@@ -327,7 +327,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
                 </div>
               )}
               <p className="export-lpos-note">
-                Heads up: automatic upload runs once the LPOS ingest pipeline ships (next update). For now your project choice is saved and the renders land in the destination folder above.
+                When each render finishes, EditPanel uploads it into this LPOS project automatically. Watch progress in Jobs.
               </p>
             </div>
           )}
@@ -398,9 +398,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           </div>
         )}
 
-        {result?.project && (
+        {result?.project && result?.started && (
           <p className="export-lpos-note">
-            Will upload to <strong>{result.project.name}</strong> ({result.project.clientName || 'Unassigned'}) once the LPOS upload pipeline ships.
+            After rendering, each file uploads to <strong>{result.project.name}</strong> ({result.project.clientName || 'Unassigned'}) automatically — watch progress in Jobs.
           </p>
         )}
       </div>

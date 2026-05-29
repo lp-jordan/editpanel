@@ -72,11 +72,8 @@ section in `electron/renderer/components/JobPanel.jsx`, `export_runs` in
 `electron/store/jobs-db.js`.
 
 ### Current status / known gaps
-- The **Upload to LPOS** toggle is UI-complete (project picker populated from
-  `window.lposAPI.listProjects()`, grouped by client) but the actual post-render
-  upload is Phase 2. The chosen project is persisted as intent (and carried into
-  the export tracker as `projectName`); the summary makes the deferred behaviour
-  explicit. Phase 2 will hook the `export-complete` event to kick off the upload.
+- The **Upload to LPOS** toggle uploads finished renders into the chosen project
+  automatically (Phase 2, below).
 - **Queue only** (no render) is not tracked — those jobs sit in Resolve's own
   render queue with nothing to poll.
 - `export_runs` is not pruned by the "Clear older than 30 days" sweep yet
@@ -85,39 +82,45 @@ section in `electron/renderer/components/JobPanel.jsx`, `export_runs` in
   preferences (`lastExportDir`, `lastExportPreset`, `lastExportBin`,
   `lastExportProjectId`).
 
-## Phase 2 — Upload to LPOS on completion (planned)
+## Phase 2 — Upload to LPOS on completion (shipped 2026-05-28)
 
-Goal: when **Upload to LPOS** is on, the target dir acts as a temporary watch
-folder — once the render finishes, EditPanel uploads the rendered files into the
-selected LPOS project and registers them as assets.
+When **Upload to LPOS** is on and a project is chosen, a finished render is
+uploaded into that LPOS project automatically: the export tracker transitions
+`rendering → uploading` and pushes each output file in as a normal media asset.
 
-### What needs building
-1. ~~**Render-completion detection**~~ — DONE (2026-05-28). The `render_status`
-   command + main-process poller + `export-complete` event already exist (see
-   the Phase-1 "Background tracking" section). Phase 2 hooks `export-complete`
-   to trigger the upload for exports whose `projectId` is set.
-2. **EP-token chunked upload endpoint** (lpos-dashboard, production): a new
-   `POST /api/ep/projects/:projectId/media/upload` (+ chunk `PATCH` + `finalize`)
-   authenticated via `requireEpToken`, reusing the existing
-   `finalizeUploadedAsset` / ingest-queue internals. The current chunked upload
-   (`/api/projects/:id/media/upload`) is **session-cookie auth only**.
-3. **EditPanel upload client**: an X-EP-Token chunked uploader (mirror the
-   chunking in `leaderpass_client.js`, but target the new EP endpoint), with
-   progress events.
-4. **Watch/trigger glue**: on completion, upload the *known expected* files
-   (we set `TargetDir` + `CustomName`, so we don't blindly sweep the folder) to
-   the chosen project; confirm via `LposClient.resolveUpload(uploadId)`.
+### How it works
+1. **Output paths from Resolve.** `render_status` now also returns each job's
+   `target_dir` + `output_filename` (from `GetRenderJobList`), so the tracker
+   knows the exact file each timeline produced — no blind directory sweep.
+2. **EP-token chunked upload endpoint** (lpos-dashboard): new
+   `POST /api/ep/projects/:projectId/media/upload` (+ chunk `PATCH`, `DELETE`,
+   and `finalize`) under `requireEpToken`. It mirrors the session-auth browser
+   route but creates its own ingest-queue job, so an EditPanel upload shows up in
+   the LPOS IngestTray and runs the full pipeline (register → transcode probe →
+   thumbnail → Frame.io). The live browser routes are left untouched; only the
+   shared service layer (`finalizeUploadedAsset`, ingest queue, stores) is reused.
+3. **EditPanel uploader** (`LposClient.uploadFileToProject`): X-EP-Token,
+   8 MiB chunks, resume-on-offset-mismatch, per-file progress callbacks.
+4. **Glue** (`uploadExportFiles` in `electron/main.js`): on a completed render
+   with a chosen `projectId` and a configured LPOS client, upload each finished
+   file sequentially, reporting per-file progress over the same `export-progress`
+   channel. Final state is `completed` (all uploaded) or `partial` (some failed).
+   The Jobs panel shows the `uploading` phase with an upload % bar; the floating
+   pill shows `Upload NN%`.
 
-### Key finding (2026-05-28)
-There is **no working upload-into-LPOS path today**:
-- The old `leaderpass_upload` command points at a *separate* LeaderPass backend,
-  and its platform worker was removed (`electron/main.js`: "platform worker
-  removed — editpanel uploads only to LPOS, never Frame.io directly").
-- LPOS exposes no EP-token-authenticated ingest endpoint.
-- `LposClient.resolveUpload()` exists but is orphaned (built for an export
-  registry that was never finished).
+### Notes / gaps
+- Auth attribution: uploads are recorded against the EP token's user.
+- A render whose canonical name/hash matches an existing asset returns
+  `version_confirmation_required` / `duplicate_version`; EditPanel marks that
+  file's upload failed (export → `partial`) and the operator resolves the version
+  in the LPOS IngestTray. (No EP-side confirm UI.)
+- If the operator isn't signed in to LPOS at completion time, the render still
+  finalizes but nothing uploads.
+- `export_runs` still isn't pruned by the 30-day sweep (follow-up).
 
-The *read* side is done: `GET /api/ep/projects` and `LposClient.listProjects()`
-both exist, which is why the Phase-1 project picker already works.
+Key files: `helper/commands/render_status.py` (output paths), the EP routes
+under `app/api/ep/projects/[projectId]/media/upload/` (lpos-dashboard),
+`LposClient.uploadFileToProject` in `electron/workers/lpos_client.js`, and
+`uploadExportFiles`/`onRenderFinished` in `electron/main.js`.
 
 See also: `lpos-contract.md` (EditPanel ↔ LPOS ownership boundaries).

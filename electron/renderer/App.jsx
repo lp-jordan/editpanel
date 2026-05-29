@@ -289,7 +289,9 @@ function App() {
       setActiveExport(null);
       setExportVersion((v) => v + 1);
       if (snap?.state) {
-        appendLog(`[export] ${snap.state}${snap.error ? ` — ${snap.error}` : ''} · ${snap.jobs?.length || 0} timeline(s)`);
+        const uploaded = (snap.jobs || []).filter((j) => j.uploadStatus === 'uploaded').length;
+        const uploadNote = snap.projectName ? ` · ${uploaded} uploaded to ${snap.projectName}` : '';
+        appendLog(`[export] ${snap.state}${snap.error ? ` — ${snap.error}` : ''} · ${snap.jobs?.length || 0} timeline(s)${uploadNote}`);
       }
     });
     return () => { offProgress && offProgress(); offComplete && offComplete(); };
@@ -559,7 +561,9 @@ function App() {
   function renderStatusBar() {
     const runningJobs = dashboard.jobs.filter(j => j.state === 'running');
     const runningJob  = runningJobs[0] ?? null;
-    const exportRunning = activeExport && activeExport.state === 'rendering';
+    const exportRendering = activeExport && activeExport.state === 'rendering';
+    const exportUploading = activeExport && activeExport.state === 'uploading';
+    const exportRunning = exportRendering || exportUploading;
     const showBusy = Boolean(runningJob) || exportRunning;
 
     return (
@@ -572,7 +576,9 @@ function App() {
           >
             {showBusy && <span className="status-bar-spinner" />}
             <span className="floating-jobs-label">
-              {exportRunning
+              {exportUploading
+                ? `Upload ${activeExport.uploadPercent ?? 0}%`
+                : exportRendering
                 ? `Export ${activeExport.percent}%`
                 : runningJob
                 ? `${runningJob.preset_id || 'Job'}${runningJob.steps_total > 0 ? ` ${runningJob.steps_done}/${runningJob.steps_total}` : ''}`

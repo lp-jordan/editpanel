@@ -661,6 +661,10 @@ async function pollRenderStatus() {
       j.status = s.status;
       j.percent = Number(s.percent) || 0;
       j.terminal = Boolean(s.terminal);
+      // Resolve hands us the exact output path once the job is in the queue.
+      if (s.target_dir && s.output_filename) {
+        j.outputPath = path.join(s.target_dir, s.output_filename);
+      }
     }
     if (j.terminal) done += 1;
     sum += (j.terminal && j.status === 'Complete') ? 100 : (Number(j.percent) || 0);
@@ -674,7 +678,7 @@ async function pollRenderStatus() {
   if (data.all_terminal) {
     const anyFailed = activeExport.jobs.some(j => j.status === 'Failed');
     const anyCancelled = activeExport.jobs.some(j => j.status === 'Cancelled');
-    finalizeExport(anyFailed ? 'failed' : anyCancelled ? 'canceled' : 'completed');
+    onRenderFinished(anyFailed ? 'failed' : anyCancelled ? 'canceled' : 'completed');
     return;
   }
 
@@ -690,14 +694,93 @@ async function pollRenderStatus() {
     if (exportIdlePolls >= threshold) {
       const allDone = activeExport.jobsDone === activeExport.jobs.length;
       if (allDone) {
-        finalizeExport('completed');
+        onRenderFinished('completed');
       } else if (exportSawRendering) {
-        finalizeExport('failed', 'Rendering stopped before all jobs finished');
+        onRenderFinished('failed');
       } else {
         finalizeExport('interrupted', 'Render did not start');
       }
     }
   }
+}
+
+// Render finished — either finalize, or (if a project was chosen and we can
+// reach LPOS) transition into the upload phase before finalizing.
+function onRenderFinished(renderState) {
+  stopExportPoll();
+  if (!activeExport) return;
+
+  const wantUpload = renderState === 'completed'
+    && activeExport.projectId
+    && lposClient && lposClient.isConfigured();
+
+  if (wantUpload) {
+    uploadExportFiles().catch(err => {
+      finalizeExport('partial', `Upload error: ${err?.message || err}`);
+    });
+  } else {
+    finalizeExport(renderState);
+  }
+}
+
+// Upload each finished render into the chosen LPOS project, reporting per-file
+// progress through the same export-progress channel.
+async function uploadExportFiles() {
+  if (!activeExport) return;
+  activeExport.state = 'uploading';
+  activeExport.uploadPercent = 0;
+  for (const j of activeExport.jobs) {
+    j.uploadStatus = (j.status === 'Complete' && j.outputPath) ? 'pending' : 'skipped';
+  }
+  persistActiveExport();
+  broadcastExport('export-progress', exportSnapshot());
+
+  const uploadable = activeExport.jobs.filter(j => j.uploadStatus === 'pending');
+
+  function recomputeUploadPercent() {
+    if (!activeExport) return;
+    const total = uploadable.length || 1;
+    const sum = uploadable.reduce((acc, x) => {
+      if (x.uploadStatus === 'uploaded') return acc + 100;
+      if (x.uploadStatus === 'failed') return acc;
+      return acc + (x.uploadPercent || 0);
+    }, 0);
+    activeExport.uploadPercent = Math.round(sum / total);
+  }
+
+  for (const j of uploadable) {
+    if (!activeExport) return; // cancelled
+    j.uploadStatus = 'uploading';
+    j.uploadPercent = 0;
+    broadcastExport('export-progress', exportSnapshot());
+
+    try {
+      const res = await lposClient.uploadFileToProject(activeExport.projectId, j.outputPath, {
+        fileName: path.basename(j.outputPath),
+        isCancelled: () => !activeExport,
+        onProgress: (p) => {
+          if (!activeExport) return;
+          j.uploadPercent = p.pct;
+          recomputeUploadPercent();
+          broadcastExport('export-progress', exportSnapshot());
+        }
+      });
+      j.uploadStatus = 'uploaded';
+      j.uploadPercent = 100;
+      j.assetId = res?.asset?.assetId || null;
+    } catch (err) {
+      j.uploadStatus = 'failed';
+      j.uploadError = err?.data?.error || err?.message || String(err);
+    }
+
+    if (!activeExport) return; // cancelled mid-upload
+    recomputeUploadPercent();
+    persistActiveExport();
+    broadcastExport('export-progress', exportSnapshot());
+  }
+
+  const anyFailed = uploadable.some(j => j.uploadStatus === 'failed');
+  finalizeExport(anyFailed ? 'partial' : 'completed');
 }
 
 function startExportTracking({ exportId, jobs, targetDir, projectId, projectName, started }) {
@@ -709,7 +792,12 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
       name: j.name || j.job_id,
       status: started ? 'Ready' : 'Queued',
       percent: 0,
-      terminal: false
+      terminal: false,
+      outputPath: null,
+      uploadStatus: 'pending',  // pending | uploading | uploaded | failed | skipped
+      uploadPercent: 0,
+      assetId: null,
+      uploadError: null
     })),
     targetDir: targetDir || null,
     projectId: projectId || null,
@@ -717,8 +805,9 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
     started: Boolean(started),
     startedAt: Date.now(),
     finishedAt: null,
-    state: started ? 'rendering' : 'queued',
+    state: started ? 'rendering' : 'queued',  // rendering | uploading | <terminal>
     percent: 0,
+    uploadPercent: 0,
     jobsDone: 0,
     error: null
   };

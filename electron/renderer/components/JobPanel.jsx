@@ -74,6 +74,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
 
   function formatExportState(state) {
     if (state === 'completed')   return '✓';
+    if (state === 'partial')     return '⚠';
     if (state === 'failed')      return '✗';
     if (state === 'canceled')    return '–';
     if (state === 'interrupted') return '!';
@@ -84,6 +85,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
   function exportRowState(state) {
     if (state === 'completed')                         return 'succeeded';
     if (state === 'failed' || state === 'interrupted') return 'failed';
+    if (state === 'partial')                           return 'failed';
     if (state === 'canceled')                          return 'canceled';
     return state;
   }
@@ -93,6 +95,14 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     if (job.status === 'Failed')    return '✗';
     if (job.status === 'Cancelled') return '–';
     return `${job.percent ?? 0}%`;
+  }
+
+  function exportUploadMark(job) {
+    if (job.uploadStatus === 'uploaded')  return '✓';
+    if (job.uploadStatus === 'failed')    return '✗';
+    if (job.uploadStatus === 'skipped')   return '–';
+    if (job.uploadStatus === 'uploading') return `${job.uploadPercent ?? 0}%`;
+    return '·';
   }
 
   async function handleCancelExport() {
@@ -153,50 +163,61 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
             <section className="job-panel-section">
               <p className="job-panel-section-label">Exports</p>
 
-              {activeExport && (
-                <div className="job-panel-row active">
-                  <div className="job-panel-row-top">
-                    <span className="job-panel-name">
-                      {activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
-                    </span>
-                    <div className="job-panel-row-actions">
-                      <span className="job-panel-step-badge">
-                        {activeExport.jobsDone}/{activeExport.jobs.length}
-                        {activeExport.state === 'rendering' ? ` · ${activeExport.percent}%` : ''}
+              {activeExport && (() => {
+                const uploading = activeExport.state === 'uploading';
+                const pct = uploading ? (activeExport.uploadPercent ?? 0) : (activeExport.percent ?? 0);
+                const active = uploading || activeExport.state === 'rendering';
+                return (
+                  <div className="job-panel-row active">
+                    <div className="job-panel-row-top">
+                      <span className="job-panel-name">
+                        {activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
                       </span>
-                      {activeExport.state === 'rendering' && (
-                        <button
-                          className="job-panel-cancel-btn"
-                          onClick={handleCancelExport}
-                          title="Stop render"
-                        >
-                          Stop
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <div className="job-panel-progress-track">
-                    <div
-                      className="job-panel-progress-fill"
-                      style={{ width: `${activeExport.percent}%` }}
-                    />
-                  </div>
-                  <div className="job-panel-export-jobs">
-                    {activeExport.jobs.map(job => (
-                      <div
-                        key={job.job_id}
-                        className={`job-panel-export-job${job.terminal ? ' done' : ''}`}
-                      >
-                        <span className="job-panel-export-job-name">{job.name}</span>
-                        <span className="job-panel-export-job-mark">{exportJobMark(job)}</span>
+                      <div className="job-panel-row-actions">
+                        <span className="job-panel-step-badge">
+                          {uploading ? `Uploading ${pct}%` : `${activeExport.jobsDone}/${activeExport.jobs.length} · ${pct}%`}
+                        </span>
+                        {active && (
+                          <button
+                            className="job-panel-cancel-btn"
+                            onClick={handleCancelExport}
+                            title={uploading ? 'Stop upload' : 'Stop render'}
+                          >
+                            Stop
+                          </button>
+                        )}
                       </div>
-                    ))}
+                    </div>
+                    <div className="job-panel-progress-track">
+                      <div
+                        className={`job-panel-progress-fill${uploading ? ' result' : ''}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <div className="job-panel-export-jobs">
+                      {activeExport.jobs.map(job => {
+                        const doneMark = uploading ? job.uploadStatus === 'uploaded' : job.terminal;
+                        return (
+                          <div
+                            key={job.job_id}
+                            className={`job-panel-export-job${doneMark ? ' done' : ''}`}
+                          >
+                            <span className="job-panel-export-job-name">{job.name}</span>
+                            <span className="job-panel-export-job-mark">
+                              {uploading ? exportUploadMark(job) : exportJobMark(job)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="job-panel-substep">
+                      {uploading
+                        ? `Uploading to ${activeExport.projectName || 'LPOS'}…`
+                        : (activeExport.targetDir || '')}
+                    </p>
                   </div>
-                  {activeExport.targetDir && (
-                    <p className="job-panel-substep">{activeExport.targetDir}</p>
-                  )}
-                </div>
-              )}
+                );
+              })()}
 
               {recentExports
                 .filter(e => e.export_id !== activeExport?.exportId)
