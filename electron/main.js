@@ -28,6 +28,18 @@ try {
   ffmpegPath = '';
 }
 
+// When packaged, app code runs from inside app.asar. Python cannot import modules
+// from inside an asar archive, and ffmpeg-static's binary lives in app.asar.unpacked
+// (see "asarUnpack" / "extraResources" in package.json build config). Resolve both
+// against their real on-disk locations so the helper workers spawn in a packaged build.
+if (ffmpegPath && app.isPackaged) {
+  ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+}
+// Directory that contains the `helper/` Python package. In dev it's the project
+// root; when packaged, helper/ is shipped unpacked as an extraResource under
+// resourcesPath, so `python -m helper.<worker>` resolves with cwd = HELPER_ROOT.
+const HELPER_ROOT = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..');
+
 const HEALTH_INTERVAL_MS = 10000;
 const PING_TIMEOUT_MS = 3000;
 // Consecutive missed health-check pings before an otherwise-idle worker is
@@ -69,7 +81,7 @@ const workers = {
   [WORKERS.resolve]: createWorkerState(WORKERS.resolve, {
     command: PYTHON_CMD,
     args: ['-m', 'helper.resolve_worker'],
-    cwd: path.join(__dirname, '..'),
+    cwd: HELPER_ROOT,
     env: {
       ...process.env,
       ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {})
@@ -78,7 +90,7 @@ const workers = {
   [WORKERS.media]: createWorkerState(WORKERS.media, {
     command: PYTHON_CMD,
     args: ['-m', 'helper.media_worker'],
-    cwd: path.join(__dirname, '..'),
+    cwd: HELPER_ROOT,
     env: {
       ...process.env,
       ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {})

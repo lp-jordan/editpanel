@@ -1,9 +1,12 @@
 {
   "name": "editpanel",
   "version": "1.0.0",
+  "description": "EditPanel — DaVinci Resolve companion app for the LPOS ecosystem",
+  "author": "LeaderPass <tools@leaderpass.com>",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
+    "package": "node scripts/package.mjs",
     "test": "echo 'No tests'",
     "baseline:latency": "node scripts/baseline-latency.js",
     "test:recipes": "node scripts/validate-recipes.js",
@@ -11,14 +14,51 @@
     "cache:invalidate": "node scripts/invalidate-step-cache.js",
     "test:platform-worker": "node scripts/test-platform-worker.js"
   },
+  "build": {
+    "appId": "com.leaderpass.editpanel",
+    "productName": "EditPanel",
+    "artifactName": "EditPanel-Setup-${version}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "helper",
+        "to": "helper",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
   "dependencies": {
     "basic-ftp": "5.0.5",
     "dictionary-en": "4.0.0",
-    "electron": "42.2.0",
     "ffmpeg-static": "5.3.0",
     "js-yaml": "4.1.1",
     "nspell": "2.1.0",
     "react": "18.0.0",
     "react-dom": "18.0.0"
+  },
+  "devDependencies": {
+    "electron": "42.2.0",
+    "electron-builder": "^26.0.12"
   }
 }
