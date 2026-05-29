@@ -109,6 +109,10 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     try { await window.exportsAPI.cancel(); } catch (_) {}
   }
 
+  async function handleStartExport() {
+    try { await window.exportsAPI.startRender(); } catch (_) {}
+  }
+
   async function handleCancelJob(jobId) {
     try { await window.electronAPI.cancelJob(jobId); } catch (_) {}
     setReloadTick(t => t + 1);
@@ -164,9 +168,16 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
               <p className="job-panel-section-label">Exports</p>
 
               {activeExport && (() => {
+                const queued    = activeExport.state === 'queued';
                 const uploading = activeExport.state === 'uploading';
-                const pct = uploading ? (activeExport.uploadPercent ?? 0) : (activeExport.percent ?? 0);
-                const active = uploading || activeExport.state === 'rendering';
+                const rendering = activeExport.state === 'rendering';
+                const pct = uploading ? (activeExport.uploadPercent ?? 0) : queued ? 0 : (activeExport.percent ?? 0);
+                const count = activeExport.jobs.length;
+                const badge = queued
+                  ? `Queued · ${count} timeline${count !== 1 ? 's' : ''}`
+                  : uploading
+                  ? `Uploading ${pct}%`
+                  : `${activeExport.jobsDone}/${count} · ${pct}%`;
                 return (
                   <div className="job-panel-row active">
                     <div className="job-panel-row-top">
@@ -174,10 +185,16 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                         {activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
                       </span>
                       <div className="job-panel-row-actions">
-                        <span className="job-panel-step-badge">
-                          {uploading ? `Uploading ${pct}%` : `${activeExport.jobsDone}/${activeExport.jobs.length} · ${pct}%`}
-                        </span>
-                        {active && (
+                        <span className="job-panel-step-badge">{badge}</span>
+                        {queued ? (
+                          <button
+                            className="job-panel-review-btn done"
+                            onClick={handleStartExport}
+                            title="Start rendering"
+                          >
+                            Start
+                          </button>
+                        ) : (
                           <button
                             className="job-panel-cancel-btn"
                             onClick={handleCancelExport}
@@ -196,22 +213,23 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                     </div>
                     <div className="job-panel-export-jobs">
                       {activeExport.jobs.map(job => {
-                        const doneMark = uploading ? job.uploadStatus === 'uploaded' : job.terminal;
+                        const doneMark = uploading ? job.uploadStatus === 'uploaded' : (rendering && job.terminal);
+                        const mark = queued ? '·' : uploading ? exportUploadMark(job) : exportJobMark(job);
                         return (
                           <div
                             key={job.job_id}
                             className={`job-panel-export-job${doneMark ? ' done' : ''}`}
                           >
                             <span className="job-panel-export-job-name">{job.name}</span>
-                            <span className="job-panel-export-job-mark">
-                              {uploading ? exportUploadMark(job) : exportJobMark(job)}
-                            </span>
+                            <span className="job-panel-export-job-mark">{mark}</span>
                           </div>
                         );
                       })}
                     </div>
                     <p className="job-panel-substep">
-                      {uploading
+                      {queued
+                        ? 'Queued in Resolve — press Start when ready'
+                        : uploading
                         ? `Uploading to ${activeExport.projectName || 'LPOS'}…`
                         : (activeExport.targetDir || '')}
                     </p>

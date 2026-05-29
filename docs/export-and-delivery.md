@@ -39,7 +39,11 @@ the render. The operator no longer has to set the Deliver-page location by hand.
    → `AddRenderJob()`. The order matters: the preset restores its own saved
    TargetDir, then we override it; `AddRenderJob` snapshots the *current*
    settings, so each job carries its own destination.
-4. If **Queue & Render**: overlay then calls `start_render` (`StartRendering`).
+4. The **"Start rendering automatically"** toggle (default off) decides what
+   happens next:
+   - **On** → the overlay queues *and* starts the render immediately.
+   - **Off** → the overlay only queues; the export becomes a **pending job** in
+     the Jobs panel with a **Start** button, so the operator renders at will.
 
 `target_dir` is optional and back-compatible — omit it and Resolve uses the
 preset's saved location. The helper `os.makedirs(target_dir, exist_ok=True)`
@@ -57,11 +61,15 @@ going (and reporting) after the picker overlay is closed.
   resolve worker (shared with every direct renderer call) responsive; the
   health-check forgives missed pings only while a command is *inflight*, and a
   blocking render would have frozen all Resolve interaction for the whole render.
-- The **Jobs panel** has an "Exports" section: active render with an overall %
-  bar + per-timeline status, a Stop button, and a list of recent exports. The
-  floating Jobs pill shows `Export NN%` while rendering.
-- Export runs persist to the `export_runs` table (jobs-db). On startup any run
-  left `rendering` from a prior session is marked `interrupted`.
+- The **Jobs panel** has an "Exports" section. A **queued** export (auto-start
+  off) shows a **Start** button (`export:start-render` → `start_render` + begins
+  polling); a **rendering**/**uploading** export shows progress + a **Stop**
+  button; plus a list of recent exports. The floating Jobs pill shows
+  `Export ready ▶` when queued and `Export NN%` while rendering.
+- Export runs persist to the `export_runs` table (jobs-db). On startup any
+  non-terminal run (`queued`/`rendering`/`uploading`) from a prior session is
+  marked `interrupted` — a queued export is in-session only (not restorable
+  across an EditPanel restart; re-queue to get a fresh startable job).
 - Poller safety nets: gives up after ~20s of lost contact with Resolve, and
   finalizes if Resolve reports it has stopped rendering for several consecutive
   polls (covers a job deleted from the queue, or a render stopped externally).
@@ -74,8 +82,9 @@ section in `electron/renderer/components/JobPanel.jsx`, `export_runs` in
 ### Current status / known gaps
 - The **Upload to LPOS** toggle uploads finished renders into the chosen project
   automatically (Phase 2, below).
-- **Queue only** (no render) is not tracked — those jobs sit in Resolve's own
-  render queue with nothing to poll.
+- A **queued** export (auto-start off) is tracked as a startable pending job, but
+  only within the session — an EditPanel restart marks it `interrupted` (the
+  Resolve render queue still holds the jobs; re-queue to drive them from EditPanel).
 - `export_runs` is not pruned by the "Clear older than 30 days" sweep yet
   (low volume; follow-up).
 - Last-used target dir / preset / bin / project are persisted in EditPanel

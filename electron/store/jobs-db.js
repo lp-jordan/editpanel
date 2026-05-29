@@ -364,11 +364,12 @@ class JobsDb {
       }));
   }
 
-  /** Mark any export still 'rendering' from a prior session as interrupted. */
+  /** Mark any non-terminal export from a prior session as interrupted — the
+   *  in-memory tracker (and any startable pending queue) is lost on restart. */
   clearStaleExportRuns() {
     this.db.prepare(
       `UPDATE export_runs SET state = 'interrupted', finished_at = ?
-       WHERE state = 'rendering'`
+       WHERE state IN ('rendering', 'uploading', 'queued')`
     ).run(Date.now());
   }
 

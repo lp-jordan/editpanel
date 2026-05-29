@@ -816,16 +816,21 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
       jobsDb.createExportRun({ exportId, targetDir, projectId, projectName, jobs: activeExport.jobs });
     } catch (_) { /* non-fatal */ }
   }
+  persistActiveExport();  // sync the real state (queued vs rendering) into the row
+  broadcastExport('export-progress', exportSnapshot());
+
+  if (started) beginExportPolling();
+}
+
+// Start (or restart) the render-status poll loop for the active export.
+function beginExportPolling() {
+  stopExportPoll();
   exportPollFailures = 0;
   exportSawRendering = false;
   exportIdlePolls = 0;
-  broadcastExport('export-progress', exportSnapshot());
-
-  if (started) {
-    exportPollTimer = setInterval(() => { pollRenderStatus().catch(() => {}); }, EXPORT_POLL_INTERVAL_MS);
-    // First poll shortly after StartRendering so the bar moves off zero quickly.
-    setTimeout(() => { pollRenderStatus().catch(() => {}); }, 800);
-  }
+  exportPollTimer = setInterval(() => { pollRenderStatus().catch(() => {}); }, EXPORT_POLL_INTERVAL_MS);
+  // First poll shortly after StartRendering so the bar moves off zero quickly.
+  setTimeout(() => { pollRenderStatus().catch(() => {}); }, 800);
 }
 
 // ── EditPanel ↔ LPOS sign-in (custom URL scheme handling) ──────────────────────
@@ -1469,24 +1474,22 @@ app.whenReady().then(() => {
       ).filter(j => j.job_id != null);
       if (jobs.length === 0) return { ok: true, empty: true };
 
-      // Only the Queue & Render path becomes a tracked background export. A
-      // queue-only dispatch leaves the jobs in Resolve's own render queue with
-      // nothing to poll, so we don't spin up a tracker that could never finish.
+      // Both paths become a tracked export. Auto-start renders immediately and
+      // begins polling; queue-only is tracked as a 'queued' pending job the user
+      // can start later from the Jobs panel (export:start-render).
+      const exportId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       if (startRender) {
         await sendWorkerRequest({ cmd: 'start_render' }, WORKERS.resolve);
-        const exportId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        startExportTracking({
-          exportId,
-          jobs,
-          targetDir: data.target_dir || targetDir,
-          projectId,
-          projectName,
-          started: true
-        });
-        return { ok: true, exportId, jobs, started: true };
       }
-
-      return { ok: true, jobs, started: false };
+      startExportTracking({
+        exportId,
+        jobs,
+        targetDir: data.target_dir || targetDir,
+        projectId,
+        projectName,
+        started: startRender
+      });
+      return { ok: true, exportId, jobs, started: startRender };
     } catch (err) {
       const msg = err?.error?.message || err?.error || err?.message || String(err);
       return { ok: false, error: msg };
@@ -1504,7 +1507,28 @@ app.whenReady().then(() => {
     }
   });
 
+  // Begin rendering a queued export (when the auto-start toggle was off).
+  ipcMain.handle('export:start-render', async () => {
+    if (!activeExport) return { ok: false, error: 'No queued export to start' };
+    if (activeExport.state !== 'queued') return { ok: false, error: `Export is already ${activeExport.state}` };
+    try {
+      await sendWorkerRequest({ cmd: 'start_render' }, WORKERS.resolve);
+    } catch (err) {
+      const msg = err?.error?.message || err?.error || err?.message || String(err);
+      return { ok: false, error: msg };
+    }
+    activeExport.started = true;
+    activeExport.state = 'rendering';
+    for (const j of activeExport.jobs) { j.status = 'Ready'; }
+    persistActiveExport();
+    broadcastExport('export-progress', exportSnapshot());
+    beginExportPolling();
+    return { ok: true };
+  });
+
   ipcMain.handle('export:cancel', async () => {
+    // For a rendering export stop_render halts Resolve; for a queued one it's a
+    // harmless no-op and we just drop the tracked job.
     try { await sendWorkerRequest({ cmd: 'stop_render' }, WORKERS.resolve); } catch (_) { /* best effort */ }
     if (activeExport) finalizeExport('canceled');
     return { ok: true };

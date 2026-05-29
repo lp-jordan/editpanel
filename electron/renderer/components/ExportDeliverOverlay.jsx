@@ -35,6 +35,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const [targetDir, setTargetDir]   = React.useState('');
   const [presetName, setPresetName] = React.useState(DEFAULT_PRESET);
   const [exportBin, setExportBin]   = React.useState(DEFAULT_BIN);
+  // Off (default) = queue only, start from Jobs later. On = render immediately.
+  const [autoStart, setAutoStart]   = React.useState(false);
 
   // ── Upload-to-LPOS state ───────────────────────────────
   const [uploadToLpos, setUploadToLpos]       = React.useState(false);
@@ -55,6 +57,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     if (!open) return;
     setStage('configure');
     setUploadToLpos(false);
+    setAutoStart(false);
     setProjectsError(null);
     setBusy(false);
     setResult(null);
@@ -321,6 +324,29 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           </p>
         </div>
 
+        {/* Auto-start toggle */}
+        <div className="atem-resolve-toggle">
+          <div className="atem-resolve-toggle-inner">
+            <div>
+              <p className="atem-field-label">Start rendering automatically</p>
+              <p className="atem-resolve-sub">
+                {autoStart
+                  ? 'The render begins as soon as the queue is built.'
+                  : "Off: jobs are queued and you press Start in Jobs when you're ready."}
+              </p>
+            </div>
+            <button
+              type="button"
+              className={`export-switch${autoStart ? ' on' : ''}`}
+              role="switch"
+              aria-checked={autoStart}
+              onClick={() => setAutoStart(v => !v)}
+            >
+              <span className="export-switch-knob" />
+            </button>
+          </div>
+        </div>
+
         {/* Upload-to-LPOS toggle */}
         <div className={`atem-resolve-toggle${lposReady ? '' : ' disabled'}`}>
           <div className="atem-resolve-toggle-inner">
@@ -462,11 +488,11 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
             <polyline points="22 4 12 14.01 9 11.01" />
           </svg>
-          <p className="atem-done-title">{result?.started ? 'Export started' : 'Jobs queued'}</p>
+          <p className="atem-done-title">{result?.started ? 'Export started' : 'Queued'}</p>
           <p className="atem-done-sub">
             {result?.started
               ? `${jobs.length} timeline${jobs.length !== 1 ? 's' : ''} rendering in the background — track progress in Jobs.`
-              : `${jobs.length} timeline${jobs.length !== 1 ? 's' : ''} queued in Resolve (not started).`}
+              : `${jobs.length} timeline${jobs.length !== 1 ? 's' : ''} queued — press Start in Jobs to begin rendering.`}
           </p>
         </div>
 
@@ -495,7 +521,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           </div>
         )}
 
-        {result?.project && result?.started && (
+        {result?.project && (
           <p className="export-lpos-note">
             After rendering, each file uploads to <strong>{result.project.name}</strong> ({result.project.clientName || 'Unassigned'}) automatically — watch progress in Jobs.
           </p>
@@ -541,14 +567,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       {/* Footer */}
       <footer className="result-overlay-actions">
         {stage === 'configure' && (
-          <>
-            <button className="btn-secondary" disabled={!canRun} onClick={() => beginExport(false)}>
-              Queue only
-            </button>
-            <button className="btn" disabled={!canRun} onClick={() => beginExport(true)}>
-              Queue &amp; Render
-            </button>
-          </>
+          <button className="btn" disabled={!canRun} onClick={() => beginExport(autoStart)}>
+            {autoStart ? 'Queue & Render' : 'Queue Export'}
+          </button>
         )}
         {stage === 'confirm' && (
           <>
@@ -558,16 +579,19 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
             </button>
           </>
         )}
-        {stage === 'done' && (
-          <>
-            {result?.started && onOpenJobs && (
-              <button className="btn" onClick={onOpenJobs}>View in Jobs</button>
-            )}
-            <button className={result?.started && onOpenJobs ? 'btn-secondary' : 'btn'} onClick={onClose}>
-              Done
-            </button>
-          </>
-        )}
+        {stage === 'done' && (() => {
+          const tracked = result && !result.error && !result.warning;
+          return (
+            <>
+              {tracked && onOpenJobs && (
+                <button className="btn" onClick={onOpenJobs}>View in Jobs</button>
+              )}
+              <button className={tracked && onOpenJobs ? 'btn-secondary' : 'btn'} onClick={onClose}>
+                Done
+              </button>
+            </>
+          );
+        })()}
       </footer>
     </div>
   );

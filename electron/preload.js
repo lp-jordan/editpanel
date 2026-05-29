@@ -206,7 +206,11 @@ contextBridge.exposeInMainWorld('exportsAPI', {
   getRecent(limit = 10) {
     return ipcRenderer.invoke('export:recent', limit);
   },
-  /** Stop the current render. */
+  /** Start rendering a queued export (auto-start toggle was off). */
+  startRender() {
+    return ipcRenderer.invoke('export:start-render');
+  },
+  /** Stop the current render / drop a queued export. */
   cancel() {
     return ipcRenderer.invoke('export:cancel');
   },

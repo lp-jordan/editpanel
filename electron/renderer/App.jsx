@@ -563,6 +563,7 @@ function App() {
     const runningJob  = runningJobs[0] ?? null;
     const exportRendering = activeExport && activeExport.state === 'rendering';
     const exportUploading = activeExport && activeExport.state === 'uploading';
+    const exportQueued    = activeExport && activeExport.state === 'queued';
     const exportRunning = exportRendering || exportUploading;
     const showBusy = Boolean(runningJob) || exportRunning;
 
@@ -582,6 +583,8 @@ function App() {
                 ? `Export ${activeExport.percent}%`
                 : runningJob
                 ? `${runningJob.preset_id || 'Job'}${runningJob.steps_total > 0 ? ` ${runningJob.steps_done}/${runningJob.steps_total}` : ''}`
+                : exportQueued
+                ? 'Export ready ▶'
                 : 'Jobs'}
             </span>
           </button>
