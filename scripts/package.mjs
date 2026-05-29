@@ -8,9 +8,12 @@
  * `npm install` (which fetches the Windows ffmpeg binary).
  *
  * Output goes to ./release by default. Set EP_RELEASE_OUT to write straight to the
- * shared NAS folder that LPOS watches, e.g. on Windows:
+ * shared NAS folder that LPOS watches. On the Windows build machine:
  *
- *   set "EP_RELEASE_OUT=N:\LPOS\editpanel dist" && npm run package
+ *   PowerShell:  $env:EP_RELEASE_OUT = "N:\LPOS\editpanel dist"; npm run package
+ *   cmd.exe:     set "EP_RELEASE_OUT=N:\LPOS\editpanel dist" && npm run package
+ *
+ * (PowerShell does not support cmd's `set VAR=... &&` syntax — use the $env: form.)
  *
  * electron-builder writes latest.yml LAST, so LPOS never picks up a build before
  * the .exe has finished copying — no separate copy step needed.
