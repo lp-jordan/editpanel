@@ -108,7 +108,25 @@ uploaded into that LPOS project automatically: the export tracker transitions
    The Jobs panel shows the `uploading` phase with an upload % bar; the floating
    pill shows `Upload NN%`.
 
+### Pre-export version warning (added 2026-05-29)
+When **Upload to LPOS** is on, clicking Queue & Render first runs a name-based
+pre-check (before anything renders): EditPanel asks Resolve which timelines would
+export (`export_preflight` — read-only, mirrors the EXPORT-bin→timeline match in
+`lp_base_export`) and lists the chosen project's existing assets
+(`GET /api/ep/projects/:id/media/assets`, X-EP-Token). If any planned output name
+matches an existing asset, a confirm step lists them ("these will upload as new
+versions — Continue / Back"). It's an advisory heads-up so you don't burn render
+time on a known conflict; it's **name-only** (can't detect exact duplicates until
+the file exists) and **fails open** (a flaky pre-check never blocks the export).
+The authoritative version/duplicate decision still happens at finalize.
+Key files: `helper/commands/export_preflight.py`, `LposClient.listProjectAssets`,
+`app/api/ep/projects/[projectId]/media/assets/route.ts` (lpos-dashboard), and the
+`preflight`/`confirm` stages in `ExportDeliverOverlay.jsx`.
+
 ### Notes / gaps
+- The pre-export warning is name-based and advisory; the binding check is still
+  at finalize. A version conflict that slips through (e.g. a rename) surfaces
+  there as a failed file (export → `partial`), resolved in the LPOS IngestTray.
 - Auth attribution: uploads are recorded against the EP token's user.
 - A render whose canonical name/hash matches an existing asset returns
   `version_confirmation_required` / `duplicate_version`; EditPanel marks that

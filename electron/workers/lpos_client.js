@@ -97,6 +97,11 @@ class LposClient {
     return this._request('GET', `/api/ep/projects/${encodeURIComponent(projectId)}`);
   }
 
+  /** List a project's media assets (id + names) — used for the pre-export version check. */
+  async listProjectAssets(projectId) {
+    return this._request('GET', `/api/ep/projects/${encodeURIComponent(projectId)}/media/assets`);
+  }
+
   /** Get production notes for a project (for note markers). */
   async getProjectNotes(projectId) {
     return this._request('GET', `/api/ep/projects/${encodeURIComponent(projectId)}/notes`);

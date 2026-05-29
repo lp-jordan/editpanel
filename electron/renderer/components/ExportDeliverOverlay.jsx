@@ -29,7 +29,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const DEFAULT_BIN = 'EXPORT';
 
   // ── Stage ──────────────────────────────────────────────
-  const [stage, setStage] = React.useState('configure'); // 'configure' | 'running' | 'done'
+  const [stage, setStage] = React.useState('configure'); // 'configure' | 'preflight' | 'confirm' | 'running' | 'done'
 
   // ── Configure state ────────────────────────────────────
   const [targetDir, setTargetDir]   = React.useState('');
@@ -47,6 +47,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   // ── Run state ──────────────────────────────────────────
   const [busy, setBusy]     = React.useState(false);
   const [result, setResult] = React.useState(null); // { jobs, targetDir, started, project, warning, error }
+  const [conflicts, setConflicts]     = React.useState([]);   // timeline names that already exist in the project
+  const [pendingStart, setPendingStart] = React.useState(true); // startRender flag held across the confirm step
 
   // Reset + seed from preferences when the overlay opens
   React.useEffect(() => {
@@ -56,6 +58,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     setProjectsError(null);
     setBusy(false);
     setResult(null);
+    setConflicts([]);
+    setPendingStart(true);
 
     if (!window.electronAPI?.getPreferences) {
       setTargetDir('');
@@ -155,7 +159,60 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     }
   }
 
-  async function runExport(startRender) {
+  // Strip extension + normalise for a forgiving name comparison.
+  function baseName(s) {
+    return String(s || '').replace(/\.[^.]+$/, '').trim().toLowerCase();
+  }
+
+  function computeConflicts(names, assets) {
+    const existing = new Set();
+    for (const a of (assets || [])) {
+      if (a.originalFilename) existing.add(baseName(a.originalFilename));
+      if (a.name) existing.add(baseName(a.name));
+    }
+    return (names || []).filter(n => existing.has(baseName(n)));
+  }
+
+  // Entry point for both footer buttons. When uploading to LPOS, run a
+  // name-based pre-export check against the chosen project first; otherwise go
+  // straight to the export.
+  function beginExport(startRender) {
+    if (uploadToLpos && selectedProjectId) {
+      runPreflight(startRender);
+    } else {
+      doStart(startRender);
+    }
+  }
+
+  async function runPreflight(startRender) {
+    if (busy) return;
+    setBusy(true);
+    setStage('preflight');
+    setPendingStart(startRender);
+    try {
+      const [namesRes, assetsRes] = await Promise.all([
+        window.leaderpassAPI.call('export_preflight', { export_bin_name: exportBin }),
+        window.lposAPI.listProjectAssets(selectedProjectId)
+      ]);
+      const names  = namesRes?.data?.names || [];
+      const assets = assetsRes?.ok ? (assetsRes.data?.assets || []) : [];
+      const found  = computeConflicts(names, assets);
+      if (found.length > 0) {
+        setConflicts(found);
+        setBusy(false);
+        setStage('confirm');
+        return;
+      }
+    } catch (err) {
+      // Fail open — a flaky pre-check shouldn't block the export.
+      const msg = err?.error?.message || err?.error || err?.message || String(err);
+      onLog?.(`[export] Version pre-check skipped: ${msg}`);
+    }
+    setBusy(false);
+    doStart(startRender);
+  }
+
+  async function doStart(startRender) {
     if (busy) return;
     setBusy(true);
     setStage('running');
@@ -345,6 +402,46 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     );
   }
 
+  function renderPreflight() {
+    return (
+      <div className="atem-loading" style={{ padding: '32px 0' }}>
+        <span className="status-bar-spinner" style={{ width: 18, height: 18 }} />
+        <span>Checking {selectedProject?.name || 'the project'} for existing versions…</span>
+      </div>
+    );
+  }
+
+  function renderConfirm() {
+    return (
+      <div className="atem-configure">
+        <div className="atem-summary-card">
+          <p className="atem-summary-line">
+            <strong>{conflicts.length}</strong> of these already exist
+          </p>
+          <p className="atem-summary-line">in <strong>{selectedProject?.name || 'the project'}</strong></p>
+        </div>
+        <p className="atem-dest-hint" style={{ fontSize: '0.84rem', color: 'var(--text)' }}>
+          These will upload as <strong>new versions</strong> of existing assets when their renders finish.
+          LPOS makes the final call at upload time (new version, or skipped if identical).
+        </p>
+        <div className="atem-session-list export-project-list">
+          {conflicts.map((n) => (
+            <div key={n} className="atem-session-row">
+              <div className="atem-session-info">
+                <span className="atem-session-name">{n}</span>
+                <span className="atem-session-meta">existing asset</span>
+              </div>
+              <span className="atem-coming-soon-badge" style={{ background: 'var(--accent-blue-soft)' }}>New version</span>
+            </div>
+          ))}
+        </div>
+        <p className="export-lpos-note">
+          This is a name match only — nothing has rendered or uploaded yet. Continue to export anyway, or go back to change the project or toggle off upload.
+        </p>
+      </div>
+    );
+  }
+
   function renderDone() {
     if (result?.error) {
       return <p className="atem-error">Export failed: {result.error}</p>;
@@ -435,6 +532,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           <p className="atem-error">Resolve is not connected — open your project first.</p>
         )}
         {stage === 'configure' && renderConfigure()}
+        {stage === 'preflight' && renderPreflight()}
+        {stage === 'confirm'   && renderConfirm()}
         {stage === 'running'   && renderRunning()}
         {stage === 'done'      && renderDone()}
       </div>
@@ -443,11 +542,19 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       <footer className="result-overlay-actions">
         {stage === 'configure' && (
           <>
-            <button className="btn-secondary" disabled={!canRun} onClick={() => runExport(false)}>
+            <button className="btn-secondary" disabled={!canRun} onClick={() => beginExport(false)}>
               Queue only
             </button>
-            <button className="btn" disabled={!canRun} onClick={() => runExport(true)}>
+            <button className="btn" disabled={!canRun} onClick={() => beginExport(true)}>
               Queue &amp; Render
+            </button>
+          </>
+        )}
+        {stage === 'confirm' && (
+          <>
+            <button className="btn-secondary" onClick={() => setStage('configure')}>Back</button>
+            <button className="btn" onClick={() => doStart(pendingStart)}>
+              {pendingStart ? 'Continue & Render' : 'Continue & Queue'}
             </button>
           </>
         )}

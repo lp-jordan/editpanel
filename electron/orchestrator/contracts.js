@@ -19,6 +19,7 @@ const COMMAND_OWNER = Object.freeze({
 
   spellcheck: WORKERS.resolve,
   lp_base_export: WORKERS.resolve,
+  export_preflight: WORKERS.resolve,
   shutdown: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
@@ -50,6 +51,7 @@ const COMMAND_SCHEMAS = Object.freeze({
   update_text: { required: [] },
   goto: { required: [] },
   spellcheck: { required: [] },
+  export_preflight: { required: [], types: { export_bin_name: 'string' } },
   lp_base_export: {
     required: [],
     types: {

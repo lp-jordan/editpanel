@@ -1285,6 +1285,18 @@ app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle('lpos:project-assets', async (_, projectId) => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    try {
+      const data = await lposClient.listProjectAssets(projectId);
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('lpos:project-notes', async (_, projectId) => {
     if (!lposClient || !lposClient.isConfigured()) {
       return { ok: false, error: 'LPOS not configured' };

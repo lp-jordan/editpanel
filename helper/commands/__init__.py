@@ -7,6 +7,7 @@ from .stop_render import handle_stop_render
 from .render_status import handle_render_status
 from .create_project_bins import handle_create_project_bins
 from .lp_base_export import handle_lp_base_export
+from .export_preflight import handle_export_preflight
 from .shutdown import handle_shutdown
 from .spellcheck import handle_spellcheck
 from .update_text import handle_update_text
@@ -21,6 +22,7 @@ RESOLVE_HANDLERS = {
     "render_status": handle_render_status,
     "create_project_bins": handle_create_project_bins,
     "lp_base_export": handle_lp_base_export,
+    "export_preflight": handle_export_preflight,
     "shutdown": handle_shutdown,
     "connect": handle_connect,
     "spellcheck": handle_spellcheck,

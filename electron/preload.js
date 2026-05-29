@@ -115,6 +115,9 @@ contextBridge.exposeInMainWorld('lposAPI', {
   getProject(projectId) {
     return ipcRenderer.invoke('lpos:project', projectId);
   },
+  listProjectAssets(projectId) {
+    return ipcRenderer.invoke('lpos:project-assets', projectId);
+  },
   getProjectNotes(projectId) {
     return ipcRenderer.invoke('lpos:project-notes', projectId);
   },
