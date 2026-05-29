@@ -591,6 +591,16 @@ let exportPollTimer = null;
 let exportPollFailures = 0;
 let exportSawRendering = false; // becomes true once Resolve reports active rendering
 let exportIdlePolls = 0;        // consecutive polls where Resolve isn't rendering
+let uploadQueue = [];           // job refs waiting to upload (serial)
+let uploadWorkerActive = false; // true while the serial upload worker is draining the queue
+
+// How we decide a render's output file is safe to read before uploading:
+// JobStatus === 'Complete' is the primary signal (Resolve finalises the
+// container before flipping to Complete); then we confirm the size is stable
+// for a few consecutive reads to ride out NAS/OS write-cache lag.
+const FILE_STABLE_CHECKS = 3;
+const FILE_STABLE_INTERVAL_MS = 1000;
+const FILE_STABLE_TIMEOUT_MS = 60_000;
 
 function broadcastExport(channel, payload) {
   BrowserWindow.getAllWindows().forEach(w => w.webContents.send(channel, payload));
@@ -624,6 +634,7 @@ function persistActiveExport() {
 
 function finalizeExport(state, error = null) {
   stopExportPoll();
+  uploadQueue = [];  // abandon any not-yet-started uploads
   if (!activeExport) return;
   activeExport.state = state;
   activeExport.finishedAt = Date.now();
@@ -671,7 +682,12 @@ async function pollRenderStatus() {
   }
   activeExport.jobsDone = done;
   activeExport.percent = activeExport.jobs.length ? Math.round(sum / activeExport.jobs.length) : 0;
-  activeExport.state = 'rendering';
+  if (activeExport.state !== 'uploading') activeExport.state = 'rendering';
+
+  // Overlap: kick off the upload for any timeline that just finished rendering,
+  // while the remaining timelines keep rendering.
+  maybeEnqueueUploads();
+
   persistActiveExport();
   broadcastExport('export-progress', exportSnapshot());
 
@@ -704,83 +720,179 @@ async function pollRenderStatus() {
   }
 }
 
-// Render finished — either finalize, or (if a project was chosen and we can
-// reach LPOS) transition into the upload phase before finalizing.
+// All renders have reached a terminal state (or the poll gave up). Uploads may
+// already be in flight / queued from the overlap path; mark anything that can't
+// upload as skipped, reflect the phase, and let the upload worker finalize once
+// the queue drains. If uploads aren't enabled, finalize immediately.
 function onRenderFinished(renderState) {
   stopExportPoll();
   if (!activeExport) return;
+  activeExport.rendersStopped = true;
 
-  const wantUpload = renderState === 'completed'
-    && activeExport.projectId
-    && lposClient && lposClient.isConfigured();
-
-  if (wantUpload) {
-    uploadExportFiles().catch(err => {
-      finalizeExport('partial', `Upload error: ${err?.message || err}`);
-    });
-  } else {
-    finalizeExport(renderState);
+  // Timelines that didn't render cleanly (or have no output path) won't upload.
+  for (const j of activeExport.jobs) {
+    if (!j.enqueued && j.uploadStatus === 'pending' && !(j.status === 'Complete' && j.outputPath)) {
+      j.uploadStatus = 'skipped';
+    }
   }
+
+  if (!activeExport.uploadEnabled) {
+    finalizeExport(renderState);
+    return;
+  }
+
+  if (hasPendingUploads()) {
+    activeExport.state = 'uploading';
+    persistActiveExport();
+    broadcastExport('export-progress', exportSnapshot());
+    kickUploadWorker();
+  }
+  maybeFinalizeExport();
 }
 
-// Upload each finished render into the chosen LPOS project, reporting per-file
-// progress through the same export-progress channel.
-async function uploadExportFiles() {
+function hasPendingUploads() {
+  if (!activeExport) return false;
+  return uploadWorkerActive
+    || uploadQueue.length > 0
+    || activeExport.jobs.some(j =>
+        j.uploadStatus === 'pending' || j.uploadStatus === 'verifying' || j.uploadStatus === 'uploading');
+}
+
+function recomputeUploadPercent() {
   if (!activeExport) return;
-  activeExport.state = 'uploading';
-  activeExport.uploadPercent = 0;
+  const uploadable = activeExport.jobs.filter(j => j.uploadStatus !== 'skipped');
+  const total = uploadable.length || 1;
+  const sum = uploadable.reduce((acc, x) => {
+    if (x.uploadStatus === 'uploaded') return acc + 100;
+    if (x.uploadStatus === 'failed') return acc;
+    return acc + (x.uploadPercent || 0);
+  }, 0);
+  activeExport.uploadPercent = Math.round(sum / total);
+}
+
+// Enqueue any just-finished timeline for upload (once). Safe to call every poll.
+function maybeEnqueueUploads() {
+  if (!activeExport || !activeExport.uploadEnabled) return;
+  let added = false;
   for (const j of activeExport.jobs) {
-    j.uploadStatus = (j.status === 'Complete' && j.outputPath) ? 'pending' : 'skipped';
+    if (!j.enqueued && j.uploadStatus === 'pending' && j.status === 'Complete' && j.outputPath) {
+      j.enqueued = true;
+      uploadQueue.push(j);
+      added = true;
+    }
   }
-  persistActiveExport();
+  if (added) kickUploadWorker();
+}
+
+// Serial upload worker — drains the queue one file at a time, concurrently with
+// any renders still running. Finalizes the export when it goes idle.
+function kickUploadWorker() {
+  if (uploadWorkerActive) return;
+  uploadWorkerActive = true;
+  (async () => {
+    try {
+      while (activeExport && uploadQueue.length > 0) {
+        const job = uploadQueue.shift();
+        await uploadOneFile(job);
+      }
+    } finally {
+      uploadWorkerActive = false;
+      maybeFinalizeExport();
+    }
+  })();
+}
+
+async function uploadOneFile(job) {
+  if (!activeExport) return;
+
+  job.uploadStatus = 'verifying';
   broadcastExport('export-progress', exportSnapshot());
 
-  const uploadable = activeExport.jobs.filter(j => j.uploadStatus === 'pending');
-
-  function recomputeUploadPercent() {
-    if (!activeExport) return;
-    const total = uploadable.length || 1;
-    const sum = uploadable.reduce((acc, x) => {
-      if (x.uploadStatus === 'uploaded') return acc + 100;
-      if (x.uploadStatus === 'failed') return acc;
-      return acc + (x.uploadPercent || 0);
-    }, 0);
-    activeExport.uploadPercent = Math.round(sum / total);
-  }
-
-  for (const j of uploadable) {
-    if (!activeExport) return; // cancelled
-    j.uploadStatus = 'uploading';
-    j.uploadPercent = 0;
-    broadcastExport('export-progress', exportSnapshot());
-
-    try {
-      const res = await lposClient.uploadFileToProject(activeExport.projectId, j.outputPath, {
-        fileName: path.basename(j.outputPath),
-        isCancelled: () => !activeExport,
-        onProgress: (p) => {
-          if (!activeExport) return;
-          j.uploadPercent = p.pct;
-          recomputeUploadPercent();
-          broadcastExport('export-progress', exportSnapshot());
-        }
-      });
-      j.uploadStatus = 'uploaded';
-      j.uploadPercent = 100;
-      j.assetId = res?.asset?.assetId || null;
-    } catch (err) {
-      j.uploadStatus = 'failed';
-      j.uploadError = err?.data?.error || err?.message || String(err);
-    }
-
-    if (!activeExport) return; // cancelled mid-upload
+  const ready = await verifyFileReady(job.outputPath);
+  if (!activeExport) return;
+  if (!ready) {
+    job.uploadStatus = 'failed';
+    job.uploadError = 'Output file did not stabilise (still being written?)';
     recomputeUploadPercent();
     persistActiveExport();
     broadcastExport('export-progress', exportSnapshot());
+    return;
   }
 
-  const anyFailed = uploadable.some(j => j.uploadStatus === 'failed');
-  finalizeExport(anyFailed ? 'partial' : 'completed');
+  job.uploadStatus = 'uploading';
+  job.uploadPercent = 0;
+  broadcastExport('export-progress', exportSnapshot());
+
+  try {
+    const res = await lposClient.uploadFileToProject(activeExport.projectId, job.outputPath, {
+      fileName: path.basename(job.outputPath),
+      isCancelled: () => !activeExport,
+      onProgress: (p) => {
+        if (!activeExport) return;
+        job.uploadPercent = p.pct;
+        recomputeUploadPercent();
+        broadcastExport('export-progress', exportSnapshot());
+      }
+    });
+    job.uploadStatus = 'uploaded';
+    job.uploadPercent = 100;
+    job.assetId = res?.asset?.assetId || null;
+  } catch (err) {
+    job.uploadStatus = 'failed';
+    job.uploadError = err?.data?.error || err?.message || String(err);
+  }
+
+  if (!activeExport) return;
+  recomputeUploadPercent();
+  persistActiveExport();
+  broadcastExport('export-progress', exportSnapshot());
+}
+
+// Confirm a render output is safe to read: it must exist, be non-empty, and have
+// a size that holds steady across a few consecutive reads (rides out write-cache
+// / NAS flush lag after Resolve reports the job Complete). Times out → not ready.
+async function verifyFileReady(filePath) {
+  if (!filePath) return false;
+  const start = Date.now();
+  let lastSize = -1;
+  let stable = 0;
+  while (Date.now() - start < FILE_STABLE_TIMEOUT_MS) {
+    if (!activeExport) return false;
+    let size = -1;
+    try { size = (await fs.promises.stat(filePath)).size; } catch { size = -1; }
+    if (size > 0 && size === lastSize) {
+      stable += 1;
+      if (stable >= FILE_STABLE_CHECKS) return true;
+    } else {
+      stable = 0;
+    }
+    lastSize = size;
+    await new Promise(r => setTimeout(r, FILE_STABLE_INTERVAL_MS));
+  }
+  return false;
+}
+
+// Finalize once renders are done AND no upload work remains. The single authority
+// for ending an export (called by the poll, onRenderFinished, and the worker).
+function maybeFinalizeExport() {
+  if (!activeExport) return;
+  if (!activeExport.rendersStopped) return;
+  if (hasPendingUploads()) return;
+
+  const completed   = activeExport.jobs.filter(j => j.status === 'Complete');
+  const anyRendFail = activeExport.jobs.some(j => j.status === 'Failed');
+  const anyCancel   = activeExport.jobs.some(j => j.status === 'Cancelled');
+  const anyUpFail   = activeExport.uploadEnabled && activeExport.jobs.some(j => j.uploadStatus === 'failed');
+
+  let outcome;
+  if (completed.length === 0) {
+    outcome = (anyCancel && !anyRendFail) ? 'canceled' : 'failed';
+  } else if (anyRendFail || anyCancel || anyUpFail) {
+    outcome = 'partial';
+  } else {
+    outcome = 'completed';
+  }
+  finalizeExport(outcome);
 }
 
 function startExportTracking({ exportId, jobs, targetDir, projectId, projectName, started }) {
@@ -794,7 +906,8 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
       percent: 0,
       terminal: false,
       outputPath: null,
-      uploadStatus: 'pending',  // pending | uploading | uploaded | failed | skipped
+      enqueued: false,          // pushed onto the upload queue yet?
+      uploadStatus: 'pending',  // pending | verifying | uploading | uploaded | failed | skipped
       uploadPercent: 0,
       assetId: null,
       uploadError: null
@@ -805,12 +918,16 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
     started: Boolean(started),
     startedAt: Date.now(),
     finishedAt: null,
-    state: started ? 'rendering' : 'queued',  // rendering | uploading | <terminal>
+    state: started ? 'rendering' : 'queued',  // queued | rendering | uploading | <terminal>
     percent: 0,
     uploadPercent: 0,
     jobsDone: 0,
+    uploadEnabled: false,       // set when rendering begins (project chosen + LPOS reachable)
+    rendersStopped: false,      // every render job has reached a terminal state
     error: null
   };
+  uploadQueue = [];
+  uploadWorkerActive = false;
   if (jobsDb) {
     try {
       jobsDb.createExportRun({ exportId, targetDir, projectId, projectName, jobs: activeExport.jobs });
@@ -828,6 +945,12 @@ function beginExportPolling() {
   exportPollFailures = 0;
   exportSawRendering = false;
   exportIdlePolls = 0;
+  // Decide once, as rendering begins, whether finished files should auto-upload.
+  if (activeExport) {
+    activeExport.uploadEnabled = Boolean(
+      activeExport.projectId && lposClient && lposClient.isConfigured()
+    );
+  }
   exportPollTimer = setInterval(() => { pollRenderStatus().catch(() => {}); }, EXPORT_POLL_INTERVAL_MS);
   // First poll shortly after StartRendering so the bar moves off zero quickly.
   setTimeout(() => { pollRenderStatus().catch(() => {}); }, 800);

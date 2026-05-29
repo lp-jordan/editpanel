@@ -110,12 +110,22 @@ uploaded into that LPOS project automatically: the export tracker transitions
    shared service layer (`finalizeUploadedAsset`, ingest queue, stores) is reused.
 3. **EditPanel uploader** (`LposClient.uploadFileToProject`): X-EP-Token,
    8 MiB chunks, resume-on-offset-mismatch, per-file progress callbacks.
-4. **Glue** (`uploadExportFiles` in `electron/main.js`): on a completed render
-   with a chosen `projectId` and a configured LPOS client, upload each finished
-   file sequentially, reporting per-file progress over the same `export-progress`
-   channel. Final state is `completed` (all uploaded) or `partial` (some failed).
-   The Jobs panel shows the `uploading` phase with an upload % bar; the floating
-   pill shows `Upload NN%`.
+4. **Per-file upload, overlapping renders** (`electron/main.js`): each timeline
+   uploads **as soon as it finishes rendering** — the poller enqueues a job the
+   moment its `JobStatus` is `Complete`, and a **serial upload worker** (one file
+   at a time) drains the queue *concurrently with the renders still running*. So
+   early-finishing files land in LPOS while later timelines are still rendering.
+   Before each upload, the file is verified ready: `Complete` (primary signal) +
+   a **size-stability check** (size > 0 and unchanged for 3 consecutive ~1 s
+   reads, 60 s timeout) to ride out NAS/OS write-cache lag. Per-file progress
+   flows over the same `export-progress` channel. The export finalizes only when
+   **all renders are terminal AND the upload queue is drained** — `completed`
+   (all uploaded) or `partial` (a render or upload failed). The Jobs panel shows
+   per-timeline marks (render `%` → `↑%` uploading → `✓`); the pill shows
+   `Export NN%` while rendering, `Upload NN%` once renders are done.
+
+   Key functions: `maybeEnqueueUploads`, `kickUploadWorker`, `uploadOneFile`,
+   `verifyFileReady`, `maybeFinalizeExport`.
 
 ### Pre-export version warning (added 2026-05-29)
 When **Upload to LPOS** is on, clicking Queue & Render first runs a name-based

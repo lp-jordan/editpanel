@@ -90,19 +90,18 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     return state;
   }
 
+  // Combined per-timeline mark: upload state takes over once a render finishes
+  // (renders and uploads overlap), otherwise show the render state/percent.
   function exportJobMark(job) {
+    if (job.uploadStatus === 'uploaded')  return '✓';
+    if (job.uploadStatus === 'uploading') return `↑${job.uploadPercent ?? 0}%`;
+    if (job.uploadStatus === 'verifying') return '…';
+    if (job.uploadStatus === 'failed')    return '✗';
     if (job.status === 'Complete')  return '✓';
     if (job.status === 'Failed')    return '✗';
     if (job.status === 'Cancelled') return '–';
+    if (job.status === 'Ready' || job.status === 'Queued') return '·';
     return `${job.percent ?? 0}%`;
-  }
-
-  function exportUploadMark(job) {
-    if (job.uploadStatus === 'uploaded')  return '✓';
-    if (job.uploadStatus === 'failed')    return '✗';
-    if (job.uploadStatus === 'skipped')   return '–';
-    if (job.uploadStatus === 'uploading') return `${job.uploadPercent ?? 0}%`;
-    return '·';
   }
 
   async function handleCancelExport() {
@@ -213,12 +212,11 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                     </div>
                     <div className="job-panel-export-jobs">
                       {activeExport.jobs.map(job => {
-                        const doneMark = uploading ? job.uploadStatus === 'uploaded' : (rendering && job.terminal);
-                        const mark = queued ? '·' : uploading ? exportUploadMark(job) : exportJobMark(job);
+                        const mark = queued ? '·' : exportJobMark(job);
                         return (
                           <div
                             key={job.job_id}
-                            className={`job-panel-export-job${doneMark ? ' done' : ''}`}
+                            className={`job-panel-export-job${mark === '✓' ? ' done' : ''}`}
                           >
                             <span className="job-panel-export-job-name">{job.name}</span>
                             <span className="job-panel-export-job-mark">{mark}</span>
