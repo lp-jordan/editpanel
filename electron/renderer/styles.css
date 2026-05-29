@@ -1367,6 +1367,44 @@ button.status-bar-chip-btn:hover {
   background: linear-gradient(90deg, var(--accent-blue), var(--accent-blue-strong));
 }
 
+/* Collapsible export header */
+.job-panel-export-head-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.job-panel-export-head-left .job-panel-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-panel-collapse-btn {
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--muted-soft);
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.job-panel-collapse-btn:hover {
+  color: var(--text-strong);
+}
+
+.job-panel-collapse-btn svg {
+  transition: transform 0.15s ease;
+}
+
+.job-panel-collapse-btn.open svg {
+  transform: rotate(90deg);
+}
+
 /* Per-timeline rows inside an active export */
 .job-panel-export-jobs {
   display: flex;

@@ -64,7 +64,10 @@ going (and reporting) after the picker overlay is closed.
 - The **Jobs panel** has an "Exports" section. A **queued** export (auto-start
   off) shows a **Start** button (`export:start-render` → `start_render` + begins
   polling); a **rendering**/**uploading** export shows progress + a **Stop**
-  button; plus a list of recent exports. The floating Jobs pill shows
+  button; plus a list of recent exports. The active/queued row is **collapsible**
+  (chevron) — collapsed it shows just the name, progress bar + badge, and the
+  Start/Stop button, hiding the per-timeline list; collapse state is per export id
+  (`collapsedExports` in `JobPanel.jsx`). The floating Jobs pill shows
   `Export ready ▶` when queued and `Export NN%` while rendering.
 - Export runs persist to the `export_runs` table (jobs-db). On startup any
   non-terminal run (`queued`/`rendering`/`uploading`) from a prior session is

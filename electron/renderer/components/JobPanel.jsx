@@ -21,6 +21,16 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
   const [recentExports, setRecentExports] = React.useState([]);
   // Bumps each time we delete/prune so the dashboard reload picks up the change
   const [reloadTick, setReloadTick] = React.useState(0);
+  // Export rows the user has collapsed (keyed by export id).
+  const [collapsedExports, setCollapsedExports] = React.useState(() => new Set());
+
+  function toggleExportCollapsed(id) {
+    setCollapsedExports(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
 
   // Reload result runs whenever panel opens or after a delete/prune
   React.useEffect(() => {
@@ -177,12 +187,26 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                   : uploading
                   ? `Uploading ${pct}%`
                   : `${activeExport.jobsDone}/${count} · ${pct}%`;
+                const collapsed = collapsedExports.has(activeExport.exportId);
                 return (
                   <div className="job-panel-row active">
                     <div className="job-panel-row-top">
-                      <span className="job-panel-name">
-                        {activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
-                      </span>
+                      <div className="job-panel-export-head-left">
+                        <button
+                          className={`job-panel-collapse-btn${collapsed ? '' : ' open'}`}
+                          onClick={() => toggleExportCollapsed(activeExport.exportId)}
+                          aria-label={collapsed ? 'Expand' : 'Collapse'}
+                          aria-expanded={!collapsed}
+                          title={collapsed ? 'Expand' : 'Collapse'}
+                        >
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <polyline points="9 6 15 12 9 18" />
+                          </svg>
+                        </button>
+                        <span className="job-panel-name">
+                          {activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
+                        </span>
+                      </div>
                       <div className="job-panel-row-actions">
                         <span className="job-panel-step-badge">{badge}</span>
                         {queued ? (
@@ -210,27 +234,31 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <div className="job-panel-export-jobs">
-                      {activeExport.jobs.map(job => {
-                        const mark = queued ? '·' : exportJobMark(job);
-                        return (
-                          <div
-                            key={job.job_id}
-                            className={`job-panel-export-job${mark === '✓' ? ' done' : ''}`}
-                          >
-                            <span className="job-panel-export-job-name">{job.name}</span>
-                            <span className="job-panel-export-job-mark">{mark}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <p className="job-panel-substep">
-                      {queued
-                        ? 'Queued in Resolve — press Start when ready'
-                        : uploading
-                        ? `Uploading to ${activeExport.projectName || 'LPOS'}…`
-                        : (activeExport.targetDir || '')}
-                    </p>
+                    {!collapsed && (
+                      <div className="job-panel-export-jobs">
+                        {activeExport.jobs.map(job => {
+                          const mark = queued ? '·' : exportJobMark(job);
+                          return (
+                            <div
+                              key={job.job_id}
+                              className={`job-panel-export-job${mark === '✓' ? ' done' : ''}`}
+                            >
+                              <span className="job-panel-export-job-name">{job.name}</span>
+                              <span className="job-panel-export-job-mark">{mark}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {!collapsed && (
+                      <p className="job-panel-substep">
+                        {queued
+                          ? 'Queued in Resolve — press Start when ready'
+                          : uploading
+                          ? `Uploading to ${activeExport.projectName || 'LPOS'}…`
+                          : (activeExport.targetDir || '')}
+                      </p>
+                    )}
                   </div>
                 );
               })()}
