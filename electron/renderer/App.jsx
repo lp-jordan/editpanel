@@ -141,6 +141,13 @@ function App() {
   const [exportOpen, setExportOpen]           = React.useState(false);
   const [activeExport, setActiveExport]       = React.useState(null);
   const [exportVersion, setExportVersion]     = React.useState(0);
+  // Sticky Resolve-worker advisory (e.g. external scripting disabled, crash
+  // loop). Driven by `resolve-advisory` IPC; null when nothing actionable.
+  const [resolveAdvisory, setResolveAdvisory] = React.useState(null);
+  // User-dismissed advisory: hides the banner until a new advisory.code or
+  // a CONNECTED status comes through. Track by code so re-emitting the same
+  // condition doesn't re-show what the user already chose to silence.
+  const [dismissedAdvisoryCode, setDismissedAdvisoryCode] = React.useState(null);
   // r2ManagerOpen removed 2026-05-27 — cold-storage management lives in LPOS now.
 
   // Settings state
@@ -346,6 +353,19 @@ function App() {
       }
     });
 
+    const unsubscribeAdvisory = window.electronAPI.onResolveAdvisory?.((advisory) => {
+      // null payload = main cleared (e.g. CONNECTED arrived). Reset the
+      // dismiss-code too so a future advisory shows up fresh.
+      if (!advisory) {
+        setResolveAdvisory(null);
+        setDismissedAdvisoryCode(null);
+        return;
+      }
+      setResolveAdvisory(advisory);
+      // A new code overrides any prior dismiss.
+      setDismissedAdvisoryCode((prev) => (prev === advisory.code ? prev : null));
+    });
+
     const unsubscribeJobEvents = window.electronAPI.onJobEvent((event) => {
       if (event?.type === 'step_progress' && event?.worker === 'media') {
         const timingLabel = Number.isFinite(event?.timing_ms) ? ` (${formatDuration(event.timing_ms)})` : '';
@@ -367,6 +387,7 @@ function App() {
       unsubscribeMessage && unsubscribeMessage();
       unsubscribeJobEvents && unsubscribeJobEvents();
       unsubscribeWorkerEvents && unsubscribeWorkerEvents();
+      unsubscribeAdvisory && unsubscribeAdvisory();
     };
   }, [appendLog, formatDuration]);
 
@@ -566,9 +587,46 @@ function App() {
     const exportQueued    = activeExport && activeExport.state === 'queued';
     const exportRunning = exportRendering || exportUploading;
     const showBusy = Boolean(runningJob) || exportRunning;
+    const showAdvisory = Boolean(resolveAdvisory) &&
+      !connected &&
+      resolveAdvisory.code !== dismissedAdvisoryCode;
 
     return (
       <React.Fragment>
+        {/* Sticky Resolve advisory banner — sits just above the status bar.
+            Surfaces actionable failure modes (external scripting disabled,
+            crash loop) that would otherwise only appear as WORKER_UNAVAILABLE
+            scrolling past in the console. */}
+        {showAdvisory && (
+          <div className="resolve-advisory" role="alert">
+            <div className="resolve-advisory-icon" aria-hidden="true">⚠</div>
+            <div className="resolve-advisory-body">
+              <div className="resolve-advisory-title">{resolveAdvisory.title}</div>
+              <div className="resolve-advisory-text">{resolveAdvisory.body}</div>
+              {resolveAdvisory.hint && (
+                <div className="resolve-advisory-hint">{resolveAdvisory.hint}</div>
+              )}
+            </div>
+            <div className="resolve-advisory-actions">
+              <button
+                type="button"
+                className="resolve-advisory-btn primary"
+                onClick={handleConnect}
+              >
+                Reconnect
+              </button>
+              <button
+                type="button"
+                className="resolve-advisory-btn"
+                onClick={() => setDismissedAdvisoryCode(resolveAdvisory.code)}
+                title="Hide until the next advisory"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Floating Jobs pill — bottom-right, above status bar */}
         <div className="floating-jobs-area">
           <button

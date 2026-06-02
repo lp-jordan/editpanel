@@ -124,6 +124,19 @@ contextBridge.exposeInMainWorld('lposAPI', {
   getAssetComments(projectId, assetId) {
     return ipcRenderer.invoke('lpos:asset-comments', projectId, assetId);
   },
+  /**
+   * Phase 5c.3+5c.4 (2026-06-02): pull Frame.io comments → Resolve markers.
+   * Fans across every editpanel-rendered timeline in the project (latest upload
+   * wins per timelineUid), fetches unresolved comments, formats name/note
+   * (replies inlined), and calls sync_comment_markers per timeline. Returns
+   * per-timeline outcomes plus an aggregate count.
+   * @param {string} projectId
+   * @param {{projectName?: string}} [options]
+   * @returns {Promise<{ok: boolean, data?: {jobId, timelines, totalPlaced, totalRemoved, totalKept, message?: string}, error?: string}>}
+   */
+  pullComments(projectId, options = {}) {
+    return ipcRenderer.invoke('lpos:pull-comments', projectId, options);
+  },
   /** Open the user's default browser to /ep/link for approval. */
   signinStart() {
     return ipcRenderer.invoke('lpos:signin-start');
