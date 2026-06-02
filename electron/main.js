@@ -1964,7 +1964,13 @@ app.whenReady().then(() => {
       // can start later from the Jobs panel (export:start-render).
       const exportId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       if (startRender) {
-        await sendWorkerRequest({ cmd: 'start_render' }, WORKERS.resolve);
+        // Scope StartRendering to ONLY the IDs lp_base_export just added so
+        // any pre-existing entries in the operator's Resolve render queue
+        // (completed, aborted, manually queued) aren't re-rendered alongside.
+        await sendWorkerRequest(
+          { cmd: 'start_render', job_ids: jobs.map(j => j.job_id) },
+          WORKERS.resolve
+        );
       }
       startExportTracking({
         exportId,
@@ -1997,7 +2003,12 @@ app.whenReady().then(() => {
     if (!activeExport) return { ok: false, error: 'No queued export to start' };
     if (activeExport.state !== 'queued') return { ok: false, error: `Export is already ${activeExport.state}` };
     try {
-      await sendWorkerRequest({ cmd: 'start_render' }, WORKERS.resolve);
+      // Same scoping as the auto-start path: only the IDs EditPanel queued,
+      // never the whole Resolve render queue.
+      await sendWorkerRequest(
+        { cmd: 'start_render', job_ids: activeExport.jobs.map(j => j.job_id) },
+        WORKERS.resolve
+      );
     } catch (err) {
       const msg = err?.error?.message || err?.error || err?.message || String(err);
       return { ok: false, error: msg };
