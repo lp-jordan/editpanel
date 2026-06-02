@@ -85,6 +85,19 @@ def _prepare_dll_search() -> None:
         logger.warning("add_dll_directory failed for %s: %s", resolve_dir, exc)
 
 
+# Log the interpreter context once at module import. fusionscript.dll
+# is a Python C extension built against a specific CPython ABI — when
+# the load segfaults inside loader.exec_module() and our DLL search dir
+# is correctly set, the next thing to suspect is an interpreter
+# version/bitness mismatch. Capturing this here means future failure
+# logs include exactly what we need to diagnose without asking.
+logger.info(
+    "Python interpreter: %s (%d-bit) at %s",
+    sys.version.split()[0],
+    64 if sys.maxsize > 2**32 else 32,
+    sys.executable,
+)
+
 # Wire the DLL search at import time so it's in place for the first
 # GetResolve() call. resolve_helper.py imports this module on startup;
 # the actual native DLL doesn't load until GetResolve() runs.
