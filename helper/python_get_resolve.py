@@ -1,52 +1,133 @@
-#!/usr/bin/env python
-
+#!/usr/bin/env python3
 """
-This file serves to return a DaVinci Resolve object
+DaVinci Resolve scripting loader (bundled, self-contained).
+
+Replaces the community python_get_resolve.py that delegated to
+Blackmagic's DaVinciResolveScript.py wrapper installed at
+%PROGRAMDATA%\\Blackmagic Design\\DaVinci Resolve\\Support\\Developer\\Scripting\\Modules\\.
+That folder is created by an *optional* Studio installer component
+(Scripting Samples / Developer Documentation), which means a perfectly
+working Resolve Studio install can still be missing it — and the old
+loader would then fall through to a misleading import error.
+
+The only file we depend on finding on the user's machine is the native
+endpoint `fusionscript.dll` (Windows) / `fusionscript.so` (Mac/Linux),
+which always ships with any Resolve install. Everything above it is
+our code now.
+
+Windows specifics: since Python 3.8 the native-DLL loader no longer
+searches PATH for an extension module's dependent DLLs. fusionscript.dll
+has hard runtime deps on other Resolve libraries that live alongside it
+in the install dir; without `os.add_dll_directory()` pointing there, the
+load succeeds at the symbol level but the first call into scriptapp()
+access-violates inside a missing dependent. That was the failure mode
+that drove the rewrite — see [[editpanel_resolve_advisory]].
 """
 
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import logging
+import os
 import sys
 
-def load_source(module_name, file_path):
-    if sys.version_info[0] >= 3 and sys.version_info[1] >= 5:
-        import importlib.util
+logger = logging.getLogger(__name__)
 
-        module = None
-        spec = importlib.util.spec_from_file_location(module_name, file_path)
-        if spec:
-            module = importlib.util.module_from_spec(spec)
-        if module:
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)
-        return module
-    else:
-        import imp
-        return imp.load_source(module_name, file_path)
+# Default fusionscript path per platform. Always overridable via the
+# RESOLVE_SCRIPT_LIB env var (the one Blackmagic env var still worth
+# honoring after the rewrite — it's the only piece of state we can't
+# predict from a default install).
+_DEFAULT_LIB_PATHS = {
+    'win32':  r'C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll',
+    'cygwin': r'C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll',
+    'darwin': '/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so',
+    'linux':  '/opt/resolve/libs/Fusion/fusionscript.so',
+}
+
+
+def _resolve_lib_path() -> str:
+    """Pick the fusionscript binary path to load."""
+    env = os.environ.get('RESOLVE_SCRIPT_LIB')
+    if env:
+        return env
+    for key, default in _DEFAULT_LIB_PATHS.items():
+        if sys.platform.startswith(key):
+            return default
+    raise RuntimeError(f"Unsupported platform for Resolve scripting: {sys.platform}")
+
+
+def _prepare_dll_search() -> None:
+    """
+    Windows-only: tell Python's native loader to also look in Resolve's
+    install dir when resolving fusionscript.dll's dependent DLLs. No-op
+    on other platforms and on Python <3.8 (which still uses PATH).
+    """
+    if not (sys.platform.startswith('win') or sys.platform.startswith('cygwin')):
+        return
+    if not hasattr(os, 'add_dll_directory'):
+        # Python 3.7 or earlier — falls back to PATH-based lookup which
+        # still works on older Windows.
+        return
+    try:
+        lib = _resolve_lib_path()
+    except RuntimeError as exc:
+        logger.warning("Can't determine Resolve lib path: %s", exc)
+        return
+    resolve_dir = os.path.dirname(lib)
+    if not os.path.isdir(resolve_dir):
+        logger.warning("Resolve install dir not present: %s", resolve_dir)
+        return
+    try:
+        os.add_dll_directory(resolve_dir)
+        logger.info("Added Resolve DLL search dir: %s", resolve_dir)
+    except OSError as exc:
+        logger.warning("add_dll_directory failed for %s: %s", resolve_dir, exc)
+
+
+# Wire the DLL search at import time so it's in place for the first
+# GetResolve() call. resolve_helper.py imports this module on startup;
+# the actual native DLL doesn't load until GetResolve() runs.
+_prepare_dll_search()
+
+
+_script_module = None  # cached after first successful load
+
+
+def _load_fusionscript():
+    """Load fusionscript.{dll,so} as a Python extension module."""
+    global _script_module
+    if _script_module is not None:
+        return _script_module
+
+    lib_path = _resolve_lib_path()
+    if not os.path.isfile(lib_path):
+        raise FileNotFoundError(
+            f"fusionscript not found at {lib_path}. "
+            "Confirm DaVinci Resolve Studio is installed; if it's installed "
+            "somewhere other than the default location, set RESOLVE_SCRIPT_LIB "
+            "to the full path of fusionscript.dll (Windows) / fusionscript.so "
+            "(Mac/Linux)."
+        )
+
+    loader = importlib.machinery.ExtensionFileLoader('fusionscript', lib_path)
+    spec = importlib.util.spec_from_loader('fusionscript', loader, origin=lib_path)
+    if spec is None:
+        raise ImportError(f"Could not build module spec for {lib_path}")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    _script_module = module
+    logger.info("Loaded fusionscript from %s", lib_path)
+    return module
 
 
 def GetResolve():
-    try:
-        # The PYTHONPATH needs to be set correctly for this import statement to work.
-        # An alternative is to import the DaVinciResolveScript by specifying absolute path (see ExceptionHandler logic)
-        import DaVinciResolveScript as bmd
-    except ImportError:
-        if sys.platform.startswith("darwin"):
-            expectedPath = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules/"
-        elif sys.platform.startswith("win") or sys.platform.startswith("cygwin"):
-            import os
-            expectedPath = os.getenv('PROGRAMDATA') + "\\Blackmagic Design\\DaVinci Resolve\\Support\\Developer\\Scripting\\Modules\\"
-        elif sys.platform.startswith("linux"):
-            expectedPath = "/opt/resolve/Developer/Scripting/Modules/"
+    """Return a connected Resolve app handle, or None if Resolve isn't running.
 
-        # check if the default path has it...
-        print("Unable to find module DaVinciResolveScript from $PYTHONPATH - trying default locations")
-        try:
-            load_source('DaVinciResolveScript', expectedPath + "DaVinciResolveScript.py")
-            import DaVinciResolveScript as bmd
-        except Exception as ex:
-            # No fallbacks ... report error:
-            print("Unable to find module DaVinciResolveScript - please ensure that the module DaVinciResolveScript is discoverable by python")
-            print("For a default DaVinci Resolve installation, the module is expected to be located in: " + expectedPath)
-            print(ex)
-            sys.exit()
-
-    return bmd.scriptapp("Resolve")
+    Raises:
+      FileNotFoundError: fusionscript.dll/.so not present at the expected path.
+      ImportError: native loader failed (typically a dependent-DLL miss
+        — check os.add_dll_directory wiring).
+    """
+    mod = _load_fusionscript()
+    return mod.scriptapp('Resolve')
