@@ -53,6 +53,23 @@ const PING_TIMEOUT_MS = 3000;
 // only kills a genuinely wedged, idle worker.
 const MAX_MISSED_PINGS = 3;
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
+// When the Resolve worker is in a known-bad crash loop (access-violation on
+// import, or repeated sub-2s deaths) we still want to keep retrying in case
+// the user fixes the underlying issue (toggles external scripting, opens
+// Resolve, etc.), but every-10-seconds restart spam drowns out the advisory
+// in the console. Slow-poll instead.
+const RESOLVE_ADVISORY_RETRY_MS = 30000;
+// Windows access-violation exit code = 0xC0000005. python_get_resolve loads
+// fusionscript.dll successfully (we see "available (bundled)" in stderr) but
+// then segfaults inside the first GetResolve() call — classic signature of
+// External Scripting being set to None in Resolve Preferences, or of the
+// free (non-Studio) build of Resolve being installed (no scripting endpoint).
+const WIN_ACCESS_VIOLATION_EXIT = 3221225477;
+// Worker uptime below this is treated as "didn't really start" for crash-loop
+// detection. Healthy startup → CONNECTED takes well over a second on a cold
+// Resolve, so this only catches the immediate-crash case.
+const FAST_CRASH_UPTIME_MS = 2000;
+const FAST_CRASH_THRESHOLD = 2;
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
 const PYTHON_CMD = process.platform === 'win32' ? 'python' : 'python3';
 const EP_LINK_SCHEME = 'lpos-editpanel';
@@ -112,7 +129,12 @@ function createWorkerState(name, spawnConfig) {
     missedPings: 0,
     restartTimer: null,
     startedAt: 0,
-    stopping: false
+    stopping: false,
+    // Sticky advisory state (resolve worker only today). When set, the
+    // restart scheduler slow-polls and the renderer shows a banner with
+    // an actionable fix instead of just logging WORKER_UNAVAILABLE noise.
+    advisoryActive: false,
+    advisoryCode: null
   };
 }
 
@@ -216,6 +238,9 @@ function handleWorkerLine(state, line) {
         resolveConnected = true;
         resolveProject = normalized.envelope.data?.project || '';
         resolveTimeline = normalized.envelope.data?.timeline || '';
+        // Whatever advisory was up (scripting unreachable, crash loop) is
+        // by definition resolved — we just got a healthy attach.
+        clearResolveAdvisory(state);
       } else if (code === 'DISCONNECTED') {
         resolveConnected = false;
         resolveProject = '';
@@ -280,14 +305,89 @@ function scheduleWorkerRestart(state, reason) {
   if (state.restartTimer) {
     return;
   }
+  // Slow-poll while an actionable advisory is displayed (e.g. Resolve external
+  // scripting disabled). The user needs to fix the host-side issue; spamming
+  // restart attempts every 10s buries the advisory and burns CPU for nothing.
   const idx = Math.min(state.crashCount, RESTART_BACKOFF_MS.length - 1);
-  const delay = RESTART_BACKOFF_MS[idx];
+  const delay = state.advisoryActive ? RESOLVE_ADVISORY_RETRY_MS : RESTART_BACKOFF_MS[idx];
   state.crashCount += 1;
   state.restartTimer = setTimeout(() => {
     state.restartTimer = null;
     startWorker(state);
   }, delay);
   console.warn(`${state.name} worker restart in ${delay}ms (${reason})`);
+}
+
+// Emit a user-facing advisory describing a known Resolve-worker failure mode
+// and a concrete fix. Goes to both the slideout console (helper-message) and
+// a dedicated channel the renderer uses to render a persistent banner.
+// Idempotent per advisory.code so we don't spam during the slow-poll retry.
+function emitResolveAdvisory(state, advisory) {
+  if (state.advisoryActive && state.advisoryCode === advisory.code) {
+    return;
+  }
+  state.advisoryActive = true;
+  state.advisoryCode = advisory.code;
+  const payload = {
+    code: advisory.code,
+    title: advisory.title,
+    body: advisory.body,
+    hint: advisory.hint || null,
+    at: Date.now()
+  };
+  BrowserWindow.getAllWindows().forEach(w => {
+    w.webContents.send('resolve-advisory', payload);
+    w.webContents.send('helper-message', `[resolve] ⚠ ${advisory.title} — ${advisory.body}`);
+    if (advisory.hint) {
+      w.webContents.send('helper-message', `[resolve] → ${advisory.hint}`);
+    }
+  });
+}
+
+function clearResolveAdvisory(state) {
+  if (!state.advisoryActive) return;
+  state.advisoryActive = false;
+  state.advisoryCode = null;
+  BrowserWindow.getAllWindows().forEach(w => {
+    w.webContents.send('resolve-advisory', null);
+  });
+}
+
+// Inspect a resolve-worker exit and surface a targeted advisory when the
+// signature matches a known failure mode. Returns true if an advisory was
+// emitted (caller can use it to know it's already explained the problem).
+function checkResolveWorkerExitForAdvisory(state, code, uptimeMs) {
+  if (state.name !== WORKERS.resolve) return false;
+
+  // 1) Windows access-violation during GetResolve(). On a Studio host where
+  //    external scripting is *enabled* and Resolve is open, GetResolve()
+  //    returns a handle without crashing. A segfault here means the scripting
+  //    endpoint isn't reachable — either the prefs flag is off, or the host
+  //    is the free build (which lacks the endpoint entirely).
+  if (process.platform === 'win32' && code === WIN_ACCESS_VIOLATION_EXIT) {
+    emitResolveAdvisory(state, {
+      code: 'RESOLVE_SCRIPTING_UNREACHABLE',
+      title: "Can't reach DaVinci Resolve's scripting endpoint",
+      body: "The Resolve helper crashed on startup (Windows access violation). This usually means external scripting is disabled in Resolve, or the installed build is Resolve free (Studio is required).",
+      hint: "In Resolve: Preferences → System → General → \"External scripting using\" → set to Local, then click Reconnect. Confirm Help → About says \"DaVinci Resolve Studio\"."
+    });
+    return true;
+  }
+
+  // 2) Repeated immediate crashes without a clean exit code we recognise.
+  //    Catches Mac/Linux variants of the same problem and any non-AV crash
+  //    pattern we haven't classified yet.
+  if (uptimeMs < FAST_CRASH_UPTIME_MS && state.crashCount >= FAST_CRASH_THRESHOLD) {
+    emitResolveAdvisory(state, {
+      code: 'RESOLVE_WORKER_CRASH_LOOP',
+      title: 'Resolve helper keeps crashing on startup',
+      body: `The helper has died ${state.crashCount} times in under ${Math.round(FAST_CRASH_UPTIME_MS / 1000)}s. The scripting bridge to Resolve isn't responding.`,
+      hint: "Check that DaVinci Resolve Studio is open, and Preferences → System → General → \"External scripting using\" is set to Local. Then click Reconnect."
+    });
+    return true;
+  }
+
+  return false;
 }
 
 function startWorker(state) {
@@ -369,6 +469,7 @@ function startWorker(state) {
 
   state.proc.on('exit', (code, signal) => {
     const exitInfo = signal ? `signal=${signal}` : `code=${code ?? '?'}`;
+    const uptimeMs = state.startedAt ? Date.now() - state.startedAt : 0;
     BrowserWindow.getAllWindows().forEach(w => {
       w.webContents.send('helper-message', `[${state.name}] process exited (${exitInfo})`);
     });
@@ -384,6 +485,9 @@ function startWorker(state) {
       state.stderrReader = null;
     }
     if (!wasStopping) {
+      // Classify the exit before scheduling a restart so the advisory flag
+      // is set in time for scheduleWorkerRestart to pick the slow-poll delay.
+      checkResolveWorkerExitForAdvisory(state, code, uptimeMs);
       scheduleWorkerRestart(state, `worker exited (${exitInfo})`);
     }
   });
@@ -835,10 +939,36 @@ async function uploadOneFile(job) {
   job.uploadPercent = 0;
   broadcastExport('export-progress', exportSnapshot());
 
+  // Phase 5c.1 (2026-06-02): when we captured a Resolve timeline uid + start TC
+  // + fps + project name at render dispatch, fold them into a renderMeta payload
+  // for the finalize call. LPOS persists this as an editorial_links row tying
+  // the asset back to the Resolve timeline so editpanel (any machine) can later
+  // pull Frame.io comments onto the correct timeline. A partial tether is worse
+  // than none — if any required field is missing we omit renderMeta entirely
+  // and the asset uploads as untethered.
+  let renderMeta = null;
+  if (
+    job.timelineUid
+    && job.timelineStartTimecode
+    && typeof job.timelineFps === 'number'
+    && job.resolveProjectName
+  ) {
+    renderMeta = {
+      timelineUid: job.timelineUid,
+      timelineName: job.name || '',
+      timelineStartTimecode: job.timelineStartTimecode,
+      timelineFps: job.timelineFps,
+      resolveProjectName: job.resolveProjectName,
+      renderedAt: new Date().toISOString(),
+      renderedFromMachine: os.hostname() || null,
+    };
+  }
+
   try {
     const res = await lposClient.uploadFileToProject(activeExport.projectId, job.outputPath, {
       fileName: path.basename(job.outputPath),
       isCancelled: () => !activeExport,
+      renderMeta,
       onProgress: (p) => {
         if (!activeExport) return;
         job.uploadPercent = p.pct;
@@ -922,7 +1052,15 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
       uploadStatus: 'pending',  // pending | verifying | uploading | uploaded | failed | skipped
       uploadPercent: 0,
       assetId: null,
-      uploadError: null
+      uploadError: null,
+      // Phase 5c.1 tether fields. Null when Resolve couldn't supply a uid (e.g.
+      // older builds without Timeline.GetUniqueId), in which case the upload
+      // worker omits renderMeta from the finalize call and no editorial_links
+      // row is written LPOS-side — the asset still uploads cleanly.
+      timelineUid: j.timelineUid || null,
+      timelineStartTimecode: j.timelineStartTimecode || null,
+      timelineFps: typeof j.timelineFps === 'number' ? j.timelineFps : null,
+      resolveProjectName: j.resolveProjectName || null,
     })),
     targetDir: targetDir || null,
     projectId: projectId || null,
@@ -1223,7 +1361,16 @@ app.whenReady().then(() => {
     BrowserWindow.getAllWindows().forEach(w => {
       w.webContents.send('helper-message', '[resolve:reconnect] respawning worker');
     });
+    // Manual reconnect is the user saying "I fixed it, try again" — drop
+    // the sticky advisory (and the slow-poll delay) so the next spawn gets
+    // the normal restart cadence.
+    clearResolveAdvisory(state);
+    state.crashCount = 0;
     resolveAutoConnectDone = false;
+    if (state.restartTimer) {
+      clearTimeout(state.restartTimer);
+      state.restartTimer = null;
+    }
     if (state.proc) {
       // Don't set state.stopping — we WANT the restart machinery to bring
       // it back. The exit handler will call scheduleWorkerRestart for us.
@@ -1612,10 +1759,24 @@ app.whenReady().then(() => {
       const data = res?.data || {};
       if (data.result === false) return { ok: true, empty: true };
 
+      // Phase 5c.1 (2026-06-02): lp_base_export now returns rich per-job dicts
+      // including timeline_uid / start_timecode / fps / project_name captured at
+      // SetCurrentTimeline. Legacy tuple shape [name, id] still tolerated for
+      // any older Python helper that hasn't been redeployed alongside this main.
       const rawJobs = Array.isArray(data.jobs) ? data.jobs : [];
-      const jobs = rawJobs.map(j =>
-        Array.isArray(j) ? { name: j[0], job_id: j[1] } : { name: j?.name, job_id: j?.id }
-      ).filter(j => j.job_id != null);
+      const jobs = rawJobs.map(j => {
+        if (Array.isArray(j)) {
+          return { name: j[0], job_id: j[1] };
+        }
+        return {
+          name: j?.name,
+          job_id: j?.id,
+          timelineUid: j?.timeline_uid || null,
+          timelineStartTimecode: j?.start_timecode || null,
+          timelineFps: typeof j?.fps === 'number' ? j.fps : null,
+          resolveProjectName: j?.project_name || null,
+        };
+      }).filter(j => j.job_id != null);
       if (jobs.length === 0) return { ok: true, empty: true };
 
       // Both paths become a tracked export. Auto-start renders immediately and

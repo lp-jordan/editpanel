@@ -1,9 +1,48 @@
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional
 import os
 import time
 
 DEFAULT_EXPORT_PRESET_NAME = "General LP Export"
 DEFAULT_EXPORT_BIN_NAME = "EXPORT"
+
+
+def _capture_timeline_metadata(timeline: Any, project_name: Optional[str]) -> Dict[str, Any]:
+    """Capture the Phase 5c.1 tether metadata for a timeline.
+
+    Called inside lp_base_export's per-timeline loop *after* SetCurrentTimeline so
+    every Resolve call resolves against the right object. Returns a dict shaped
+    for direct merge into editpanel's per-job state; falls back to None for any
+    field Resolve can't supply (Resolve 18 builds without GetUniqueId, missing
+    fps setting, etc.). When timeline_uid is None the upload-time renderMeta
+    payload is suppressed editpanel-side so we never send a partial tether.
+    """
+    timeline_uid: Optional[str] = None
+    try:
+        # Resolve 19+ — confirmed target per user (2026-06-02).
+        timeline_uid = timeline.GetUniqueId()
+    except Exception:
+        timeline_uid = None
+
+    start_timecode: Optional[str] = None
+    try:
+        start_timecode = timeline.GetStartTimecode()
+    except Exception:
+        start_timecode = None
+
+    fps: Optional[float] = None
+    try:
+        raw_fps = timeline.GetSetting("timelineFrameRate")
+        if raw_fps is not None and str(raw_fps).strip():
+            fps = float(raw_fps)
+    except Exception:
+        fps = None
+
+    return {
+        "timeline_uid": timeline_uid,
+        "start_timecode": start_timecode,
+        "fps": fps,
+        "project_name": project_name,
+    }
 
 def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Queue render jobs for timelines matching items in EXPORT bin."""
@@ -82,7 +121,8 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"result": False}
 
     # Load preset and queue jobs
-    render_jobs: List[Tuple[str, int]] = []
+    project_name = project.GetName() if project else None
+    render_jobs: List[Dict[str, Any]] = []
 
     for timeline in matched_timelines:
         timeline_name = timeline.GetName()
@@ -116,14 +156,31 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         job_id = project.AddRenderJob()
         if job_id:
+            # Phase 5c.1 (2026-06-02): capture timeline tether metadata at job
+            # creation so the upload-time renderMeta payload can be assembled
+            # without re-querying Resolve. timeline_uid is the stable key
+            # (rename-safe); name/start_tc/fps drive marker placement math.
+            metadata = _capture_timeline_metadata(timeline, project_name)
+            if metadata.get("timeline_uid") is None:
+                rh.log(
+                    f"Warning: Timeline.GetUniqueId() unavailable for '{timeline_name}'; "
+                    f"comment-marker tether will not be persisted for this job."
+                )
             rh.log(f"Added timeline '{timeline_name}' to render queue. Job ID: {job_id}.")
-            render_jobs.append((timeline_name, job_id))
+            render_jobs.append({
+                "name": timeline_name,
+                "id": job_id,
+                "timeline_uid": metadata["timeline_uid"],
+                "start_timecode": metadata["start_timecode"],
+                "fps": metadata["fps"],
+                "project_name": metadata["project_name"],
+            })
         else:
             rh.log(f"Error: Failed to add timeline '{timeline_name}' to the render queue.")
 
     if render_jobs:
-        for t_name, j_id in render_jobs:
-            rh.log(f"Timeline: {t_name}, Job ID: {j_id}")
+        for entry in render_jobs:
+            rh.log(f"Timeline: {entry['name']}, Job ID: {entry['id']}")
     else:
         rh.log("No render jobs were added.")
 

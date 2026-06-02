@@ -180,6 +180,12 @@ class LposClient {
    * @param {number} [opts.chunkSize]  bytes per chunk (default 8 MiB)
    * @param {(p: {bytesUploaded:number, fileSize:number, pct:number}) => void} [opts.onProgress]
    * @param {() => boolean} [opts.isCancelled]  abort the upload if this returns true
+   * @param {object|null} [opts.renderMeta]  Phase 5c.1 (2026-06-02): editpanel
+   *   render provenance — when present, sent on the finalize POST body so LPOS
+   *   persists an editorial_links row tying this asset to a Resolve timeline.
+   *   Fields: timelineUid, timelineName, timelineStartTimecode, timelineFps,
+   *   resolveProjectName, renderedAt, renderedFromMachine. Null/omitted for
+   *   non-editpanel uploads.
    */
   async uploadFileToProject(projectId, filePath, opts = {}) {
     const fileName  = opts.fileName || path.basename(filePath);
@@ -237,7 +243,15 @@ class LposClient {
       await handle.close();
     }
 
-    return this._uploadRequest('POST', `/api/ep/projects/${pid}/media/upload/${uploadId}/finalize`, {});
+    // Phase 5c.1 (2026-06-02): on finalize, send the editpanel renderMeta body
+    // when the caller provided one. LPOS's parseRenderMeta is lenient on absence
+    // (empty/missing body → no editorial_links row written; just a plain asset
+    // registration) but strict on shape, so we send the whole object as-is and
+    // let the server validate.
+    const finalizeOpts = opts.renderMeta
+      ? { json: { renderMeta: opts.renderMeta } }
+      : {};
+    return this._uploadRequest('POST', `/api/ep/projects/${pid}/media/upload/${uploadId}/finalize`, finalizeOpts);
   }
 
   // B2-related methods removed 2026-05-27. Cold-storage monitoring &
