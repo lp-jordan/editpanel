@@ -116,6 +116,42 @@ const workers = {
   // platform worker removed — editpanel uploads only to LPOS, never Frame.io directly
 };
 
+// ─── Phase 5c.3 helpers: format Frame.io comments for the sync_comment_markers
+// helper. Lives at module scope so the IPC handler stays focused on
+// orchestration. Schema match: FrameIOComment (lpos-dashboard) → target_comment
+// (sync_comment_markers.py).
+function _formatHMS(seconds) {
+  const total = Math.max(0, Math.floor(seconds || 0));
+  const m = Math.floor(total / 60);
+  const ss = total % 60;
+  return `${m}:${ss.toString().padStart(2, '0')}`;
+}
+
+function _formatTargetComment(comment) {
+  // Frame.io general comments have null timestamp — they can't be anchored to a
+  // timeline frame, so skip them entirely (orchestrator counts these separately
+  // so the editor sees they exist but weren't placed).
+  if (typeof comment?.timestamp !== 'number') return null;
+  if (!comment.id) return null;
+
+  const author = comment.authorName || 'Unknown';
+  const name = `${author} · ${_formatHMS(comment.timestamp)}`;
+
+  let note = comment.text || '';
+  const replies = Array.isArray(comment.replies) ? comment.replies : [];
+  for (const reply of replies) {
+    note += `\n  ↳ ${reply.authorName || 'Unknown'}: ${reply.text || ''}`;
+  }
+
+  return {
+    commentId: comment.id,
+    timestamp_s: comment.timestamp,
+    duration_s: typeof comment.duration === 'number' ? comment.duration : null,
+    name,
+    note,
+  };
+}
+
 function createWorkerState(name, spawnConfig) {
   return {
     name,
@@ -1614,6 +1650,150 @@ app.whenReady().then(() => {
       return { ok: true, data };
     } catch (err) {
       return { ok: false, error: err.message };
+    }
+  });
+
+  // ─── Phase 5c.3 (2026-06-02): Pull comments → place markers ────────────────
+  // One-click sync from the Edit tab. Walks every editpanel-rendered asset in
+  // the project, groups by timelineUid (latest upload wins), fetches Frame.io
+  // comments per asset, drops resolved ones, formats name/note (replies
+  // inlined), and hands the unresolved set to sync_comment_markers per timeline.
+  // Returns per-timeline outcomes; persists as a result_run so the JobPanel
+  // result row carries the breakdown.
+  ipcMain.handle('lpos:pull-comments', async (_, projectId, options = {}) => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    if (!projectId || typeof projectId !== 'string') {
+      return { ok: false, error: 'projectId is required' };
+    }
+    const projectName = (options && options.projectName) || null;
+
+    try {
+      // 1. Asset list — already carries editpanelRender per asset (5c.1).
+      const assetsResp = await lposClient.listProjectAssets(projectId);
+      const assets = Array.isArray(assetsResp?.assets) ? assetsResp.assets : [];
+
+      // 2. Group editpanel-rendered assets by timelineUid; keep the latest by
+      //    renderedAt. Comments live on the current cut, not aggregated history.
+      const latestByUid = new Map();
+      for (const asset of assets) {
+        const er = asset && asset.editpanelRender;
+        if (!er || !er.timelineUid) continue;
+        const existing = latestByUid.get(er.timelineUid);
+        if (!existing) {
+          latestByUid.set(er.timelineUid, asset);
+          continue;
+        }
+        const existingT = Date.parse(existing.editpanelRender.renderedAt) || 0;
+        const newT = Date.parse(er.renderedAt) || 0;
+        if (newT > existingT) latestByUid.set(er.timelineUid, asset);
+      }
+
+      if (latestByUid.size === 0) {
+        return {
+          ok: true,
+          data: {
+            jobId: null,
+            timelines: [],
+            totalPlaced: 0,
+            totalRemoved: 0,
+            totalKept: 0,
+            message: 'No editpanel-rendered assets found in this project. Render and upload a timeline first.'
+          }
+        };
+      }
+
+      // 3. Fan out: one comment fetch + one sync_comment_markers call per
+      //    timeline. Serial rather than parallel because the resolve worker
+      //    is single-threaded — concurrent sync_comment_markers requests
+      //    would just queue inside the worker.
+      const timelineResults = [];
+      for (const [timelineUid, asset] of latestByUid.entries()) {
+        const er = asset.editpanelRender;
+        const result = {
+          timelineUid,
+          timelineName: er.timelineName || '',
+          assetId: asset.assetId,
+          placed: 0,
+          removed: 0,
+          kept: 0,
+          skipped: [],
+          unresolvedCount: 0,
+          generalCommentsSkipped: 0,
+          error: null,
+        };
+
+        try {
+          const commentsResp = await lposClient.getAssetComments(projectId, asset.assetId);
+          const allComments = Array.isArray(commentsResp?.comments) ? commentsResp.comments : [];
+          const unresolved = allComments.filter(c => !c.completed);
+
+          // Format; drop general (timestamp == null) comments here. Count them
+          // separately so the JobPanel result shows "X general comments not
+          // placed" alongside placed/removed/kept.
+          const formatted = unresolved.map(_formatTargetComment);
+          result.unresolvedCount = unresolved.length;
+          result.generalCommentsSkipped = formatted.filter(c => c === null).length;
+          const targetComments = formatted.filter(c => c !== null);
+
+          const syncRes = await sendWorkerRequest({
+            cmd: 'sync_comment_markers',
+            timeline_uid: timelineUid,
+            fps: er.timelineFps,
+            target_comments: targetComments,
+          }, WORKERS.resolve);
+          const syncData = (syncRes && syncRes.data) || {};
+
+          if (syncData.result === false) {
+            // Most common: 'timeline_not_found' (uid not in current Resolve
+            // project — wrong project loaded, timeline deleted, .drt
+            // import shuffled uids). Surface as per-row error rather than
+            // failing the whole pull.
+            result.error = syncData.reason || 'sync_failed';
+          } else {
+            result.placed = Number(syncData.placed) || 0;
+            result.removed = Number(syncData.removed) || 0;
+            result.kept = Number(syncData.kept) || 0;
+            result.skipped = Array.isArray(syncData.skipped) ? syncData.skipped : [];
+            if (typeof syncData.timeline_name === 'string' && syncData.timeline_name) {
+              result.timelineName = syncData.timeline_name; // refresh to current name
+            }
+          }
+        } catch (err) {
+          result.error = (err && (err.error?.message || err.message)) || String(err);
+        }
+
+        timelineResults.push(result);
+      }
+
+      // 4. Persist as a result_run so JobPanel can surface the per-timeline
+      //    breakdown. itemKey = timelineUid, itemData = the full per-timeline
+      //    result row. 5c.4 will hook the renderer-side display.
+      const jobId = `comments-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const totalPlaced = timelineResults.reduce((s, r) => s + r.placed, 0);
+      const totalRemoved = timelineResults.reduce((s, r) => s + r.removed, 0);
+      const totalKept = timelineResults.reduce((s, r) => s + r.kept, 0);
+      const label = `Comment pull — ${projectName || projectId} (+${totalPlaced} -${totalRemoved} =${totalKept})`;
+      if (jobsDb) {
+        try {
+          const items = timelineResults.map(r => ({ key: r.timelineUid, data: r }));
+          jobsDb.initRun(jobId, 'comment_pull', label, items, { projectName });
+        } catch (_) { /* non-fatal; result still returned to renderer */ }
+      }
+
+      return {
+        ok: true,
+        data: {
+          jobId,
+          timelines: timelineResults,
+          totalPlaced,
+          totalRemoved,
+          totalKept,
+        }
+      };
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
     }
   });
 
