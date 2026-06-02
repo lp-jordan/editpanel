@@ -86,6 +86,27 @@ def _tool_id(tool):
     return "UnknownTool"
 
 
+def _tool_unique_name(tool):
+    """Return the tool's unique-within-comp name (e.g. 'Text1', 'TextPlus2').
+
+    DO NOT rely on the integer key from `Comp.GetToolList()` — Resolve returns
+    that as a 1-indexed integer dict in current builds, so iterating gives
+    you "1", "12", … which is meaningless for tool-name-based dedup or
+    later lookup from update_text. The persistent name lives at
+    GetAttrs()["TOOLS_Name"] and is what `comp.FindTool(name)` matches on.
+    """
+    try:
+        get_attrs = _safe_get(tool, "GetAttrs")
+        if callable(get_attrs):
+            attrs = get_attrs() or {}
+            name = attrs.get("TOOLS_Name") if isinstance(attrs, dict) else None
+            if name:
+                return str(name)
+    except Exception:
+        pass
+    return ""
+
+
 def _extract_text_from_tool(comp, tool):
     """Return every distinct text string the tool would display.
 
@@ -127,13 +148,13 @@ def _extract_text_from_tool(comp, tool):
             if isinstance(val, dict):
                 # Keyframed input — emit every distinct value across the
                 # animation curve. Dict keys are frames (int/float); values
-                # are the strings.
+                # are the strings. Do NOT also call _safe_get(tool, inp)
+                # here: in some Resolve builds that attribute access
+                # returns the same dict object, and _add(dict) would
+                # str(dict) the whole thing producing gibberish that
+                # surfaces as a phantom flagged token.
                 for v in val.values():
                     _add(v)
-                # Also try the bare attribute fallback in case GetInput
-                # returned the dict but the attribute holds the "current"
-                # static value (defensive).
-                _add(_safe_get(tool, inp))
             else:
                 _add(val)
                 if not texts:
@@ -164,17 +185,20 @@ def _extract_texts_from_comp(comp):
         except Exception:
             tools = {}
 
-        if hasattr(tools, "items"):
-            iterable = list(tools.items())
+        # GetToolList(False) returns a 1-indexed integer-keyed dict in
+        # current Resolve builds — the iteration key is the index, NOT the
+        # tool's unique name. Pull the name off each tool's GetAttrs()
+        # instead. The earlier code treated the iteration key as the name
+        # and ended up recording tool_name="12", which then failed to
+        # match anything in update_text's lookup.
+        if hasattr(tools, "values"):
+            tool_iterable = list(tools.values())
         else:
-            iterable = [(None, t) for t in tools]
+            tool_iterable = list(tools)
 
         seen_names: set = set()
-        for name, t in iterable:
-            tool_name = str(name) if name is not None else ""
-            # Tool names ARE stable within a comp — Resolve guarantees unique
-            # names per comp ("Text1", "Text2", …) and they survive across API
-            # calls, unlike the wrapper identity.
+        for t in tool_iterable:
+            tool_name = _tool_unique_name(t)
             if tool_name and tool_name in seen_names:
                 continue
             if tool_name:

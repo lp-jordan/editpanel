@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from .spellcheck import _get_fusion_comps
+from .spellcheck import _get_fusion_comps, _tool_unique_name
 
 
 def handle_update_text(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -60,30 +60,52 @@ def handle_update_text(payload: Dict[str, Any]) -> Dict[str, Any]:
             ),
         }
 
-    # IMPORTANT: GetToolList(True) returns SELECTED tools only — almost
-    # always empty when the editor is on the Edit page reviewing a spellcheck
-    # report. Use GetToolList(False) for ALL tools. The earlier `True` was
-    # silently failing every apply call; the renderer treated the
-    # `{result: False}` return as success and marked items resolved with no
-    # actual change in Resolve.
+    # GetToolList(False) gives ALL tools (True = selected-only, almost
+    # always empty from the Edit page). The dict's keys are 1-indexed
+    # INTEGERS in current Resolve builds, not tool names — so we must
+    # iterate the values and match each tool's GetAttrs()["TOOLS_Name"]
+    # against the target name. The earlier code did `tools.get(tool_name)`
+    # which never matched anything, and treated the iteration key as a
+    # name fallback which also never matched (key was "12", target was
+    # "Text1").
     comps = _get_fusion_comps(target)
+    seen_names = []
     for comp in comps:
+        # Prefer the dedicated lookup API when available — fewer surface
+        # paths to go wrong.
+        find_tool = getattr(comp, "FindTool", None)
+        if callable(find_tool):
+            try:
+                tool = find_tool(tool_name)
+                if tool:
+                    set_input = getattr(tool, "SetInput", None)
+                    if callable(set_input):
+                        res = set_input("StyledText", text)
+                        return {"result": bool(res) if res is not None else True}
+            except Exception:
+                pass
+
         get_tool_list = getattr(comp, "GetToolList", None)
         if not callable(get_tool_list):
             continue
         try:
             tools = get_tool_list(False) or {}
-            tool = tools.get(tool_name) if hasattr(tools, "get") else None
-            if not tool and hasattr(tools, "items"):
-                for name, t in tools.items():
-                    if name == tool_name:
-                        tool = t
-                        break
-            if tool:
-                set_input = getattr(tool, "SetInput", None)
-                if callable(set_input):
-                    res = set_input("StyledText", text)
-                    return {"result": bool(res) if res is not None else True}
+            tool_iterable = list(tools.values()) if hasattr(tools, "values") else list(tools)
+            for t in tool_iterable:
+                name = _tool_unique_name(t)
+                if name:
+                    seen_names.append(name)
+                if name == tool_name:
+                    set_input = getattr(t, "SetInput", None)
+                    if callable(set_input):
+                        res = set_input("StyledText", text)
+                        return {"result": bool(res) if res is not None else True}
         except Exception:
             continue
-    return {"result": False, "reason": f"Tool '{tool_name}' not found in any Fusion comp on this clip"}
+    return {
+        "result": False,
+        "reason": (
+            f"Tool '{tool_name}' not found in any Fusion comp on this clip. "
+            f"Available tools: {', '.join(seen_names) or '(none)'}"
+        ),
+    }
