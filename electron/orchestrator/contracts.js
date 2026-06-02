@@ -21,6 +21,8 @@ const COMMAND_OWNER = Object.freeze({
   lp_base_export: WORKERS.resolve,
   export_preflight: WORKERS.resolve,
   shutdown: WORKERS.resolve,
+  // Phase 5c.2 (2026-06-02): Frame.io comment-marker reconciliation per timeline.
+  sync_comment_markers: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -62,6 +64,13 @@ const COMMAND_SCHEMAS = Object.freeze({
     }
   },
   shutdown: { required: [] },
+  // Phase 5c.2 (2026-06-02). target_comments is an array of objects; the schema
+  // layer only checks top-level scalars, so deep validation lives in the Python
+  // handler (handle_sync_comment_markers).
+  sync_comment_markers: {
+    required: ['timeline_uid', 'fps', 'target_comments'],
+    types: { timeline_uid: 'string', fps: 'number' }
+  },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });

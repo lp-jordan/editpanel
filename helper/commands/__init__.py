@@ -12,6 +12,7 @@ from .shutdown import handle_shutdown
 from .spellcheck import handle_spellcheck
 from .update_text import handle_update_text
 from .goto import handle_goto
+from .sync_comment_markers import handle_sync_comment_markers
 
 
 RESOLVE_HANDLERS = {
@@ -28,6 +29,7 @@ RESOLVE_HANDLERS = {
     "spellcheck": handle_spellcheck,
     "update_text": handle_update_text,
     "goto": handle_goto,
+    "sync_comment_markers": handle_sync_comment_markers,
 }
 
 # Reserved for future media worker commands (audit mode, etc.)
