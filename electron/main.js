@@ -2019,6 +2019,22 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
+  // Delete a single export run from the recent list. Refuses to touch the
+  // currently in-flight export — that path is `export:cancel`.
+  ipcMain.handle('export:delete-run', async (_e, exportId) => {
+    if (!exportId) return { ok: false, error: 'Missing exportId' };
+    if (activeExport && activeExport.exportId === exportId) {
+      return { ok: false, error: 'Use cancel to stop the active export' };
+    }
+    if (!jobsDb) return { ok: true };
+    try {
+      jobsDb.deleteExportRun(exportId);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   // B2 Media Manager IPC removed 2026-05-27 — cold-storage management is now
   // LPOS-side (see lpos-dashboard /settings/storage). EditPanel no longer
   // ships an S3 SDK or holds B2 credentials.

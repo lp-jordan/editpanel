@@ -380,6 +380,11 @@ class JobsDb {
       }));
   }
 
+  /** Delete a single export run from the recent list. */
+  deleteExportRun(exportId) {
+    this.db.prepare(`DELETE FROM export_runs WHERE export_id = ?`).run(exportId);
+  }
+
   /** Mark any non-terminal export from a prior session as interrupted — the
    *  in-memory tracker (and any startable pending queue) is lost on restart. */
   clearStaleExportRuns() {

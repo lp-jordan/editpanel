@@ -23,6 +23,24 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
   const [reloadTick, setReloadTick] = React.useState(0);
   // Export rows the user has collapsed (keyed by export id).
   const [collapsedExports, setCollapsedExports] = React.useState(() => new Set());
+  // Ref on the panel inner so a global mousedown can detect clicks outside it.
+  const panelRef = React.useRef(null);
+
+  // Close the panel when the user clicks anywhere outside it. The floating
+  // Jobs pill that toggles `open` lives in the status bar — we exclude it so
+  // the pill keeps acting as a toggle (otherwise the outside-click would close
+  // first, then the pill's onClick would reopen on the same gesture).
+  React.useEffect(() => {
+    if (!open) return undefined;
+    function handleMouseDown(event) {
+      if (!panelRef.current) return;
+      if (panelRef.current.contains(event.target)) return;
+      if (event.target.closest && event.target.closest('.floating-jobs-btn')) return;
+      onClose();
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [open, onClose]);
 
   function toggleExportCollapsed(id) {
     setCollapsedExports(prev => {
@@ -137,6 +155,11 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     setReloadTick(t => t + 1);
   }
 
+  async function handleDeleteExportRun(exportId) {
+    try { await window.exportsAPI.deleteRun(exportId); } catch (_) {}
+    setReloadTick(t => t + 1);
+  }
+
   async function handleClearOld() {
     // 30 days. Engine jobs use ms; result runs use ms.
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -158,7 +181,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
 
   return (
     <div className={`job-panel${open ? ' open' : ''}`} role="dialog" aria-label="Jobs">
-      <div className="job-panel-inner">
+      <div className="job-panel-inner" ref={panelRef}>
         <header className="job-panel-header">
           <span className="job-panel-title">Jobs</span>
           <button className="job-panel-close" onClick={onClose} aria-label="Close">
@@ -210,13 +233,23 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                       <div className="job-panel-row-actions">
                         <span className="job-panel-step-badge">{badge}</span>
                         {queued ? (
-                          <button
-                            className="job-panel-review-btn done"
-                            onClick={handleStartExport}
-                            title="Start rendering"
-                          >
-                            Start
-                          </button>
+                          <React.Fragment>
+                            <button
+                              className="job-panel-review-btn done"
+                              onClick={handleStartExport}
+                              title="Start rendering"
+                            >
+                              Start
+                            </button>
+                            <button
+                              className="job-panel-delete-btn"
+                              onClick={handleCancelExport}
+                              title="Clear queued export"
+                              aria-label="Clear queued export"
+                            >
+                              {xIcon}
+                            </button>
+                          </React.Fragment>
                         ) : (
                           <button
                             className="job-panel-cancel-btn"
@@ -276,6 +309,14 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                       <span className="job-panel-age">{formatDuration(e.finished_at - e.started_at)}</span>
                     )}
                     <span className="job-panel-age">{formatAge(e.finished_at || e.started_at)}</span>
+                    <button
+                      className="job-panel-delete-btn"
+                      onClick={() => handleDeleteExportRun(e.export_id)}
+                      title="Delete this export"
+                      aria-label="Delete this export"
+                    >
+                      {xIcon}
+                    </button>
                   </div>
                 ))}
             </section>

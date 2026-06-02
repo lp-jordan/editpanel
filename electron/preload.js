@@ -230,6 +230,10 @@ contextBridge.exposeInMainWorld('exportsAPI', {
   cancel() {
     return ipcRenderer.invoke('export:cancel');
   },
+  /** Delete a finished export run from the recent list. */
+  deleteRun(exportId) {
+    return ipcRenderer.invoke('export:delete-run', exportId);
+  },
   /** Progress ticks while an export renders. */
   onProgress(callback) {
     const handler = (_event, payload) => callback(payload);

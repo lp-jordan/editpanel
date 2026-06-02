@@ -646,7 +646,7 @@ function App() {
           // markers whose comments are now resolved upstream.
           key: 'pull-comments',
           label: 'Pull Comments',
-          description: 'Fetch Frame.io comments from LPOS and place them as Red markers on the matching Resolve timelines.',
+          description: 'Fetch LPOS comments and place into project.',
           actionLabel: 'Pull Comments',
           onClick: handlePullComments,
           requiresResolve: true
