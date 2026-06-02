@@ -450,6 +450,93 @@ function App() {
     setExportOpen(true);
   }, [appendLog]);
 
+  // Phase 5c.4 (2026-06-02): pull Frame.io comments → Resolve markers.
+  // Heuristic project match: find the LPOS project whose name equals (or
+  // overlaps) the current Resolve project name. Most editors keep these
+  // aligned. If we miss, the log surfaces the candidate list so the editor
+  // can rename + retry. A proper picker overlay can land later — first cut
+  // prioritises an end-to-end button without blocking on UI design.
+  const handlePullComments = React.useCallback(async () => {
+    if (!window.lposAPI?.pullComments) {
+      appendLog('LPOS API not available — sign in to LPOS in Settings');
+      return;
+    }
+    const resolveProjectName = project;
+    if (!resolveProjectName) {
+      appendLog('No active Resolve project — connect to Resolve first');
+      return;
+    }
+    appendLog(`Pull comments → matching LPOS project for Resolve "${resolveProjectName}"…`);
+
+    let lposProjects = [];
+    try {
+      const projectsResp = await window.lposAPI.listProjects();
+      // listProjects bubbles through { ok, data: { projects: [...] } | [...] }
+      // depending on which version of the IPC handler is in the build; tolerate both.
+      const payload = projectsResp?.data ?? projectsResp;
+      lposProjects = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.projects) ? payload.projects : [];
+    } catch (err) {
+      appendLog(`Pull comments — couldn't list LPOS projects: ${err?.message || err}`);
+      return;
+    }
+    if (!lposProjects.length) {
+      appendLog('Pull comments — no LPOS projects visible to this account');
+      return;
+    }
+
+    const normalize = (s) => (s || '').toLowerCase().trim();
+    const target = normalize(resolveProjectName);
+    let match = lposProjects.find((p) => normalize(p.name) === target);
+    if (!match) {
+      match = lposProjects.find((p) => {
+        const n = normalize(p.name);
+        return n && (n.includes(target) || target.includes(n));
+      });
+    }
+    if (!match) {
+      appendLog(
+        `Pull comments — no LPOS project matches "${resolveProjectName}". ` +
+        `Candidates: ${lposProjects.slice(0, 5).map((p) => p.name).join(', ')}`
+      );
+      return;
+    }
+    appendLog(`Pull comments — matched LPOS project: ${match.name}`);
+
+    let res;
+    try {
+      res = await window.lposAPI.pullComments(match.projectId, { projectName: match.name });
+    } catch (err) {
+      appendLog(`Pull comments error: ${err?.message || err}`);
+      return;
+    }
+    if (!res?.ok) {
+      appendLog(`Pull comments failed: ${res?.error || 'unknown'}`);
+      return;
+    }
+
+    const d = res.data || {};
+    if (d.message) {
+      appendLog(d.message);
+    } else {
+      const tlCount = (d.timelines || []).length;
+      appendLog(
+        `Pull comments → ${d.totalPlaced || 0} placed, ${d.totalRemoved || 0} removed, ` +
+        `${d.totalKept || 0} kept across ${tlCount} timeline${tlCount === 1 ? '' : 's'}.`
+      );
+      const tlErrors = (d.timelines || []).filter((t) => t.error);
+      for (const t of tlErrors) {
+        appendLog(`  • ${t.timelineName || t.timelineUid}: ${t.error}`);
+      }
+      const tlSkipped = (d.timelines || []).filter((t) => Array.isArray(t.skipped) && t.skipped.length);
+      for (const t of tlSkipped) {
+        appendLog(`  • ${t.timelineName || t.timelineUid}: ${t.skipped.length} marker(s) not placed (see Jobs panel for details)`);
+      }
+    }
+    if (d.jobId) setJobPanelOpen(true);
+  }, [appendLog, project, setJobPanelOpen]);
+
   const handleSpellcheck = React.useCallback(() => {
     if (!window.leaderpassAPI) {
       appendLog('Leaderpass API not available; cannot run spellcheck');
@@ -550,6 +637,19 @@ function App() {
           actionLabel: 'Run Spellcheck',
           onClick: handleSpellcheck,
           requiresResolve: true
+        },
+        {
+          // Phase 5c.4 (2026-06-02): Frame.io comments → Resolve markers.
+          // Matches the current Resolve project to its LPOS counterpart by
+          // name, then fans across every editpanel-uploaded timeline,
+          // placing Red markers for unresolved comments and removing
+          // markers whose comments are now resolved upstream.
+          key: 'pull-comments',
+          label: 'Pull Comments',
+          description: 'Fetch Frame.io comments from LPOS and place them as Red markers on the matching Resolve timelines.',
+          actionLabel: 'Pull Comments',
+          onClick: handlePullComments,
+          requiresResolve: true
         }
       ]
     },
@@ -575,7 +675,7 @@ function App() {
         }
       ]
     }
-  }), [handleLPBaseExport, handleNewProjectBins, handleSpellcheck]);
+  }), [handleLPBaseExport, handleNewProjectBins, handleSpellcheck, handlePullComments]);
 
   const currentWorkspace = workspaceConfig[route];
 
