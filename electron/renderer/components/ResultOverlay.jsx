@@ -129,7 +129,7 @@ function ResultOverlay({ jobId, onClose }) {
           correction
         );
         try {
-          await window.leaderpassAPI.call('update_text', {
+          const res = await window.leaderpassAPI.call('update_text', {
             track: d.track,
             start_frame: d.start_frame,
             tool_name: d.tool_name,
@@ -137,6 +137,21 @@ function ResultOverlay({ jobId, onClose }) {
             expect_project:  scopeProject  || null,
             expect_timeline: scopeTimeline || null
           });
+          // The Python helper returns `{ result: false, reason: "..." }`
+          // when it couldn't find the clip or the Text+ tool. Earlier code
+          // only caught thrown errors, so those silent failures got
+          // recorded as "resolved" and the editor never saw the timeline
+          // hadn't actually been updated. Treat any falsy result as a hard
+          // error and leave the item pending.
+          const payload = res?.data ?? res ?? {};
+          if (payload && payload.result === false) {
+            setApplyError(
+              payload.reason ||
+                'Resolve refused the text update — nothing was changed in the timeline.'
+            );
+            setSaving(false);
+            return;
+          }
         } catch (err) {
           // Refuse-on-mismatch surfaces here. Show the message and bail
           // without writing a resolution row — the item stays pending so
@@ -176,6 +191,22 @@ function ResultOverlay({ jobId, onClose }) {
     ));
     setSaving(false);
     goNextPending();
+  }
+
+  async function handleReopen() {
+    if (!currentItem || saving) return;
+    setSaving(true);
+    setApplyError('');
+
+    await window.resultsAPI?.reopenItem(jobId, currentItem.item_key).catch(() => {});
+
+    setItems(prev => prev.map((it, i) =>
+      i === currentIdx
+        ? { ...it, state: 'pending', resolution: null }
+        : it
+    ));
+    setSaving(false);
+    // Stay on this item so the user can make a new choice.
   }
 
   function handleJumpToTimecode() {
@@ -263,12 +294,20 @@ function ResultOverlay({ jobId, onClose }) {
 
   function renderResolvedItem(item) {
     const res = item.resolution;
+    const wasApplied = item.state === 'resolved';
     return (
       <div className="result-item-content resolved-item">
         <p className="result-item-resolved-label">
           {item.state === 'skipped' ? 'Skipped' : `Replaced with: "${res?.replacement ?? ''}"`}
         </p>
         <p className="result-item-context dim">{item.item_data?.clipText ?? ''}</p>
+        {wasApplied && (
+          <p className="result-item-reopen-note">
+            Reopening lets you make a different choice here, but the Resolve
+            timeline text was already updated. Edit it directly in Resolve if
+            you need to revert.
+          </p>
+        )}
       </div>
     );
   }
@@ -381,7 +420,10 @@ function ResultOverlay({ jobId, onClose }) {
       {/* Already-resolved item action bar */}
       {!allDone && currentItem && currentItem.state !== 'pending' && (
         <footer className="result-overlay-actions">
-          <button className="btn-secondary" onClick={goNextPending}>
+          <button className="btn-secondary" onClick={handleReopen} disabled={saving}>
+            Reopen
+          </button>
+          <button className="btn" onClick={goNextPending}>
             Next Pending →
           </button>
         </footer>

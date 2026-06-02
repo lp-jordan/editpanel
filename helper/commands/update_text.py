@@ -42,7 +42,7 @@ def handle_update_text(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     get_items = getattr(rh.timeline, "GetItemListInTrack", None)
     if not callable(get_items):
-        return {"result": False}
+        return {"result": False, "reason": "Timeline does not expose GetItemListInTrack"}
     items = get_items("video", track) or []
     target = None
     for item in items:
@@ -51,15 +51,28 @@ def handle_update_text(payload: Dict[str, Any]) -> Dict[str, Any]:
             target = item
             break
     if not target:
-        return {"result": False}
+        return {
+            "result": False,
+            "reason": (
+                f"No clip on track {track} starts at frame {start_frame}. "
+                "The clip may have been moved, trimmed, or deleted since "
+                "the spellcheck scan ran. Re-run the scan and try again."
+            ),
+        }
 
+    # IMPORTANT: GetToolList(True) returns SELECTED tools only — almost
+    # always empty when the editor is on the Edit page reviewing a spellcheck
+    # report. Use GetToolList(False) for ALL tools. The earlier `True` was
+    # silently failing every apply call; the renderer treated the
+    # `{result: False}` return as success and marked items resolved with no
+    # actual change in Resolve.
     comps = _get_fusion_comps(target)
     for comp in comps:
         get_tool_list = getattr(comp, "GetToolList", None)
         if not callable(get_tool_list):
             continue
         try:
-            tools = get_tool_list(True) or {}
+            tools = get_tool_list(False) or {}
             tool = tools.get(tool_name) if hasattr(tools, "get") else None
             if not tool and hasattr(tools, "items"):
                 for name, t in tools.items():
@@ -73,4 +86,4 @@ def handle_update_text(payload: Dict[str, Any]) -> Dict[str, Any]:
                     return {"result": bool(res) if res is not None else True}
         except Exception:
             continue
-    return {"result": False}
+    return {"result": False, "reason": f"Tool '{tool_name}' not found in any Fusion comp on this clip"}

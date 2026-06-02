@@ -1324,6 +1324,15 @@ app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle('results:reopen-item', (_event, jobId, itemKey) => {
+    if (!jobsDb) return { ok: false, error: 'DB not available' };
+    try {
+      return jobsDb.reopenItem(jobId, itemKey);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('results:reset-run', (_event, jobId) => {
     if (!jobsDb) return { ok: false, error: 'DB not available' };
     try {

@@ -176,6 +176,9 @@ contextBridge.exposeInMainWorld('resultsAPI', {
   skipItem(jobId, itemKey) {
     return ipcRenderer.invoke('results:skip-item', jobId, itemKey);
   },
+  reopenItem(jobId, itemKey) {
+    return ipcRenderer.invoke('results:reopen-item', jobId, itemKey);
+  },
   resetRun(jobId) {
     return ipcRenderer.invoke('results:reset-run', jobId);
   },

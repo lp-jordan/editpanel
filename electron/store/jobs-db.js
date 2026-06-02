@@ -209,6 +209,22 @@ class JobsDb {
   }
 
   /**
+   * Flip a single item back to pending so the reviewer can change their
+   * earlier Skip / Apply decision. The previous resolution_json is cleared.
+   * Note: for applied items, this does NOT undo the Resolve text write —
+   * the caller is responsible for surfacing that nuance in the UI.
+   */
+  reopenItem(jobId, itemKey) {
+    const stmt = this.db.prepare(
+      `UPDATE result_items
+       SET state = 'pending', resolution_json = NULL, resolved_at = NULL
+       WHERE job_id = ? AND item_key = ?`
+    );
+    stmt.run(jobId, itemKey);
+    return { ok: true };
+  }
+
+  /**
    * Reset all items in a run back to pending (for a full re-review).
    */
   resetRun(jobId) {

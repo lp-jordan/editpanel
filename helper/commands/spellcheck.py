@@ -5,17 +5,50 @@ def _safe_get(obj, name, default=None):
     return getattr(obj, name, default)
 
 
+def _comp_key(comp):
+    """Stable identity for a Fusion comp wrapper.
+
+    Resolve returns a fresh Python wrapper on every API call, so `comp in list`
+    (which falls back to identity) treats the same underlying comp as different
+    objects each time. That broke dedup across the three discovery paths
+    below — the same comp was getting walked 2-3× and every text string
+    flagged 2-3× downstream.
+
+    Use the comp's name when available (stable for a given clip), otherwise
+    fall back to id() — at worst we re-walk one comp once, never more.
+    """
+    try:
+        get_attrs = _safe_get(comp, "GetAttrs")
+        if callable(get_attrs):
+            attrs = get_attrs() or {}
+            name = attrs.get("COMPS_Name") if isinstance(attrs, dict) else None
+            if name:
+                return ("name", str(name))
+    except Exception:
+        pass
+    return ("id", id(comp))
+
+
 def _get_fusion_comps(timeline_item):
     comps = []
+    seen_keys = set()
+
+    def _add(comp):
+        if not comp:
+            return
+        k = _comp_key(comp)
+        if k in seen_keys:
+            return
+        seen_keys.add(k)
+        comps.append(comp)
+
     get_count = _safe_get(timeline_item, "GetFusionCompCount")
     get_by_idx = _safe_get(timeline_item, "GetFusionCompByIndex")
     if callable(get_count) and callable(get_by_idx):
         try:
             count = int(get_count() or 0)
             for i in range(1, count + 1):
-                comp = get_by_idx(i)
-                if comp:
-                    comps.append(comp)
+                _add(get_by_idx(i))
         except Exception:
             pass
 
@@ -24,8 +57,7 @@ def _get_fusion_comps(timeline_item):
         try:
             d = get_list() or {}
             for _, comp in (d.items() if hasattr(d, "items") else []):
-                if comp and comp not in comps:
-                    comps.append(comp)
+                _add(comp)
         except Exception:
             pass
 
@@ -33,9 +65,7 @@ def _get_fusion_comps(timeline_item):
     if callable(get_by_name):
         for name in ("Fusion Composition", "FusionComp", "Effects"):
             try:
-                comp = get_by_name(name)
-                if comp and comp not in comps:
-                    comps.append(comp)
+                _add(get_by_name(name))
             except Exception:
                 pass
 
@@ -57,7 +87,31 @@ def _tool_id(tool):
 
 
 def _extract_text_from_tool(comp, tool):
+    """Return every distinct text string the tool would display.
+
+    For keyframed StyledText (Resolve stores it as a frame→value dict whenever
+    the input is animated — common because Text+ fade-ins/outs keyframe many
+    inputs), we scan ALL keyframe values, not just the one at comp.CurrentTime.
+    Earlier behavior read at CurrentTime which is the comp's internal playhead
+    (often 0) — completely unrelated to where the visible text actually is on
+    the timeline, so an older keyframe value at frame 0 would surface instead
+    of the editor's current text.
+
+    Returning every distinct keyframe value is the right move for spellcheck:
+    if any version of the text is misspelled the editor needs to know, and
+    they typically only have one or two distinct strings across all keyframes.
+    """
     texts: List[str] = []
+    seen: set = set()
+
+    def _add(raw):
+        if raw is None:
+            return
+        s = str(raw).strip()
+        if s and s not in seen:
+            seen.add(s)
+            texts.append(s)
+
     tid = _tool_id(tool).lower()
     candidates: Tuple[str, ...] = ()
     if "textplus" in tid or "text+" in tid:
@@ -68,51 +122,70 @@ def _extract_text_from_tool(comp, tool):
     for inp in candidates:
         try:
             get_input = _safe_get(tool, "GetInput")
-            if callable(get_input):
-                val = get_input(inp)
+            val = get_input(inp) if callable(get_input) else _safe_get(tool, inp)
+
+            if isinstance(val, dict):
+                # Keyframed input — emit every distinct value across the
+                # animation curve. Dict keys are frames (int/float); values
+                # are the strings.
+                for v in val.values():
+                    _add(v)
+                # Also try the bare attribute fallback in case GetInput
+                # returned the dict but the attribute holds the "current"
+                # static value (defensive).
+                _add(_safe_get(tool, inp))
             else:
-                val = _safe_get(tool, inp)
-
-            if isinstance(val, dict) and hasattr(comp, "CurrentTime"):
-                frame = int(getattr(comp, "CurrentTime", 0) or 0)
-                val = val.get(frame, "")
-            if val is None:
-                val = _safe_get(tool, inp)
-
-            if val:
-                s = str(val).strip()
-                if s:
-                    texts.append(s)
+                _add(val)
+                if not texts:
+                    _add(_safe_get(tool, inp))
         except Exception:
             pass
     return texts
 
 
 def _extract_texts_from_comp(comp):
-    out: List[Tuple[str, str, str]] = []  # (tool_id, tool_name, text)
+    """List every (tool_id, tool_name, text) triple in the comp.
+
+    GetToolList(False) returns ALL tools; we only need that one call. The
+    earlier code also iterated GetToolList(True) (selected-only) as a
+    "belt-and-suspenders" pass and tried to dedupe with `(id(t), tid)`,
+    but Resolve returns a fresh wrapper on every call so id(t) was
+    always new — every Text+ tool ended up emitted twice. Just call
+    GetToolList(False) once and dedupe by the tool's stable name.
+    """
+    out: List[Tuple[str, str, str]] = []
     try:
         get_tool_list = _safe_get(comp, "GetToolList")
         if not callable(get_tool_list):
             return out
-        seen = set()
-        for arg in (False, True):
+
+        try:
+            tools = get_tool_list(False) or {}
+        except Exception:
+            tools = {}
+
+        if hasattr(tools, "items"):
+            iterable = list(tools.items())
+        else:
+            iterable = [(None, t) for t in tools]
+
+        seen_names: set = set()
+        for name, t in iterable:
+            tool_name = str(name) if name is not None else ""
+            # Tool names ARE stable within a comp — Resolve guarantees unique
+            # names per comp ("Text1", "Text2", …) and they survive across API
+            # calls, unlike the wrapper identity.
+            if tool_name and tool_name in seen_names:
+                continue
+            if tool_name:
+                seen_names.add(tool_name)
             try:
-                tools = get_tool_list(arg) or {}
-                if hasattr(tools, "items"):
-                    iterable = tools.items()
-                else:
-                    iterable = [(None, t) for t in tools]
-                for name, t in iterable:
-                    tid = _tool_id(t)
-                    if (id(t), tid) in seen:
-                        continue
-                    seen.add((id(t), tid))
-                    texts = _extract_text_from_tool(comp, t)
-                    tool_name = str(name) if name is not None else ""
-                    for s in texts:
-                        out.append((tid, tool_name, s))
+                texts = _extract_text_from_tool(comp, t)
             except Exception:
                 continue
+            tid = _tool_id(t)
+            for s in texts:
+                out.append((tid, tool_name, s))
     except Exception:
         pass
     return out

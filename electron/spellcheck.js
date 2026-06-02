@@ -68,10 +68,18 @@ function loadSpell() {
   return spellPromise;
 }
 
+// Tokenize so contractions and possessives stay intact (`isn't`, `John's`),
+// straight or curly apostrophe — Resolve auto-corrects to U+2019 — both count.
+// Pure-numeric tokens (`13`, `2025`) are excluded entirely: hunspell dicts
+// don't include numbers, so nspell would flag every digit run as misspelled.
+function tokenizeForSpellcheck(text) {
+  const normalized = String(text).replace(/’/g, "'");
+  const matches = normalized.match(/[A-Za-z](?:['A-Za-z]*[A-Za-z])?/g) || [];
+  return matches;
+}
+
 async function misspellings(_, text) {
-  const words = String(text)
-    .split(/\W+/)
-    .filter(Boolean);
+  const words = tokenizeForSpellcheck(text);
   try {
     const spell = await loadSpell();
     const misspelled = [];
