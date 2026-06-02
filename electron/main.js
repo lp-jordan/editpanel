@@ -1653,68 +1653,138 @@ app.whenReady().then(() => {
     }
   });
 
-  // ─── Phase 5c.3 (2026-06-02): Pull comments → place markers ────────────────
-  // One-click sync from the Edit tab. Walks every editpanel-rendered asset in
-  // the project, groups by timelineUid (latest upload wins), fetches Frame.io
-  // comments per asset, drops resolved ones, formats name/note (replies
-  // inlined), and hands the unresolved set to sync_comment_markers per timeline.
-  // Returns per-timeline outcomes; persists as a result_run so the JobPanel
-  // result row carries the breakdown.
+  // ─── Phase 5c.3 + 5c.5 (2026-06-02): Pull comments → place markers ────────
+  // One-click sync from the Edit tab. Auto-discovers which LPOS projects the
+  // current Resolve project's timelines were uploaded to via the editorial_links
+  // tether — no name-matching guesswork — and reconciles frameio:* markers per
+  // timeline against the unresolved Frame.io comment set.
+  //
+  // Two modes:
+  //   - Scoped:   pullComments(projectId, …)   — restrict to one LPOS project
+  //   - Discover: pullComments(null, …)        — fan across all LPOS projects
+  //                                              user can see; UI default
   ipcMain.handle('lpos:pull-comments', async (_, projectId, options = {}) => {
     if (!lposClient || !lposClient.isConfigured()) {
       return { ok: false, error: 'LPOS not configured' };
     }
-    if (!projectId || typeof projectId !== 'string') {
-      return { ok: false, error: 'projectId is required' };
-    }
-    const projectName = (options && options.projectName) || null;
 
     try {
-      // 1. Asset list — already carries editpanelRender per asset (5c.1).
-      const assetsResp = await lposClient.listProjectAssets(projectId);
-      const assets = Array.isArray(assetsResp?.assets) ? assetsResp.assets : [];
+      // 1. Build the asset pool. Each entry: {asset, projectId, projectName}.
+      //    In scoped mode the pool is one LPOS project's assets. In discover
+      //    mode we ask Resolve for the current project's timeline uids, then
+      //    walk every LPOS project the user can see and keep assets whose
+      //    editpanelRender.timelineUid is in the wanted set.
+      let pool = [];
+      let scopeKind;
+      let scopeLabel;
 
-      // 2. Group editpanel-rendered assets by timelineUid; keep the latest by
-      //    renderedAt. Comments live on the current cut, not aggregated history.
+      if (projectId && typeof projectId === 'string') {
+        scopeKind = 'scoped';
+        scopeLabel = options.projectName || projectId;
+        const resp = await lposClient.listProjectAssets(projectId);
+        const items = Array.isArray(resp?.assets) ? resp.assets : [];
+        pool = items.map(a => ({ asset: a, projectId, projectName: options.projectName || null }));
+      } else {
+        scopeKind = 'discover';
+
+        // 1a. Ask Resolve for the current project's timelines so we know which
+        //     uids to look for in LPOS. No name match anywhere — uids only.
+        let timelinesPayload;
+        try {
+          const res = await sendWorkerRequest({ cmd: 'list_timelines' }, WORKERS.resolve);
+          timelinesPayload = (res && res.data) || {};
+        } catch (err) {
+          return { ok: false, error: `Couldn't read Resolve timelines: ${err?.error?.message || err?.message || err}` };
+        }
+        const resolveProjectName = timelinesPayload.project_name || null;
+        scopeLabel = resolveProjectName || 'Current Resolve project';
+        const timelines = Array.isArray(timelinesPayload.timelines) ? timelinesPayload.timelines : [];
+        const wantedUids = new Set(
+          timelines.map(t => t && t.uid).filter(uid => typeof uid === 'string' && uid)
+        );
+
+        if (wantedUids.size === 0) {
+          return {
+            ok: true,
+            data: {
+              jobId: null, timelines: [], totalPlaced: 0, totalRemoved: 0, totalKept: 0,
+              message: timelines.length === 0
+                ? 'No timelines in the current Resolve project.'
+                : 'Timelines have no unique IDs (Resolve build pre-19). Comment markers require GetUniqueId support.',
+            }
+          };
+        }
+
+        // 1b. Fan across LPOS projects. Tolerate the {projects: [...]} /
+        //     {data: {projects}} / plain array shapes the existing listProjects
+        //     IPC may return.
+        let lposProjects;
+        try {
+          const resp = await lposClient.listProjects();
+          const payload = resp?.data ?? resp;
+          lposProjects = Array.isArray(payload)
+            ? payload
+            : Array.isArray(payload?.projects) ? payload.projects : [];
+        } catch (err) {
+          return { ok: false, error: `Couldn't list LPOS projects: ${err?.message || err}` };
+        }
+
+        for (const proj of lposProjects) {
+          if (!proj || !proj.projectId) continue;
+          let items = [];
+          try {
+            const resp = await lposClient.listProjectAssets(proj.projectId);
+            items = Array.isArray(resp?.assets) ? resp.assets : [];
+          } catch (_) {
+            continue; // one project failing shouldn't kill the whole pull
+          }
+          for (const asset of items) {
+            const er = asset && asset.editpanelRender;
+            if (!er || !er.timelineUid) continue;
+            if (!wantedUids.has(er.timelineUid)) continue;
+            pool.push({ asset, projectId: proj.projectId, projectName: proj.name || null });
+          }
+        }
+      }
+
+      // 2. Group by timelineUid; keep the latest by renderedAt across all
+      //    LPOS projects in the pool. Comments live on the current cut.
       const latestByUid = new Map();
-      for (const asset of assets) {
-        const er = asset && asset.editpanelRender;
+      for (const entry of pool) {
+        const er = entry.asset.editpanelRender;
         if (!er || !er.timelineUid) continue;
         const existing = latestByUid.get(er.timelineUid);
-        if (!existing) {
-          latestByUid.set(er.timelineUid, asset);
-          continue;
-        }
-        const existingT = Date.parse(existing.editpanelRender.renderedAt) || 0;
-        const newT = Date.parse(er.renderedAt) || 0;
-        if (newT > existingT) latestByUid.set(er.timelineUid, asset);
+        if (!existing) { latestByUid.set(er.timelineUid, entry); continue; }
+        const a = Date.parse(existing.asset.editpanelRender.renderedAt) || 0;
+        const b = Date.parse(er.renderedAt) || 0;
+        if (b > a) latestByUid.set(er.timelineUid, entry);
       }
 
       if (latestByUid.size === 0) {
         return {
           ok: true,
           data: {
-            jobId: null,
-            timelines: [],
-            totalPlaced: 0,
-            totalRemoved: 0,
-            totalKept: 0,
-            message: 'No editpanel-rendered assets found in this project. Render and upload a timeline first.'
+            jobId: null, timelines: [], totalPlaced: 0, totalRemoved: 0, totalKept: 0,
+            message: scopeKind === 'scoped'
+              ? 'No editpanel-rendered assets found in this LPOS project.'
+              : "None of this Resolve project's timelines have been uploaded to LPOS yet. Export one from the Deliver tab first.",
           }
         };
       }
 
-      // 3. Fan out: one comment fetch + one sync_comment_markers call per
-      //    timeline. Serial rather than parallel because the resolve worker
-      //    is single-threaded — concurrent sync_comment_markers requests
-      //    would just queue inside the worker.
+      // 3. Per-timeline reconcile. Serial — resolve worker single-threaded.
       const timelineResults = [];
-      for (const [timelineUid, asset] of latestByUid.entries()) {
-        const er = asset.editpanelRender;
+      const involvedProjectNames = new Set();
+      for (const [timelineUid, entry] of latestByUid.entries()) {
+        const er = entry.asset.editpanelRender;
+        if (entry.projectName) involvedProjectNames.add(entry.projectName);
+
         const result = {
           timelineUid,
           timelineName: er.timelineName || '',
-          assetId: asset.assetId,
+          assetId: entry.asset.assetId,
+          lposProjectId: entry.projectId,
+          lposProjectName: entry.projectName,
           placed: 0,
           removed: 0,
           kept: 0,
@@ -1725,13 +1795,9 @@ app.whenReady().then(() => {
         };
 
         try {
-          const commentsResp = await lposClient.getAssetComments(projectId, asset.assetId);
+          const commentsResp = await lposClient.getAssetComments(entry.projectId, entry.asset.assetId);
           const allComments = Array.isArray(commentsResp?.comments) ? commentsResp.comments : [];
           const unresolved = allComments.filter(c => !c.completed);
-
-          // Format; drop general (timestamp == null) comments here. Count them
-          // separately so the JobPanel result shows "X general comments not
-          // placed" alongside placed/removed/kept.
           const formatted = unresolved.map(_formatTargetComment);
           result.unresolvedCount = unresolved.length;
           result.generalCommentsSkipped = formatted.filter(c => c === null).length;
@@ -1746,10 +1812,6 @@ app.whenReady().then(() => {
           const syncData = (syncRes && syncRes.data) || {};
 
           if (syncData.result === false) {
-            // Most common: 'timeline_not_found' (uid not in current Resolve
-            // project — wrong project loaded, timeline deleted, .drt
-            // import shuffled uids). Surface as per-row error rather than
-            // failing the whole pull.
             result.error = syncData.reason || 'sync_failed';
           } else {
             result.placed = Number(syncData.placed) || 0;
@@ -1757,7 +1819,7 @@ app.whenReady().then(() => {
             result.kept = Number(syncData.kept) || 0;
             result.skipped = Array.isArray(syncData.skipped) ? syncData.skipped : [];
             if (typeof syncData.timeline_name === 'string' && syncData.timeline_name) {
-              result.timelineName = syncData.timeline_name; // refresh to current name
+              result.timelineName = syncData.timeline_name;
             }
           }
         } catch (err) {
@@ -1767,19 +1829,25 @@ app.whenReady().then(() => {
         timelineResults.push(result);
       }
 
-      // 4. Persist as a result_run so JobPanel can surface the per-timeline
-      //    breakdown. itemKey = timelineUid, itemData = the full per-timeline
-      //    result row. 5c.4 will hook the renderer-side display.
+      // 4. Persist a result_run. Label includes the involved LPOS project
+      //    name(s) so JobPanel shows where comments came from regardless of
+      //    Resolve↔LPOS naming mismatch.
       const jobId = `comments-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const totalPlaced = timelineResults.reduce((s, r) => s + r.placed, 0);
       const totalRemoved = timelineResults.reduce((s, r) => s + r.removed, 0);
       const totalKept = timelineResults.reduce((s, r) => s + r.kept, 0);
-      const label = `Comment pull — ${projectName || projectId} (+${totalPlaced} -${totalRemoved} =${totalKept})`;
+      const involved = Array.from(involvedProjectNames).filter(Boolean);
+      const projectLabel = involved.length === 0
+        ? scopeLabel
+        : involved.length === 1
+          ? involved[0]
+          : `${involved.length} LPOS projects`;
+      const label = `Comment pull — ${projectLabel} (+${totalPlaced} -${totalRemoved} =${totalKept})`;
       if (jobsDb) {
         try {
           const items = timelineResults.map(r => ({ key: r.timelineUid, data: r }));
-          jobsDb.initRun(jobId, 'comment_pull', label, items, { projectName });
-        } catch (_) { /* non-fatal; result still returned to renderer */ }
+          jobsDb.initRun(jobId, 'comment_pull', label, items, { projectName: projectLabel });
+        } catch (_) { /* non-fatal */ }
       }
 
       return {
@@ -1790,6 +1858,8 @@ app.whenReady().then(() => {
           totalPlaced,
           totalRemoved,
           totalKept,
+          involvedProjectNames: involved,
+          scope: scopeKind,
         }
       };
     } catch (err) {

@@ -450,63 +450,26 @@ function App() {
     setExportOpen(true);
   }, [appendLog]);
 
-  // Phase 5c.4 (2026-06-02): pull Frame.io comments → Resolve markers.
-  // Heuristic project match: find the LPOS project whose name equals (or
-  // overlaps) the current Resolve project name. Most editors keep these
-  // aligned. If we miss, the log surfaces the candidate list so the editor
-  // can rename + retry. A proper picker overlay can land later — first cut
-  // prioritises an end-to-end button without blocking on UI design.
+  // Phase 5c.3 + 5c.5 (2026-06-02): pull Frame.io comments → Resolve markers.
+  // No project picker, no name match — the main process auto-discovers which
+  // LPOS project(s) the current Resolve project's timelines were uploaded to
+  // by walking timelineUids through the editorial_links tether. Editor clicks
+  // once, system figures out the rest.
   const handlePullComments = React.useCallback(async () => {
     if (!window.lposAPI?.pullComments) {
       appendLog('LPOS API not available — sign in to LPOS in Settings');
       return;
     }
-    const resolveProjectName = project;
-    if (!resolveProjectName) {
+    if (!project) {
       appendLog('No active Resolve project — connect to Resolve first');
       return;
     }
-    appendLog(`Pull comments → matching LPOS project for Resolve "${resolveProjectName}"…`);
-
-    let lposProjects = [];
-    try {
-      const projectsResp = await window.lposAPI.listProjects();
-      // listProjects bubbles through { ok, data: { projects: [...] } | [...] }
-      // depending on which version of the IPC handler is in the build; tolerate both.
-      const payload = projectsResp?.data ?? projectsResp;
-      lposProjects = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload?.projects) ? payload.projects : [];
-    } catch (err) {
-      appendLog(`Pull comments — couldn't list LPOS projects: ${err?.message || err}`);
-      return;
-    }
-    if (!lposProjects.length) {
-      appendLog('Pull comments — no LPOS projects visible to this account');
-      return;
-    }
-
-    const normalize = (s) => (s || '').toLowerCase().trim();
-    const target = normalize(resolveProjectName);
-    let match = lposProjects.find((p) => normalize(p.name) === target);
-    if (!match) {
-      match = lposProjects.find((p) => {
-        const n = normalize(p.name);
-        return n && (n.includes(target) || target.includes(n));
-      });
-    }
-    if (!match) {
-      appendLog(
-        `Pull comments — no LPOS project matches "${resolveProjectName}". ` +
-        `Candidates: ${lposProjects.slice(0, 5).map((p) => p.name).join(', ')}`
-      );
-      return;
-    }
-    appendLog(`Pull comments — matched LPOS project: ${match.name}`);
+    appendLog(`Pull comments → matching timelines in "${project}" against LPOS uploads…`);
 
     let res;
     try {
-      res = await window.lposAPI.pullComments(match.projectId, { projectName: match.name });
+      // null projectId triggers discover mode (server-side fan-out by uid).
+      res = await window.lposAPI.pullComments(null, {});
     } catch (err) {
       appendLog(`Pull comments error: ${err?.message || err}`);
       return;
@@ -521,9 +484,15 @@ function App() {
       appendLog(d.message);
     } else {
       const tlCount = (d.timelines || []).length;
+      const projects = Array.isArray(d.involvedProjectNames) ? d.involvedProjectNames : [];
+      const projectLabel = projects.length === 0
+        ? ''
+        : projects.length === 1
+          ? ` (LPOS: ${projects[0]})`
+          : ` (LPOS: ${projects.length} projects)`;
       appendLog(
         `Pull comments → ${d.totalPlaced || 0} placed, ${d.totalRemoved || 0} removed, ` +
-        `${d.totalKept || 0} kept across ${tlCount} timeline${tlCount === 1 ? '' : 's'}.`
+        `${d.totalKept || 0} kept across ${tlCount} timeline${tlCount === 1 ? '' : 's'}${projectLabel}.`
       );
       const tlErrors = (d.timelines || []).filter((t) => t.error);
       for (const t of tlErrors) {

@@ -13,6 +13,7 @@ from .spellcheck import handle_spellcheck
 from .update_text import handle_update_text
 from .goto import handle_goto
 from .sync_comment_markers import handle_sync_comment_markers
+from .list_timelines import handle_list_timelines
 
 
 RESOLVE_HANDLERS = {
@@ -30,6 +31,7 @@ RESOLVE_HANDLERS = {
     "update_text": handle_update_text,
     "goto": handle_goto,
     "sync_comment_markers": handle_sync_comment_markers,
+    "list_timelines": handle_list_timelines,
 }
 
 # Reserved for future media worker commands (audit mode, etc.)

@@ -23,6 +23,9 @@ const COMMAND_OWNER = Object.freeze({
   shutdown: WORKERS.resolve,
   // Phase 5c.2 (2026-06-02): Frame.io comment-marker reconciliation per timeline.
   sync_comment_markers: WORKERS.resolve,
+  // Phase 5c.5 (2026-06-02): enumerate current Resolve project's timelines for
+  // auto-discovering which LPOS project(s) a Pull Comments call should target.
+  list_timelines: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -71,6 +74,7 @@ const COMMAND_SCHEMAS = Object.freeze({
     required: ['timeline_uid', 'fps', 'target_comments'],
     types: { timeline_uid: 'string', fps: 'number' }
   },
+  list_timelines: { required: [] },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });
