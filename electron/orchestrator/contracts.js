@@ -13,6 +13,11 @@ const COMMAND_OWNER = Object.freeze({
   start_render: WORKERS.resolve,
   stop_render: WORKERS.resolve,
   render_status: WORKERS.resolve,
+  // Phase 3.5 (2026-06-03): enumerate ALL render jobs in the active Resolve
+  // project so the main-process reconciliation tick can detect renders queued
+  // directly in Resolve (without going through editpanel's overlay) and write
+  // them into export_runs as source='reconciled' orphans.
+  list_render_jobs: WORKERS.resolve,
   create_project_bins: WORKERS.resolve,
   update_text: WORKERS.resolve,
   goto: WORKERS.resolve,
@@ -61,6 +66,7 @@ const COMMAND_SCHEMAS = Object.freeze({
   start_render: { required: [] },
   stop_render: { required: [] },
   render_status: { required: [] },
+  list_render_jobs: { required: [] },
   create_project_bins: { required: [] },
   update_text: { required: [] },
   goto: { required: [] },

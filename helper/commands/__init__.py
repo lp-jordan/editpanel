@@ -5,6 +5,7 @@ from .add_marker import handle_add_marker
 from .start_render import handle_start_render
 from .stop_render import handle_stop_render
 from .render_status import handle_render_status
+from .list_render_jobs import handle_list_render_jobs
 from .create_project_bins import handle_create_project_bins
 from .lp_base_export import handle_lp_base_export
 from .export_preflight import handle_export_preflight
@@ -25,6 +26,7 @@ RESOLVE_HANDLERS = {
     "start_render": handle_start_render,
     "stop_render": handle_stop_render,
     "render_status": handle_render_status,
+    "list_render_jobs": handle_list_render_jobs,
     "create_project_bins": handle_create_project_bins,
     "lp_base_export": handle_lp_base_export,
     "export_preflight": handle_export_preflight,
