@@ -125,6 +125,28 @@ class JobsDb {
     if (!exportCols.has('lpos_delivery_json')) {
       this.db.exec(`ALTER TABLE export_runs ADD COLUMN lpos_delivery_json TEXT`);
     }
+
+    // 2026-06-03 — "Dismiss from job queue" model. JobPanel is the transient
+    // monitor; ExportsPanel on /deliver is the concrete record. Clicking the X
+    // on JobPanel sets this flag to 1 so the row disappears from JobPanel
+    // (export:recent filters on it) but stays visible in ExportsPanel (which
+    // queries everything regardless). 0 = visible in JobPanel; 1 = hidden.
+    if (!exportCols.has('hidden_from_jobpanel')) {
+      this.db.exec(`ALTER TABLE export_runs ADD COLUMN hidden_from_jobpanel INTEGER NOT NULL DEFAULT 0`);
+    }
+
+    // One-shot migration of any rows that landed in the short-lived
+    // 'user_dismissed' state from 1.1.6. Convert them to "complete_unassigned
+    // + hidden_from_jobpanel" — closest match for the intent (orphan, hidden
+    // from JobPanel, still listed in ExportsPanel). Safe to run repeatedly:
+    // hits zero rows after the first run.
+    try {
+      this.db.exec(
+        `UPDATE export_runs
+         SET state = 'complete_unassigned', hidden_from_jobpanel = 1
+         WHERE state = 'user_dismissed'`
+      );
+    } catch (_) { /* non-fatal */ }
   }
 
   /**
@@ -443,6 +465,14 @@ class JobsDb {
       where.push(`source = ?`);
       params.push(opts.source);
     }
+    // hiddenFromJobpanel: true → only hidden rows; false → only visible rows;
+    // undefined → all rows. JobPanel passes false; ExportsPanel omits the
+    // option so both hidden and visible rows surface.
+    if (opts.hiddenFromJobpanel === true) {
+      where.push(`hidden_from_jobpanel = 1`);
+    } else if (opts.hiddenFromJobpanel === false) {
+      where.push(`hidden_from_jobpanel = 0`);
+    }
     if (opts.projectId !== undefined) {
       if (opts.projectId === null) {
         where.push(`project_id IS NULL`);
@@ -570,14 +600,30 @@ class JobsDb {
     this.updateExportRun(exportId, { state, ...extra });
   }
 
+  /** Hide / un-hide an export row from JobPanel without affecting its state
+   *  or its visibility in ExportsPanel. Used by the JobPanel X button and the
+   *  Clear-all action. */
+  setExportHiddenFromJobpanel(exportId, hidden) {
+    this.db.prepare(
+      `UPDATE export_runs SET hidden_from_jobpanel = ? WHERE export_id = ?`
+    ).run(hidden ? 1 : 0, exportId);
+  }
+
   /**
-   * Count exports in the `complete_unassigned` state. Drives the Jobs-tab
-   * clearable pill ("N exports awaiting assignment → Review"). Restricted
-   * to terminal-but-unassigned so still-rendering orphans don't inflate the count.
+   * Count exports in the `complete_unassigned` state, EXCLUDING rows the
+   * editor has dismissed from JobPanel. Drives the Jobs-tab clearable pill
+   * ("N exports awaiting assignment → Review"); when the editor dismisses
+   * an orphan from JobPanel the row stays in DB (so ExportsPanel keeps the
+   * concrete record) but the pill should also stop nagging — that's why
+   * hidden_from_jobpanel is part of the count filter.
+   *
+   * Restricted to terminal-but-unassigned so still-rendering orphans don't
+   * inflate the count.
    */
   countUnassignedExports() {
     const row = this.db.prepare(
-      `SELECT COUNT(*) AS n FROM export_runs WHERE state = 'complete_unassigned'`
+      `SELECT COUNT(*) AS n FROM export_runs
+       WHERE state = 'complete_unassigned' AND hidden_from_jobpanel = 0`
     ).get();
     return row?.n || 0;
   }

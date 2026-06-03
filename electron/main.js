@@ -1597,37 +1597,11 @@ async function reconcileTick() {
     }
   }
 
-  // 3. Hard-delete soft-deleted rows whose JobId is no longer in Resolve's
-  //    queue. user_dismissed rows exist only to keep their JobId in
-  //    trackedJobIds — once Resolve has dropped the job, the row's purpose
-  //    is gone and it's safe to fully remove. No debounce here: when the
-  //    JobId is genuinely gone for one tick the row can leave the DB. The
-  //    "false positive on a transient queue rebuild" risk is bounded — even
-  //    if we delete a still-relevant row, the reconciler will re-discover
-  //    the JobId next tick and recreate it as a fresh orphan, which is the
-  //    pre-fix behavior we no longer trigger in steady state.
-  let dismissedRows;
-  try {
-    dismissedRows = jobsDb.listExportRuns({ state: 'user_dismissed', limit: 5000 });
-  } catch (_) {
-    dismissedRows = [];
-  }
-  for (const row of dismissedRows) {
-    const jobs = Array.isArray(row.jobs) ? row.jobs : [];
-    const stillLive = jobs.some(j => {
-      const id = String(j?.JobId ?? j?.job_id ?? '');
-      return id && liveJobIds.has(id);
-    });
-    if (stillLive) continue;
-    try {
-      jobsDb.deleteExportRun(row.export_id);
-      broadcastExport('export-reconciled', {
-        exportId: row.export_id,
-        state: 'deleted',
-        deleted: true
-      });
-    } catch (_) { /* non-fatal */ }
-  }
+  // Note: there is intentionally NO "GC stale dismissed rows" pass here.
+  // hidden_from_jobpanel is a UI-visibility flag, not a soft-delete — rows
+  // dismissed from JobPanel are permanent records in ExportsPanel. The
+  // reconciler skips re-creation because their JobIds are still tracked by
+  // collectTrackedJobIds (which includes every non-dismissed_in_resolve row).
 }
 
 // ── EditPanel ↔ LPOS sign-in (custom URL scheme handling) ──────────────────────
@@ -2749,7 +2723,16 @@ app.whenReady().then(() => {
   ipcMain.handle('export:recent', async (_e, limit = 10) => {
     if (!jobsDb) return { ok: true, data: [] };
     try {
-      return { ok: true, data: jobsDb.listExportRuns(Number(limit) || 10) };
+      // JobPanel is the transient monitor — filter out rows the user has
+      // dismissed from it. ExportsPanel uses exports:list which has no such
+      // filter (concrete record of every render touched).
+      return {
+        ok: true,
+        data: jobsDb.listExportRuns({
+          limit: Number(limit) || 10,
+          hiddenFromJobpanel: false
+        })
+      };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -2787,17 +2770,12 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
-  // "Delete" a single export run from the recent list. SOFT-DELETE for any row
-  // whose Resolve JobId is potentially still in Resolve's render queue —
-  // hard-delete here would let the orphan reconciler re-discover the same
-  // JobId on the next 3s tick and recreate the row endlessly. Instead we flip
-  // state to 'user_dismissed'; the JobId stays tracked (collectTrackedJobIds
-  // does not exclude this state) so the reconciler treats it as known and
-  // skips creation. The reconciler's "JobId vanished" sweep below hard-deletes
-  // these rows once Resolve actually drops the JobId from its queue.
-  //
-  // Hard-delete is kept only for state='dismissed_in_resolve' (already known
-  // JobId-gone) — they're safe to fully remove.
+  // "Delete" from JobPanel: hide the row from the JobPanel "Recent exports"
+  // section WITHOUT removing it from the underlying DB or from the ExportsPanel
+  // on /deliver. ExportsPanel is the concrete record of every render the editor
+  // touched; JobPanel is a transient monitor. Keeping the row in DB also
+  // preserves the JobId in collectTrackedJobIds so the orphan reconciler treats
+  // it as known and skips re-creation — no more never-ending unassigned loop.
   ipcMain.handle('export:delete-run', async (_e, exportId) => {
     if (!exportId) return { ok: false, error: 'Missing exportId' };
     if (activeExport && activeExport.exportId === exportId) {
@@ -2807,43 +2785,41 @@ app.whenReady().then(() => {
     try {
       const row = jobsDb.getExportRun(exportId);
       if (!row) return { ok: true };
-      if (row.state === 'dismissed_in_resolve') {
-        jobsDb.deleteExportRun(exportId);
-      } else {
-        jobsDb.setExportState(exportId, 'user_dismissed', { finishedAt: row.finished_at || Date.now() });
-        broadcastExport('export-reconciled', { exportId, state: 'user_dismissed', dismissed: true });
-      }
+      jobsDb.setExportHiddenFromJobpanel(exportId, true);
+      // Broadcast so JobPanel + ExportsPanel both refresh. ExportsPanel will
+      // re-render with the row still present; JobPanel's export:recent query
+      // now excludes it.
+      broadcastExport('export-reconciled', { exportId, hiddenFromJobpanel: true });
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
     }
   });
 
-  // Clear all terminal exports in one motion. Mirrors per-row delete-run:
-  // anything potentially still in Resolve's queue becomes 'user_dismissed';
-  // anything already 'dismissed_in_resolve' hard-deletes. The currently
-  // in-flight export (if any) is left untouched.
+  // Clear all from JobPanel. Hides every terminal export from JobPanel in one
+  // motion. Same semantics as the per-row delete: rows stay in DB and remain
+  // visible in ExportsPanel; only the JobPanel surface clears. Active export
+  // is left untouched.
   ipcMain.handle('exports:clear-terminal', async () => {
-    if (!jobsDb) return { ok: true, data: { dismissed: 0, deleted: 0 } };
+    if (!jobsDb) return { ok: true, data: { hidden: 0 } };
     try {
       const TERMINAL = [
         'completed', 'delivered', 'complete_unassigned', 'partial',
         'failed', 'canceled', 'interrupted', 'dismissed_in_resolve'
       ];
-      const rows = jobsDb.listExportRuns({ state: TERMINAL, limit: 5000 });
-      let dismissed = 0, deleted = 0;
+      const rows = jobsDb.listExportRuns({
+        state: TERMINAL,
+        hiddenFromJobpanel: false,
+        limit: 5000
+      });
+      let hidden = 0;
       for (const r of rows) {
         if (activeExport && activeExport.exportId === r.export_id) continue;
-        if (r.state === 'dismissed_in_resolve') {
-          jobsDb.deleteExportRun(r.export_id);
-          deleted += 1;
-        } else {
-          jobsDb.setExportState(r.export_id, 'user_dismissed', { finishedAt: r.finished_at || Date.now() });
-          dismissed += 1;
-        }
+        jobsDb.setExportHiddenFromJobpanel(r.export_id, true);
+        hidden += 1;
       }
-      broadcastExport('export-reconciled', { cleared: true, dismissed, deleted });
-      return { ok: true, data: { dismissed, deleted } };
+      broadcastExport('export-reconciled', { cleared: true, hidden });
+      return { ok: true, data: { hidden } };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -2857,15 +2833,9 @@ app.whenReady().then(() => {
   ipcMain.handle('exports:list', async (_e, filter = {}) => {
     if (!jobsDb) return { ok: true, data: [] };
     try {
-      // 'user_dismissed' is the soft-delete state used by the per-row delete
-      // + clear-terminal handlers. The UI should never see these — they only
-      // exist so the reconciler can keep their JobIds tracked. Set as a
-      // baseline exclusion on EVERY query, then layer the filter-specific
-      // state constraints on top.
-      const opts = {
-        limit: Number(filter?.limit) || 500,
-        excludeState: 'user_dismissed'
-      };
+      // ExportsPanel is the concrete record — show every render the editor
+      // touched, regardless of whether it's been dismissed from JobPanel.
+      const opts = { limit: Number(filter?.limit) || 500 };
       switch (filter?.kind) {
         case 'unassigned':
           opts.state = 'complete_unassigned';
@@ -2888,7 +2858,7 @@ app.whenReady().then(() => {
           // "Delivered" isn't a single state — it covers any row whose LPOS
           // half is recorded (editpanel-queued 'completed' + lpos_delivery set,
           // or orphan path 'delivered'). Easier to post-filter.
-          const all = jobsDb.listExportRuns({ limit: 500, excludeState: 'user_dismissed' });
+          const all = jobsDb.listExportRuns({ limit: 500 });
           return {
             ok: true,
             data: all.filter(r => r.lpos_delivery !== null || r.state === 'delivered')
@@ -2966,14 +2936,19 @@ app.whenReady().then(() => {
     }
 
     // Claim the row before doing any network work so the UI flips immediately.
+    // Also un-hide the row from JobPanel: pushing-to-LPOS is fresh activity
+    // and the editor will want to monitor the upload in real time, even if
+    // they previously dismissed the orphan from the transient JobPanel.
     try {
       jobsDb.assignExportProject(exportId, projectId, projectName);
       jobsDb.setExportState(exportId, 'uploading');
+      jobsDb.setExportHiddenFromJobpanel(exportId, false);
       broadcastExport('export-reconciled', {
         exportId,
         state: 'uploading',
         project_id: projectId,
-        project_name: projectName
+        project_name: projectName,
+        hiddenFromJobpanel: false
       });
     } catch (err) {
       return { ok: false, error: err.message };
