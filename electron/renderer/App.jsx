@@ -619,15 +619,16 @@ function App() {
 
       appendLog(`Spellcheck complete — ${resultItems.length} issue(s) found`);
 
-      if (resultItems.length === 0) return;
-
-      // Store result items and open the result overlay
+      // Always register a result run, even when nothing was found — the editor
+      // needs proof the scan happened. With zero items the JobPanel row shows
+      // "✓ No issues" without a Review button (handled in JobPanel.jsx); with
+      // ≥1 items it opens the review overlay immediately as before.
       const runId = crypto.randomUUID();
       await window.resultsAPI?.init(runId, 'spellcheck', 'Spellcheck', resultItems, {
         projectName:  scopeProject  || null,
         timelineName: scopeTimeline || null
       }).catch(() => {});
-      setActiveResultJobId(runId);
+      if (resultItems.length > 0) setActiveResultJobId(runId);
 
     }).catch((err) => appendLog(`Spellcheck error: ${err?.error || err}`));
   }, [appendLog, project, timeline]);

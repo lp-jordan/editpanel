@@ -252,6 +252,13 @@ contextBridge.exposeInMainWorld('exportsAPI', {
   deleteRun(exportId) {
     return ipcRenderer.invoke('export:delete-run', exportId);
   },
+  /** Soft-delete every terminal export in one call. Mirrors deleteRun's
+   *  per-row semantics across the whole list (anything still potentially in
+   *  Resolve's queue becomes user_dismissed; only dismissed_in_resolve rows
+   *  hard-delete). Resolves with { ok, data: { dismissed, deleted } }. */
+  clearTerminal() {
+    return ipcRenderer.invoke('exports:clear-terminal');
+  },
   /** Progress ticks while an export renders. */
   onProgress(callback) {
     const handler = (_event, payload) => callback(payload);

@@ -401,6 +401,7 @@ class JobsDb {
    *   listExportRuns({ state: ['delivered','complete_unassigned'] })
    *   listExportRuns({ source: 'reconciled', projectId: null })
    *   listExportRuns({ unassignedOnly: true })  // shorthand
+   *   listExportRuns({ excludeState: 'user_dismissed' })  // soft-deletes hidden
    */
   listExportRuns(options = {}) {
     const opts = typeof options === 'number' ? { limit: options } : (options || {});
@@ -421,6 +422,21 @@ class JobsDb {
       } else {
         where.push(`state = ?`);
         params.push(opts.state);
+      }
+    }
+    // Allow callers to exclude one or more states (e.g. 'user_dismissed' so the
+    // Exports UI doesn't surface soft-deleted orphans). Not unconditional —
+    // the reconciler still needs to see user_dismissed rows so their JobIds
+    // stay in trackedJobIds and don't trigger re-discovery.
+    if (opts.excludeState !== undefined && opts.excludeState !== null) {
+      if (Array.isArray(opts.excludeState)) {
+        if (opts.excludeState.length > 0) {
+          where.push(`state NOT IN (${opts.excludeState.map(() => '?').join(',')})`);
+          params.push(...opts.excludeState);
+        }
+      } else {
+        where.push(`state != ?`);
+        params.push(opts.excludeState);
       }
     }
     if (opts.source) {

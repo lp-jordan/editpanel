@@ -15,6 +15,16 @@
  *  exportVersion — bumps when an export completes, to refresh the recent list
  *  onViewResults — (jobId: string) => void  called when user clicks Review
  */
+// Tab keys for the subtle pill bar at the top of the panel body. Engine jobs
+// (recipes) don't get their own tab today — they're rare and surface only in
+// the 'all' view; if they grow into a meaningful workload they earn one.
+const TABS = [
+  { key: 'all',        label: 'All' },
+  { key: 'exports',    label: 'Exports' },
+  { key: 'spellcheck', label: 'Spellcheck' },
+  { key: 'comments',   label: 'Comments' }
+];
+
 function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onViewResults, onReviewExports }) {
   const [runs, setRuns] = React.useState([]);
   const [loadingRuns, setLoadingRuns] = React.useState(false);
@@ -23,6 +33,12 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
   const [reloadTick, setReloadTick] = React.useState(0);
   // Export rows the user has collapsed (keyed by export id).
   const [collapsedExports, setCollapsedExports] = React.useState(() => new Set());
+  // Active tab (component-local — resets to 'all' each session, which is the
+  // right default for a quick-look panel).
+  const [activeTab, setActiveTab] = React.useState('all');
+  // "Clearing…" guard so double-clicks on Clear-all don't fire concurrent
+  // sweeps. The button is also visually disabled while truthy.
+  const [clearing, setClearing] = React.useState(false);
   // Ref on the panel inner so a global mousedown can detect clicks outside it.
   const panelRef = React.useRef(null);
 
@@ -70,6 +86,36 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
 
   const runningJobs = (dashboard?.jobs ?? []).filter(j => j.state === 'running');
   const recentJobs  = (dashboard?.jobs ?? []).filter(j => j.state !== 'running').slice(0, 5);
+
+  // Per-tab counts. Surfaced as small chips next to the tab labels so the
+  // editor can tell at a glance whether there's anything in a category before
+  // clicking. We deliberately leave a chip-less tab visible at 0 — stable
+  // layout beats appearing/disappearing tabs.
+  const spellcheckRuns   = runs.filter(r => r.item_type === 'spellcheck');
+  const commentPullRuns  = runs.filter(r => r.item_type === 'comment_pull');
+  const otherRuns        = runs.filter(r => r.item_type !== 'spellcheck' && r.item_type !== 'comment_pull');
+  const exportsCount     = (activeExport ? 1 : 0) + recentExports.filter(e => e.export_id !== activeExport?.exportId).length;
+  const tabCounts = {
+    all:        exportsCount + runs.length + recentJobs.length + runningJobs.length,
+    exports:    exportsCount,
+    spellcheck: spellcheckRuns.length,
+    comments:   commentPullRuns.length
+  };
+
+  // Which sections render under the current tab. 'all' shows everything;
+  // category tabs scope to their content and hide Running/Recent engine job
+  // boxes (those only make sense in the panoramic 'all' view).
+  const showExports    = activeTab === 'all' || activeTab === 'exports';
+  const showSpellcheck = activeTab === 'all' || activeTab === 'spellcheck';
+  const showComments   = activeTab === 'all' || activeTab === 'comments';
+  const showRunning    = activeTab === 'all';
+  const showRecent     = activeTab === 'all';
+  // The runs subset to feed into the Results section depends on the active
+  // tab. 'all' shows everything; per-category tabs narrow to their type.
+  const filteredRuns =
+      activeTab === 'spellcheck' ? spellcheckRuns
+    : activeTab === 'comments'   ? commentPullRuns
+    : runs;
 
   function formatState(state) {
     if (state === 'succeeded') return '✓';
@@ -160,16 +206,42 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     setReloadTick(t => t + 1);
   }
 
-  async function handleClearOld() {
-    // 30 days. Engine jobs use ms; result runs use ms.
-    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  // Tab-scoped Clear-all. Each tab clears its own category; the All tab fans
+  // out across categories so one click empties everything terminal. Engine
+  // jobs (recipes) are pruned with 0ms = "anything older than now," which
+  // effectively means every terminal job. The active export is never touched.
+  async function handleClearAll() {
+    if (clearing) return;
+    setClearing(true);
     try {
-      await Promise.all([
-        window.electronAPI.pruneJobs(THIRTY_DAYS_MS),
-        window.resultsAPI.pruneRuns(THIRTY_DAYS_MS)
-      ]);
-    } catch (_) {}
-    setReloadTick(t => t + 1);
+      const tasks = [];
+      if (activeTab === 'all' || activeTab === 'exports') {
+        if (window.exportsAPI?.clearTerminal) tasks.push(window.exportsAPI.clearTerminal());
+      }
+      if (activeTab === 'all' || activeTab === 'spellcheck') {
+        // pruneRuns currently takes an "older than" ms cutoff; 0 means
+        // "everything finished before this instant." For per-type clearing
+        // we filter client-side after listing, then delete one-by-one. The
+        // listRuns path returns all types — we just delete the matching ones.
+        if (window.resultsAPI?.deleteRun) {
+          const spell = runs.filter(r => r.item_type === 'spellcheck');
+          tasks.push(...spell.map(r => window.resultsAPI.deleteRun(r.job_id)));
+        }
+      }
+      if (activeTab === 'all' || activeTab === 'comments') {
+        if (window.resultsAPI?.deleteRun) {
+          const pulls = runs.filter(r => r.item_type === 'comment_pull');
+          tasks.push(...pulls.map(r => window.resultsAPI.deleteRun(r.job_id)));
+        }
+      }
+      if (activeTab === 'all') {
+        if (window.electronAPI?.pruneJobs) tasks.push(window.electronAPI.pruneJobs(0));
+      }
+      await Promise.all(tasks.map(p => p.catch(() => {})));
+    } finally {
+      setClearing(false);
+      setReloadTick(t => t + 1);
+    }
   }
 
   const xIcon = (
@@ -194,16 +266,37 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
 
         <div className="job-panel-body">
 
+          {/* Tab bar — subtle pills, always visible, counts when > 0. */}
+          <div className="job-panel-tabs" role="tablist" aria-label="Job categories">
+            {TABS.map(t => {
+              const count = tabCounts[t.key] || 0;
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === t.key}
+                  className={`job-panel-tab${activeTab === t.key ? ' active' : ''}`}
+                  onClick={() => setActiveTab(t.key)}
+                >
+                  {t.label}
+                  {count > 0 && <span className="job-panel-tab-count">{count}</span>}
+                </button>
+              );
+            })}
+          </div>
+
           {/* Phase 3.5: clearable pill for orphans awaiting LPOS assignment.
               Component is defined in ExportsPanel.jsx (loaded before App.jsx
               in index.html, so it's resolvable here as a global). Renders
-              nothing when there's nothing fresh to nudge about. */}
-          {typeof UnassignedExportsPill !== 'undefined' && (
+              nothing when there's nothing fresh to nudge about. Only on the
+              All tab — the per-category tabs have their own focus. */}
+          {activeTab === 'all' && typeof UnassignedExportsPill !== 'undefined' && (
             <UnassignedExportsPill onClick={onReviewExports} />
           )}
 
           {/* ── Exports / renders ── */}
-          {(activeExport || recentExports.some(e => e.export_id !== activeExport?.exportId)) && (
+          {showExports && (activeExport || recentExports.some(e => e.export_id !== activeExport?.exportId)) && (
             <section className="job-panel-section">
               <p className="job-panel-section-label">Exports</p>
 
@@ -331,7 +424,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
           )}
 
           {/* ── Active jobs ── */}
-          {runningJobs.length > 0 && (
+          {showRunning && runningJobs.length > 0 && (
             <section className="job-panel-section">
               <p className="job-panel-section-label">Running</p>
               {runningJobs.map(job => {
@@ -373,11 +466,15 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
           )}
 
           {/* ── Result runs ── */}
-          {(loadingRuns || runs.length > 0) && (
+          {(showSpellcheck || showComments) && (loadingRuns || filteredRuns.length > 0) && (
             <section className="job-panel-section">
-              <p className="job-panel-section-label">Results</p>
+              <p className="job-panel-section-label">
+                {activeTab === 'spellcheck' ? 'Spellcheck runs'
+                  : activeTab === 'comments' ? 'Comment pulls'
+                  : 'Results'}
+              </p>
               {loadingRuns && <p className="job-panel-empty">Loading…</p>}
-              {!loadingRuns && runs.map(run => {
+              {!loadingRuns && filteredRuns.map(run => {
                 // Phase 5c.8 (2026-06-02): comment_pull runs aren't a per-item
                 // review flow — every item is informational (state stays
                 // 'pending' because nothing's resolved or skipped). Show a
@@ -413,6 +510,31 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                       <p className="job-panel-substep">
                         View the report for a full breakdown.
                       </p>
+                    </div>
+                  );
+                }
+
+                // Spellcheck-with-zero-issues: register that the run happened
+                // (so the editor has proof) but skip the Review button and the
+                // resolved/skipped/pending substep — there's nothing to review.
+                // Shows a calm "✓ No issues" mark in line with the success
+                // color used elsewhere in this panel.
+                const noItems = run.total === 0;
+                if (noItems) {
+                  return (
+                    <div key={run.job_id} className="job-panel-row compact succeeded">
+                      <span className="job-panel-state-icon succeeded">✓</span>
+                      <span className="job-panel-name">{run.label}</span>
+                      <span className="job-panel-age">No issues</span>
+                      <span className="job-panel-age">{formatAge(run.created_at)}</span>
+                      <button
+                        className="job-panel-delete-btn"
+                        onClick={() => handleDeleteRun(run.job_id)}
+                        title="Delete this run"
+                        aria-label="Delete this run"
+                      >
+                        {xIcon}
+                      </button>
                     </div>
                   );
                 }
@@ -461,7 +583,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
           )}
 
           {/* ── Recent engine jobs ── */}
-          {recentJobs.length > 0 && (
+          {showRecent && recentJobs.length > 0 && (
             <section className="job-panel-section">
               <p className="job-panel-section-label">Recent</p>
               {recentJobs.map(job => (
@@ -489,17 +611,29 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
             </section>
           )}
 
-          {runningJobs.length === 0 && runs.length === 0 && recentJobs.length === 0
-            && !activeExport && recentExports.length === 0 && !loadingRuns && (
-            <p className="job-panel-empty">No jobs yet.</p>
+          {tabCounts[activeTab] === 0 && !loadingRuns && (
+            <p className="job-panel-empty">
+              {activeTab === 'all'        ? 'No jobs yet.'
+                : activeTab === 'exports'   ? 'No exports yet.'
+                : activeTab === 'spellcheck' ? 'No spellcheck runs yet.'
+                : activeTab === 'comments'   ? 'No comment pulls yet.'
+                : 'Nothing here.'}
+            </p>
           )}
 
         </div>
 
-        {(runs.length > 0 || recentJobs.length > 0) && (
+        {tabCounts[activeTab] > 0 && (
           <footer className="job-panel-footer">
-            <button className="job-panel-clear-old-btn" onClick={handleClearOld}>
-              Clear older than 30 days
+            <button
+              className="job-panel-clear-old-btn"
+              onClick={handleClearAll}
+              disabled={clearing}
+              title={activeTab === 'all'
+                ? 'Clear every finished item across all categories'
+                : `Clear every finished ${activeTab === 'exports' ? 'export' : activeTab === 'spellcheck' ? 'spellcheck run' : 'comment pull'}`}
+            >
+              {clearing ? 'Clearing…' : (activeTab === 'all' ? 'Clear all' : `Clear all ${activeTab}`)}
             </button>
           </footer>
         )}
