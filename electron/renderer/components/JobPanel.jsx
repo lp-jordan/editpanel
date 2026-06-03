@@ -403,7 +403,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                         </div>
                       </div>
                       <p className="job-panel-substep">
-                        Pulled comments — open the report for the per-timeline breakdown.
+                        View the report for a full breakdown.
                       </p>
                     </div>
                   );

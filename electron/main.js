@@ -1911,7 +1911,9 @@ app.whenReady().then(() => {
         : involved.length === 1
           ? involved[0]
           : `${involved.length} LPOS projects`;
-      const label = `Comment pull — ${projectLabel} (+${totalPlaced} -${totalRemoved} =${totalKept})`;
+      // Label intentionally compact — no equation. Counts live in the report's
+      // summary chips. JobPanel surfaces this as "Comment Pull - <project>".
+      const label = `Comment Pull - ${projectLabel}`;
       if (jobsDb) {
         try {
           // 5c.7: always write a __summary__ row carrying the aggregate stats
