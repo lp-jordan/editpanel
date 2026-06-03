@@ -794,6 +794,35 @@ function finalizeExport(state, error = null) {
   activeExport.state = state;
   activeExport.finishedAt = Date.now();
   if (error) activeExport.error = error;
+
+  // Phase 3.5: capture on-disk paths + LPOS delivery info on the row before
+  // the in-memory activeExport is dropped. Powers the Exports history page's
+  // "Local" and "LPOS" links. Failures here are non-fatal — the existing
+  // persistActiveExport below still records the export's state either way.
+  if (jobsDb && activeExport) {
+    try {
+      const outputs = activeExport.jobs
+        .filter(j => j.status === 'Complete' && j.outputPath)
+        .map(j => j.outputPath);
+      if (outputs.length > 0) {
+        jobsDb.setExportOutputPaths(activeExport.exportId, outputs);
+      }
+    } catch (_) { /* non-fatal */ }
+    if (activeExport.uploadEnabled) {
+      try {
+        const uploaded = activeExport.jobs.filter(j => j.uploadStatus === 'uploaded' && j.assetId);
+        if (uploaded.length > 0) {
+          jobsDb.setExportLposDelivery(activeExport.exportId, {
+            project_id:   activeExport.projectId,
+            project_name: activeExport.projectName,
+            file_ids:     uploaded.map(j => j.assetId),
+            uploaded_at:  Date.now()
+          });
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+  }
+
   persistActiveExport();
   broadcastExport('export-complete', exportSnapshot());
   activeExport = null;
