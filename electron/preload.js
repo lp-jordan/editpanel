@@ -137,6 +137,24 @@ contextBridge.exposeInMainWorld('lposAPI', {
   pullComments(projectId, options = {}) {
     return ipcRenderer.invoke('lpos:pull-comments', projectId, options);
   },
+  /**
+   * Phase 5c.10 (2026-06-03): jump Resolve to a specific comment's timeline +
+   * marker frame. Used by the "Jump" button on each comment row in the
+   * CommentPullReport.
+   * @param {{timelineUid: string, frame: number}} payload
+   */
+  focusComment(payload) {
+    return ipcRenderer.invoke('comments:focus', payload);
+  },
+  /**
+   * Phase 5c.10 (2026-06-03): toggle a Frame.io comment's completed state via
+   * LPOS, and (when completing) delete the corresponding local marker. The
+   * editor's CommentPullReport's "Mark complete" button funnels through here.
+   * @param {{projectId: string, assetId: string, commentId: string, completed: boolean, timelineUid?: string}} payload
+   */
+  setCommentCompleted(payload) {
+    return ipcRenderer.invoke('comments:set-completed', payload);
+  },
   /** Open the user's default browser to /ep/link for approval. */
   signinStart() {
     return ipcRenderer.invoke('lpos:signin-start');

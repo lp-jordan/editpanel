@@ -19,6 +19,11 @@ function CommentPullReport({ jobId, onClose }) {
   const [loading, setLoading] = React.useState(true);
   const [runLabel, setRunLabel] = React.useState('');
   const [expanded, setExpanded] = React.useState({}); // timelineUid -> bool
+  // 5c.10: per-comment local completion state (commentId -> 'completing' | 'completed' | 'error').
+  // The actual upstream truth is Frame.io's `completed` flag; this is local
+  // mirror state for the UI's optimistic-then-confirmed transition.
+  const [completionState, setCompletionState] = React.useState({});
+  const [busyComments, setBusyComments] = React.useState({}); // commentId -> bool
 
   React.useEffect(() => {
     if (!jobId || !window.resultsAPI) return;
@@ -68,6 +73,50 @@ function CommentPullReport({ jobId, onClose }) {
     return `${m}:${ss.toString().padStart(2, '0')}`;
   }
 
+  // ── 5c.10 action handlers ────────────────────────────────────────────────
+  async function handleJump(timelineUid, frame) {
+    if (!window.commentsAPI?.focusComment) return;
+    try {
+      const res = await window.commentsAPI.focusComment({ timelineUid, frame });
+      if (!res?.ok) {
+        // Silent fail; the report doesn't have a toast surface yet. The
+        // background log surfaces errors elsewhere if needed.
+        console.warn('[CommentPullReport] focus failed:', res?.error);
+      }
+    } catch (err) {
+      console.warn('[CommentPullReport] focus error:', err);
+    }
+  }
+
+  async function handleSetCompleted(timeline, comment, completed) {
+    const cid = comment.commentId;
+    if (!cid || !window.commentsAPI?.setCommentCompleted) return;
+    if (busyComments[cid]) return;
+    setBusyComments(prev => ({ ...prev, [cid]: true }));
+    // Optimistic UI: flip the state immediately. Confirm/revert on response.
+    setCompletionState(prev => ({ ...prev, [cid]: completed ? 'completing' : 'reopening' }));
+    try {
+      const res = await window.commentsAPI.setCommentCompleted({
+        projectId:   timeline.lposProjectId,
+        assetId:     timeline.assetId,
+        commentId:   cid,
+        completed,
+        timelineUid: timeline.timelineUid,
+      });
+      if (res?.ok) {
+        setCompletionState(prev => ({ ...prev, [cid]: completed ? 'completed' : 'open' }));
+      } else {
+        setCompletionState(prev => ({ ...prev, [cid]: 'error' }));
+        console.warn('[CommentPullReport] set-completed failed:', res?.error);
+      }
+    } catch (err) {
+      setCompletionState(prev => ({ ...prev, [cid]: 'error' }));
+      console.warn('[CommentPullReport] set-completed error:', err);
+    } finally {
+      setBusyComments(prev => ({ ...prev, [cid]: false }));
+    }
+  }
+
   function fmtTimecode(startTC, offsetS, fps) {
     // Best-effort: parse "HH:MM:SS:FF" (non-drop) and add offsetS seconds.
     // Drop-frame TC math is non-trivial; we just show m:ss-from-start if
@@ -88,18 +137,61 @@ function CommentPullReport({ jobId, onClose }) {
     return `${String(outH).padStart(2, '0')}:${String(outM).padStart(2, '0')}:${String(outS).padStart(2, '0')}:${String(outF).padStart(2, '0')}`;
   }
 
-  function CommentRow({ comment, outcome, startTC, fps }) {
+  function CommentRow({ comment, outcome, startTC, fps, timeline }) {
     // outcome: 'placed' | 'kept' | 'removed' | 'skipped'
+    const cid = comment.commentId;
+    const localState = cid ? completionState[cid] : null;
+    const isCompleted = localState === 'completed' || localState === 'completing';
+    const isBusy = cid ? !!busyComments[cid] : false;
+    const isActionable = (outcome === 'placed' || outcome === 'kept')
+      && timeline
+      && cid
+      && typeof comment.frame === 'number';
+
     const offsetLabel = comment.timestamp_s != null ? fmtHMS(comment.timestamp_s) : '?';
     const absLabel    = comment.timestamp_s != null ? fmtTimecode(startTC, comment.timestamp_s, fps) : null;
+
     return (
-      <div className={`comment-pull-comment outcome-${outcome}`}>
+      <div className={`comment-pull-comment outcome-${outcome}${isCompleted ? ' is-completed' : ''}${localState === 'error' ? ' has-error' : ''}`}>
         <div className="comment-pull-comment-header">
-          <span className={`comment-pull-outcome-pill outcome-${outcome}`}>{outcome}</span>
+          <span className={`comment-pull-outcome-pill outcome-${isCompleted ? 'completed' : outcome}`}>
+            {isCompleted ? 'completed' : outcome}
+          </span>
           {comment.authorName && <span className="comment-pull-comment-author">{comment.authorName}</span>}
           <span className="comment-pull-comment-tc" title={absLabel || ''}>
             {offsetLabel}{absLabel ? `  ·  ${absLabel}` : ''}
           </span>
+          {isActionable && (
+            <div className="comment-pull-comment-actions">
+              <button
+                className="comment-action-btn jump"
+                onClick={() => handleJump(timeline.timelineUid, comment.frame)}
+                disabled={isBusy}
+                title="Jump to this marker in Resolve"
+              >
+                Jump
+              </button>
+              {isCompleted ? (
+                <button
+                  className="comment-action-btn reopen"
+                  onClick={() => handleSetCompleted(timeline, comment, false)}
+                  disabled={isBusy}
+                  title="Reopen this comment in Frame.io"
+                >
+                  {isBusy ? '…' : 'Reopen'}
+                </button>
+              ) : (
+                <button
+                  className="comment-action-btn complete"
+                  onClick={() => handleSetCompleted(timeline, comment, true)}
+                  disabled={isBusy}
+                  title="Mark complete in Frame.io and drop the marker"
+                >
+                  {isBusy ? '…' : 'Mark complete'}
+                </button>
+              )}
+            </div>
+          )}
         </div>
         {comment.text && (
           <div className="comment-pull-comment-text">{comment.text}</div>
@@ -118,6 +210,11 @@ function CommentPullReport({ jobId, onClose }) {
         {outcome === 'removed' && !comment.text && (
           <div className="comment-pull-comment-text dim">
             (no longer in LPOS — marker removed)
+          </div>
+        )}
+        {localState === 'error' && (
+          <div className="comment-pull-comment-text dim">
+            (Couldn't update — try again, or pull comments to resync state.)
           </div>
         )}
       </div>
@@ -262,15 +359,15 @@ function CommentPullReport({ jobId, onClose }) {
                         )}
                         {(t.placed || []).map(c => (
                           <CommentRow key={`p-${c.commentId}`} comment={c} outcome="placed"
-                            startTC={t.timelineStartTimecode} fps={t.fps} />
+                            startTC={t.timelineStartTimecode} fps={t.fps} timeline={t} />
                         ))}
                         {(t.kept || []).map(c => (
                           <CommentRow key={`k-${c.commentId}`} comment={c} outcome="kept"
-                            startTC={t.timelineStartTimecode} fps={t.fps} />
+                            startTC={t.timelineStartTimecode} fps={t.fps} timeline={t} />
                         ))}
                         {(t.removed || []).map(c => (
                           <CommentRow key={`r-${c.commentId}`} comment={c} outcome="removed"
-                            startTC={t.timelineStartTimecode} fps={t.fps} />
+                            startTC={t.timelineStartTimecode} fps={t.fps} timeline={t} />
                         ))}
                         {(t.skipped || []).map((s, i) => (
                           <SkippedRow key={`s-${i}`} skipped={s} />

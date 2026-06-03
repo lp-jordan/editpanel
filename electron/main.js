@@ -1971,6 +1971,74 @@ app.whenReady().then(() => {
     }
   });
 
+  // Phase 5c.10 (2026-06-03): per-comment Jump button in CommentPullReport.
+  // Switches Resolve to the target timeline and moves the playhead to the
+  // comment's marker frame in one call. Surfaces timeline_not_found cleanly
+  // so the renderer can tell the editor what went wrong.
+  ipcMain.handle('comments:focus', async (_, payload = {}) => {
+    const { timelineUid, frame } = payload;
+    if (typeof timelineUid !== 'string' || !timelineUid) {
+      return { ok: false, error: 'timelineUid is required' };
+    }
+    if (typeof frame !== 'number' || !Number.isFinite(frame)) {
+      return { ok: false, error: 'frame must be a number' };
+    }
+    try {
+      const res = await sendWorkerRequest({
+        cmd: 'focus_comment',
+        timeline_uid: timelineUid,
+        frame,
+      }, WORKERS.resolve);
+      return { ok: true, data: (res && res.data) || {} };
+    } catch (err) {
+      return { ok: false, error: err?.error?.message || err?.message || String(err) };
+    }
+  });
+
+  // Phase 5c.10 (2026-06-03): per-comment Mark-complete button. Writes the
+  // completion through to Frame.io via LPOS, then immediately removes the
+  // local marker so the timeline visual state stays in sync with the report.
+  // Local marker removal is best-effort — the upstream write is the source
+  // of truth, and the next Pull Comments would clean up regardless.
+  ipcMain.handle('comments:set-completed', async (_, payload = {}) => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    const { projectId, assetId, commentId, completed, timelineUid } = payload;
+    if (typeof projectId !== 'string' || !projectId)  return { ok: false, error: 'projectId is required' };
+    if (typeof assetId   !== 'string' || !assetId)    return { ok: false, error: 'assetId is required' };
+    if (typeof commentId !== 'string' || !commentId)  return { ok: false, error: 'commentId is required' };
+    if (typeof completed !== 'boolean')               return { ok: false, error: 'completed must be a boolean' };
+
+    let upstream;
+    try {
+      upstream = await lposClient.setCommentCompleted(projectId, assetId, commentId, completed);
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+
+    // Now reconcile the local marker. When marking COMPLETED, drop the
+    // marker; when reopening, do nothing here — the next Pull Comments will
+    // re-add it since it'll be back in target.
+    let localMarkerDeleted = false;
+    if (completed === true && typeof timelineUid === 'string' && timelineUid) {
+      try {
+        const res = await sendWorkerRequest({
+          cmd: 'delete_comment_marker',
+          timeline_uid: timelineUid,
+          comment_id: commentId,
+        }, WORKERS.resolve);
+        const d = (res && res.data) || {};
+        localMarkerDeleted = !!d.deleted;
+      } catch (_) { /* non-fatal */ }
+    }
+
+    return {
+      ok: true,
+      data: { ...upstream, localMarkerDeleted }
+    };
+  });
+
   // lpos:b2-sync-* IPC handlers removed 2026-05-27 — see LPOS /settings/storage.
 
   // --- ATEM FTP IPC ---

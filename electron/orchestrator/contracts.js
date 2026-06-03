@@ -29,6 +29,12 @@ const COMMAND_OWNER = Object.freeze({
   // Phase 5c.8 (2026-06-02): flag timeline MediaPoolItems with a color after a
   // Pull Comments run so the editor can sort the bin by flag.
   flag_timelines: WORKERS.resolve,
+  // Phase 5c.10 (2026-06-03): per-comment Jump and Mark-complete buttons in
+  // the CommentPullReport. focus_comment switches timeline + sets playhead;
+  // delete_comment_marker removes a single frameio:* marker after the
+  // upstream Frame.io completion lands.
+  focus_comment: WORKERS.resolve,
+  delete_comment_marker: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -82,6 +88,15 @@ const COMMAND_SCHEMAS = Object.freeze({
   flag_timelines: {
     required: ['timeline_uids'],
     types: { color: 'string' }
+  },
+  // Phase 5c.10 (2026-06-03).
+  focus_comment: {
+    required: ['timeline_uid', 'frame'],
+    types: { timeline_uid: 'string', frame: 'number' }
+  },
+  delete_comment_marker: {
+    required: ['timeline_uid', 'comment_id'],
+    types: { timeline_uid: 'string', comment_id: 'string' }
   },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }

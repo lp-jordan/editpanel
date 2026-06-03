@@ -15,6 +15,8 @@ from .goto import handle_goto
 from .sync_comment_markers import handle_sync_comment_markers
 from .list_timelines import handle_list_timelines
 from .flag_timelines import handle_flag_timelines
+from .focus_comment import handle_focus_comment
+from .delete_comment_marker import handle_delete_comment_marker
 
 
 RESOLVE_HANDLERS = {
@@ -34,6 +36,8 @@ RESOLVE_HANDLERS = {
     "sync_comment_markers": handle_sync_comment_markers,
     "list_timelines": handle_list_timelines,
     "flag_timelines": handle_flag_timelines,
+    "focus_comment": handle_focus_comment,
+    "delete_comment_marker": handle_delete_comment_marker,
 }
 
 # Reserved for future media worker commands (audit mode, etc.)

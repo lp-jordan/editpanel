@@ -254,6 +254,23 @@ class LposClient {
     return this._uploadRequest('POST', `/api/ep/projects/${pid}/media/upload/${uploadId}/finalize`, finalizeOpts);
   }
 
+  /**
+   * Phase 5c.10 (2026-06-03): toggle the completed/resolved state of a
+   * Frame.io comment from editpanel. LPOS forwards to Frame.io's
+   * PATCH .../comments/:id endpoint via toggleCommentCompleted.
+   * @param {string} projectId
+   * @param {string} assetId
+   * @param {string} commentId
+   * @param {boolean} completed
+   */
+  async setCommentCompleted(projectId, assetId, commentId, completed) {
+    return this._request(
+      'PATCH',
+      `/api/ep/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/comments/${encodeURIComponent(commentId)}`,
+      { body: { completed: Boolean(completed) } }
+    );
+  }
+
   // B2-related methods removed 2026-05-27. Cold-storage monitoring &
   // bucket management moved entirely LPOS-side — see lpos-dashboard
   // /settings/storage. EditPanel no longer touches B2.

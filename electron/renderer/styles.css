@@ -3330,3 +3330,84 @@ button.status-bar-chip-btn:hover {
   color: var(--text-muted, rgba(255, 255, 255, 0.6));
   font-style: italic;
 }
+
+/* ─── 5c.10 per-comment actions (Jump / Mark complete / Reopen) ─────────── */
+
+.comment-pull-comment-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.comment-action-btn {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text, rgba(255, 255, 255, 0.85));
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.comment-action-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.comment-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.comment-action-btn.jump {
+  color: #8fb6e8;
+  border-color: rgba(143, 182, 232, 0.4);
+  background: rgba(143, 182, 232, 0.08);
+}
+
+.comment-action-btn.jump:hover:not(:disabled) {
+  background: rgba(143, 182, 232, 0.16);
+}
+
+.comment-action-btn.complete {
+  color: #6bd99c;
+  border-color: rgba(107, 217, 156, 0.4);
+  background: rgba(107, 217, 156, 0.08);
+}
+
+.comment-action-btn.complete:hover:not(:disabled) {
+  background: rgba(107, 217, 156, 0.16);
+}
+
+.comment-action-btn.reopen {
+  color: #d3a960;
+  border-color: rgba(211, 169, 96, 0.4);
+  background: rgba(211, 169, 96, 0.08);
+}
+
+.comment-action-btn.reopen:hover:not(:disabled) {
+  background: rgba(211, 169, 96, 0.16);
+}
+
+.comment-pull-comment.is-completed {
+  opacity: 0.5;
+  border-left-color: #6bd99c;
+}
+
+.comment-pull-comment.is-completed .comment-pull-comment-text {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+}
+
+.comment-pull-outcome-pill.outcome-completed {
+  color: #6bd99c;
+  background: rgba(107, 217, 156, 0.18);
+}
+
+.comment-pull-comment.has-error {
+  border-left-color: #d97070;
+}
