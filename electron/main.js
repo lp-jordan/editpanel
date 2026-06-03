@@ -2606,6 +2606,212 @@ app.whenReady().then(() => {
     }
   });
 
+  // ── Phase 3.5: Exports history page + orphan assignment ─────
+  // Renderer-facing surface for the Delivery → Exports section. Sourced
+  // from export_runs (history), countUnassignedExports (pill), and the
+  // existing chunked-uploader (push-to-LPOS for orphans).
+
+  ipcMain.handle('exports:list', async (_e, filter = {}) => {
+    if (!jobsDb) return { ok: true, data: [] };
+    try {
+      const opts = { limit: Number(filter?.limit) || 500 };
+      switch (filter?.kind) {
+        case 'unassigned':
+          opts.state = 'complete_unassigned';
+          break;
+        case 'failed':
+          // Failed exports + Resolve-vanished orphans + interrupted prior-session
+          // exports all land here — they're the actionable retries-or-investigate
+          // bucket on the Exports page.
+          opts.state = ['failed', 'dismissed_in_resolve', 'interrupted'];
+          break;
+        case 'active':
+          opts.state = ['rendering', 'queued', 'uploading'];
+          break;
+        case 'by_project':
+          // projectId === null filters orphans (IS NULL); a string filters that
+          // exact LPOS project.
+          opts.projectId = filter.projectId ?? null;
+          break;
+        case 'delivered': {
+          // "Delivered" isn't a single state — it covers any row whose LPOS
+          // half is recorded (editpanel-queued 'completed' + lpos_delivery set,
+          // or orphan path 'delivered'). Easier to post-filter.
+          const all = jobsDb.listExportRuns({ limit: 500 });
+          return {
+            ok: true,
+            data: all.filter(r => r.lpos_delivery !== null || r.state === 'delivered')
+          };
+        }
+        default:
+          break;
+      }
+      return { ok: true, data: jobsDb.listExportRuns(opts) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('exports:get', async (_e, exportId) => {
+    if (!jobsDb)   return { ok: false, error: 'jobs db not ready' };
+    if (!exportId) return { ok: false, error: 'exportId required' };
+    try {
+      const row = jobsDb.getExportRun(exportId);
+      return { ok: true, data: row };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // Reveal the export's output file in the OS file browser. Accepts either a
+  // direct filePath (preferred — selects the file in its containing folder via
+  // showItemInFolder) or a dirPath fallback (openPath to the directory).
+  ipcMain.handle('exports:open-folder', async (_e, payload = {}) => {
+    const { filePath, dirPath } = payload || {};
+    try {
+      if (filePath) {
+        shell.showItemInFolder(filePath);
+        return { ok: true };
+      }
+      if (dirPath) {
+        const err = await shell.openPath(dirPath);
+        if (err) return { ok: false, error: err };
+        return { ok: true };
+      }
+      return { ok: false, error: 'No path provided' };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // Push an orphan (state='complete_unassigned', project_id IS NULL) into the
+  // chosen LPOS project. Reuses the existing chunked uploader and the same
+  // upload→registration→Frame.io pipeline that editpanel-queued exports use.
+  // Returns immediately after the state transition; the upload itself runs in
+  // the background and reports through 'export-reconciled' events (state =
+  // 'uploading' → 'delivered'/'partial'/'failed').
+  ipcMain.handle('exports:push-to-lpos', async (_e, payload = {}) => {
+    if (!jobsDb) return { ok: false, error: 'jobs db not ready' };
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not signed in' };
+    }
+    const { exportId, projectId, projectName } = payload || {};
+    if (!exportId || !projectId) {
+      return { ok: false, error: 'exportId and projectId required' };
+    }
+
+    let row;
+    try { row = jobsDb.getExportRun(exportId); }
+    catch (err) { return { ok: false, error: err.message }; }
+
+    if (!row) return { ok: false, error: 'export not found' };
+    if (row.state !== 'complete_unassigned') {
+      return { ok: false, error: `cannot push from state '${row.state}'` };
+    }
+
+    const outputs = Array.isArray(row.output_paths) ? row.output_paths : [];
+    if (outputs.length === 0) {
+      return { ok: false, error: 'no output files recorded for this export' };
+    }
+
+    // Claim the row before doing any network work so the UI flips immediately.
+    try {
+      jobsDb.assignExportProject(exportId, projectId, projectName);
+      jobsDb.setExportState(exportId, 'uploading');
+      broadcastExport('export-reconciled', {
+        exportId,
+        state: 'uploading',
+        project_id: projectId,
+        project_name: projectName
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+
+    // Fire-and-forget the actual upload — the renderer doesn't wait on it.
+    // Progress visibility is intentionally coarse for this MVP (start/end only
+    // via export-reconciled events). Per-file streaming progress would tie
+    // into the same broadcastExport channel if the UI needs it later.
+    (async () => {
+      const fileIds = [];
+      let anyFailed = false;
+      for (const filePath of outputs) {
+        try {
+          const res = await lposClient.uploadFileToProject(projectId, filePath, {
+            fileName: path.basename(filePath)
+          });
+          const assetId = res?.asset?.assetId;
+          if (assetId) fileIds.push(assetId);
+          else anyFailed = true;
+        } catch (_err) {
+          anyFailed = true;
+        }
+      }
+
+      try {
+        if (fileIds.length > 0) {
+          jobsDb.setExportLposDelivery(exportId, {
+            project_id:   projectId,
+            project_name: projectName,
+            file_ids:     fileIds,
+            uploaded_at:  Date.now()
+          });
+        }
+        // Final state: 'delivered' on a clean run; 'partial' if any file
+        // succeeded but at least one failed; 'failed' if nothing landed.
+        const finalState = anyFailed
+          ? (fileIds.length > 0 ? 'partial' : 'failed')
+          : 'delivered';
+        jobsDb.setExportState(exportId, finalState, { finishedAt: Date.now() });
+        broadcastExport('export-reconciled', {
+          exportId,
+          state: finalState,
+          fileIds
+        });
+      } catch (_) { /* non-fatal */ }
+    })();
+
+    return { ok: true };
+  });
+
+  // Count of orphans awaiting assignment. Drives the Jobs-tab pill (Batch 7)
+  // and is read by 'exports:pill-state' to decide whether to show it.
+  ipcMain.handle('exports:unassigned-count', async () => {
+    if (!jobsDb) return { ok: true, data: 0 };
+    try {
+      return { ok: true, data: jobsDb.countUnassignedExports() };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // Pill state: editor can ✕ the pill. We remember the count at dismissal in
+  // preferences.json; the pill re-appears once new orphans push the live
+  // count above the dismissed-at count. So dismissing doesn't permanently
+  // silence the pill — fresh activity always wakes it.
+  ipcMain.handle('exports:dismiss-pill', async () => {
+    if (!jobsDb || !controlPlane) return { ok: false, error: 'not ready' };
+    try {
+      const dismissedCount = jobsDb.countUnassignedExports();
+      controlPlane.setPreferences({ exports_pill_dismissed_count: dismissedCount });
+      return { ok: true, data: { dismissedCount } };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('exports:pill-state', async () => {
+    if (!jobsDb) return { ok: true, data: { count: 0, dismissedCount: 0, show: false } };
+    try {
+      const prefs = controlPlane ? controlPlane.getPreferences() : {};
+      const count = jobsDb.countUnassignedExports();
+      const dismissedCount = Number(prefs?.exports_pill_dismissed_count || 0);
+      return { ok: true, data: { count, dismissedCount, show: count > dismissedCount } };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   // B2 Media Manager IPC removed 2026-05-27 — cold-storage management is now
   // LPOS-side (see lpos-dashboard /settings/storage). EditPanel no longer
   // ships an S3 SDK or holds B2 credentials.

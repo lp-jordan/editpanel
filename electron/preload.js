@@ -263,6 +263,52 @@ contextBridge.exposeInMainWorld('exportsAPI', {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('export-complete', handler);
     return () => ipcRenderer.removeListener('export-complete', handler);
+  },
+
+  // ── Phase 3.5 — orphan reconciliation + Exports history surface ─────
+  /** Filtered listing for the Delivery → Exports page.
+   *  filter.kind: 'all' (default) | 'unassigned' | 'delivered' | 'failed'
+   *               | 'active' | 'by_project'
+   *  filter.projectId (only when kind='by_project'): LPOS project id, or null
+   *                                                  for orphan-bucket. */
+  list(filter = {}) {
+    return ipcRenderer.invoke('exports:list', filter);
+  },
+  /** Single export row, with parsed jobs/output_paths/lpos_delivery. */
+  get(exportId) {
+    return ipcRenderer.invoke('exports:get', exportId);
+  },
+  /** Reveal the export's output file (or its containing folder) in the OS file browser.
+   *  Pass { filePath } to select a specific file, or { dirPath } to open the folder. */
+  openFolder(payload = {}) {
+    return ipcRenderer.invoke('exports:open-folder', payload);
+  },
+  /** Assign an orphan (state='complete_unassigned') to an LPOS project and
+   *  kick the upload. Returns ok immediately; subsequent state changes arrive
+   *  via onReconciled (state: 'uploading' → 'delivered' | 'partial' | 'failed'). */
+  pushToLpos({ exportId, projectId, projectName } = {}) {
+    return ipcRenderer.invoke('exports:push-to-lpos', { exportId, projectId, projectName });
+  },
+  /** Count of orphans currently awaiting assignment (state='complete_unassigned'). */
+  unassignedCount() {
+    return ipcRenderer.invoke('exports:unassigned-count');
+  },
+  /** Record the current unassigned count as the dismissal baseline. The pill
+   *  re-appears once countUnassignedExports() exceeds this. */
+  dismissPill() {
+    return ipcRenderer.invoke('exports:dismiss-pill');
+  },
+  /** { count, dismissedCount, show } — drives the Jobs-tab pill visibility. */
+  pillState() {
+    return ipcRenderer.invoke('exports:pill-state');
+  },
+  /** Fires on every reconciler-driven state change: orphan discovered,
+   *  orphan progressed, orphan completed, push-to-LPOS phase transitions, etc.
+   *  Payload always includes exportId; other fields vary by event. */
+  onReconciled(callback) {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('export-reconciled', handler);
+    return () => ipcRenderer.removeListener('export-reconciled', handler);
   }
 });
 
