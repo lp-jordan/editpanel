@@ -140,6 +140,11 @@ function App() {
   const [atemIngestOpen, setAtemIngestOpen]   = React.useState(false);
   const [exportOpen, setExportOpen]           = React.useState(false);
   const [activeExport, setActiveExport]       = React.useState(null);
+  // Phase 3.5: bumps when the Jobs-tab "exports awaiting assignment" pill is
+  // clicked. ExportsPanel observes the change and expands itself filtered to
+  // 'unassigned'. We use a counter instead of a boolean so successive clicks
+  // re-trigger the focus effect cleanly.
+  const [exportsFocusToken, setExportsFocusToken] = React.useState(0);
   const [exportVersion, setExportVersion]     = React.useState(0);
   // Sticky Resolve-worker advisory (e.g. external scripting disabled, crash
   // loop). Driven by `resolve-advisory` IPC; null when nothing actionable.
@@ -803,8 +808,10 @@ function App() {
 
           {/* Phase 3.5 — Exports history on the Delivery page only. The divider
               button keeps the page silhouette unchanged when collapsed; expand
-              to browse every render (editpanel-queued + reconciled orphans). */}
-          {route === '/deliver' && <ExportsPanel />}
+              to browse every render (editpanel-queued + reconciled orphans).
+              focusToken lets the Jobs-tab pill (above) snap the panel open +
+              filter to Unassigned in one motion. */}
+          {route === '/deliver' && <ExportsPanel focusToken={exportsFocusToken} />}
         </main>
       </div>
     );
@@ -1012,6 +1019,13 @@ function App() {
         onViewResults={(runId) => {
           setJobPanelOpen(false);
           setActiveResultJobId(runId);
+        }}
+        onReviewExports={() => {
+          // Pill click: close Jobs, jump to Delivery, ask ExportsPanel to expand
+          // + snap its filter to 'unassigned' via the focus token.
+          setJobPanelOpen(false);
+          navigateTo('/deliver');
+          setExportsFocusToken(t => t + 1);
         }}
       />
       {activeResultJobId && (

@@ -3703,3 +3703,72 @@ button.status-bar-chip-btn:hover {
 /* Inherits .atem-session-row from the existing ATEM ingest UI so we get the
    same selectable-row treatment without redefining it. No additional rules
    needed unless the picker grows project-specific styling later. */
+
+/* ── Phase 3.5 — Orphan-exports nudge pill (lives inside JobPanel) ── */
+.exports-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(219, 175, 95, 0.34);
+  border-radius: 10px;
+  color: var(--accent-strong);
+  font-size: 0.84rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.exports-pill:hover {
+  background: rgba(219, 175, 95, 0.22);
+  border-color: rgba(219, 175, 95, 0.5);
+}
+
+.exports-pill-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--page-bg);
+  font-size: 0.6rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.exports-pill-text {
+  flex: 1 1 auto;
+  color: var(--accent-strong);
+  font-weight: 500;
+}
+
+.exports-pill-cta {
+  color: var(--accent);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.exports-pill-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  transition: background 120ms ease, color 120ms ease;
+  flex-shrink: 0;
+}
+
+.exports-pill-dismiss:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-strong);
+}

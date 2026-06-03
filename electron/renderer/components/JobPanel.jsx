@@ -15,7 +15,7 @@
  *  exportVersion — bumps when an export completes, to refresh the recent list
  *  onViewResults — (jobId: string) => void  called when user clicks Review
  */
-function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onViewResults }) {
+function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onViewResults, onReviewExports }) {
   const [runs, setRuns] = React.useState([]);
   const [loadingRuns, setLoadingRuns] = React.useState(false);
   const [recentExports, setRecentExports] = React.useState([]);
@@ -193,6 +193,14 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
         </header>
 
         <div className="job-panel-body">
+
+          {/* Phase 3.5: clearable pill for orphans awaiting LPOS assignment.
+              Component is defined in ExportsPanel.jsx (loaded before App.jsx
+              in index.html, so it's resolvable here as a global). Renders
+              nothing when there's nothing fresh to nudge about. */}
+          {typeof UnassignedExportsPill !== 'undefined' && (
+            <UnassignedExportsPill onClick={onReviewExports} />
+          )}
 
           {/* ── Exports / renders ── */}
           {(activeExport || recentExports.some(e => e.export_id !== activeExport?.exportId)) && (

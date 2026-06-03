@@ -291,8 +291,80 @@ function ExportRow({ row, onPushClick, onOpenFolderClick }) {
   );
 }
 
+// ── Unassigned-exports pill ────────────────────────────────────
+// Single non-blocking chip that lives at the top of the JobPanel. Wakes when
+// the reconciler discovers a fresh orphan; editor can ✕ it. Dismissal stores
+// the current count as a baseline (preferences.exports_pill_dismissed_count);
+// the pill reappears the moment a new orphan pushes the live count above it.
+// So ✕ is "I saw these, hide until something new" — never "silence forever."
+//
+// Clicking the pill (anywhere except ✕) invokes onClick, which the parent
+// uses to close JobPanel, navigate to /deliver, and bump a focus token that
+// expands ExportsPanel + sets its filter to 'unassigned' (one motion, no
+// scrolling).
+function UnassignedExportsPill({ onClick }) {
+  const [state, setState] = React.useState({ count: 0, dismissedCount: 0, show: false });
+
+  const refresh = React.useCallback(async () => {
+    if (!window.exportsAPI?.pillState) return;
+    try {
+      const res = await window.exportsAPI.pillState();
+      if (res?.ok) setState(res.data || { count: 0, dismissedCount: 0, show: false });
+    } catch (_) { /* non-fatal */ }
+  }, []);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  React.useEffect(() => {
+    if (!window.exportsAPI?.onReconciled) return;
+    const unsub = window.exportsAPI.onReconciled(() => refresh());
+    return () => { try { unsub && unsub(); } catch (_) {} };
+  }, [refresh]);
+
+  // Refresh when the window regains focus — covers the case where orphans were
+  // detected while the editor was switched to Resolve and editpanel was idle.
+  React.useEffect(() => {
+    const onFocus = () => refresh();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refresh]);
+
+  async function handleDismiss(e) {
+    e.stopPropagation();
+    if (!window.exportsAPI?.dismissPill) return;
+    try { await window.exportsAPI.dismissPill(); } catch (_) {}
+    refresh();
+  }
+
+  if (!state.show || state.count === 0) return null;
+
+  return (
+    <button
+      type="button"
+      className="exports-pill"
+      onClick={onClick}
+      title="Open the Exports list to review"
+    >
+      <span className="exports-pill-icon" aria-hidden="true">●</span>
+      <span className="exports-pill-text">
+        {state.count} export{state.count !== 1 ? 's' : ''} awaiting assignment
+      </span>
+      <span className="exports-pill-cta">Review →</span>
+      <span
+        className="exports-pill-dismiss"
+        onClick={handleDismiss}
+        role="button"
+        aria-label="Dismiss"
+        title="Hide until a new orphan is detected"
+      >
+        ×
+      </span>
+    </button>
+  );
+}
+
 // ── Panel ──────────────────────────────────────────────────────
-function ExportsPanel() {
+function ExportsPanel({ focusToken } = {}) {
   const [open, setOpen]       = React.useState(false);
   const [filter, setFilter]   = React.useState('all');
   const [rows, setRows]       = React.useState([]);
@@ -321,6 +393,16 @@ function ExportsPanel() {
   React.useEffect(() => {
     if (open) refresh();
   }, [open, refresh]);
+
+  // External focus request — pill click in JobPanel bumps focusToken. We
+  // expand the panel and snap the filter to Unassigned. Each bump = one
+  // action; we don't compare prev-vs-next, just react on every change.
+  React.useEffect(() => {
+    if (focusToken && focusToken > 0) {
+      setOpen(true);
+      setFilter('unassigned');
+    }
+  }, [focusToken]);
 
   // Reconciler-driven refresh. Subscribe whenever the panel is open; rely on
   // the same exportsAPI.onReconciled the Jobs-tab pill uses (Batch 7).
