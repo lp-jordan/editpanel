@@ -1677,6 +1677,8 @@ app.whenReady().then(() => {
       let pool = [];
       let scopeKind;
       let scopeLabel;
+      let scannedCount = null;       // total timelines walked in current Resolve project
+      let resolveProjectName = null; // for the summary card
 
       if (projectId && typeof projectId === 'string') {
         scopeKind = 'scoped';
@@ -1696,9 +1698,10 @@ app.whenReady().then(() => {
         } catch (err) {
           return { ok: false, error: `Couldn't read Resolve timelines: ${err?.error?.message || err?.message || err}` };
         }
-        const resolveProjectName = timelinesPayload.project_name || null;
+        resolveProjectName = timelinesPayload.project_name || null;
         scopeLabel = resolveProjectName || 'Current Resolve project';
         const timelines = Array.isArray(timelinesPayload.timelines) ? timelinesPayload.timelines : [];
+        scannedCount = timelines.length;
         const wantedUids = new Set(
           timelines.map(t => t && t.uid).filter(uid => typeof uid === 'string' && uid)
         );
@@ -1785,9 +1788,14 @@ app.whenReady().then(() => {
           assetId: entry.asset.assetId,
           lposProjectId: entry.projectId,
           lposProjectName: entry.projectName,
-          placed: 0,
-          removed: 0,
-          kept: 0,
+          fps: er.timelineFps,
+          timelineStartTimecode: er.timelineStartTimecode || null,
+          // 5c.7: placed/removed/kept are now arrays of comment records (not
+          // just counts) so the CommentPullReport renderer can show the
+          // editor exactly which comments landed where.
+          placed: [],
+          removed: [],
+          kept: [],
           skipped: [],
           unresolvedCount: 0,
           generalCommentsSkipped: 0,
@@ -1803,6 +1811,16 @@ app.whenReady().then(() => {
           result.generalCommentsSkipped = formatted.filter(c => c === null).length;
           const targetComments = formatted.filter(c => c !== null);
 
+          // Index target_comments by commentId so we can decorate placed/kept
+          // records returned by the helper with the rich Frame.io comment data
+          // (author, full text, replies) for the report UI. Also index the
+          // ORIGINAL raw Frame.io comment so the report can show author avatar
+          // and the un-mangled text/replies separately.
+          const targetByCid = new Map(targetComments.map(t => [t.commentId, t]));
+          const rawByCid = new Map(
+            unresolved.filter(c => c && c.id).map(c => [c.id, c])
+          );
+
           const syncRes = await sendWorkerRequest({
             cmd: 'sync_comment_markers',
             timeline_uid: timelineUid,
@@ -1814,9 +1832,35 @@ app.whenReady().then(() => {
           if (syncData.result === false) {
             result.error = syncData.reason || 'sync_failed';
           } else {
-            result.placed = Number(syncData.placed) || 0;
-            result.removed = Number(syncData.removed) || 0;
-            result.kept = Number(syncData.kept) || 0;
+            const decorate = (rec) => {
+              const cid = rec && rec.commentId;
+              const target = cid ? targetByCid.get(cid) : null;
+              const raw = cid ? rawByCid.get(cid) : null;
+              return {
+                commentId: cid || null,
+                frame: typeof rec?.frame === 'number' ? rec.frame : null,
+                // Target shape carries the marker name/note we computed; raw
+                // carries the un-flattened Frame.io fields for richer display.
+                timestamp_s: target?.timestamp_s ?? (raw?.timestamp ?? null),
+                duration_s:  target?.duration_s  ?? (raw?.duration  ?? null),
+                text:        raw?.text ?? '',
+                authorName:  raw?.authorName ?? '',
+                authorAvatar: raw?.authorAvatar ?? null,
+                createdAt:   raw?.createdAt ?? null,
+                replies:     Array.isArray(raw?.replies) ? raw.replies : [],
+              };
+            };
+            // 'removed' records have no target/raw data — the comment isn't in
+            // the current Frame.io set. Pass through commentId+frame; the
+            // report shows "Removed: <commentId> (no longer in LPOS)".
+            const passThrough = (rec) => ({
+              commentId: rec?.commentId || null,
+              frame: typeof rec?.frame === 'number' ? rec.frame : null,
+            });
+
+            result.placed  = Array.isArray(syncData.placed)  ? syncData.placed.map(decorate)    : [];
+            result.removed = Array.isArray(syncData.removed) ? syncData.removed.map(passThrough): [];
+            result.kept    = Array.isArray(syncData.kept)    ? syncData.kept.map(decorate)      : [];
             result.skipped = Array.isArray(syncData.skipped) ? syncData.skipped : [];
             if (typeof syncData.timeline_name === 'string' && syncData.timeline_name) {
               result.timelineName = syncData.timeline_name;
@@ -1833,9 +1877,10 @@ app.whenReady().then(() => {
       //    name(s) so JobPanel shows where comments came from regardless of
       //    Resolve↔LPOS naming mismatch.
       const jobId = `comments-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const totalPlaced = timelineResults.reduce((s, r) => s + r.placed, 0);
-      const totalRemoved = timelineResults.reduce((s, r) => s + r.removed, 0);
-      const totalKept = timelineResults.reduce((s, r) => s + r.kept, 0);
+      const totalPlaced  = timelineResults.reduce((s, r) => s + r.placed.length, 0);
+      const totalRemoved = timelineResults.reduce((s, r) => s + r.removed.length, 0);
+      const totalKept    = timelineResults.reduce((s, r) => s + r.kept.length, 0);
+      const totalSkipped = timelineResults.reduce((s, r) => s + (Array.isArray(r.skipped) ? r.skipped.length : 0), 0);
       const involved = Array.from(involvedProjectNames).filter(Boolean);
       const projectLabel = involved.length === 0
         ? scopeLabel
@@ -1845,16 +1890,31 @@ app.whenReady().then(() => {
       const label = `Comment pull — ${projectLabel} (+${totalPlaced} -${totalRemoved} =${totalKept})`;
       if (jobsDb) {
         try {
-          // Only persist items for timelines that actually did something. A
-          // typical pull involves walking many timelines (e.g. 14 in a project
-          // where one cut got reviewed); listing the 13 zero-activity rows in
-          // the JobPanel is just noise. Aggregate counts live in the label.
-          const interestingItems = timelineResults
-            .filter(r => r.placed > 0 || r.removed > 0 || r.kept > 0
+          // 5c.7: always write a __summary__ row carrying the aggregate stats
+          // (scanned, matched, totals, involved projects) so the
+          // CommentPullReport renderer can show the editor a one-page report
+          // even when no per-timeline rows landed (e.g. "scanned 14, none had
+          // comments"). Per-timeline rows only follow for timelines with any
+          // activity or error — empty rows are still pure noise.
+          const summaryItem = {
+            key: '__summary__',
+            data: {
+              kind: 'summary',
+              scope: scopeKind,
+              resolveProject: resolveProjectName,
+              scannedCount,                       // null in scoped mode
+              matchedCount: latestByUid.size,
+              totalPlaced, totalRemoved, totalKept, totalSkipped,
+              involvedProjectNames: involved,
+              generatedAt: new Date().toISOString(),
+            }
+          };
+          const timelineItems = timelineResults
+            .filter(r => r.placed.length > 0 || r.removed.length > 0 || r.kept.length > 0
                       || (Array.isArray(r.skipped) && r.skipped.length > 0)
                       || r.error)
-            .map(r => ({ key: r.timelineUid, data: r }));
-          jobsDb.initRun(jobId, 'comment_pull', label, interestingItems, { projectName: projectLabel });
+            .map(r => ({ key: r.timelineUid, data: { kind: 'timeline', ...r } }));
+          jobsDb.initRun(jobId, 'comment_pull', label, [summaryItem, ...timelineItems], { projectName: projectLabel });
         } catch (_) { /* non-fatal */ }
       }
 
@@ -1863,9 +1923,12 @@ app.whenReady().then(() => {
         data: {
           jobId,
           timelines: timelineResults,
+          scannedCount,
+          matchedCount: latestByUid.size,
           totalPlaced,
           totalRemoved,
           totalKept,
+          totalSkipped,
           involvedProjectNames: involved,
           scope: scopeKind,
         }

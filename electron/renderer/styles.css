@@ -3033,3 +3033,279 @@ button.status-bar-chip-btn:hover {
 .export-lpos-note strong {
   color: var(--text-strong);
 }
+
+/* ─── CommentPullReport (Phase 5c.7, 2026-06-02) ─────────────────────────────
+   Single-page report rendered when ResultOverlay routes a comment_pull run.
+   Summary card at top + collapsible per-timeline accordion. Reuses
+   .result-overlay shell so the chrome (back button, title bar) is consistent
+   with the spellcheck path. */
+
+.comment-pull-body {
+  padding: 16px 20px 32px;
+  overflow-y: auto;
+}
+
+.comment-pull-summary {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 16px 18px;
+  margin-bottom: 18px;
+}
+
+.comment-pull-summary-totals {
+  display: flex;
+  gap: 28px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.comment-pull-totals-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.comment-pull-totals-num {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.comment-pull-totals-num.placed { color: #6bd99c; }
+.comment-pull-totals-num.kept { color: #8fb6e8; }
+.comment-pull-totals-num.removed { color: #c87d7d; }
+.comment-pull-totals-num.skipped { color: #d3a960; }
+
+.comment-pull-totals-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+}
+
+.comment-pull-summary-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text, rgba(255, 255, 255, 0.85));
+}
+
+.comment-pull-summary-meta .dim {
+  color: var(--text-muted, rgba(255, 255, 255, 0.5));
+  margin-right: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.comment-pull-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  margin: 4px 0 8px;
+}
+
+.comment-pull-section-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.comment-pull-section-actions .link-btn {
+  background: none;
+  border: none;
+  color: var(--accent-blue, #8fb6e8);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.comment-pull-section-actions .link-btn:hover {
+  text-decoration: underline;
+}
+
+.comment-pull-timelines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comment-pull-timeline {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: background 0.12s;
+}
+
+.comment-pull-timeline.open {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.comment-pull-timeline-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.comment-pull-timeline-head:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.comment-pull-twisty {
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+}
+
+.comment-pull-timeline-name {
+  font-weight: 600;
+  color: var(--text-strong, #fff);
+}
+
+.comment-pull-timeline-project {
+  font-size: 12px;
+}
+
+.comment-pull-timeline-counts {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.comment-pull-timeline-counts .count {
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.comment-pull-timeline-counts .count.placed { color: #6bd99c; background: rgba(107, 217, 156, 0.12); }
+.comment-pull-timeline-counts .count.kept { color: #8fb6e8; background: rgba(143, 182, 232, 0.12); }
+.comment-pull-timeline-counts .count.removed { color: #c87d7d; background: rgba(200, 125, 125, 0.12); }
+.comment-pull-timeline-counts .count.skipped { color: #d3a960; background: rgba(211, 169, 96, 0.12); }
+.comment-pull-timeline-counts .count.error { color: #d97070; background: rgba(217, 112, 112, 0.16); }
+
+.comment-pull-timeline-body {
+  padding: 6px 14px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comment-pull-error {
+  color: #d97070;
+  font-size: 12px;
+  padding: 8px 10px;
+  background: rgba(217, 112, 112, 0.08);
+  border-radius: 4px;
+}
+
+.comment-pull-comment {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 3px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+
+.comment-pull-comment.outcome-placed { border-left-color: #6bd99c; }
+.comment-pull-comment.outcome-kept { border-left-color: #8fb6e8; }
+.comment-pull-comment.outcome-removed { border-left-color: #c87d7d; opacity: 0.75; }
+.comment-pull-comment.outcome-skipped { border-left-color: #d3a960; }
+
+.comment-pull-comment-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.comment-pull-outcome-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.comment-pull-outcome-pill.outcome-placed { color: #6bd99c; background: rgba(107, 217, 156, 0.12); }
+.comment-pull-outcome-pill.outcome-kept { color: #8fb6e8; background: rgba(143, 182, 232, 0.12); }
+.comment-pull-outcome-pill.outcome-removed { color: #c87d7d; background: rgba(200, 125, 125, 0.12); }
+.comment-pull-outcome-pill.outcome-skipped { color: #d3a960; background: rgba(211, 169, 96, 0.12); }
+
+.comment-pull-comment-author {
+  font-weight: 600;
+  color: var(--text-strong, #fff);
+}
+
+.comment-pull-comment-tc {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted, rgba(255, 255, 255, 0.6));
+  font-size: 11px;
+}
+
+.comment-pull-comment-text {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text, rgba(255, 255, 255, 0.88));
+  white-space: pre-wrap;
+}
+
+.comment-pull-comment-text.dim {
+  color: var(--text-muted, rgba(255, 255, 255, 0.5));
+  font-style: italic;
+}
+
+.comment-pull-comment-replies {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.comment-pull-comment-reply {
+  font-size: 12px;
+  display: flex;
+  gap: 6px;
+}
+
+.comment-pull-comment-reply-arrow {
+  color: var(--text-muted, rgba(255, 255, 255, 0.45));
+}
+
+.comment-pull-comment-reply-author {
+  font-weight: 600;
+  color: var(--text, rgba(255, 255, 255, 0.85));
+}
+
+.comment-pull-empty {
+  padding: 20px 16px;
+  text-align: center;
+  font-size: 13px;
+}

@@ -9,6 +9,34 @@
  *   onClose — () => void
  */
 function ResultOverlay({ jobId, onClose }) {
+  // 5c.7 (2026-06-02): Pull Comments runs use a single-page CommentPullReport
+  // (summary card + collapsible per-timeline) rather than the spellcheck-style
+  // item-by-item walk. Detect the run type up-front via the run row's
+  // item_type and bypass the spellcheck UI entirely.
+  const [routedType, setRoutedType] = React.useState(null); // null = unknown, 'spellcheck', 'comment_pull', …
+  React.useEffect(() => {
+    if (!jobId || !window.resultsAPI) return;
+    let cancelled = false;
+    window.resultsAPI.listRuns(50)
+      .then(res => {
+        if (cancelled) return;
+        const run = (res?.data ?? []).find(r => r.job_id === jobId);
+        setRoutedType(run?.item_type || 'unknown');
+      })
+      .catch(() => setRoutedType('unknown'));
+    return () => { cancelled = true; };
+  }, [jobId]);
+
+  if (routedType === 'comment_pull') {
+    return <CommentPullReport jobId={jobId} onClose={onClose} />;
+  }
+
+  // Spellcheck (and any other future per-item-walk run type) keeps the
+  // existing behaviour.
+  return <SpellcheckResultOverlay jobId={jobId} onClose={onClose} />;
+}
+
+function SpellcheckResultOverlay({ jobId, onClose }) {
   const [items, setItems] = React.useState([]);
   const [currentIdx, setCurrentIdx] = React.useState(0);
   const [suggestions, setSuggestions] = React.useState([]);

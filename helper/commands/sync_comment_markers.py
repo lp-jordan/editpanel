@@ -39,14 +39,19 @@ Input payload (from orchestrator):
 
 Output:
   Success → {
-    "result":    True,
-    "placed":    int,            # newly added markers this pull
-    "removed":   int,            # frameio:* markers deleted (completed or upstream-deleted)
-    "kept":      int,            # frameio:* markers left untouched
-    "skipped":   [{"commentId": str, "frame": int, "reason": str}, ...],
-    "timeline_name": str         # latest known name, for display
+    "result":   True,
+    "placed":   [{"commentId": str, "frame": int}, ...],   # newly added this pull
+    "removed":  [{"commentId": str, "frame": int}, ...],   # deleted (completed or upstream-deleted)
+    "kept":     [{"commentId": str, "frame": int}, ...],   # left untouched (still in target)
+    "skipped":  [{"commentId": str, "frame": int, "reason": str}, ...],
+    "timeline_name": str
   }
   Timeline missing → { "result": False, "reason": "timeline_not_found" }
+
+5c.7 (2026-06-02): placed/removed/kept now return record lists, not just counts.
+The orchestrator merges these against the original target_comments to surface
+which specific comments landed where in the CommentPullReport UI. Counts are
+trivially derivable as .length.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -162,12 +167,16 @@ def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
     to_add = [c for c in target_comments if isinstance(c, dict)
               and isinstance(c.get("commentId"), str)
               and c["commentId"] not in existing_ids]
-    kept = len(existing_ids & target_ids)
+    kept_records: List[Dict[str, Any]] = [
+        {"commentId": cid, "frame": existing[cid][0]}
+        for cid in (existing_ids & target_ids)
+    ]
 
     # ── Remove (frameio:* markers no longer in target — completed in LPOS or
     #    deleted upstream) ────────────────────────────────────────────────────
-    removed = 0
+    removed_records: List[Dict[str, Any]] = []
     for cid in to_remove_ids:
+        frame_for_record = existing[cid][0]
         custom_data = f"{FRAMEIO_TAG_PREFIX}{cid}"
         ok = False
         try:
@@ -177,15 +186,14 @@ def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not ok:
             # Fallback: delete by frame if customData-based delete is unsupported.
             try:
-                frame, _ = existing[cid]
-                ok = bool(timeline.DeleteMarkerAtFrame(frame))
+                ok = bool(timeline.DeleteMarkerAtFrame(frame_for_record))
             except Exception:
                 ok = False
         if ok:
-            removed += 1
+            removed_records.append({"commentId": cid, "frame": frame_for_record})
 
     # ── Add (target comments not yet on the timeline) ─────────────────────────
-    placed = 0
+    placed_records: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     for comment in to_add:
         cid = comment["commentId"]
@@ -220,16 +228,16 @@ def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
                             "reason": f"AddMarker raised: {exc}"})
             continue
         if ok:
-            placed += 1
+            placed_records.append({"commentId": cid, "frame": marker_frame})
         else:
             skipped.append({"commentId": cid, "frame": marker_frame,
                             "reason": "AddMarker returned False (likely out of range)"})
 
     return {
         "result": True,
-        "placed": placed,
-        "removed": removed,
-        "kept": kept,
+        "placed": placed_records,
+        "removed": removed_records,
+        "kept": kept_records,
         "skipped": skipped,
         "timeline_name": timeline_name,
     }
