@@ -137,13 +137,18 @@ def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Resolve marker frames are absolute (relative to the project frame-0, not the
-    # timeline ruler's start TC). GetStartFrame is the anchor: a comment at
-    # render-relative second X lands at frame (start + round(X * fps_at_render)).
-    try:
-        start_frame = int(timeline.GetStartFrame() or 0)
-    except Exception:
-        start_frame = 0
+    # Resolve's AddMarker(frameId, …) takes a 0-relative frame index into the
+    # timeline content (frame 0 = first frame, regardless of GetStartTimecode).
+    # The ruler displays that frame at start_tc + frameId/fps. So a comment at
+    # render-relative second X lands at frame round(X * fps_at_render) — we do
+    # NOT add GetStartFrame() (that's the absolute project-coordinate frame of
+    # the timeline start, which is NOT what AddMarker expects).
+    #
+    # 2026-06-02 first-cut bug: this code originally added GetStartFrame(),
+    # which for a 01:00:00:00-start timeline put markers ~86,400 frames past
+    # the visible content. AddMarker silently accepted (returned True) and
+    # the editor saw "1 placed" but no marker on the timeline. Verified by
+    # cross-checking add_marker.py which already places markers as 0-relative.
 
     existing = _extract_existing_frameio_markers(timeline)
     target_ids = set()
@@ -196,7 +201,7 @@ def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             duration_s = 0.0
 
-        marker_frame = start_frame + int(round(timestamp_s * fps))
+        marker_frame = int(round(timestamp_s * fps))
         duration_frames = max(1, int(round(duration_s * fps))) if duration_s > 0 else 1
         name = str(comment.get("name") or "")
         note = str(comment.get("note") or "")

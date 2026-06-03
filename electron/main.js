@@ -1845,8 +1845,16 @@ app.whenReady().then(() => {
       const label = `Comment pull — ${projectLabel} (+${totalPlaced} -${totalRemoved} =${totalKept})`;
       if (jobsDb) {
         try {
-          const items = timelineResults.map(r => ({ key: r.timelineUid, data: r }));
-          jobsDb.initRun(jobId, 'comment_pull', label, items, { projectName: projectLabel });
+          // Only persist items for timelines that actually did something. A
+          // typical pull involves walking many timelines (e.g. 14 in a project
+          // where one cut got reviewed); listing the 13 zero-activity rows in
+          // the JobPanel is just noise. Aggregate counts live in the label.
+          const interestingItems = timelineResults
+            .filter(r => r.placed > 0 || r.removed > 0 || r.kept > 0
+                      || (Array.isArray(r.skipped) && r.skipped.length > 0)
+                      || r.error)
+            .map(r => ({ key: r.timelineUid, data: r }));
+          jobsDb.initRun(jobId, 'comment_pull', label, interestingItems, { projectName: projectLabel });
         } catch (_) { /* non-fatal */ }
       }
 
