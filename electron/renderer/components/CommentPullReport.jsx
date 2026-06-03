@@ -206,6 +206,13 @@ function CommentPullReport({ jobId, onClose }) {
                 {summary.involvedProjectNames.join(', ')}
               </div>
             )}
+            {Array.isArray(summary?.flagged) && summary.flagged.length > 0 && (
+              <div className="comment-pull-flag-hint">
+                <span className="dim">Flagged</span>{' '}
+                {summary.flagged.length} timeline{summary.flagged.length === 1 ? '' : 's'} <strong>{summary.flagColor || 'Sand'}</strong>{' '}
+                — sort the bin by Flag in Resolve to find them.
+              </div>
+            )}
           </div>
         </div>
 

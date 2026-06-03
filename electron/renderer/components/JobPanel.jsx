@@ -370,6 +370,45 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
               <p className="job-panel-section-label">Results</p>
               {loadingRuns && <p className="job-panel-empty">Loading…</p>}
               {!loadingRuns && runs.map(run => {
+                // Phase 5c.8 (2026-06-02): comment_pull runs aren't a per-item
+                // review flow — every item is informational (state stays
+                // 'pending' because nothing's resolved or skipped). Show a
+                // 'View Report' button and a one-line summary instead of
+                // resolved/skipped/pending counts + a progress bar that never
+                // moves.
+                const isCommentPull = run.item_type === 'comment_pull';
+                if (isCommentPull) {
+                  return (
+                    <div key={run.job_id} className="job-panel-row comment-pull-row">
+                      <div className="job-panel-row-top">
+                        <div>
+                          <span className="job-panel-name">{run.label}</span>
+                          <span className="job-panel-age">{formatAge(run.created_at)}</span>
+                        </div>
+                        <div className="job-panel-row-actions">
+                          <button
+                            className="job-panel-review-btn done"
+                            onClick={() => onViewResults(run.job_id)}
+                          >
+                            View Report
+                          </button>
+                          <button
+                            className="job-panel-delete-btn"
+                            onClick={() => handleDeleteRun(run.job_id)}
+                            title="Delete this run"
+                            aria-label="Delete this run"
+                          >
+                            {xIcon}
+                          </button>
+                        </div>
+                      </div>
+                      <p className="job-panel-substep">
+                        Pulled comments — open the report for the per-timeline breakdown.
+                      </p>
+                    </div>
+                  );
+                }
+
                 const pct = run.total > 0
                   ? Math.round(((run.resolved + run.skipped) / run.total) * 100)
                   : 0;

@@ -494,6 +494,9 @@ function App() {
         `Pull comments → ${d.totalPlaced || 0} placed, ${d.totalRemoved || 0} removed, ` +
         `${d.totalKept || 0} kept across ${tlCount} timeline${tlCount === 1 ? '' : 's'}${projectLabel}.`
       );
+      if (d.flaggedCount > 0) {
+        appendLog(`  • Flagged ${d.flaggedCount} timeline${d.flaggedCount === 1 ? '' : 's'} ${d.flagColor || 'Sand'} — sort the bin by Flag in Resolve to find them.`);
+      }
       const tlErrors = (d.timelines || []).filter((t) => t.error);
       for (const t of tlErrors) {
         appendLog(`  • ${t.timelineName || t.timelineUid}: ${t.error}`);

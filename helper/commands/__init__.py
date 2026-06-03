@@ -14,6 +14,7 @@ from .update_text import handle_update_text
 from .goto import handle_goto
 from .sync_comment_markers import handle_sync_comment_markers
 from .list_timelines import handle_list_timelines
+from .flag_timelines import handle_flag_timelines
 
 
 RESOLVE_HANDLERS = {
@@ -32,6 +33,7 @@ RESOLVE_HANDLERS = {
     "goto": handle_goto,
     "sync_comment_markers": handle_sync_comment_markers,
     "list_timelines": handle_list_timelines,
+    "flag_timelines": handle_flag_timelines,
 }
 
 # Reserved for future media worker commands (audit mode, etc.)

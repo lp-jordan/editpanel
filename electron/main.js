@@ -134,8 +134,11 @@ function _formatTargetComment(comment) {
   if (typeof comment?.timestamp !== 'number') return null;
   if (!comment.id) return null;
 
+  // ASCII-only name. Resolve's marker UI renders multibyte sequences as Latin-1
+  // (the leading UTF-8 C2 byte shows as "Â", so "·" became "Â·"). 5c.8 fix:
+  // separator is " - " — no UTF-8 punctuation in the marker name.
   const author = comment.authorName || 'Unknown';
-  const name = `${author} · ${_formatHMS(comment.timestamp)}`;
+  const name = `${author} - ${_formatHMS(comment.timestamp)}`;
 
   let note = comment.text || '';
   const replies = Array.isArray(comment.replies) ? comment.replies : [];
@@ -1873,6 +1876,27 @@ app.whenReady().then(() => {
         timelineResults.push(result);
       }
 
+      // 3a. Phase 5c.8 (2026-06-02): flag the MediaPoolItems for any timeline
+      //     that had comment activity (placed or kept) with the configured
+      //     color, so the editor can sort the bin by Flag in Resolve and jump
+      //     straight to the cuts that need attention. Best-effort — failure
+      //     here doesn't kill the result_run write.
+      const FLAG_COLOR = 'Sand';
+      let flagResult = null;
+      const flaggableUids = timelineResults
+        .filter(r => r.placed.length > 0 || r.kept.length > 0)
+        .map(r => r.timelineUid);
+      if (flaggableUids.length > 0) {
+        try {
+          const flagRes = await sendWorkerRequest({
+            cmd: 'flag_timelines',
+            timeline_uids: flaggableUids,
+            color: FLAG_COLOR,
+          }, WORKERS.resolve);
+          flagResult = (flagRes && flagRes.data) || null;
+        } catch (_) { /* non-fatal */ }
+      }
+
       // 4. Persist a result_run. Label includes the involved LPOS project
       //    name(s) so JobPanel shows where comments came from regardless of
       //    Resolve↔LPOS naming mismatch.
@@ -1907,6 +1931,11 @@ app.whenReady().then(() => {
               totalPlaced, totalRemoved, totalKept, totalSkipped,
               involvedProjectNames: involved,
               generatedAt: new Date().toISOString(),
+              // 5c.8: flag aggregate so the report can tell the editor to sort
+              // the bin by Flag color in Resolve.
+              flagColor: FLAG_COLOR,
+              flagged: flagResult && Array.isArray(flagResult.flagged) ? flagResult.flagged : [],
+              flagMissing: flagResult && Array.isArray(flagResult.missing) ? flagResult.missing : [],
             }
           };
           const timelineItems = timelineResults
@@ -1931,6 +1960,8 @@ app.whenReady().then(() => {
           totalSkipped,
           involvedProjectNames: involved,
           scope: scopeKind,
+          flagColor: FLAG_COLOR,
+          flaggedCount: flagResult && Array.isArray(flagResult.flagged) ? flagResult.flagged.length : 0,
         }
       };
     } catch (err) {

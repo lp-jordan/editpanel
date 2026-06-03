@@ -157,19 +157,48 @@ def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     existing = _extract_existing_frameio_markers(timeline)
     target_ids = set()
+    target_by_cid: Dict[str, Dict[str, Any]] = {}
     for c in target_comments:
         cid = c.get("commentId") if isinstance(c, dict) else None
         if isinstance(cid, str) and cid.strip():
             target_ids.add(cid)
+            target_by_cid[cid] = c
 
     existing_ids = set(existing.keys())
-    to_remove_ids = existing_ids - target_ids
+    to_remove_ids = set(existing_ids - target_ids)  # comments now completed / deleted upstream
+
+    # 5c.8 (2026-06-02) stale-marker re-placement: a marker whose underlying
+    # comment IS still in target but whose current frame is far from where it
+    # would land with correct math is treated as misplaced (almost always from
+    # the pre-5c.6 GetStartFrame bug) and re-placed. Editor manual nudges of a
+    # few seconds are preserved; nudges past tolerance are not. Without this,
+    # the 5c.6 fix can't recover already-broken markers — the reconciler would
+    # see the matching commentId and report them as kept forever.
+    STALE_FRAME_TOLERANCE = 100  # frames (~4s at 24fps; well past any plausible editor nudge)
+    misplaced_ids = set()
+    for cid in (existing_ids & target_ids):
+        comment = target_by_cid[cid]
+        try:
+            ts = float(comment.get("timestamp_s") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        expected_frame = int(round(ts * fps))
+        existing_frame = existing[cid][0]
+        if abs(existing_frame - expected_frame) > STALE_FRAME_TOLERANCE:
+            misplaced_ids.add(cid)
+
+    # Remove misplaced markers as part of the to_remove pass, then re-add them
+    # by injecting them into to_add. Net: editor sees +N placed and they end
+    # up at the correct frame.
+    to_remove_ids |= misplaced_ids
+
     to_add = [c for c in target_comments if isinstance(c, dict)
               and isinstance(c.get("commentId"), str)
-              and c["commentId"] not in existing_ids]
+              and (c["commentId"] not in existing_ids or c["commentId"] in misplaced_ids)]
     kept_records: List[Dict[str, Any]] = [
         {"commentId": cid, "frame": existing[cid][0]}
         for cid in (existing_ids & target_ids)
+        if cid not in misplaced_ids
     ]
 
     # ── Remove (frameio:* markers no longer in target — completed in LPOS or

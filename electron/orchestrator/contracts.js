@@ -26,6 +26,9 @@ const COMMAND_OWNER = Object.freeze({
   // Phase 5c.5 (2026-06-02): enumerate current Resolve project's timelines for
   // auto-discovering which LPOS project(s) a Pull Comments call should target.
   list_timelines: WORKERS.resolve,
+  // Phase 5c.8 (2026-06-02): flag timeline MediaPoolItems with a color after a
+  // Pull Comments run so the editor can sort the bin by flag.
+  flag_timelines: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -75,6 +78,11 @@ const COMMAND_SCHEMAS = Object.freeze({
     types: { timeline_uid: 'string', fps: 'number' }
   },
   list_timelines: { required: [] },
+  // Phase 5c.8 (2026-06-02). timeline_uids deep-validated Python-side.
+  flag_timelines: {
+    required: ['timeline_uids'],
+    types: { color: 'string' }
+  },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });

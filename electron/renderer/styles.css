@@ -3055,15 +3055,17 @@ button.status-bar-chip-btn:hover {
 
 .comment-pull-summary-totals {
   display: flex;
-  gap: 28px;
+  gap: 36px;
   margin-bottom: 14px;
   flex-wrap: wrap;
+  justify-content: center; /* 5c.8: centered, per design feedback */
 }
 
 .comment-pull-totals-item {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  align-items: center;     /* 5c.8: center the label under the number */
 }
 
 .comment-pull-totals-num {
@@ -3308,4 +3310,23 @@ button.status-bar-chip-btn:hover {
   padding: 20px 16px;
   text-align: center;
   font-size: 13px;
+}
+
+.comment-pull-flag-hint {
+  margin-top: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: rgba(232, 196, 138, 0.08);     /* faint sand */
+  border-left: 3px solid #e8c48a;
+  border-radius: 3px;
+}
+
+.comment-pull-flag-hint strong {
+  color: #e8c48a;
+  font-weight: 600;
+}
+
+.job-panel-row.comment-pull-row .job-panel-substep {
+  color: var(--text-muted, rgba(255, 255, 255, 0.6));
+  font-style: italic;
 }
