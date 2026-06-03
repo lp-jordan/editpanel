@@ -202,9 +202,12 @@ select,
 /* ─── Custom window controls (frameless) ─────────────────────────────── */
 /* Top-left island of three small colored circles — close / minimize / anchor.
    Hidden by default; fade in when the user hovers the corner (or tabs into a
-   button). Sits at z-index 50 — one above the drag strip (49) so clicks land
-   on the buttons, not on the OS drag region. The container itself is no-drag
-   so that the hit area never gets swallowed by the strip. */
+   button). Sits at z-index 60 — above the drag strip (49), the breadcrumb-bar
+   (40), AND the navbar (50). The navbar's `pointer-events: auto` covers the
+   full-width top strip; without winning z-index, its hover-detection would
+   swallow events meant for these buttons in the top-left corner. Generous
+   padding gives the hit area enough room that users don't have to land
+   pixel-perfect on a 12px target. */
 .window-controls {
   position: fixed;
   top: 8px;
@@ -212,12 +215,11 @@ select,
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 6px;
-  z-index: 50;
+  padding: 6px 10px;
+  z-index: 60;
   -webkit-app-region: no-drag;
   opacity: 0;
   transition: opacity 160ms ease;
-  /* Pad the hit area so users don't have to land pixel-perfect on a 12px target. */
   border-radius: 999px;
 }
 /* Fade in when the user is anywhere near them, or when a button is focused
@@ -628,7 +630,10 @@ select,
 .breadcrumb-bar {
   position: fixed;
   top: 20px;
-  left: 32px;
+  /* Clears the window-controls island at top-left (extent ≈10–74px unanchored,
+     ≈10–84px anchored). 96px gives breathing room in both states without
+     pushing the crumbs visibly off-center on wider windows. */
+  left: 96px;
   z-index: 40;
   display: flex;
   align-items: center;
