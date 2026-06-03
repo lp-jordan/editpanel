@@ -800,6 +800,11 @@ function App() {
               );
             })}
           </div>
+
+          {/* Phase 3.5 — Exports history on the Delivery page only. The divider
+              button keeps the page silhouette unchanged when collapsed; expand
+              to browse every render (editpanel-queued + reconciled orphans). */}
+          {route === '/deliver' && <ExportsPanel />}
         </main>
       </div>
     );
