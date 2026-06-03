@@ -104,6 +104,27 @@ class JobsDb {
 
       CREATE INDEX IF NOT EXISTS idx_export_runs_started ON export_runs(started_at);
     `);
+
+    // 2026-06-03 — Phase 3.5 orphan-export reconciliation.
+    //   source              — 'editpanel' (queued via overlay) | 'reconciled'
+    //                         (caught from Resolve's queue) | 'filesystem' (future)
+    //   output_paths_json   — concrete on-disk file paths captured at render
+    //                         completion. Drives the Exports UI "Local" link.
+    //   lpos_delivery_json  — { project_id, project_name, file_ids, uploaded_at }
+    //                         once upload finishes. Powers the LPOS deep-link.
+    // Idempotent ALTER guard via PRAGMA table_info, same pattern as result_runs.
+    const exportCols = new Set(
+      this.db.prepare(`PRAGMA table_info(export_runs)`).all().map(r => r.name)
+    );
+    if (!exportCols.has('source')) {
+      this.db.exec(`ALTER TABLE export_runs ADD COLUMN source TEXT NOT NULL DEFAULT 'editpanel'`);
+    }
+    if (!exportCols.has('output_paths_json')) {
+      this.db.exec(`ALTER TABLE export_runs ADD COLUMN output_paths_json TEXT`);
+    }
+    if (!exportCols.has('lpos_delivery_json')) {
+      this.db.exec(`ALTER TABLE export_runs ADD COLUMN lpos_delivery_json TEXT`);
+    }
   }
 
   /**
@@ -369,15 +390,79 @@ class JobsDb {
     this.db.prepare(`UPDATE export_runs SET ${fields.join(', ')} WHERE export_id = ?`).run(...values);
   }
 
-  /** Recent export runs, newest first, with jobs parsed back into an array. */
-  listExportRuns(limit = 10) {
+  /**
+   * Recent export runs, newest first, with JSON columns parsed back to arrays/objects.
+   *
+   * Backward-compatible signature — pass a number for the old behavior:
+   *   listExportRuns(10)
+   *
+   * Or pass an options object for filtered queries (Phase 3.5 Exports UI):
+   *   listExportRuns({ limit: 200, state: 'complete_unassigned' })
+   *   listExportRuns({ state: ['delivered','complete_unassigned'] })
+   *   listExportRuns({ source: 'reconciled', projectId: null })
+   *   listExportRuns({ unassignedOnly: true })  // shorthand
+   */
+  listExportRuns(options = {}) {
+    const opts = typeof options === 'number' ? { limit: options } : (options || {});
+    const limit = Number.isFinite(opts.limit) ? opts.limit : 200;
+
+    const where = [];
+    const params = [];
+
+    if (opts.unassignedOnly) {
+      where.push(`state = 'complete_unassigned'`);
+    }
+    if (opts.state !== undefined && opts.state !== null) {
+      if (Array.isArray(opts.state)) {
+        if (opts.state.length > 0) {
+          where.push(`state IN (${opts.state.map(() => '?').join(',')})`);
+          params.push(...opts.state);
+        }
+      } else {
+        where.push(`state = ?`);
+        params.push(opts.state);
+      }
+    }
+    if (opts.source) {
+      where.push(`source = ?`);
+      params.push(opts.source);
+    }
+    if (opts.projectId !== undefined) {
+      if (opts.projectId === null) {
+        where.push(`project_id IS NULL`);
+      } else {
+        where.push(`project_id = ?`);
+        params.push(opts.projectId);
+      }
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const sql = `SELECT * FROM export_runs ${whereSql} ORDER BY started_at DESC LIMIT ?`;
+    params.push(limit);
+
     return this.db
-      .prepare(`SELECT * FROM export_runs ORDER BY started_at DESC LIMIT ?`)
-      .all(limit)
+      .prepare(sql)
+      .all(...params)
       .map(row => ({
         ...row,
-        jobs: row.jobs_json ? JSON.parse(row.jobs_json) : []
+        jobs: row.jobs_json ? JSON.parse(row.jobs_json) : [],
+        output_paths: row.output_paths_json ? JSON.parse(row.output_paths_json) : [],
+        lpos_delivery: row.lpos_delivery_json ? JSON.parse(row.lpos_delivery_json) : null
       }));
+  }
+
+  /** Fetch a single export row by id, with the same JSON parsing as listExportRuns. */
+  getExportRun(exportId) {
+    const row = this.db
+      .prepare(`SELECT * FROM export_runs WHERE export_id = ?`)
+      .get(exportId);
+    if (!row) return null;
+    return {
+      ...row,
+      jobs: row.jobs_json ? JSON.parse(row.jobs_json) : [],
+      output_paths: row.output_paths_json ? JSON.parse(row.output_paths_json) : [],
+      lpos_delivery: row.lpos_delivery_json ? JSON.parse(row.lpos_delivery_json) : null
+    };
   }
 
   /** Delete a single export run from the recent list. */
@@ -386,12 +471,99 @@ class JobsDb {
   }
 
   /** Mark any non-terminal export from a prior session as interrupted — the
-   *  in-memory tracker (and any startable pending queue) is lost on restart. */
+   *  in-memory tracker (and any startable pending queue) is lost on restart.
+   *  `complete_unassigned` is intentionally excluded: orphans waiting for the
+   *  user to pick a project should persist verbatim across restarts. */
   clearStaleExportRuns() {
     this.db.prepare(
       `UPDATE export_runs SET state = 'interrupted', finished_at = ?
        WHERE state IN ('rendering', 'uploading', 'queued')`
     ).run(Date.now());
+  }
+
+  // ─── Phase 3.5 — orphan export reconciliation ────────────────
+
+  /**
+   * Insert (or replace) an orphan export discovered by reconciling Resolve's
+   * render queue against export_runs. project_id is intentionally NULL —
+   * orphans require explicit user assignment via the Exports UI before they
+   * upload to LPOS. source='reconciled' distinguishes "we caught this" from
+   * "the editor queued it" so the UI can render the right badge / badge text.
+   */
+  createOrphanExportRun({ exportId, targetDir, projectName, jobs, state = 'rendering', startedAt } = {}) {
+    if (!exportId) throw new Error('createOrphanExportRun: exportId is required');
+    const list = Array.isArray(jobs) ? jobs : [];
+    // INSERT OR IGNORE is intentional: the reconciler keys orphan rows by
+    // Resolve JobId (export_id = 'orphan_' + jobId). If a tick race ever
+    // re-fires this insert for an already-tracked job, we must NOT reset
+    // the row's state — an orphan in 'complete_unassigned' getting flipped
+    // back to 'rendering' would lose the user's pending-action signal.
+    const info = this.db.prepare(
+      `INSERT OR IGNORE INTO export_runs
+         (export_id, target_dir, project_id, project_name, job_count, jobs_done,
+          percent, state, jobs_json, started_at, source)
+       VALUES (?, ?, NULL, ?, ?, 0, 0, ?, ?, ?, 'reconciled')`
+    ).run(
+      exportId,
+      targetDir || null,
+      projectName || null,
+      list.length,
+      state,
+      JSON.stringify(list),
+      Number.isFinite(startedAt) ? startedAt : Date.now()
+    );
+    return { exportId, inserted: info.changes > 0 };
+  }
+
+  /**
+   * Record the concrete on-disk file paths Resolve produced for this export.
+   * Captured at render-completion time. Drives the Exports UI "Local" link
+   * and the "Open folder" action.
+   */
+  setExportOutputPaths(exportId, outputPaths) {
+    const paths = Array.isArray(outputPaths) ? outputPaths : [];
+    this.db.prepare(
+      `UPDATE export_runs SET output_paths_json = ? WHERE export_id = ?`
+    ).run(JSON.stringify(paths), exportId);
+  }
+
+  /**
+   * Record where this export landed in LPOS once the upload finishes.
+   * delivery shape: { project_id, project_name, file_ids: [...], uploaded_at }
+   * Powers the Exports UI's deep-link to the LPOS project row.
+   */
+  setExportLposDelivery(exportId, delivery) {
+    this.db.prepare(
+      `UPDATE export_runs SET lpos_delivery_json = ? WHERE export_id = ?`
+    ).run(delivery ? JSON.stringify(delivery) : null, exportId);
+  }
+
+  /**
+   * Assign an LPOS project to an orphan export. Does NOT trigger the upload —
+   * the caller (IPC handler) kicks the existing upload flow afterward, then
+   * the upload-finish hook calls setExportLposDelivery + setExportState('delivered').
+   */
+  assignExportProject(exportId, projectId, projectName) {
+    this.db.prepare(
+      `UPDATE export_runs SET project_id = ?, project_name = ? WHERE export_id = ?`
+    ).run(projectId || null, projectName || null, exportId);
+  }
+
+  /** Generic state setter — wrapper around updateExportRun for clarity at call sites. */
+  setExportState(exportId, state, extra = {}) {
+    this.updateExportRun(exportId, { state, ...extra });
+  }
+
+  /**
+   * Count exports in the `complete_unassigned` state. Drives the Jobs-tab
+   * clearable pill ("N exports awaiting assignment → Review"). Restricted
+   * to terminal-but-unassigned so still-rendering orphans don't inflate the count.
+   */
+  countUnassignedExports() {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM export_runs WHERE state = 'complete_unassigned'`
+    ).get();
+    return row?.n || 0;
   }
 
   close() {
