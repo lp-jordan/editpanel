@@ -363,6 +363,94 @@ function UnassignedExportsPill({ onClick }) {
   );
 }
 
+// ── Resolve-project grouping (Unassigned filter only) ─────────
+// At meaningful unassigned counts the flat list gets noisy — editors usually
+// review by source Resolve project ("everything from Project A goes to LPOS
+// Project A"), so we bucket the Unassigned view by resolveProjectName and let
+// the editor push the whole group with one picker click.
+//
+// Unknown bucket: reconciled orphans where we couldn't recover the Resolve
+// project name (rare — usually means the render was queued by something that
+// didn't set TargetDir/JobMeta in the way we expect). These land in a tail
+// "Unknown project" group, sorted last so they don't dilute the named ones.
+const UNKNOWN_GROUP_KEY = '__unknown_resolve_project__';
+
+function groupByResolveProject(rows) {
+  const buckets = new Map(); // key → { projectName: string | null, rows: [], newestStarted: number }
+  for (const r of rows) {
+    const name = resolveProjectNameOf(r);
+    const key = name || UNKNOWN_GROUP_KEY;
+    if (!buckets.has(key)) {
+      buckets.set(key, { projectName: name, rows: [], newestStarted: 0 });
+    }
+    const b = buckets.get(key);
+    b.rows.push(r);
+    if (Number(r.started_at) > b.newestStarted) b.newestStarted = Number(r.started_at);
+  }
+  // Sort: named groups by newest-row first; the Unknown bucket pinned to the end.
+  return Array.from(buckets.entries())
+    .map(([key, b]) => ({ key, ...b }))
+    .sort((a, b) => {
+      if (a.key === UNKNOWN_GROUP_KEY) return 1;
+      if (b.key === UNKNOWN_GROUP_KEY) return -1;
+      return b.newestStarted - a.newestStarted;
+    });
+}
+
+// One Resolve-project group: collapsible header + body of ExportRow cards.
+// Header carries the project name, the count chip, and (when count > 1) a
+// "Push all (N) to LPOS…" button that opens the picker for the whole group.
+// Single-item groups omit the group push button — the row's own button does
+// the same thing and the duplicate would just add visual noise.
+function ResolveProjectGroup({
+  group, open, onToggle, onGroupPushClick, onRowPushClick, onOpenFolderClick
+}) {
+  const { projectName, rows } = group;
+  const isUnknown = !projectName;
+  const count = rows.length;
+  const showGroupPush = count > 1;
+  return (
+    <section className={`exports-group${open ? ' open' : ''}${isUnknown ? ' unknown' : ''}`}>
+      <header
+        className="exports-group-head"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={onToggle}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
+      >
+        <span className="exports-group-chevron" aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <span className="exports-group-name">
+          {projectName || 'Unknown project'}
+        </span>
+        <span className="exports-group-count">{count}</span>
+        <span className="exports-group-spacer" />
+        {showGroupPush && (
+          <button
+            type="button"
+            className="btn primary small exports-group-push"
+            onClick={(e) => { e.stopPropagation(); onGroupPushClick(group); }}
+          >
+            Push all ({count}) to LPOS…
+          </button>
+        )}
+      </header>
+      {open && (
+        <div className="exports-group-body">
+          {rows.map(r => (
+            <ExportRow
+              key={r.export_id}
+              row={r}
+              onPushClick={onRowPushClick}
+              onOpenFolderClick={onOpenFolderClick}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ── Panel ──────────────────────────────────────────────────────
 function ExportsPanel({ focusToken } = {}) {
   const [open, setOpen]       = React.useState(false);
@@ -373,6 +461,19 @@ function ExportsPanel({ focusToken } = {}) {
   const [pickerForRow, setPickerForRow] = React.useState(null);
   const [pushBusy, setPushBusy]         = React.useState(false);
   const [pushError, setPushError]       = React.useState(null);
+  // Group state (Unassigned filter only): pickerForGroup holds the whole group
+  // object while its picker is open; groupOpen is a per-group-key collapse map
+  // (undefined → expanded; explicit false → collapsed). groupPushFeedback is a
+  // transient "Pushed N to <project>" line that auto-clears after a few seconds.
+  const [pickerForGroup, setPickerForGroup]       = React.useState(null);
+  const [groupOpen, setGroupOpen]                 = React.useState({});
+  const [groupPushFeedback, setGroupPushFeedback] = React.useState(null);
+
+  // Unassigned-only grouping. Memoized so we don't re-bucket on every render.
+  const groupedRows = React.useMemo(
+    () => filter === 'unassigned' ? groupByResolveProject(rows) : null,
+    [filter, rows]
+  );
 
   const refresh = React.useCallback(async () => {
     if (!window.exportsAPI?.list) return;
@@ -451,6 +552,63 @@ function ExportsPanel({ focusToken } = {}) {
     }
   }
 
+  // Group push: fire pushToLpos for every row in the chosen Resolve-project
+  // group concurrently. Each push is fire-and-forget on the main side (returns
+  // ok immediately, runs upload in a background IIFE), so launching N in
+  // parallel just queues N background uploads — they progress individually in
+  // JobPanel. We surface an aggregate "Pushed N to <project>" line that
+  // auto-clears after 4.5s; per-row errors continue to show on each row via
+  // the existing reconciled-event flow.
+  async function handleGroupPush(project) {
+    if (!pickerForGroup || !window.exportsAPI?.pushToLpos) return;
+    const groupRows = pickerForGroup.rows || [];
+    setPushBusy(true);
+    setPushError(null);
+    try {
+      const results = await Promise.allSettled(groupRows.map(r =>
+        window.exportsAPI.pushToLpos({
+          exportId:    r.export_id,
+          projectId:   project.projectId,
+          projectName: project.name || project.projectName
+        })
+      ));
+      const ok     = results.filter(r => r.status === 'fulfilled' && r.value?.ok).length;
+      const failed = results.length - ok;
+      setGroupPushFeedback({
+        projectName: project.name || project.projectName,
+        ok,
+        failed,
+        total: results.length
+      });
+      // Auto-clear the feedback line so it doesn't pile up across sessions.
+      setTimeout(() => setGroupPushFeedback(null), 4500);
+      setPickerForGroup(null);
+      refresh();
+    } catch (err) {
+      setPushError(err?.message || String(err));
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  // The ProjectPicker is shared between per-row and per-group pushes — open
+  // condition is "either picker target is set"; the chosen onPick routes to
+  // whichever flow the user actually invoked.
+  const pickerOpen = Boolean(pickerForRow) || Boolean(pickerForGroup);
+  function handlePickerClose() {
+    setPickerForRow(null);
+    setPickerForGroup(null);
+    setPushError(null);
+  }
+  function handlePickerPick(project) {
+    if (pickerForGroup) return handleGroupPush(project);
+    return handlePush(project);
+  }
+
+  function toggleGroup(key) {
+    setGroupOpen(prev => ({ ...prev, [key]: prev[key] === false ? true : false }));
+  }
+
   return (
     <section className="exports-panel">
       <div
@@ -494,27 +652,58 @@ function ExportsPanel({ focusToken } = {}) {
           )}
 
           {!loading && !error && rows.length > 0 && (
-            <div className="exports-list">
-              {rows.map(r => (
-                <ExportRow
-                  key={r.export_id}
-                  row={r}
-                  onPushClick={setPickerForRow}
-                  onOpenFolderClick={handleOpenFolder}
-                />
-              ))}
-            </div>
+            filter === 'unassigned' && groupedRows ? (
+              <div className="exports-groups">
+                {groupedRows.map(g => (
+                  <ResolveProjectGroup
+                    key={g.key}
+                    group={g}
+                    open={groupOpen[g.key] !== false /* default expanded */}
+                    onToggle={() => toggleGroup(g.key)}
+                    onGroupPushClick={setPickerForGroup}
+                    onRowPushClick={setPickerForRow}
+                    onOpenFolderClick={handleOpenFolder}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="exports-list">
+                {rows.map(r => (
+                  <ExportRow
+                    key={r.export_id}
+                    row={r}
+                    onPushClick={setPickerForRow}
+                    onOpenFolderClick={handleOpenFolder}
+                  />
+                ))}
+              </div>
+            )
+          )}
+
+          {/* Transient feedback after a group push. Auto-clears after 4.5s;
+              click-through close still available for impatient editors. */}
+          {groupPushFeedback && (
+            <button
+              type="button"
+              className={`exports-group-feedback${groupPushFeedback.failed > 0 ? ' has-failures' : ''}`}
+              onClick={() => setGroupPushFeedback(null)}
+              title="Dismiss"
+            >
+              {groupPushFeedback.failed === 0
+                ? `Pushed ${groupPushFeedback.ok} to ${groupPushFeedback.projectName}`
+                : `Pushed ${groupPushFeedback.ok}/${groupPushFeedback.total} to ${groupPushFeedback.projectName} — ${groupPushFeedback.failed} failed`}
+            </button>
           )}
 
           <ProjectPicker
-            open={Boolean(pickerForRow)}
-            onClose={() => { setPickerForRow(null); setPushError(null); }}
-            onPick={handlePush}
+            open={pickerOpen}
+            onClose={handlePickerClose}
+            onPick={handlePickerPick}
           />
-          {pickerForRow && pushBusy && (
-            <p className="muted">Pushing…</p>
+          {pickerOpen && pushBusy && (
+            <p className="muted">Pushing{pickerForGroup ? ` ${pickerForGroup.rows.length} exports` : ''}…</p>
           )}
-          {pickerForRow && pushError && (
+          {pickerOpen && pushError && (
             <p className="bad">Push failed: {pushError}</p>
           )}
         </div>

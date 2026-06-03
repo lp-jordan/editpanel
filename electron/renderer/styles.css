@@ -3750,6 +3750,120 @@ button.status-bar-chip-btn:hover {
   gap: 10px;
 }
 
+/* ─── Unassigned-by-Resolve-project groups ───────────────────────────── */
+/* Only rendered when filter='unassigned'. Each Resolve project gets a
+   collapsible section; the group header shows the project name + a count
+   chip + (when count > 1) a Push-all action. */
+.exports-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.exports-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.exports-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  user-select: none;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.exports-group-head:hover {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.09);
+}
+.exports-group-head:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+.exports-group-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--muted-soft);
+  font-size: 0.75rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.exports-group-name {
+  font-weight: 600;
+  color: var(--text-strong);
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+}
+.exports-group-count {
+  background: var(--accent-blue-soft);
+  color: var(--accent-blue-strong);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.exports-group-spacer {
+  flex: 1;
+}
+.exports-group-push {
+  flex-shrink: 0;
+}
+.exports-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Subtle left inset so rows visually attach to their group without needing
+     a heavy border. The padding also keeps the row's left border-color stripe
+     readable against the group's background. */
+  padding-left: 10px;
+}
+/* Unknown bucket — muted styling so it reads as "leftovers, not a real
+   project." Group push button still works the same way. */
+.exports-group.unknown .exports-group-name {
+  color: var(--muted);
+  font-style: italic;
+}
+.exports-group.unknown .exports-group-count {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted-soft);
+}
+
+/* Transient feedback chip after a group push. Looks like a pill; click to
+   dismiss; auto-clears after a few seconds via component-side setTimeout. */
+.exports-group-feedback {
+  appearance: none;
+  border: 1px solid var(--accent-blue-soft);
+  background: var(--accent-blue-soft);
+  color: var(--accent-blue-strong);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: flex-start;
+  margin-top: 6px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.exports-group-feedback:hover {
+  background: rgba(91, 155, 213, 0.22);
+}
+.exports-group-feedback.has-failures {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.14);
+  color: #fca5a5;
+}
+.exports-group-feedback.has-failures:hover {
+  background: rgba(248, 113, 113, 0.20);
+}
+
 .exports-row {
   background: var(--surface-1);
   border: 1px solid var(--line);
