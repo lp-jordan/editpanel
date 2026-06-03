@@ -1032,6 +1032,8 @@ function App() {
         <ResultOverlay
           jobId={activeResultJobId}
           onClose={() => setActiveResultJobId(null)}
+          resolveProject={project}
+          resolveConnected={connected}
         />
       )}
       {atemIngestOpen && (

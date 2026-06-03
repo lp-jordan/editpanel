@@ -11,10 +11,21 @@
  *   - 0..N timeline items (kind: 'timeline') with placed/removed/kept/skipped arrays
  *
  * Props:
- *   jobId   — string, the result_run job id
- *   onClose — () => void
+ *   jobId            — string, the result_run job id
+ *   onClose          — () => void
+ *   resolveProject   — string, the project name currently open in Resolve (live)
+ *   resolveConnected — bool, is Resolve attached right now?
+ *
+ * When the live Resolve project differs from `summary.resolveProject` (the
+ * project the report was generated against), a mismatch banner is shown
+ * sticky at the top of the body. Jump and Mark-complete actions still
+ * dispatch as usual; the banner is advisory because the wrong-project
+ * case can produce confusing results (Jump lands on a different timeline
+ * by uid, marker drops happen in the wrong project, etc.) but isn't
+ * categorically wrong — the editor may have intentionally opened a
+ * different project to review.
  */
-function CommentPullReport({ jobId, onClose }) {
+function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected }) {
   const [items, setItems]   = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [runLabel, setRunLabel] = React.useState('');
@@ -240,7 +251,11 @@ function CommentPullReport({ jobId, onClose }) {
           <button className="result-overlay-back" onClick={onClose} aria-label="Close">×</button>
           <span className="result-overlay-title">Comment pull</span>
         </header>
-        <div className="result-overlay-body"><p className="result-item-loading">Loading…</p></div>
+        <div className="result-overlay-body comment-pull-body">
+          <div className="comment-pull-content">
+            <p className="result-item-loading">Loading…</p>
+          </div>
+        </div>
       </div>
     );
   }
@@ -250,6 +265,22 @@ function CommentPullReport({ jobId, onClose }) {
   const removedSum = summary?.totalRemoved ?? 0;
   const keptSum    = summary?.totalKept    ?? 0;
   const skippedSum = summary?.totalSkipped ?? 0;
+
+  // Wrong-project check. The report records which Resolve project was open
+  // when the pull ran; the live `resolveProject` prop is whatever is open
+  // now. A mismatch makes Jump/Mark-complete dangerous (different timelines
+  // share uids across projects only by accident, and "drop marker" lands in
+  // whichever project is open). We surface this prominently rather than
+  // disabling actions because: (a) the editor may have intentionally
+  // switched projects to spot-check, (b) Resolve may not be attached at
+  // all — in which case the report is still useful as a read-only summary.
+  const reportProject = (summary?.resolveProject || '').trim();
+  const livePProject  = (resolveProject || '').trim();
+  const projectMismatch = !!reportProject &&
+    resolveConnected &&
+    !!livePProject &&
+    reportProject !== livePProject;
+  const resolveOffline = !!reportProject && !resolveConnected;
 
   return (
     <div className="result-overlay comment-pull-report" role="dialog" aria-label={runLabel || 'Comment pull report'}>
@@ -264,6 +295,52 @@ function CommentPullReport({ jobId, onClose }) {
       </header>
 
       <div className="result-overlay-body comment-pull-body">
+        {/* Centered, max-width content column so the report breathes on wide
+            screens instead of stretching to the full viewport. */}
+        <div className="comment-pull-content">
+
+        {/* Sticky top stack: project-mismatch banner (when applicable) +
+            summary card. Both stick together so the editor always sees the
+            aggregate counts and the project context regardless of scroll
+            depth — addresses "I lose the ability to scroll up to the top
+            to view the summary when everything is expanded." */}
+        <div className="comment-pull-sticky-top">
+        {(projectMismatch || resolveOffline) && (
+          <div
+            className={`comment-pull-mismatch-banner ${projectMismatch ? 'mismatch' : 'offline'}`}
+            role="alert"
+          >
+            <div className="comment-pull-mismatch-icon" aria-hidden="true">⚠</div>
+            <div className="comment-pull-mismatch-body">
+              {projectMismatch ? (
+                <>
+                  <div className="comment-pull-mismatch-title">
+                    You're not in the project this report was generated for
+                  </div>
+                  <div className="comment-pull-mismatch-text">
+                    Report project: <strong>{reportProject}</strong>{' '}
+                    · currently open: <strong>{livePProject}</strong>
+                    . Open <strong>{reportProject}</strong> in Resolve before using
+                    Jump or Mark complete, or these actions will target the
+                    wrong project's timelines.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="comment-pull-mismatch-title">
+                    Resolve isn't connected
+                  </div>
+                  <div className="comment-pull-mismatch-text">
+                    This report's markers were placed in{' '}
+                    <strong>{reportProject}</strong>. Reconnect to Resolve
+                    (and open that project) before using Jump or Mark complete.
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Summary card */}
         <div className="comment-pull-summary">
           <div className="comment-pull-summary-totals">
@@ -312,6 +389,7 @@ function CommentPullReport({ jobId, onClose }) {
             )}
           </div>
         </div>
+        </div>{/* /.comment-pull-sticky-top */}
 
         {/* Per-timeline collapsible list */}
         {hasTimelineActivity ? (
@@ -391,6 +469,8 @@ function CommentPullReport({ jobId, onClose }) {
                 : 'All scanned timelines had no comment activity.'}
           </div>
         )}
+
+        </div>{/* /.comment-pull-content */}
       </div>
     </div>
   );

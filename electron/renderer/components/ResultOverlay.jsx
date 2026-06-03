@@ -3,12 +3,22 @@
  *
  * Supports item types:
  *   'spellcheck' — shows misspelled word in context, suggestions, custom input, jump-to-timecode
+ *   'comment_pull' — single-page summary + per-timeline accordion via CommentPullReport
  *
  * Props:
- *   jobId   — string, the result run to review
- *   onClose — () => void
+ *   jobId            — string, the result run to review
+ *   onClose          — () => void
+ *   resolveProject   — string, the project name currently open in Resolve (live)
+ *   resolveConnected — bool, is Resolve attached right now?
+ *
+ * The live Resolve project + connection state are passed through so the
+ * routed report component can warn when the editor is viewing a run that
+ * was generated against a different project than what's currently open
+ * (or no project at all). The spellcheck branch doesn't currently use
+ * these — it's a per-item walk with no project context to mismatch
+ * against — but they're available if it ever needs them.
  */
-function ResultOverlay({ jobId, onClose }) {
+function ResultOverlay({ jobId, onClose, resolveProject, resolveConnected }) {
   // 5c.7 (2026-06-02): Pull Comments runs use a single-page CommentPullReport
   // (summary card + collapsible per-timeline) rather than the spellcheck-style
   // item-by-item walk. Detect the run type up-front via the run row's
@@ -28,7 +38,14 @@ function ResultOverlay({ jobId, onClose }) {
   }, [jobId]);
 
   if (routedType === 'comment_pull') {
-    return <CommentPullReport jobId={jobId} onClose={onClose} />;
+    return (
+      <CommentPullReport
+        jobId={jobId}
+        onClose={onClose}
+        resolveProject={resolveProject}
+        resolveConnected={resolveConnected}
+      />
+    );
   }
 
   // Spellcheck (and any other future per-item-walk run type) keeps the
