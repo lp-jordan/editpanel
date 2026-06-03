@@ -312,6 +312,23 @@ contextBridge.exposeInMainWorld('exportsAPI', {
   }
 });
 
+// Custom window controls for the frameless shell. close() hides to tray (the
+// app stays running so background jobs/uploads/reconcile keep going); the user
+// reopens via the tray icon. toggleAnchor() flips right-edge always-on-top
+// persistent-panel mode; anchor-state event lets the gold button render its
+// active style and the shell apply the .is-anchored layout modifier.
+contextBridge.exposeInMainWorld('windowAPI', {
+  close() { ipcRenderer.send('window:close'); },
+  minimize() { ipcRenderer.send('window:minimize'); },
+  toggleAnchor() { return ipcRenderer.invoke('window:toggle-anchor'); },
+  getAnchorState() { return ipcRenderer.invoke('window:get-anchor-state'); },
+  onAnchorState(callback) {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('anchor-state', handler);
+    return () => ipcRenderer.removeListener('anchor-state', handler);
+  }
+});
+
 contextBridge.exposeInMainWorld('fsAPI', {
   readFile: p => ipcRenderer.invoke('fs:readFile', p),
   writeFile: (p, data) => ipcRenderer.invoke('fs:writeFile', p, data),

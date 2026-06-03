@@ -48,6 +48,50 @@ function GearIcon({ size = 16 }) {
   );
 }
 
+// Top-left custom window controls for the frameless shell. Three small colored
+// circles, hidden until the user hovers the top-left corner (or tabs into one).
+// No icons — buttons rely on color + aria-label/title for identity. Close hides
+// to tray (background jobs keep running, tray icon reopens). Anchor flips the
+// window into a right-edge always-on-top persistent panel; gold button shows
+// active state while anchored. The host .app-shell also gets an .is-anchored
+// modifier so layout tweaks for narrow widths can be scoped cleanly.
+function WindowControls({ anchored }) {
+  const onClose = React.useCallback(() => window.windowAPI?.close(), []);
+  const onMinimize = React.useCallback(() => window.windowAPI?.minimize(), []);
+  const onToggleAnchor = React.useCallback(() => {
+    // Fire-and-forget. The main process broadcasts anchor-state on success,
+    // which is what flips the button's visual active state — we don't need
+    // the resolved value here.
+    window.windowAPI?.toggleAnchor().catch(() => {});
+  }, []);
+  return (
+    <div className="window-controls" role="group" aria-label="Window controls">
+      <button
+        type="button"
+        className="window-control window-control-close"
+        aria-label="Close (keep running in tray)"
+        title="Close (keep running in tray)"
+        onClick={onClose}
+      />
+      <button
+        type="button"
+        className="window-control window-control-minimize"
+        aria-label="Minimize"
+        title="Minimize"
+        onClick={onMinimize}
+      />
+      <button
+        type="button"
+        className={`window-control window-control-anchor${anchored ? ' is-active' : ''}`}
+        aria-label={anchored ? 'Un-anchor panel' : 'Anchor panel to right'}
+        title={anchored ? 'Un-anchor panel' : 'Anchor panel to right'}
+        aria-pressed={anchored}
+        onClick={onToggleAnchor}
+      />
+    </div>
+  );
+}
+
 function HoverNav({ route, onNavigate }) {
   return (
     <nav className="navbar">
@@ -154,6 +198,12 @@ function App() {
   // condition doesn't re-show what the user already chose to silence.
   const [dismissedAdvisoryCode, setDismissedAdvisoryCode] = React.useState(null);
   // r2ManagerOpen removed 2026-05-27 — cold-storage management lives in LPOS now.
+
+  // Anchor mode (right-edge always-on-top persistent panel). State mirrors the
+  // main process; we read it once on mount and then keep it in sync via the
+  // 'anchor-state' broadcast. Drives the gold button's active style and the
+  // shell-level .is-anchored class so narrow-width layout tweaks can be scoped.
+  const [anchored, setAnchored] = React.useState(false);
 
   // Settings state
   const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '', atemHost: '' });
@@ -288,6 +338,20 @@ function App() {
     window.addEventListener('hashchange', onHashChange);
     onHashChange();
     return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // Subscribe to anchor-state from the main process. Reads the persisted state
+  // once on mount (covers the case where boot-time anchor restore happened
+  // before the renderer was ready) and then keeps in sync via broadcast.
+  React.useEffect(() => {
+    if (!window.windowAPI) return;
+    window.windowAPI.getAnchorState().then((r) => {
+      if (r?.ok && r.data) setAnchored(Boolean(r.data.isAnchored));
+    }).catch(() => {});
+    const off = window.windowAPI.onAnchorState((payload) => {
+      setAnchored(Boolean(payload?.isAnchored));
+    });
+    return () => { if (off) off(); };
   }, []);
 
   // Background export tracking — drives the Jobs panel "Exports" section and
@@ -1002,10 +1066,13 @@ function App() {
     : renderWorkspacePage();
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${anchored ? ' is-anchored' : ''}`}>
       {/* Thin drag strip at the top — lets the user move the frameless window.
-          Kept below the overlay z-index so it never blocks overlay headers. */}
+          Kept below the overlay z-index so it never blocks overlay headers.
+          Hidden while anchored (the .is-anchored modifier styles take care of
+          it) so the user can't accidentally pull the panel off its dock. */}
       <div className="window-drag-handle" aria-hidden="true" />
+      <WindowControls anchored={anchored} />
       <div key={route} className="page-enter">
         {pageContent}
       </div>

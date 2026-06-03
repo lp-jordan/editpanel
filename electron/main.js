@@ -694,6 +694,105 @@ function createTray() {
   });
 }
 
+// ── Window anchor state ───────────────────────────────────────────────
+//
+// "Anchor" mode docks the window to the right edge of the current display,
+// flips it to always-on-top, and (on macOS) makes it visible across fullscreen
+// spaces — turning the app into a persistent side-panel the editor can monitor
+// while working in Resolve. Three pieces of state we care about:
+//
+//   isAnchored          — current mode flag, also broadcast to the renderer
+//                         so the gold button can render active/inactive.
+//   preAnchorBounds     — the {x,y,width,height} we restore to on un-anchor.
+//                         Captured at the moment of toggle-on, NOT later, so
+//                         user resizes while anchored don't overwrite it.
+//   anchoredWidthOverride — user-edge-drag width while anchored. Defaults to
+//                           DEFAULT_ANCHORED_WIDTH; persisted so the next
+//                           anchor lands at whatever width they last set.
+//
+// Hard minimums (NORMAL_MIN_*) are restored on un-anchor; while anchored we
+// drop to ANCHORED_MIN_* so the right-edge column can be narrow.
+const DEFAULT_ANCHORED_WIDTH = 460;
+const NORMAL_MIN_WIDTH  = 980;
+const NORMAL_MIN_HEIGHT = 700;
+const ANCHORED_MIN_WIDTH  = 360;
+const ANCHORED_MIN_HEIGHT = 600;
+
+let isAnchored = false;
+let preAnchorBounds = null;
+let anchoredWidthOverride = null;
+let anchorResizeDebounce = null; // debounce persistence of edge-drag width
+
+function getAnchoredWidth() {
+  const w = Number(anchoredWidthOverride);
+  if (!Number.isFinite(w) || w < ANCHORED_MIN_WIDTH) return DEFAULT_ANCHORED_WIDTH;
+  return Math.round(w);
+}
+
+function broadcastAnchorState() {
+  const payload = { isAnchored, anchoredWidth: getAnchoredWidth() };
+  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('anchor-state', payload));
+}
+
+function applyAnchorPosition() {
+  if (!win || win.isDestroyed()) return;
+  const bounds = win.getBounds();
+  const display = screen.getDisplayMatching(bounds) || screen.getPrimaryDisplay();
+  const area = display.workArea || { x: 0, y: 0, width: 1440, height: 900 };
+  const width = Math.min(getAnchoredWidth(), area.width);
+  const height = area.height;
+  const x = area.x + area.width - width;
+  const y = area.y;
+  win.setBounds({ x, y, width, height });
+}
+
+function enableAnchor() {
+  if (!win || win.isDestroyed() || isAnchored) return;
+  // Snapshot the pre-anchor geometry so we can restore on un-anchor.
+  preAnchorBounds = win.getBounds();
+  isAnchored = true;
+  // Drop the minimum size BEFORE resizing — Electron clamps to the current
+  // minimum, so a 460px target gets bumped to 980px without this step.
+  win.setMinimumSize(ANCHORED_MIN_WIDTH, ANCHORED_MIN_HEIGHT);
+  applyAnchorPosition();
+  win.setAlwaysOnTop(true, 'floating');
+  // macOS-only: keep the window visible while another app is in fullscreen.
+  // This is the actual point of the feature — without it the panel disappears
+  // the moment the editor goes fullscreen in Resolve. No-op on Windows/Linux.
+  try {
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } catch (_err) { /* not all platforms support the options arg */ }
+  broadcastAnchorState();
+  persistAnchorState();
+}
+
+function disableAnchor() {
+  if (!win || win.isDestroyed() || !isAnchored) return;
+  isAnchored = false;
+  win.setAlwaysOnTop(false);
+  try {
+    win.setVisibleOnAllWorkspaces(false);
+  } catch (_err) { /* no-op on platforms that don't support it */ }
+  // Restore minimum BEFORE re-applying bounds, same clamp reason as enable.
+  win.setMinimumSize(NORMAL_MIN_WIDTH, NORMAL_MIN_HEIGHT);
+  if (preAnchorBounds) {
+    win.setBounds(preAnchorBounds);
+    preAnchorBounds = null;
+  }
+  broadcastAnchorState();
+  persistAnchorState();
+}
+
+function persistAnchorState() {
+  if (!controlPlane) return;
+  try {
+    controlPlane.setPreferences({
+      window_anchored: isAnchored,
+      window_anchored_width: getAnchoredWidth()
+    });
+  } catch (_err) { /* persistence is best-effort; UI state is the source of truth */ }
+}
+
 function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay();
   const workAreaSize = primaryDisplay?.workAreaSize || { width: 1440, height: 900 };
@@ -703,8 +802,8 @@ function createWindow() {
   win = new BrowserWindow({
     width,
     height,
-    minWidth: 980,
-    minHeight: 700,
+    minWidth: NORMAL_MIN_WIDTH,
+    minHeight: NORMAL_MIN_HEIGHT,
     frame: false,          // remove OS title bar and traffic-light buttons
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -721,6 +820,40 @@ function createWindow() {
       event.preventDefault();
       win.hide();
     }
+  });
+
+  // While anchored, listen for user edge-drags so they can widen/narrow the
+  // panel; capture the new width, debounce-persist it, and snap-y back to the
+  // workArea top + right-edge alignment so the dock can't drift.
+  win.on('resize', () => {
+    if (!isAnchored || !win || win.isDestroyed()) return;
+    const b = win.getBounds();
+    const display = screen.getDisplayMatching(b) || screen.getPrimaryDisplay();
+    const area = display.workArea;
+    // Detect a user edge-drag (width changed materially) vs. a programmatic
+    // setBounds we triggered ourselves. Programmatic ones already match the
+    // expected x/width, so the snap-back is a no-op for them.
+    if (b.width >= ANCHORED_MIN_WIDTH && b.width <= area.width) {
+      anchoredWidthOverride = b.width;
+    }
+    const targetX = area.x + area.width - b.width;
+    if (b.x !== targetX || b.y !== area.y || b.height !== area.height) {
+      win.setBounds({ x: targetX, y: area.y, width: b.width, height: area.height });
+    }
+    if (anchorResizeDebounce) clearTimeout(anchorResizeDebounce);
+    anchorResizeDebounce = setTimeout(() => {
+      persistAnchorState();
+      broadcastAnchorState();
+      anchorResizeDebounce = null;
+    }, 400);
+  });
+
+  // If the display the anchored window is on gets unplugged, re-apply against
+  // whichever display Electron has moved us to. Without this the panel stays
+  // alive but lands at whatever bounds Electron picked, not snapped to the
+  // right edge of the new display.
+  screen.on('display-removed', () => {
+    if (isAnchored) applyAnchorPosition();
   });
 }
 
@@ -1869,6 +2002,32 @@ app.whenReady().then(() => {
     app.quit();
   });
 
+  // ── Custom window controls (frameless app) ───────────────────────────
+  // Three buttons in the renderer's top-left island fade in on hover and
+  // route here. Close mirrors the existing OS-close behavior (hide to tray,
+  // app stays alive). Minimize is just minimize. toggle-anchor flips the
+  // right-edge persistent panel mode — see the anchor state block near
+  // createWindow() for the geometry + always-on-top + fullscreen-space
+  // wiring it composes.
+
+  ipcMain.on('window:close', () => {
+    if (win && !win.isDestroyed()) win.hide();
+  });
+
+  ipcMain.on('window:minimize', () => {
+    if (win && !win.isDestroyed()) win.minimize();
+  });
+
+  ipcMain.handle('window:toggle-anchor', async () => {
+    if (isAnchored) disableAnchor(); else enableAnchor();
+    return { ok: true, data: { isAnchored, anchoredWidth: getAnchoredWidth() } };
+  });
+
+  ipcMain.handle('window:get-anchor-state', async () => ({
+    ok: true,
+    data: { isAnchored, anchoredWidth: getAnchoredWidth() }
+  }));
+
   // --- LPOS IPC handlers ---
   // Used by the renderer to query LPOS data (projects, notes, comments, health).
   // All calls proxy through LposClient which adds the X-EP-Token header.
@@ -2818,6 +2977,20 @@ app.whenReady().then(() => {
 
   createTray();
   createWindow();
+
+  // Boot-time anchor restoration. Read the persisted width first (so the next
+  // anchor lands at the user's last manual size), then re-apply anchor mode if
+  // that's how they left it. Done after createWindow() so win exists; done
+  // here rather than inside createWindow() so it can see the live controlPlane.
+  try {
+    const prefs = controlPlane.getPreferences();
+    if (Number.isFinite(Number(prefs?.window_anchored_width))) {
+      anchoredWidthOverride = Number(prefs.window_anchored_width);
+    }
+    if (prefs?.window_anchored) {
+      enableAnchor();
+    }
+  } catch (_err) { /* boot-time anchor restore is best-effort */ }
 
   app.on('activate', () => {
     if (win) {
