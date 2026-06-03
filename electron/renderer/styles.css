@@ -248,21 +248,100 @@ select,
 }
 .window-control-close    { background: #ff5f57; }
 .window-control-minimize { background: #febc2e; }
-.window-control-anchor   { background: #d4a84a; } /* LPOS gold */
-/* Subtle ring on the anchor button while active — gives the user a clear
-   "panel mode is on" signal without needing an icon. */
+/* Anchor button uses the LPOS accent blue (--accent-blue: #5b9bd5) — gold
+   read too close to the yellow minimize button next to it. */
+.window-control-anchor   { background: #5b9bd5; }
+/* Stronger ring on the anchor button while active — the panel-mode state is
+   the one piece of UI we really don't want the user losing track of, since
+   it's their only obvious path back out. */
 .window-control-anchor.is-active {
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25),
-              0 0 0 2px rgba(212, 168, 74, 0.45);
+              0 0 0 2px rgba(91, 155, 213, 0.55);
+}
+/* In anchored mode, scale the controls up slightly and ensure they're clearly
+   clickable — the editor's mouse is coming over from Resolve, not already on
+   the panel, so the buttons need to look like targets, not decoration. */
+.app-shell.is-anchored .window-controls {
+  top: 10px;
+  left: 12px;
+  gap: 10px;
+}
+.app-shell.is-anchored .window-control {
+  width: 14px;
+  height: 14px;
 }
 
 /* ─── Anchored-window modifier ───────────────────────────────────────── */
 /* While anchored, the window IS the panel — there's no spare room above the
    buttons for a drag strip, and we don't want the user accidentally pulling
-   the window off its dock. Hide the drag handle entirely. Narrow-width layout
-   reflow for the navbar/status bar/JobPanel will land in a follow-up pass. */
+   the window off its dock. Hide the drag handle entirely. */
 .app-shell.is-anchored .window-drag-handle {
   display: none;
+}
+
+/* Narrow-width readability pass. At ~460px wide, the default task-grid renders
+   two 200×200 squares with sub-12px body copy — readable from a desk but not
+   from a glance while editing. In anchored mode we collapse to a single full-
+   width row-style card, bump body copy, and tighten outer padding so the
+   content gets the real estate the chrome was eating. */
+
+/* Tighter outer padding — recover ~36px of horizontal space for content. */
+.app-shell.is-anchored .app-content {
+  padding: 80px 14px 48px;
+}
+
+/* Single column. Drop the 1:1 aspect ratio so cards size to their content
+   instead of becoming squat squares. */
+.app-shell.is-anchored .task-grid {
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+.app-shell.is-anchored .task-card {
+  aspect-ratio: auto;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: 18px 18px 20px;
+  gap: 10px;
+}
+.app-shell.is-anchored .task-card-title {
+  font-size: 1.15rem;
+}
+/* Bump the description from 0.7rem (~11px, the offender the user called out)
+   to 0.88rem (~14px) — still secondary, but actually readable at a glance. */
+.app-shell.is-anchored .task-card-desc {
+  font-size: 0.88rem;
+  line-height: 1.45;
+  max-width: none;
+}
+.app-shell.is-anchored .task-card .btn,
+.app-shell.is-anchored .task-card .btn-secondary {
+  align-self: stretch;
+  min-height: 42px;
+  font-size: 0.9rem;
+  margin-top: 6px;
+}
+
+/* Page-level type. The page-title already uses clamp() so it shrinks
+   gracefully, but the eyebrow + section-copy were stuck at very small sizes. */
+.app-shell.is-anchored .eyebrow {
+  font-size: 0.78rem;
+}
+.app-shell.is-anchored .section-title {
+  font-size: 1.2rem;
+}
+.app-shell.is-anchored .page-copy,
+.app-shell.is-anchored .section-copy {
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+/* JobPanel floating card is fixed 380px — at 460px window width it would
+   crowd the right edge. Pin it to a touch more breathing room. */
+.app-shell.is-anchored .job-panel {
+  right: 10px;
+  left: 10px;
+  width: auto;
 }
 
 .app-home,

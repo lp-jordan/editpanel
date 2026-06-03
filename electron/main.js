@@ -805,6 +805,12 @@ function createWindow() {
     minWidth: NORMAL_MIN_WIDTH,
     minHeight: NORMAL_MIN_HEIGHT,
     frame: false,          // remove OS title bar and traffic-light buttons
+    // When anchored, the editor mouses over from Resolve to click the panel.
+    // Default `acceptFirstMouse: false` would swallow that first click as a
+    // focus event — making the anchor toggle (and every other control) feel
+    // dead until a second click. true means the first click also registers as
+    // an actual click on whatever element it lands on. Safe in all modes.
+    acceptFirstMouse: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
