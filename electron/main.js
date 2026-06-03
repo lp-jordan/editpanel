@@ -1145,6 +1145,291 @@ function beginExportPolling() {
   setTimeout(() => { pollRenderStatus().catch(() => {}); }, 800);
 }
 
+// ── Phase 3.5 — orphan export reconciliation ─────────────────────────────────
+//
+// Independent of the activeExport tracker above. The tracker only polls
+// render_status for jobs the editor queued through EditPanel's overlay; an
+// editor who hit Render directly in Resolve would never appear on its radar.
+// This loop polls list_render_jobs every few seconds whenever Resolve is
+// connected, diffs every JobId against `export_runs.jobs_json`, and inserts
+// any unknowns as source='reconciled' orphans (project_id=NULL, awaiting the
+// editor's explicit project pick from the Exports page).
+//
+// Belt-and-suspenders re-attach: EditPanel-queued exports (Batch 4) prefix
+// CustomName with "[lpos:<export_id>] …". If we see that prefix on an
+// otherwise-untracked job — meaning its export_runs row was lost (SQLite
+// write failure mid-render, etc.) — we re-attach instead of creating a
+// duplicate orphan.
+
+const RECONCILE_INTERVAL_MS = 3000;
+const RECONCILE_DISMISS_THRESHOLD = 3;  // consecutive ticks of absence ≈ 9s
+let reconcileTimer = null;
+// Map<exportId, missCount> — counts consecutive ticks an orphan's JobId was
+// missing from Resolve's queue. Resets on every sighting. Cleared on terminal
+// transitions and on stop. Keeps the rare race (queue rebuilding mid-tick)
+// from flipping a rendering orphan to dismissed_in_resolve prematurely.
+const reconcileMissCounters = new Map();
+
+function startReconcileLoop() {
+  stopReconcileLoop();
+  if (!jobsDb) return;
+  reconcileTimer = setInterval(() => {
+    reconcileTick().catch(err => {
+      // Silent on the tick path — tick errors are rate-limited noise. If the
+      // worker is down we'll see it in the worker logs already.
+      void err;
+    });
+  }, RECONCILE_INTERVAL_MS);
+}
+
+function stopReconcileLoop() {
+  if (reconcileTimer) {
+    clearInterval(reconcileTimer);
+    reconcileTimer = null;
+  }
+  reconcileMissCounters.clear();
+}
+
+// Extract the "[lpos:<exportId>]" tag from a Resolve CustomName, if present.
+// Format authored in Batch 4 by SetRenderSettings(CustomName). Used by the
+// reconciler to re-attach orphan-looking jobs whose export_runs row was lost.
+function extractEditpanelExportId(customName) {
+  if (!customName || typeof customName !== 'string') return null;
+  const m = customName.match(/^\[lpos:([A-Za-z0-9_-]+)\]/);
+  return m ? m[1] : null;
+}
+
+// Every JobId currently held by a non-dismissed export_runs row. Drives the
+// "is this job an orphan?" check. We deliberately keep `delivered` / `failed`
+// in here too: Resolve continues to list completed jobs in the queue until
+// the editor manually clears them, and we don't want to re-discover them as
+// new orphans every tick.
+function collectTrackedJobIds() {
+  const ids = new Set();
+  if (!jobsDb) return ids;
+  let rows;
+  try {
+    rows = jobsDb.listExportRuns({ limit: 1000 });
+  } catch (_e) {
+    return ids;
+  }
+  for (const r of rows) {
+    if (r.state === 'dismissed_in_resolve') continue;
+    const jobs = Array.isArray(r.jobs) ? r.jobs : [];
+    for (const j of jobs) {
+      const id = j?.JobId ?? j?.job_id;
+      if (id != null) ids.add(String(id));
+    }
+  }
+  return ids;
+}
+
+// Update an orphan row's progress + state from the latest list_render_jobs
+// reading. No-op for editpanel-queued (source='editpanel') rows — the
+// activeExport tracker already drives their state authoritatively.
+function maybeUpdateOrphanProgress(jobId, liveJob) {
+  const orphanId = `orphan_${jobId}`;
+  let row;
+  try { row = jobsDb.getExportRun(orphanId); } catch (_) { return; }
+  if (!row || row.source !== 'reconciled') return;
+  if (row.state !== 'rendering') return;
+
+  const updates = {};
+  const livePercent = Number(liveJob.percent) || 0;
+  if (livePercent !== row.percent) updates.percent = livePercent;
+
+  if (liveJob.terminal && liveJob.status === 'Complete') {
+    updates.state = 'complete_unassigned';
+    updates.jobsDone = 1;
+    updates.percent = 100;
+    updates.finishedAt = Date.now();
+    if (liveJob.target_dir && liveJob.output_filename) {
+      try {
+        jobsDb.setExportOutputPaths(orphanId, [path.join(liveJob.target_dir, liveJob.output_filename)]);
+      } catch (_) { /* non-fatal */ }
+    }
+  } else if (liveJob.terminal && (liveJob.status === 'Failed' || liveJob.status === 'Cancelled')) {
+    updates.state = 'failed';
+    updates.error = `Resolve render ${String(liveJob.status).toLowerCase()}`;
+    updates.finishedAt = Date.now();
+  }
+
+  if (Object.keys(updates).length > 0) {
+    try {
+      jobsDb.updateExportRun(orphanId, updates);
+      broadcastExport('export-reconciled', { exportId: orphanId, jobId, ...updates });
+    } catch (_) { /* non-fatal */ }
+  }
+}
+
+async function reconcileTick() {
+  if (!jobsDb) return;
+  if (!resolveConnected) return;
+
+  let res;
+  try {
+    res = await sendWorkerRequest({ cmd: 'list_render_jobs' }, WORKERS.resolve);
+  } catch (_err) {
+    // Worker not ready / Resolve hiccup — try again next tick.
+    return;
+  }
+
+  const data = res?.data || {};
+  const liveJobs = Array.isArray(data.jobs) ? data.jobs : [];
+  const resolveProjectName = data.project_name || resolveProject || null;
+  const liveJobIds = new Set(liveJobs.map(j => String(j.job_id || '')).filter(Boolean));
+
+  const trackedJobIds = collectTrackedJobIds();
+
+  // 1. Sweep every live Resolve job. Three outcomes per job:
+  //    a) tracked → maybe-update orphan progress (no-op for editpanel-queued)
+  //    b) has [lpos:…] tag for a known export → re-attach
+  //    c) truly unknown → create orphan row
+  for (const j of liveJobs) {
+    const jid = String(j.job_id || '');
+    if (!jid) continue;
+
+    if (trackedJobIds.has(jid)) {
+      maybeUpdateOrphanProgress(jid, j);
+      reconcileMissCounters.delete(`orphan_${jid}`);
+      continue;
+    }
+
+    const taggedExportId = extractEditpanelExportId(j.custom_name);
+    if (taggedExportId) {
+      let taggedRow;
+      try { taggedRow = jobsDb.getExportRun(taggedExportId); } catch (_) { taggedRow = null; }
+      if (taggedRow) {
+        // Lost-row recovery: rebind this JobId onto the known editpanel export
+        // rather than creating an orphan. The activeExport tracker may pick it
+        // up next tick if the export is still active, but at minimum the row's
+        // jobs_json now records the JobId so subsequent ticks won't keep
+        // re-discovering it.
+        const existingJobs = Array.isArray(taggedRow.jobs) ? taggedRow.jobs : [];
+        const already = existingJobs.some(x => String(x?.JobId ?? x?.job_id) === jid);
+        if (!already) {
+          existingJobs.push({
+            JobId: jid,
+            TimelineName: j.timeline_name,
+            CustomName: j.custom_name,
+            RenderJobName: j.render_job_name,
+            TargetDir: j.target_dir,
+            OutputFilename: j.output_filename
+          });
+          try {
+            jobsDb.updateExportRun(taggedExportId, { jobs: existingJobs });
+          } catch (_) { /* non-fatal */ }
+        }
+        continue;
+      }
+      // Tagged but the export_id doesn't exist anymore (deleted, fresh
+      // install, etc.) — fall through and treat as a fresh orphan.
+    }
+
+    // c) True orphan — insert.
+    const isComplete = j.terminal && j.status === 'Complete';
+    const isFailed   = j.terminal && (j.status === 'Failed' || j.status === 'Cancelled');
+    const initialState = isComplete ? 'complete_unassigned' : (isFailed ? 'failed' : 'rendering');
+    const orphanId = `orphan_${jid}`;
+
+    let result;
+    try {
+      result = jobsDb.createOrphanExportRun({
+        exportId: orphanId,
+        targetDir: j.target_dir,
+        // project_name on the export_runs row is the LPOS project name; for an
+        // orphan we don't have an LPOS assignment yet (the editor picks one
+        // from the Exports page). Leave NULL. The source Resolve project name
+        // lives per-job below — same field name startExportTracking uses
+        // (resolveProjectName) so downstream UI code can treat both shapes the
+        // same way.
+        projectName: null,
+        jobs: [{
+          JobId: jid,
+          TimelineName: j.timeline_name,
+          CustomName: j.custom_name,
+          RenderJobName: j.render_job_name,
+          TargetDir: j.target_dir,
+          OutputFilename: j.output_filename,
+          status: j.status,
+          percent: Number(j.percent) || 0,
+          resolveProjectName: resolveProjectName
+        }],
+        state: initialState
+      });
+    } catch (_err) {
+      continue;
+    }
+
+    if (result?.inserted) {
+      // Backfill terminal-row fields the createOrphan call doesn't take
+      // explicitly (it's tuned for the rendering-discovery case).
+      const post = {};
+      if (isComplete || isFailed) {
+        post.percent = isComplete ? 100 : (Number(j.percent) || 0);
+        post.jobsDone = 1;
+        post.finishedAt = Date.now();
+        if (isFailed) post.error = `Resolve render ${String(j.status).toLowerCase()}`;
+      }
+      if (Object.keys(post).length > 0) {
+        try { jobsDb.updateExportRun(orphanId, post); } catch (_) { /* non-fatal */ }
+      }
+      if (isComplete && j.target_dir && j.output_filename) {
+        try {
+          jobsDb.setExportOutputPaths(orphanId, [path.join(j.target_dir, j.output_filename)]);
+        } catch (_) { /* non-fatal */ }
+      }
+      broadcastExport('export-reconciled', {
+        exportId: orphanId,
+        jobId: jid,
+        state: initialState,
+        discovered: true
+      });
+    }
+
+    reconcileMissCounters.delete(orphanId);
+  }
+
+  // 2. Detect orphans whose JobId vanished from Resolve's queue. Only counts
+  //    against still-rendering orphans (terminal ones shouldn't transition to
+  //    dismissed). Debounced over RECONCILE_DISMISS_THRESHOLD consecutive ticks
+  //    so a transient queue-rebuild blip doesn't trip the dismissal.
+  let openOrphans;
+  try {
+    openOrphans = jobsDb.listExportRuns({ source: 'reconciled', state: 'rendering', limit: 500 });
+  } catch (_) {
+    openOrphans = [];
+  }
+  for (const orphan of openOrphans) {
+    const firstJob = Array.isArray(orphan.jobs) ? orphan.jobs[0] : null;
+    const jid = firstJob ? String(firstJob.JobId ?? firstJob.job_id ?? '') : '';
+    const fallbackJid = (!jid && typeof orphan.export_id === 'string')
+      ? orphan.export_id.replace(/^orphan_/, '')
+      : jid;
+    const checkJid = jid || fallbackJid;
+    if (!checkJid) continue;
+
+    if (liveJobIds.has(checkJid)) {
+      reconcileMissCounters.delete(orphan.export_id);
+      continue;
+    }
+
+    const misses = (reconcileMissCounters.get(orphan.export_id) || 0) + 1;
+    reconcileMissCounters.set(orphan.export_id, misses);
+    if (misses >= RECONCILE_DISMISS_THRESHOLD) {
+      try {
+        jobsDb.setExportState(orphan.export_id, 'dismissed_in_resolve', { finishedAt: Date.now() });
+      } catch (_) { /* non-fatal */ }
+      reconcileMissCounters.delete(orphan.export_id);
+      broadcastExport('export-reconciled', {
+        exportId: orphan.export_id,
+        state: 'dismissed_in_resolve',
+        dismissed: true
+      });
+    }
+  }
+}
+
 // ── EditPanel ↔ LPOS sign-in (custom URL scheme handling) ──────────────────────
 //
 // After the user approves on /ep/link in their browser, LPOS redirects to
@@ -1313,6 +1598,10 @@ app.whenReady().then(() => {
     jobsDb = new JobsDb(path.join(app.getPath('userData'), 'jobs-history.db'));
     jobsDb.clearStaleAtemLogs();   // mark any interrupted ingest runs from prior session
     jobsDb.clearStaleExportRuns(); // mark any export still 'rendering' from prior session as interrupted
+    // Phase 3.5: ticking reconciliation against Resolve's render queue. Runs
+    // for the entire app lifetime; each tick is a no-op when Resolve isn't
+    // connected. See the section block above for the design rationale.
+    startReconcileLoop();
   } catch (err) {
     console.error('Failed to open jobs-history.db:', err.message);
   }
@@ -2315,6 +2604,7 @@ app.on('before-quit', () => {
   isQuitting = true;
   if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
   if (lposHeartbeatTimer) { clearInterval(lposHeartbeatTimer); lposHeartbeatTimer = null; }
+  stopReconcileLoop();
   lposClient = null;
   if (jobsDb) { jobsDb.close(); jobsDb = null; }
   if (controlPlane) { controlPlane.dispose(); controlPlane = null; }
