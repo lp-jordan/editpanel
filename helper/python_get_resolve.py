@@ -26,11 +26,23 @@ that drove the rewrite — see [[editpanel_resolve_advisory]].
 
 from __future__ import annotations
 
+import faulthandler
 import importlib.machinery
 import importlib.util
 import logging
 import os
 import sys
+import time
+
+# Dump a Python traceback to stderr if the interpreter segfaults — including
+# crashes inside native module initialization. Without this, an access
+# violation inside fusionscript.dll's PyInit just kills the process with no
+# clue which Python frame triggered it. The stderr stream is forwarded to
+# the EditPanel UI, so the dump shows up in the slideout console.
+try:
+    faulthandler.enable()
+except Exception:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +140,21 @@ def _load_fusionscript():
     if spec is None:
         raise ImportError(f"Could not build module spec for {lib_path}")
     module = importlib.util.module_from_spec(spec)
+
+    # Log right before the native load so we know which DLL the loader tried
+    # even when exec_module access-violates. Without this, an AV produces a
+    # silent process death and we have to infer "it tried to load <default
+    # path>" from the absence of the success message below.
+    try:
+        st = os.stat(lib_path)
+        logger.info(
+            "Attempting native load: %s (size=%d bytes, mtime=%s)",
+            lib_path, st.st_size, time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(st.st_mtime)),
+        )
+    except OSError as exc:
+        logger.info("Attempting native load: %s (stat failed: %s)", lib_path, exc)
+    sys.stderr.flush()
+
     loader.exec_module(module)
     _script_module = module
     logger.info("Loaded fusionscript from %s", lib_path)
