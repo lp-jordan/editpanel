@@ -309,6 +309,17 @@ function SelectionActionBar({ count, onClear, onDelete }) {
 }
 
 // ── Row ────────────────────────────────────────────────────────
+// Phase 3.5.2 (2026-06-08) — collapsed two-line layout (header + meta),
+// down from the four-line label-prefix layout that was visually chunky in
+// real-world use. The pre-3.5.2 layout repeated the filename in both the
+// title and a separate LOCAL line, and gave LPOS its own line for a value
+// that's frequently '—' on unassigned rows. Now:
+//   HEADER: [badge] title                                        time
+//   META:   resolveProject / timeline  · queued    → LposProject [↗ Open] [Push to LPOS…]
+//   ERROR:  (only when row.error present)
+// The meta row flexes — the from-info shrinks first, the LPOS chip + action
+// buttons stay fixed on the right. Inline buttons are visually tightened by
+// a sibling .btn.small min-height override in styles.css.
 function ExportRow({
   row, selected, selectable, onRowClick, onPushClick, onOpenFolderClick
 }) {
@@ -319,17 +330,34 @@ function ExportRow({
     || (row.target_dir ? row.target_dir : null);
   const ldelivery = row.lpos_delivery;
 
-  const fromLine = (rpName || tl.length > 0)
+  // Contextual sub-text — Resolve project / timeline. No "FROM" label: the
+  // muted color + position under the title carry the same meaning.
+  const fromInfo = (rpName || tl.length > 0)
     ? `${rpName || '—'}${tl.length > 0 ? ` / ${tl.join(', ')}` : ''}`
     : null;
 
-  const localLine = localPrimary
-    ? (Array.isArray(row.output_paths) && row.output_paths.length > 1
-        ? `${fileTail(localPrimary)} (+${row.output_paths.length - 1})`
-        : (fileTail(localPrimary) || localPrimary))
-    : null;
-
   const orphanWaitingAssign = row.state === 'complete_unassigned';
+
+  // LPOS chip text — show the destination project name when known. Drops
+  // for unassigned rows (the Push button takes over that visual slot) so
+  // we don't say "→ not assigned" which is just noise.
+  const lposName = ldelivery?.project_name
+    || (orphanWaitingAssign ? null : row.project_name)
+    || null;
+
+  // Multi-file "(+N)" affordance — historically shown next to LOCAL filename.
+  // Now folded into the title or the LPOS chip (whichever is present).
+  const multiFileCount = (Array.isArray(row.output_paths) && row.output_paths.length > 1)
+    ? row.output_paths.length
+    : 0;
+
+  const titleText = fileTail(localPrimary) || tl[0] || row.export_id;
+
+  const hasMeta = fromInfo
+    || lposName
+    || orphanWaitingAssign
+    || localPrimary
+    || row.source === 'reconciled';
 
   // Clicks on inline action buttons must NOT bubble up to the row root and
   // trigger a selection change. The row's onClick is selection; the
@@ -359,69 +387,53 @@ function ExportRow({
         <span className={`exports-row-badge exports-row-badge-${badge.cls}`} title={badge.label}>
           {badge.icon}
         </span>
-        <span className="exports-row-title">
-          {fileTail(localPrimary) || tl[0] || row.export_id}
+        <span className="exports-row-title" title={titleText}>
+          {titleText}
+          {multiFileCount > 0 && (
+            <span className="exports-row-multifile"> +{multiFileCount - 1}</span>
+          )}
         </span>
         <span className="exports-row-time">{relativeTime(row.started_at)}</span>
       </header>
 
-      {fromLine && (
-        <div className="exports-row-line">
-          <span className="exports-row-label">From</span>
-          <span className="exports-row-value">{fromLine}</span>
-          {row.source === 'reconciled' && (
-            <span className="exports-row-hint">queued in Resolve</span>
+      {hasMeta && (
+        <div className="exports-row-meta">
+          {fromInfo && (
+            <span className="exports-row-from" title={fromInfo}>{fromInfo}</span>
           )}
-        </div>
-      )}
-
-      {localLine && (
-        <div className="exports-row-line">
-          <span className="exports-row-label">Local</span>
-          <span className="exports-row-value mono">{localLine}</span>
-          <button
-            type="button"
-            className="btn ghost small"
-            onClick={stopBubble(() => onOpenFolderClick(localPrimary))}
-          >
-            ↗ Open folder
-          </button>
-        </div>
-      )}
-
-      <div className="exports-row-line">
-        <span className="exports-row-label">LPOS</span>
-        {ldelivery ? (
-          <>
-            <span className="exports-row-value">
-              {ldelivery.project_name || row.project_name || '—'}
+          {row.source === 'reconciled' && (
+            <span className="exports-row-hint">· queued in Resolve</span>
+          )}
+          {lposName && (
+            <span className="exports-row-lpos-chip" title={`Uploaded to ${lposName}`}>
+              → {lposName}
             </span>
-            {ldelivery.file_ids?.length > 1 && (
-              <span className="exports-row-hint">{ldelivery.file_ids.length} files</span>
-            )}
-          </>
-        ) : orphanWaitingAssign ? (
-          <>
-            <span className="exports-row-value muted">— not assigned —</span>
+          )}
+          {localPrimary && (
             <button
               type="button"
-              className="btn primary small"
+              className="btn ghost small exports-row-action"
+              onClick={stopBubble(() => onOpenFolderClick(localPrimary))}
+              title="Reveal local file in folder"
+            >
+              ↗ Open
+            </button>
+          )}
+          {orphanWaitingAssign && (
+            <button
+              type="button"
+              className="btn primary small exports-row-action"
               onClick={stopBubble(() => onPushClick(row))}
             >
               Push to LPOS…
             </button>
-          </>
-        ) : row.project_name ? (
-          <span className="exports-row-value">{row.project_name}</span>
-        ) : (
-          <span className="exports-row-value muted">—</span>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {row.error && (
-        <div className="exports-row-line exports-row-error">
-          <span className="exports-row-label">Error</span>
-          <span className="exports-row-value">{row.error}</span>
+        <div className="exports-row-error-line" title={row.error}>
+          {row.error}
         </div>
       )}
     </article>
