@@ -1,12 +1,13 @@
 {
   "name": "editpanel",
-  "version": "1.1.16",
+  "version": "1.2.1",
   "description": "EditPanel — DaVinci Resolve companion app for the LPOS ecosystem",
   "author": "LeaderPass <tools@leaderpass.com>",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "package": "node scripts/package.mjs",
+    "postinstall": "node scripts/fetch-python.mjs",
     "test": "echo 'No tests'",
     "baseline:latency": "node scripts/baseline-latency.js",
     "test:recipes": "node scripts/validate-recipes.js",
@@ -34,6 +35,13 @@
           "**/*",
           "!**/__pycache__/**",
           "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "vendor/python-win32",
+        "to": "python",
+        "filter": [
+          "**/*"
         ]
       }
     ],

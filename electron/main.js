@@ -71,7 +71,21 @@ const WIN_ACCESS_VIOLATION_EXIT = 3221225477;
 const FAST_CRASH_UPTIME_MS = 2000;
 const FAST_CRASH_THRESHOLD = 2;
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
-const PYTHON_CMD = process.platform === 'win32' ? 'python' : 'python3';
+// PYTHON_CMD — bundled Python 3.10 on packaged Windows builds eliminates the
+// lp2-class failure mode (wrong system Python loaded fusionscript.dll and
+// segfaulted; see docs/project history.md 2026-06-02 + docs/new-machine-setup.md).
+// macOS dev keeps system python3 (packaging is Windows-only); Windows dev
+// prefers the vendor/ copy if scripts/fetch-python.mjs has materialized it,
+// else falls back to system python.
+const PYTHON_CMD = (() => {
+  if (process.platform !== 'win32') return 'python3';
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'python', 'python.exe');
+  }
+  const vendor = path.join(__dirname, '..', 'vendor', 'python-win32', 'python.exe');
+  if (fs.existsSync(vendor)) return vendor;
+  return 'python';
+})();
 const EP_LINK_SCHEME = 'lpos-editpanel';
 const EP_LINK_CALLBACK = `${EP_LINK_SCHEME}://callback`;
 
@@ -1408,6 +1422,40 @@ function maybeUpdateOrphanProgress(jobId, liveJob) {
   let row;
   try { row = jobsDb.getExportRun(orphanId); } catch (_) { return; }
   if (!row || row.source !== 'reconciled') return;
+
+  // Phase 3.5.4 (2026-06-08): if a user_dismissed tombstone's JobId reappears
+  // in Resolve's queue as non-terminal (Rendering / Ready), the editor clicked
+  // "Render Again" on a previously-dismissed queue item. Resolve keeps the
+  // JobId stable across re-runs of the same queue job, so the 3.5.3 tombstone
+  // (which kept the JobId in trackedJobIds to prevent re-discovery) ends up
+  // silently swallowing the re-render's progress. Revive: un-tombstone the
+  // row back to 'rendering' so the existing progress/completion logic below
+  // takes over normally. Don't revive on status=Complete — Resolve keeps
+  // completed jobs in the queue indefinitely, and that's exactly the case
+  // 3.5.3's tombstone is supposed to absorb. The non-terminal signal is the
+  // unambiguous "the user actively re-ran this" trigger.
+  //
+  // Edge case not handled: a re-render that completes between consecutive
+  // reconcile ticks (3s window) — we'd never see status=Rendering and the
+  // revive wouldn't fire. The user would need to render again. Acceptable
+  // tradeoff vs. the risk of false-positive revives on plain re-listings.
+  if (row.state === 'user_dismissed' && !liveJob.terminal) {
+    try {
+      jobsDb.setExportState(orphanId, 'rendering');
+      jobsDb.setExportHiddenFromJobpanel(orphanId, false);
+      // Clear the Phase 3 prune counter so it doesn't accumulate misses
+      // against a row that's now actively rendering again.
+      userDismissedPruneCounters.delete(orphanId);
+      broadcastExport('export-reconciled', {
+        exportId: orphanId, jobId, state: 'rendering', revived: true
+      });
+    } catch (_) { return; }
+    // Re-read so the row reflects the new 'rendering' state for the gate
+    // below + the progress-update logic that follows.
+    try { row = jobsDb.getExportRun(orphanId); } catch (_) { return; }
+    if (!row) return;
+  }
+
   if (row.state !== 'rendering') return;
 
   const updates = {};
