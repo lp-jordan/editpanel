@@ -1449,6 +1449,46 @@ async function reconcileTick() {
 
   const trackedJobIds = collectTrackedJobIds();
 
+  // Phase 5c.11 (2026-06-08): lazy-fetched per-tick map of
+  // timelineName → { uid, startTimecode, fps } for the *currently open* Resolve
+  // project, used to tether new orphans. Only populated if we actually find an
+  // orphan to insert (the common case is zero orphans per tick → no extra
+  // worker call). Names that appear on more than one timeline are dropped from
+  // the lookup — we can't pick a UID we're not sure of, and a partial tether
+  // is worse than none (LPOS finalize rejects malformed renderMeta with 400;
+  // and the wrong UID would silently mis-tether comments to the wrong
+  // timeline). Degraded path: orphan gets created without timeline metadata
+  // and uploads untethered, matching today's behavior.
+  let timelineLookupPromise = null;
+  const getTimelineLookup = () => {
+    if (timelineLookupPromise) return timelineLookupPromise;
+    timelineLookupPromise = (async () => {
+      try {
+        const r = await sendWorkerRequest({ cmd: 'list_timelines' }, WORKERS.resolve);
+        const rows = r?.data?.timelines || [];
+        const byName = new Map();
+        const ambiguous = new Set();
+        for (const row of rows) {
+          if (!row || !row.name || !row.uid) continue;
+          if (byName.has(row.name)) {
+            ambiguous.add(row.name);
+          } else {
+            byName.set(row.name, {
+              uid: row.uid,
+              startTimecode: row.start_timecode || null,
+              fps: typeof row.fps === 'number' ? row.fps : null,
+            });
+          }
+        }
+        for (const n of ambiguous) byName.delete(n);
+        return byName;
+      } catch (_) {
+        return new Map();
+      }
+    })();
+    return timelineLookupPromise;
+  };
+
   // 1. Sweep every live Resolve job. Three outcomes per job:
   //    a) tracked → maybe-update orphan progress (no-op for editpanel-queued)
   //    b) has [lpos:…] tag for a known export → re-attach
@@ -1500,6 +1540,22 @@ async function reconcileTick() {
     const initialState = isComplete ? 'complete_unassigned' : (isFailed ? 'failed' : 'rendering');
     const orphanId = `orphan_${jid}`;
 
+    // Phase 5c.11 (2026-06-08): capture timeline tether at discovery time. The
+    // render job record only carries the timeline NAME — we resolve it to
+    // {uid, startTimecode, fps} via list_timelines so the eventual
+    // push-to-LPOS can send a full renderMeta block and write an
+    // editorial_links row. Done here (not at push time) because the user may
+    // close the Resolve project before assigning — capturing at discovery
+    // freezes the tether in jobs_json where it survives indefinitely.
+    let tether = null;
+    if (j.timeline_name) {
+      const lookup = await getTimelineLookup();
+      const hit = lookup.get(j.timeline_name);
+      if (hit && hit.uid && hit.startTimecode && typeof hit.fps === 'number') {
+        tether = hit;
+      }
+    }
+
     let result;
     try {
       result = jobsDb.createOrphanExportRun({
@@ -1521,7 +1577,14 @@ async function reconcileTick() {
           OutputFilename: j.output_filename,
           status: j.status,
           percent: Number(j.percent) || 0,
-          resolveProjectName: resolveProjectName
+          resolveProjectName: resolveProjectName,
+          // Tether fields (Phase 5c.11). Null when timeline isn't loaded in
+          // Resolve right now or its name is ambiguous within the project.
+          // Push-to-LPOS reads these to build renderMeta; all-or-nothing —
+          // if any one is null it skips renderMeta entirely.
+          timelineUid:           tether ? tether.uid : null,
+          timelineStartTimecode: tether ? tether.startTimecode : null,
+          timelineFps:           tether ? tether.fps : null
         }],
         state: initialState
       });
@@ -2954,6 +3017,36 @@ app.whenReady().then(() => {
       return { ok: false, error: err.message };
     }
 
+    // Phase 5c.11 (2026-06-08): build renderMeta from the orphan's stored
+    // tether so the upload writes an editorial_links row on LPOS — same shape
+    // the active-export path (line ~1163) uses. The reconcile tick captured
+    // timelineUid + startTimecode + fps at discovery time; if any field is
+    // missing (timeline name was ambiguous, Resolve project had since closed,
+    // pre-5c.11 orphan row from an older build, etc.) we omit renderMeta and
+    // the asset uploads untethered — matching pre-5c.11 behavior. Per-file
+    // resolution: in practice all jobs in one orphan export_run share a
+    // timeline (Resolve renders one timeline per queue submission), so we
+    // build renderMeta once from the first job and reuse it.
+    const firstJob = Array.isArray(row.jobs) ? row.jobs[0] : null;
+    let renderMeta = null;
+    if (
+      firstJob
+      && firstJob.timelineUid
+      && firstJob.timelineStartTimecode
+      && typeof firstJob.timelineFps === 'number'
+      && firstJob.resolveProjectName
+    ) {
+      renderMeta = {
+        timelineUid:           firstJob.timelineUid,
+        timelineName:          firstJob.TimelineName || '',
+        timelineStartTimecode: firstJob.timelineStartTimecode,
+        timelineFps:           firstJob.timelineFps,
+        resolveProjectName:    firstJob.resolveProjectName,
+        renderedAt:            new Date().toISOString(),
+        renderedFromMachine:   os.hostname() || null
+      };
+    }
+
     // Fire-and-forget the actual upload — the renderer doesn't wait on it.
     // Progress visibility is intentionally coarse for this MVP (start/end only
     // via export-reconciled events). Per-file streaming progress would tie
@@ -2964,7 +3057,8 @@ app.whenReady().then(() => {
       for (const filePath of outputs) {
         try {
           const res = await lposClient.uploadFileToProject(projectId, filePath, {
-            fileName: path.basename(filePath)
+            fileName: path.basename(filePath),
+            renderMeta
           });
           const assetId = res?.asset?.assetId;
           if (assetId) fileIds.push(assetId);
