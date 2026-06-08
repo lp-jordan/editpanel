@@ -1337,6 +1337,14 @@ let reconcileTimer = null;
 // transitions and on stop. Keeps the rare race (queue rebuilding mid-tick)
 // from flipping a rendering orphan to dismissed_in_resolve prematurely.
 const reconcileMissCounters = new Map();
+// Map<exportId, missCount> for the Phase 3.5.3 user_dismissed prune pass.
+// When the user hard-deletes a row from the Exports page, the row is
+// tombstoned (state='user_dismissed') so its JobId stays in trackedJobIds
+// and the reconciler doesn't re-discover it as an orphan. Once Resolve's
+// queue no longer holds that JobId, the row is safe to actually delete —
+// debounced over RECONCILE_DISMISS_THRESHOLD ticks to ride out queue
+// rebuild blips, same as the existing dismissed_in_resolve debounce.
+const userDismissedPruneCounters = new Map();
 
 function startReconcileLoop() {
   stopReconcileLoop();
@@ -1665,6 +1673,49 @@ async function reconcileTick() {
   // dismissed from JobPanel are permanent records in ExportsPanel. The
   // reconciler skips re-creation because their JobIds are still tracked by
   // collectTrackedJobIds (which includes every non-dismissed_in_resolve row).
+
+  // 3. Phase 3.5.3 (2026-06-08) — opportunistic prune of `user_dismissed`
+  //    tombstones. The Exports-page "Delete" action transitions rows to
+  //    state='user_dismissed' rather than DELETEing so the row's JobId stays
+  //    in trackedJobIds and the reconciler won't re-discover the underlying
+  //    Resolve render job as a fresh orphan. Once Resolve's queue no longer
+  //    holds the JobId (editor cleared the queue, Resolve restarted, etc.),
+  //    re-discovery is impossible and the tombstone is safe to hard-DELETE.
+  //    Debounced over RECONCILE_DISMISS_THRESHOLD ticks for the same reason
+  //    Phase 2 is — a transient queue-rebuild blip shouldn't trigger the
+  //    final delete and leave the door open to a re-discovery race. Silent
+  //    (no broadcast); the row was already invisible to every UI when the
+  //    Delete action set the state.
+  let dismissedTombstones;
+  try {
+    dismissedTombstones = jobsDb.listExportRuns({ state: 'user_dismissed', limit: 500 });
+  } catch (_) {
+    dismissedTombstones = [];
+  }
+  for (const tomb of dismissedTombstones) {
+    const jobs = Array.isArray(tomb.jobs) ? tomb.jobs : [];
+    // A tombstone may carry multiple JobIds (e.g. an orphan row that was
+    // re-bound to an editpanel export — rare but possible). Only prune
+    // when EVERY JobId on the row has fallen out of Resolve's queue.
+    let anyStillLive = false;
+    for (const j of jobs) {
+      const id = j?.JobId ?? j?.job_id;
+      if (id != null && liveJobIds.has(String(id))) { anyStillLive = true; break; }
+    }
+    // Also handle the (unusual) zero-JobId case — a tombstoned row that for
+    // whatever reason has no JobIds can be pruned immediately; there's
+    // nothing in Resolve's queue to re-discover.
+    if (anyStillLive) {
+      userDismissedPruneCounters.delete(tomb.export_id);
+      continue;
+    }
+    const misses = (userDismissedPruneCounters.get(tomb.export_id) || 0) + 1;
+    userDismissedPruneCounters.set(tomb.export_id, misses);
+    if (misses >= RECONCILE_DISMISS_THRESHOLD) {
+      try { jobsDb.deleteExportRun(tomb.export_id); } catch (_) { /* non-fatal */ }
+      userDismissedPruneCounters.delete(tomb.export_id);
+    }
+  }
 }
 
 // ── EditPanel ↔ LPOS sign-in (custom URL scheme handling) ──────────────────────
@@ -2898,7 +2949,18 @@ app.whenReady().then(() => {
     try {
       // ExportsPanel is the concrete record — show every render the editor
       // touched, regardless of whether it's been dismissed from JobPanel.
-      const opts = { limit: Number(filter?.limit) || 500 };
+      //
+      // Phase 3.5.3 (2026-06-08): `user_dismissed` rows are tombstones from
+      // the multi-select delete action — they live in the table only so
+      // their JobId stays in `collectTrackedJobIds` (preventing reconciler
+      // re-discovery), and they get pruned by the reconciler once Resolve's
+      // queue drops their JobId. They should never appear in any Exports UI
+      // filter, so the exclusion sits at the top-level opts and cascades to
+      // every switch branch (including the post-filter `delivered` case).
+      const opts = {
+        limit: Number(filter?.limit) || 500,
+        excludeState: 'user_dismissed'
+      };
       switch (filter?.kind) {
         case 'unassigned':
           opts.state = 'complete_unassigned';
@@ -2920,8 +2982,10 @@ app.whenReady().then(() => {
         case 'delivered': {
           // "Delivered" isn't a single state — it covers any row whose LPOS
           // half is recorded (editpanel-queued 'completed' + lpos_delivery set,
-          // or orphan path 'delivered'). Easier to post-filter.
-          const all = jobsDb.listExportRuns({ limit: 500 });
+          // or orphan path 'delivered'). Easier to post-filter; pass the
+          // user_dismissed exclusion through so this branch stays consistent
+          // with the others.
+          const all = jobsDb.listExportRuns({ limit: 500, excludeState: 'user_dismissed' });
           return {
             ok: true,
             data: all.filter(r => r.lpos_delivery !== null || r.state === 'delivered')
@@ -3094,15 +3158,33 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
-  // Phase 3.5.1 (2026-06-08): hard-delete a batch of terminal export_runs
-  // rows. Distinct from 'export:delete-run' (JobPanel-side soft-hide) — this
-  // is the Exports page's "permanently remove from local history" action,
-  // surfaced via the multi-select floating action bar. Hard delete is the
-  // right call here because: (1) the editor explicitly selected rows and
-  // confirmed in a modal that flagged unassigned-row LPOS-link loss; (2)
-  // soft-hide would re-orphan complete_unassigned rows on the next
-  // reconcile tick (the reconciler's collectTrackedJobIds excludes hidden
-  // rows from its known-set), so 'hide' wouldn't actually stick.
+  // Phase 3.5.1 (2026-06-08): "delete" a batch of terminal export_runs rows
+  // from the Exports page's multi-select action bar. Distinct from
+  // 'export:delete-run' (JobPanel-side soft-hide).
+  //
+  // **Phase 3.5.3 (2026-06-08) correction:** my 3.5.1 implementation hard-
+  // DELETED rows. That re-introduced the exact bug 3.5.1 was trying to fix:
+  // the reconciler's `collectTrackedJobIds` reads `jobs_json` to learn which
+  // Resolve JobIds are already accounted for; once the row was gone, the
+  // JobId fell out of the tracked set, and the very next 3s tick re-
+  // discovered the same Resolve render job and re-inserted it as a fresh
+  // orphan. Soft-hide (`hidden_from_jobpanel`) has the same flaw — the
+  // collectTrackedJobIds reads ALL rows regardless of hidden_from_jobpanel,
+  // BUT collectTrackedJobIds also explicitly skips `dismissed_in_resolve`
+  // rows, and a 3.5.1-era hard-delete on a complete_unassigned row removed
+  // it entirely from the tracked-set. Either way, ghosts.
+  //
+  // The fix is "soft-tombstone": transition the row to a new terminal state
+  // `user_dismissed` (and hide it from JobPanel). The row stays in
+  // export_runs so its JobId stays in trackedJobIds → reconciler treats the
+  // Resolve render job as known → no re-discovery. The Exports UI defaults
+  // to excluding `user_dismissed` rows (see `exports:list` opts), so from
+  // the editor's POV the rows vanish on the next refresh, same UX as a
+  // hard delete. The reconciler's Phase 3 pass (added in the same commit)
+  // opportunistically hard-deletes user_dismissed rows once their JobId is
+  // no longer in Resolve's queue (debounced over RECONCILE_DISMISS_THRESHOLD
+  // ticks, mirroring the existing dismissed_in_resolve transition), so the
+  // table doesn't grow unboundedly.
   //
   // Skipped (returned in `skipped`):
   //   - The active export row (use cancel, not delete, for in-flight work).
@@ -3143,7 +3225,10 @@ app.whenReady().then(() => {
         continue;
       }
       try {
-        jobsDb.deleteExportRun(exportId);
+        // Tombstone: state transition + hide from JobPanel. The JobId stays
+        // in trackedJobIds so the reconciler won't re-discover it.
+        jobsDb.setExportState(exportId, 'user_dismissed', { finishedAt: Date.now() });
+        jobsDb.setExportHiddenFromJobpanel(exportId, true);
         deleted.push(exportId);
       } catch (err) {
         skipped.push({ exportId, reason: err.message || String(err) });
@@ -3151,8 +3236,10 @@ app.whenReady().then(() => {
     }
 
     // Single broadcast — renderer's onReconciled handler refreshes the list.
-    // Including deletedExportIds in the payload lets future renderers do
-    // optimistic local removal if they want.
+    // The Exports UI's list filter excludes user_dismissed, so from the
+    // editor's POV the rows vanish; JobPanel ignores them because
+    // hidden_from_jobpanel=true. Payload key kept as `deletedExportIds` for
+    // backwards compatibility with any future optimistic-removal renderers.
     broadcastExport('export-reconciled', {
       deletedExportIds: deleted,
       hardDeleted: deleted.length

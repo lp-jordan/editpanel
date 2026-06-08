@@ -120,16 +120,27 @@ function dirOf(p) {
 // Mirrors the grouped-by-client shape ExportDeliverOverlay uses so editors
 // see the same project listing they're used to. Loads on open; renders an
 // error if LPOS unreachable.
+//
+// Phase 3.5.3 (2026-06-08): added a filter-as-you-type search at the top.
+// Matches case-insensitively against EITHER project name or client name —
+// typing a client name surfaces every project under that client, typing
+// part of a project name narrows to that project. Empty client groups
+// disappear from the result. Input is autofocused on open and cleared on
+// close so each session starts fresh. Cmd/Ctrl+F focuses the input if the
+// editor's mid-scroll and reaches for it instinctively.
 function ProjectPicker({ open, onClose, onPick }) {
   const [projects, setProjects] = React.useState([]);
   const [loading, setLoading]   = React.useState(false);
   const [error, setError]       = React.useState(null);
   const [picked, setPicked]     = React.useState(null);
+  const [query, setQuery]       = React.useState('');
+  const searchRef = React.useRef(null);
 
   React.useEffect(() => {
     if (!open) return;
     setError(null);
     setPicked(null);
+    setQuery('');
     if (!window.lposAPI?.listProjects) {
       setError('LPOS API unavailable');
       return;
@@ -144,18 +155,58 @@ function ProjectPicker({ open, onClose, onPick }) {
       .finally(() => setLoading(false));
   }, [open]);
 
+  // Autofocus the search input when the modal opens. The data fetch effect
+  // above runs first; this runs after the input is in the DOM. Defer with
+  // requestAnimationFrame so we focus AFTER the layout pass that mounted
+  // the input, not before.
+  React.useEffect(() => {
+    if (!open) return;
+    const raf = window.requestAnimationFrame(() => {
+      if (searchRef.current) searchRef.current.focus();
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [open]);
+
+  // Cmd/Ctrl+F → focus search input. Standard convention; the editor
+  // shouldn't have to reach for the mouse if they're already mid-scroll.
+  React.useEffect(() => {
+    if (!open) return;
+    function onKey(e) {
+      if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        if (searchRef.current) searchRef.current.focus();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
   const grouped = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
     const m = new Map();
     for (const p of projects) {
       if (p.archived) continue;
+      const name   = (p.name || p.projectName || '').toLowerCase();
+      const client = (p.clientName || '').toLowerCase();
+      if (q && !name.includes(q) && !client.includes(q)) continue;
       const k = p.clientName || 'Unassigned';
       if (!m.has(k)) m.set(k, []);
       m.get(k).push(p);
     }
     return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [projects]);
+  }, [projects, query]);
+
+  // Total filtered count — useful for "no matches" copy and as a sanity
+  // check during typing. Derived from grouped so we count post-filter.
+  const filteredCount = React.useMemo(
+    () => grouped.reduce((acc, [, list]) => acc + list.length, 0),
+    [grouped]
+  );
 
   if (!open) return null;
+
+  const showNoMatches = !loading && !error && projects.length > 0 && filteredCount === 0;
+  const showNoProjects = !loading && !error && projects.length === 0;
 
   return (
     <div className="export-picker-overlay" role="dialog" aria-modal="true">
@@ -168,11 +219,44 @@ function ProjectPicker({ open, onClose, onPick }) {
           <button type="button" className="btn ghost" onClick={onClose}>Cancel</button>
         </header>
 
+        <div className="export-picker-search">
+          <input
+            ref={searchRef}
+            type="search"
+            className="export-picker-search-input"
+            placeholder="Search projects or clients…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            // Esc clears the query if any, else closes the modal — matches
+            // how text-input dialogs typically handle Esc.
+            onKeyDown={e => {
+              if (e.key === 'Escape') {
+                if (query) {
+                  e.preventDefault();
+                  setQuery('');
+                } else {
+                  onClose();
+                }
+              }
+            }}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          {query && (
+            <span className="export-picker-search-meta">
+              {filteredCount} match{filteredCount !== 1 ? 'es' : ''}
+            </span>
+          )}
+        </div>
+
         <div className="export-picker-body">
           {loading && <p className="muted">Loading projects…</p>}
           {error   && <p className="bad">{error}</p>}
-          {!loading && !error && grouped.length === 0 && (
+          {showNoProjects && (
             <p className="muted">No projects available.</p>
+          )}
+          {showNoMatches && (
+            <p className="muted">No projects match “{query}”.</p>
           )}
           {!loading && !error && grouped.map(([client, list]) => (
             <div key={client} className="export-project-group">

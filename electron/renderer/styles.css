@@ -4343,6 +4343,56 @@ button.status-bar-chip-btn:hover {
   font-size: 1.1rem;
 }
 
+/* Phase 3.5.3 — search bar between header and the scrolling project list.
+   Sticky-looking border under the input separates it visually from the
+   scrolling body. The body's own padding-top stays so the first client
+   group has the same breathing room it had before the search was added. */
+.export-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.export-picker-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text-strong);
+  font-size: 0.88rem;
+  outline: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.export-picker-search-input::placeholder {
+  color: var(--muted-soft);
+}
+
+.export-picker-search-input:focus {
+  border-color: var(--accent, #d4a25e);
+  background: var(--surface-2);
+}
+
+/* Native search input's UA clear button — hide on Chromium/Electron so we
+   don't end up with two clears (the Esc-clear behavior covers it). */
+.export-picker-search-input::-webkit-search-cancel-button {
+  appearance: none;
+  display: none;
+}
+
+.export-picker-search-meta {
+  flex: 0 0 auto;
+  font-size: 0.74rem;
+  color: var(--muted-soft);
+  white-space: nowrap;
+}
+
 .export-picker-body {
   flex: 1 1 auto;
   overflow-y: auto;
