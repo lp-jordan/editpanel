@@ -3094,6 +3094,73 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
+  // Phase 3.5.1 (2026-06-08): hard-delete a batch of terminal export_runs
+  // rows. Distinct from 'export:delete-run' (JobPanel-side soft-hide) — this
+  // is the Exports page's "permanently remove from local history" action,
+  // surfaced via the multi-select floating action bar. Hard delete is the
+  // right call here because: (1) the editor explicitly selected rows and
+  // confirmed in a modal that flagged unassigned-row LPOS-link loss; (2)
+  // soft-hide would re-orphan complete_unassigned rows on the next
+  // reconcile tick (the reconciler's collectTrackedJobIds excludes hidden
+  // rows from its known-set), so 'hide' wouldn't actually stick.
+  //
+  // Skipped (returned in `skipped`):
+  //   - The active export row (use cancel, not delete, for in-flight work).
+  //   - Any non-terminal row (rendering/uploading/queued) — defensive guard;
+  //     the renderer shouldn't offer these as selectable, but races happen.
+  //
+  // Missing exportIds are silently skipped (idempotent — a re-fire after a
+  // partial failure shouldn't error on already-gone rows).
+  ipcMain.handle('exports:hard-delete-batch', async (_e, payload = {}) => {
+    if (!jobsDb) return { ok: false, error: 'jobs db not ready' };
+    const ids = Array.isArray(payload?.exportIds) ? payload.exportIds.filter(Boolean) : [];
+    if (ids.length === 0) {
+      return { ok: false, error: 'exportIds required (non-empty array)' };
+    }
+
+    const TERMINAL = new Set([
+      'completed', 'delivered', 'complete_unassigned', 'partial',
+      'failed', 'canceled', 'interrupted', 'dismissed_in_resolve'
+    ]);
+
+    const deleted = [];
+    const skipped = []; // [{ exportId, reason }]
+    for (const exportId of ids) {
+      if (activeExport && activeExport.exportId === exportId) {
+        skipped.push({ exportId, reason: 'active' });
+        continue;
+      }
+      let row;
+      try { row = jobsDb.getExportRun(exportId); }
+      catch (_) { row = null; }
+      if (!row) {
+        // Already gone — treat as success for batch purposes (idempotent).
+        deleted.push(exportId);
+        continue;
+      }
+      if (!TERMINAL.has(row.state)) {
+        skipped.push({ exportId, reason: `non-terminal state '${row.state}'` });
+        continue;
+      }
+      try {
+        jobsDb.deleteExportRun(exportId);
+        deleted.push(exportId);
+      } catch (err) {
+        skipped.push({ exportId, reason: err.message || String(err) });
+      }
+    }
+
+    // Single broadcast — renderer's onReconciled handler refreshes the list.
+    // Including deletedExportIds in the payload lets future renderers do
+    // optimistic local removal if they want.
+    broadcastExport('export-reconciled', {
+      deletedExportIds: deleted,
+      hardDeleted: deleted.length
+    });
+
+    return { ok: true, data: { deleted: deleted.length, skipped } };
+  });
+
   // Count of orphans awaiting assignment. Drives the Jobs-tab pill (Batch 7)
   // and is read by 'exports:pill-state' to decide whether to show it.
   ipcMain.handle('exports:unassigned-count', async () => {

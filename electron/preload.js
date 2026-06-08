@@ -296,6 +296,13 @@ contextBridge.exposeInMainWorld('exportsAPI', {
   pushToLpos({ exportId, projectId, projectName } = {}) {
     return ipcRenderer.invoke('exports:push-to-lpos', { exportId, projectId, projectName });
   },
+  /** Hard-delete one or more terminal export_runs rows from the Exports
+   *  history (Phase 3.5.1, surfaced via the multi-select action bar). Active
+   *  and non-terminal rows are returned in `skipped`. Resolves with
+   *  { ok, data: { deleted: N, skipped: [{exportId, reason}, ...] } }. */
+  hardDeleteBatch(exportIds) {
+    return ipcRenderer.invoke('exports:hard-delete-batch', { exportIds });
+  },
   /** Count of orphans currently awaiting assignment (state='complete_unassigned'). */
   unassignedCount() {
     return ipcRenderer.invoke('exports:unassigned-count');

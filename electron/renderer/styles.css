@@ -3981,16 +3981,41 @@ button.status-bar-chip-btn:hover {
 .exports-row {
   background: var(--surface-1);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 14px 16px;
+  border-radius: 8px;
+  /* Phase 3.5.1: thinner rows. Was 14px 16px / gap 6px — vertical felt heavy
+     once the list grew past a handful of entries. Tightened vertical to 8px
+     and inter-line gap to 3px; horizontal kept at 14px so the From/Local/LPOS
+     labels still align under the title. */
+  padding: 8px 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
   transition: border-color 160ms ease, background 160ms ease;
 }
 
 .exports-row:hover {
   border-color: var(--line-strong);
+}
+
+/* Phase 3.5.1 selection state. Background tint + accent border-left so
+   selection reads even on the non-color-coded states. cursor: pointer signals
+   that the row is clickable for selection (the existing inline buttons keep
+   their own cursors because they stopPropagation). */
+.exports-row.selected {
+  background: var(--accent-soft, rgba(212, 162, 94, 0.15));
+  border-color: var(--accent-strong, #d4a25e);
+}
+.exports-row.selected:hover {
+  border-color: var(--accent-strong, #d4a25e);
+}
+
+/* Non-selectable rows (rendering / uploading / queued — active work).
+   Subtle visual cue that clicking does nothing; cursor stays default. */
+.exports-row.unselectable {
+  cursor: default;
+}
+.exports-row:not(.unselectable) {
+  cursor: pointer;
 }
 
 .exports-row-wait { border-left: 3px solid var(--accent); }
@@ -4003,18 +4028,20 @@ button.status-bar-chip-btn:hover {
 .exports-row-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 2px;
+  gap: 10px;
+  /* was margin-bottom: 2px — gap on .exports-row already provides spacing */
+  margin-bottom: 0;
 }
 
 .exports-row-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  /* Phase 3.5.1: shrunk from 24px to 20px to match the thinner row. */
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   font-weight: 600;
   flex-shrink: 0;
 }
@@ -4046,9 +4073,12 @@ button.status-bar-chip-btn:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   color: var(--text);
-  padding-left: 36px;
+  /* Was padding-left: 36px — aligned with the old 24px badge + 12px gap.
+     Now the badge is 20px and head gap is 10px, so 30px keeps labels lined
+     up under the title. */
+  padding-left: 30px;
 }
 
 .exports-row-label {
@@ -4102,6 +4132,120 @@ button.status-bar-chip-btn:hover {
 .btn.ghost:hover {
   color: var(--text);
   border-color: var(--line-strong);
+}
+
+/* Destructive action (Phase 3.5.1 — multi-select hard delete). Mirrors
+   .btn.ghost's neutral footprint with a red accent, so it sits comfortably
+   alongside the existing Cancel/Push buttons in the confirm dialog without
+   shouting until hovered. Overrides .btn's gold gradient explicitly. */
+.btn.danger {
+  background: transparent;
+  color: #fca5a5;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  font-weight: 600;
+}
+.btn.danger:hover {
+  background: rgba(248, 113, 113, 0.15);
+  border-color: rgba(248, 113, 113, 0.7);
+  color: #fecaca;
+  transform: none;
+  box-shadow: none;
+}
+.btn.danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Selection action bar (Phase 3.5.1) ─────────────────────────────
+   Appears at the top of the Exports body when selectedIds.size > 0.
+   Slim sticky bar; doesn't push content around because it's outside
+   the .exports-groups / .exports-list flow position-wise but rendered
+   in normal flow above them. Inherits the panel's neutral surface
+   tokens to stay calm. */
+.exports-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  margin-bottom: 8px;
+  background: var(--accent-soft, rgba(212, 162, 94, 0.12));
+  border: 1px solid var(--accent, rgba(212, 162, 94, 0.4));
+  border-radius: 8px;
+}
+.exports-selection-count {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.exports-selection-spacer {
+  flex: 1 1 auto;
+}
+
+/* ── Confirm-delete dialog (Phase 3.5.1) ─────────────────────────────
+   Rides on the existing .export-picker / .export-picker-overlay shells
+   (the project picker reuses them too). Only the body content gets
+   bespoke styling — warning paragraph, body paragraph, and the preview
+   list of about-to-delete rows. */
+.confirm-delete-dialog {
+  max-width: 520px;
+}
+.confirm-delete-warning {
+  background: rgba(248, 113, 113, 0.10);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: #fecaca;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  margin: 0 0 10px 0;
+}
+.confirm-delete-warning strong {
+  color: #fef2f2;
+}
+.confirm-delete-body {
+  font-size: 0.88rem;
+  color: var(--text);
+  line-height: 1.45;
+  margin: 0 0 12px 0;
+}
+.confirm-delete-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.confirm-delete-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+.confirm-delete-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.confirm-delete-state {
+  color: var(--muted-soft);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.confirm-delete-more {
+  background: transparent !important;
+  border: none !important;
+  color: var(--muted-soft);
+  font-style: italic;
+  padding-left: 12px !important;
 }
 
 /* ── Inline project picker (Push to LPOS) ─────────────────────────── */

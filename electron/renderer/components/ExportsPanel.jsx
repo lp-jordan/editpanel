@@ -17,10 +17,16 @@
  *   - Open folder — shell.showItemInFolder via exports:open-folder.
  *   - Push to LPOS… — inline project picker (reuses lposAPI.listProjects,
  *     same shape ExportDeliverOverlay already grouped) → exports:push-to-lpos.
+ *   - Multi-select hard delete (Phase 3.5.1, 2026-06-08) — standard
+ *     shift/cmd-click selection on terminal rows; floating action bar shows
+ *     "N selected · [Clear] [Delete]"; confirmation modal flags LPOS-link
+ *     loss when unassigned rows are in the batch. Wires to
+ *     window.exportsAPI.hardDeleteBatch (jobsDb.deleteExportRun under the
+ *     hood — hard DELETE, NOT the misleadingly-named export:delete-run
+ *     which is JobPanel-side soft-hide).
  *
  * Sort: newest first by started_at. No Dismiss button (history view —
- * nothing to dismiss). Manual delete is available via window.exportsAPI's
- * deleteRun method (existing) but isn't surfaced here yet.
+ * nothing to dismiss).
  */
 
 const FILTERS = [
@@ -47,6 +53,15 @@ function stateBadge(state) {
     case 'dismissed_in_resolve':return { icon: '⊖', cls: 'mute',  label: 'Removed from Resolve' };
     default:                    return { icon: '·', cls: 'mute',  label: state || 'Unknown' };
   }
+}
+
+// Whether a row is selectable for the multi-select / hard-delete flow.
+// Active states (rendering, uploading, queued) are deliberately excluded —
+// in-flight work shouldn't be deleted; use cancel instead. Mirrors the
+// backend guard in 'exports:hard-delete-batch'.
+const NON_SELECTABLE_STATES = new Set(['rendering', 'uploading', 'queued']);
+function isSelectableState(state) {
+  return !NON_SELECTABLE_STATES.has(state);
 }
 
 function relativeTime(ms) {
@@ -195,8 +210,108 @@ function ProjectPicker({ open, onClose, onPick }) {
   );
 }
 
+// ── Confirm-delete modal (Phase 3.5.1) ─────────────────────────
+// Triggered from the selection action bar. Renders a count summary, calls
+// out the LPOS-link-loss specifically when unassigned rows are in the batch
+// (the unique-and-unrecoverable cost of deletion), and a per-row preview
+// (first ~6 rows by file name) so the editor can sanity-check before
+// committing. Reuses the .export-picker-overlay positioning to stay visually
+// consistent with the existing project picker.
+function ConfirmDeleteDialog({ rows, busy, error, onCancel, onConfirm }) {
+  if (!rows || rows.length === 0) return null;
+  const unassignedCount = rows.filter(r => r.state === 'complete_unassigned').length;
+  const PREVIEW = 6;
+  const preview = rows.slice(0, PREVIEW);
+  const more    = Math.max(0, rows.length - PREVIEW);
+
+  return (
+    <div className="export-picker-overlay" role="dialog" aria-modal="true" aria-label="Confirm delete">
+      <div className="export-picker confirm-delete-dialog">
+        <header className="export-picker-head">
+          <div>
+            <p className="eyebrow">Delete</p>
+            <h3>Permanently delete {rows.length} export{rows.length !== 1 ? 's' : ''}?</h3>
+          </div>
+          <button type="button" className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+        </header>
+
+        <div className="export-picker-body">
+          {unassignedCount > 0 && (
+            <p className="confirm-delete-warning">
+              <strong>{unassignedCount}</strong> of these {unassignedCount === 1 ? 'is' : 'are'}{' '}
+              <strong>unassigned</strong>. Deleting them removes any future possibility of
+              linking these renders to an LPOS project for comment retrieval.
+            </p>
+          )}
+          <p className="confirm-delete-body">
+            All selected exports will be removed from local Exports history. Any files
+            already uploaded to LPOS will remain on the LPOS side — only the local
+            history rows are deleted. This cannot be undone.
+          </p>
+          <ul className="confirm-delete-list">
+            {preview.map(r => {
+              const tail = fileTail(primaryOutputPath(r))
+                || (timelineNamesOf(r)[0])
+                || r.export_id;
+              const badge = stateBadge(r.state);
+              return (
+                <li key={r.export_id}>
+                  <span className={`exports-row-badge exports-row-badge-${badge.cls}`} title={badge.label}>
+                    {badge.icon}
+                  </span>
+                  <span className="confirm-delete-name">{tail}</span>
+                  <span className="confirm-delete-state">{badge.label}</span>
+                </li>
+              );
+            })}
+            {more > 0 && (
+              <li className="confirm-delete-more">…and {more} more</li>
+            )}
+          </ul>
+          {error && <p className="bad">{error}</p>}
+        </div>
+
+        <footer className="export-picker-foot">
+          <button
+            type="button"
+            className="btn danger"
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? 'Deleting…' : `Delete ${rows.length} export${rows.length !== 1 ? 's' : ''}`}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+// ── Selection action bar (Phase 3.5.1) ─────────────────────────
+// Slim sticky bar at the top of the Exports body when selection > 0. Mirrors
+// the standard pattern (Finder/Mail/anywhere) — count + clear + primary
+// destructive action. Esc clears selection (handled in the parent).
+function SelectionActionBar({ count, onClear, onDelete }) {
+  if (count <= 0) return null;
+  return (
+    <div className="exports-selection-bar" role="toolbar" aria-label="Selection actions">
+      <span className="exports-selection-count">
+        {count} selected
+      </span>
+      <span className="exports-selection-spacer" />
+      <button type="button" className="btn ghost small" onClick={onClear}>
+        Clear
+      </button>
+      <button type="button" className="btn danger small" onClick={onDelete}>
+        Delete
+      </button>
+    </div>
+  );
+}
+
 // ── Row ────────────────────────────────────────────────────────
-function ExportRow({ row, onPushClick, onOpenFolderClick }) {
+function ExportRow({
+  row, selected, selectable, onRowClick, onPushClick, onOpenFolderClick
+}) {
   const badge   = stateBadge(row.state);
   const tl      = timelineNamesOf(row);
   const rpName  = resolveProjectNameOf(row);
@@ -216,8 +331,30 @@ function ExportRow({ row, onPushClick, onOpenFolderClick }) {
 
   const orphanWaitingAssign = row.state === 'complete_unassigned';
 
+  // Clicks on inline action buttons must NOT bubble up to the row root and
+  // trigger a selection change. The row's onClick is selection; the
+  // buttons keep their existing semantics.
+  const stopBubble = (handler) => (e) => { e.stopPropagation(); handler && handler(); };
+
+  const classes = [
+    'exports-row',
+    `exports-row-${badge.cls}`,
+    selectable ? '' : 'unselectable',
+    selected   ? 'selected'     : ''
+  ].filter(Boolean).join(' ');
+
+  function handleRootClick(e) {
+    if (!selectable) return;
+    if (!onRowClick) return;
+    onRowClick(row.export_id, e);
+  }
+
   return (
-    <article className={`exports-row exports-row-${badge.cls}`}>
+    <article
+      className={classes}
+      onClick={handleRootClick}
+      aria-selected={selected || undefined}
+    >
       <header className="exports-row-head">
         <span className={`exports-row-badge exports-row-badge-${badge.cls}`} title={badge.label}>
           {badge.icon}
@@ -245,7 +382,7 @@ function ExportRow({ row, onPushClick, onOpenFolderClick }) {
           <button
             type="button"
             className="btn ghost small"
-            onClick={() => onOpenFolderClick(localPrimary)}
+            onClick={stopBubble(() => onOpenFolderClick(localPrimary))}
           >
             ↗ Open folder
           </button>
@@ -269,7 +406,7 @@ function ExportRow({ row, onPushClick, onOpenFolderClick }) {
             <button
               type="button"
               className="btn primary small"
-              onClick={() => onPushClick(row)}
+              onClick={stopBubble(() => onPushClick(row))}
             >
               Push to LPOS…
             </button>
@@ -403,7 +540,8 @@ function groupByResolveProject(rows) {
 // Single-item groups omit the group push button — the row's own button does
 // the same thing and the duplicate would just add visual noise.
 function ResolveProjectGroup({
-  group, open, onToggle, onGroupPushClick, onRowPushClick, onOpenFolderClick
+  group, open, onToggle, onGroupPushClick, onRowPushClick, onOpenFolderClick,
+  selectedIds, onRowClick
 }) {
   const { projectName, rows } = group;
   const isUnknown = !projectName;
@@ -441,6 +579,9 @@ function ResolveProjectGroup({
             <ExportRow
               key={r.export_id}
               row={r}
+              selected={selectedIds ? selectedIds.has(r.export_id) : false}
+              selectable={isSelectableState(r.state)}
+              onRowClick={onRowClick}
               onPushClick={onRowPushClick}
               onOpenFolderClick={onOpenFolderClick}
             />
@@ -469,11 +610,86 @@ function ExportsPanel({ focusToken } = {}) {
   const [groupOpen, setGroupOpen]                 = React.useState({});
   const [groupPushFeedback, setGroupPushFeedback] = React.useState(null);
 
+  // Phase 3.5.1 (2026-06-08) — multi-select hard-delete state.
+  // selectedIds: Set of export_ids currently checked.
+  // selectionAnchor: last single-clicked id, used for shift-range extension.
+  // confirmRows: when non-null, opens the confirmation modal with this list.
+  // deleteBusy / deleteError: modal action state.
+  const [selectedIds,     setSelectedIds]     = React.useState(() => new Set());
+  const [selectionAnchor, setSelectionAnchor] = React.useState(null);
+  const [confirmRows,     setConfirmRows]     = React.useState(null);
+  const [deleteBusy,      setDeleteBusy]      = React.useState(false);
+  const [deleteError,     setDeleteError]     = React.useState(null);
+
   // Unassigned-only grouping. Memoized so we don't re-bucket on every render.
   const groupedRows = React.useMemo(
     () => filter === 'unassigned' ? groupByResolveProject(rows) : null,
     [filter, rows]
   );
+
+  // Visible-and-selectable export_ids in DOM order. Used for shift-click
+  // range selection and for pruning stale selections when rows change.
+  // For the unassigned (grouped) view, walks groups in their sorted order
+  // and skips rows in collapsed groups (those aren't rendered, so a
+  // shift-range across them would jump invisible rows). For the flat view,
+  // just maps rows in their natural order.
+  const visibleSelectableIds = React.useMemo(() => {
+    const out = [];
+    if (filter === 'unassigned' && groupedRows) {
+      for (const g of groupedRows) {
+        const isOpen = groupOpen[g.key] !== false; // default expanded
+        if (!isOpen) continue;
+        for (const r of g.rows) {
+          if (isSelectableState(r.state)) out.push(r.export_id);
+        }
+      }
+    } else {
+      for (const r of rows) {
+        if (isSelectableState(r.state)) out.push(r.export_id);
+      }
+    }
+    return out;
+  }, [filter, groupedRows, groupOpen, rows]);
+
+  // When rows change (refresh, filter switch, reconciler event after a
+  // delete), prune the selection to ids that are still selectable. Avoids
+  // a stale id ghosting the action bar count.
+  React.useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const live = new Set(visibleSelectableIds);
+    let changed = false;
+    const next = new Set();
+    for (const id of selectedIds) {
+      if (live.has(id)) next.add(id);
+      else changed = true;
+    }
+    if (changed) {
+      setSelectedIds(next);
+      if (selectionAnchor && !live.has(selectionAnchor)) {
+        setSelectionAnchor(null);
+      }
+    }
+  }, [visibleSelectableIds, selectedIds, selectionAnchor]);
+
+  // Esc clears selection. Only when the panel is open and there's something
+  // to clear — don't steal Esc from other UI when we're idle.
+  React.useEffect(() => {
+    if (!open) return;
+    if (selectedIds.size === 0 && !confirmRows) return;
+    function onKey(e) {
+      if (e.key !== 'Escape') return;
+      if (confirmRows) {
+        // Esc closes the modal first; second Esc clears selection.
+        setConfirmRows(null);
+        setDeleteError(null);
+        return;
+      }
+      setSelectedIds(new Set());
+      setSelectionAnchor(null);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, selectedIds, confirmRows]);
 
   const refresh = React.useCallback(async () => {
     if (!window.exportsAPI?.list) return;
@@ -609,6 +825,111 @@ function ExportsPanel({ focusToken } = {}) {
     setGroupOpen(prev => ({ ...prev, [key]: prev[key] === false ? true : false }));
   }
 
+  // ── Selection click handler (Phase 3.5.1) ───────────────────
+  // Standard shift/cmd-click semantics, matched to Finder/Mail:
+  //   plain click        → replace selection with this id; set anchor
+  //   cmd/ctrl + click   → toggle this id; set anchor
+  //   shift + click      → replace selection with range from anchor to id
+  //                        (inclusive, in visible-DOM order); leave anchor
+  //   shift + click (no anchor) → falls through to plain click
+  // Only fires for selectable rows — non-selectable rows get short-circuited
+  // at ExportRow.handleRootClick before we ever see them here.
+  const handleRowClick = React.useCallback((exportId, e) => {
+    const toggleMod = e.metaKey || e.ctrlKey;
+    const rangeMod  = e.shiftKey;
+
+    setSelectedIds(prev => {
+      // Range select
+      if (rangeMod && selectionAnchor && selectionAnchor !== exportId) {
+        const order = visibleSelectableIds;
+        const a = order.indexOf(selectionAnchor);
+        const b = order.indexOf(exportId);
+        if (a === -1 || b === -1) {
+          // Anchor or target not visible — fall back to plain replace.
+          return new Set([exportId]);
+        }
+        const [lo, hi] = a <= b ? [a, b] : [b, a];
+        return new Set(order.slice(lo, hi + 1));
+      }
+      // Toggle
+      if (toggleMod) {
+        const next = new Set(prev);
+        if (next.has(exportId)) next.delete(exportId);
+        else next.add(exportId);
+        return next;
+      }
+      // Plain
+      return new Set([exportId]);
+    });
+
+    // Anchor moves on plain click and on cmd/ctrl-toggle; shift-range
+    // leaves the anchor in place (matches Finder — shift-clicking around
+    // re-anchors from the same point).
+    if (!rangeMod) {
+      setSelectionAnchor(exportId);
+    } else if (!selectionAnchor) {
+      // First-ever shift-click without anchor — set anchor now.
+      setSelectionAnchor(exportId);
+    }
+  }, [visibleSelectableIds, selectionAnchor]);
+
+  // Clear selection (action bar Clear button).
+  function clearSelection() {
+    setSelectedIds(new Set());
+    setSelectionAnchor(null);
+  }
+
+  // Action bar Delete button → open confirmation modal. Resolves the selected
+  // ids to the actual row objects so the modal can show a preview + count
+  // the unassigned ones for its LPOS-link warning.
+  function openConfirm() {
+    if (selectedIds.size === 0) return;
+    const byId = new Map(rows.map(r => [r.export_id, r]));
+    const selectedRows = [];
+    for (const id of selectedIds) {
+      const r = byId.get(id);
+      if (r) selectedRows.push(r);
+    }
+    if (selectedRows.length === 0) return;
+    setDeleteError(null);
+    setConfirmRows(selectedRows);
+  }
+
+  // Modal Confirm → fire the batch hard-delete IPC, refresh, clear selection.
+  async function handleConfirmDelete() {
+    if (!confirmRows || confirmRows.length === 0) return;
+    if (!window.exportsAPI?.hardDeleteBatch) {
+      setDeleteError('hardDeleteBatch unavailable in preload');
+      return;
+    }
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      const ids = confirmRows.map(r => r.export_id);
+      const res = await window.exportsAPI.hardDeleteBatch(ids);
+      if (res?.ok) {
+        const skipped = Array.isArray(res.data?.skipped) ? res.data.skipped : [];
+        setConfirmRows(null);
+        clearSelection();
+        // Server broadcasts export-reconciled with deletedExportIds; the
+        // panel's existing onReconciled listener will refresh. Call refresh
+        // here anyway to avoid waiting on the round-trip event.
+        await refresh();
+        // Surface a soft warning if any rows were skipped (e.g., became
+        // active between selection and confirm — rare but possible).
+        if (skipped.length > 0) {
+          setError(`Skipped ${skipped.length} of ${ids.length}: ${skipped.map(s => s.reason).join('; ')}`);
+        }
+      } else {
+        setDeleteError(res?.error || 'Delete failed');
+      }
+    } catch (err) {
+      setDeleteError(err?.message || String(err));
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   return (
     <section className="exports-panel">
       <div
@@ -645,6 +966,12 @@ function ExportsPanel({ focusToken } = {}) {
             </button>
           </div>
 
+          <SelectionActionBar
+            count={selectedIds.size}
+            onClear={clearSelection}
+            onDelete={openConfirm}
+          />
+
           {loading && <p className="muted">Loading…</p>}
           {error && <p className="bad">{error}</p>}
           {!loading && !error && rows.length === 0 && (
@@ -663,6 +990,8 @@ function ExportsPanel({ focusToken } = {}) {
                     onGroupPushClick={setPickerForGroup}
                     onRowPushClick={setPickerForRow}
                     onOpenFolderClick={handleOpenFolder}
+                    selectedIds={selectedIds}
+                    onRowClick={handleRowClick}
                   />
                 ))}
               </div>
@@ -672,6 +1001,9 @@ function ExportsPanel({ focusToken } = {}) {
                   <ExportRow
                     key={r.export_id}
                     row={r}
+                    selected={selectedIds.has(r.export_id)}
+                    selectable={isSelectableState(r.state)}
+                    onRowClick={handleRowClick}
                     onPushClick={setPickerForRow}
                     onOpenFolderClick={handleOpenFolder}
                   />
@@ -706,6 +1038,14 @@ function ExportsPanel({ focusToken } = {}) {
           {pickerOpen && pushError && (
             <p className="bad">Push failed: {pushError}</p>
           )}
+
+          <ConfirmDeleteDialog
+            rows={confirmRows}
+            busy={deleteBusy}
+            error={deleteError}
+            onCancel={() => { if (!deleteBusy) { setConfirmRows(null); setDeleteError(null); } }}
+            onConfirm={handleConfirmDelete}
+          />
         </div>
       )}
     </section>
