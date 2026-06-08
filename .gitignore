@@ -14,3 +14,7 @@ __pycache__/
 # Build output (electron-builder; large binaries, never committed)
 release/
 dist/
+
+# Bundled Python (fetched on `npm install` via scripts/fetch-python.mjs)
+vendor/
+
