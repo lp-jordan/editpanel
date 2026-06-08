@@ -164,6 +164,23 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     return state;
   }
 
+  // Build the headline label for an export_runs row in the compact recent list.
+  // Editpanel-queued (or assigned orphans) → "→ {LPOS project}" to match the
+  // active-row arrow convention. Orphans without an LPOS assignment fall back
+  // to the richest Resolve-side identity we captured at reconcile time
+  // (resolveProjectName · TimelineName / CustomName / OutputFilename) so the
+  // editor doesn't see a wall of generic "Render" rows. Last resort: 'Render'.
+  function exportRowLabel(e) {
+    if (e.project_name) return `→ ${e.project_name}`;
+    const j = (e.jobs && e.jobs[0]) || {};
+    const proj = j.resolveProjectName || null;
+    const tl   = j.TimelineName || j.CustomName || j.OutputFilename || j.RenderJobName || null;
+    if (proj && tl) return `${proj} · ${tl}`;
+    if (proj)       return proj;
+    if (tl)         return tl;
+    return 'Render';
+  }
+
   // Combined per-timeline mark: upload state takes over once a render finishes
   // (renders and uploads overlap), otherwise show the render state/percent.
   function exportJobMark(job) {
@@ -399,27 +416,48 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
 
               {recentExports
                 .filter(e => e.export_id !== activeExport?.exportId)
-                .map(e => (
-                  <div key={e.export_id} className={`job-panel-row compact ${exportRowState(e.state)}`}>
-                    <span className={`job-panel-state-icon ${exportRowState(e.state)}`}>
-                      {formatExportState(e.state)}
-                    </span>
-                    <span className="job-panel-name">{e.project_name || 'Render'}</span>
-                    <span className="job-panel-age">{e.jobs_done}/{e.job_count}</span>
-                    {e.finished_at && e.started_at && (
-                      <span className="job-panel-age">{formatDuration(e.finished_at - e.started_at)}</span>
-                    )}
-                    <span className="job-panel-age">{formatAge(e.finished_at || e.started_at)}</span>
-                    <button
-                      className="job-panel-delete-btn"
-                      onClick={() => handleDeleteExportRun(e.export_id)}
-                      title="Delete this export"
-                      aria-label="Delete this export"
+                .map(e => {
+                  // Orphan = caught from Resolve's render queue, not queued via
+                  // editpanel. Until the editor assigns an LPOS project the row
+                  // stays in this in-between state; the chip makes that explicit
+                  // so it doesn't read as "just another finished render."
+                  const isUnassignedOrphan = e.source === 'reconciled' && !e.project_name;
+                  const titleParts = [];
+                  if (e.project_name) titleParts.push(`LPOS: ${e.project_name}`);
+                  if (e.target_dir)   titleParts.push(`Output: ${e.target_dir}`);
+                  if (isUnassignedOrphan) titleParts.push('Not yet assigned to an LPOS project');
+                  const rowTitle = titleParts.join('\n') || undefined;
+                  return (
+                    <div
+                      key={e.export_id}
+                      className={`job-panel-row compact ${exportRowState(e.state)}`}
+                      title={rowTitle}
                     >
-                      {xIcon}
-                    </button>
-                  </div>
-                ))}
+                      <span className={`job-panel-state-icon ${exportRowState(e.state)}`}>
+                        {formatExportState(e.state)}
+                      </span>
+                      <span className="job-panel-name">{exportRowLabel(e)}</span>
+                      {isUnassignedOrphan && (
+                        <span className="job-panel-row-chip" title="Caught from Resolve's render queue — pick a destination project on the Deliver page">
+                          Unassigned
+                        </span>
+                      )}
+                      <span className="job-panel-age">{e.jobs_done}/{e.job_count}</span>
+                      {e.finished_at && e.started_at && (
+                        <span className="job-panel-age">{formatDuration(e.finished_at - e.started_at)}</span>
+                      )}
+                      <span className="job-panel-age">{formatAge(e.finished_at || e.started_at)}</span>
+                      <button
+                        className="job-panel-delete-btn"
+                        onClick={() => handleDeleteExportRun(e.export_id)}
+                        title="Delete this export"
+                        aria-label="Delete this export"
+                      >
+                        {xIcon}
+                      </button>
+                    </div>
+                  );
+                })}
             </section>
           )}
 

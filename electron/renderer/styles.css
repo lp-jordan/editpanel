@@ -1623,6 +1623,36 @@ button.status-bar-chip-btn:hover {
   padding: 7px 10px;
 }
 
+/* The compact row's headline name can now hold a much richer label for orphan
+   renders ("Resolve Project · Timeline Name") rather than the old bare "Render".
+   Give it flex-grow so it consumes free space, and ellipsize so a very long
+   timeline name doesn't push the chip/age/× off the right edge. The hover
+   title attr still exposes the full text. */
+.job-panel-row.compact .job-panel-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Small muted pill that flags a row as "caught from Resolve, not yet routed
+   to an LPOS project." Visually quieter than the state icon and the age
+   chips so it adds information without competing for attention. */
+.job-panel-row-chip {
+  flex-shrink: 0;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid rgba(219, 175, 95, 0.32);
+  padding: 1px 7px;
+  border-radius: 999px;
+  cursor: help;
+}
+
 .job-panel-row-top {
   display: flex;
   align-items: center;
