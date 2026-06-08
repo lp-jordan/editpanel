@@ -4128,45 +4128,12 @@ button.status-bar-chip-btn:hover {
   text-overflow: ellipsis;
 }
 
-/* Kept for completeness — old .exports-row-line / -label / -value rules
-   above are now unused by ExportRow but harmless. The error-row dropped its
-   "Error" label; the new .exports-row-error-line carries the styling. */
-
-.exports-row-label {
-  color: var(--muted-soft);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  font-size: 0.7rem;
-  min-width: 44px;
-}
-
-.exports-row-value {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.exports-row-value.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.exports-row-value.muted { color: var(--muted-soft); font-style: italic; }
-
 .exports-row-hint {
   color: var(--muted-soft);
   font-size: 0.75rem;
   font-style: italic;
   white-space: nowrap;
 }
-
-.exports-row-error {
-  color: var(--danger);
-}
-
-.exports-row-error .exports-row-label { color: var(--danger); }
 
 /* Inline buttons inside rows — small variants of the existing .btn.
    Phase 3.5.2: the original .btn.small (3.5.1 era) only overrode padding
