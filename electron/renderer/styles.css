@@ -126,7 +126,22 @@ textarea:focus-visible {
 }
 
 .page-enter {
-  animation: page-enter 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* IMPORTANT: no fill-mode here (was `both`). Per CSS spec any `transform`
+     on an ancestor — including the identity `translateY(0) scale(1)` that
+     the `to` keyframe sets — makes that ancestor the containing block for
+     every `position: fixed` descendant inside it. `both` kept the `to`
+     transform applied forever after the 260ms animation finished, so every
+     overlay below (ProjectPicker's .export-picker-overlay, ResultOverlay,
+     AtemIngestOverlay, CommentPullReport, ExportDeliverOverlay) was
+     positioning relative to this wrapper instead of the viewport. In
+     anchored / sidepanel mode that meant the modal centered itself inside
+     a tall scrollable page, well below the visible window, while the
+     backdrop locked scroll — exactly the "modal isn't visible" report.
+     With no fill-mode the animation runs once on mount, the transform
+     drops back to `none`, and fixed overlays cover the viewport again.
+     No flicker risk: animation starts at t=0 on mount, so the `from`
+     keyframe is what paints on the first frame anyway. */
+  animation: page-enter 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* ─── Shell ───────────────────────────────────────────────── */
