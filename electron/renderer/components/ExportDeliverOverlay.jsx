@@ -38,6 +38,17 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   // Off (default) = queue only, start from Jobs later. On = render immediately.
   const [autoStart, setAutoStart]   = React.useState(false);
 
+  // ── Preset / bin dropdown sources ──────────────────────
+  // Fetched from Resolve when the overlay opens (and we're connected). Empty
+  // arrays mean "not loaded / not available" — the dropdown still renders the
+  // persisted value as the sole option so the editor can always queue.
+  const [presets, setPresets]               = React.useState([]);
+  const [presetsLoading, setPresetsLoading] = React.useState(false);
+  const [presetsError, setPresetsError]     = React.useState(null);
+  const [bins, setBins]                     = React.useState([]);
+  const [binsLoading, setBinsLoading]       = React.useState(false);
+  const [binsError, setBinsError]           = React.useState(null);
+
   // ── Upload-to-LPOS state ───────────────────────────────
   const [uploadToLpos, setUploadToLpos]       = React.useState(false);
   const [projects, setProjects]               = React.useState([]);
@@ -85,6 +96,55 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         setExportBin(DEFAULT_BIN);
       });
   }, [open]);
+
+  // Fetch the current Resolve project's render-preset list and top-level bins
+  // so the preset/bin pickers become dropdowns instead of free-text inputs.
+  // Re-runs every time the overlay opens (cheap) so a freshly-added preset or
+  // bin shows up without having to restart editpanel.
+  //
+  // Both fetches are best-effort — on disconnect / error we leave the
+  // dropdown with just the persisted value as its sole option so the editor
+  // can still queue. (Fail open: the actual lp_base_export call already errors
+  // loudly if the preset or bin name doesn't exist in Resolve.)
+  React.useEffect(() => {
+    if (!open) return;
+    if (!connected) {
+      setPresets([]); setPresetsError(null); setPresetsLoading(false);
+      setBins([]);    setBinsError(null);    setBinsLoading(false);
+      return;
+    }
+    let cancelled = false;
+
+    setPresetsLoading(true);
+    setPresetsError(null);
+    window.leaderpassAPI.call('list_render_presets')
+      .then((res) => {
+        if (cancelled) return;
+        setPresets(Array.isArray(res?.data?.presets) ? res.data.presets : []);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPresets([]);
+        setPresetsError(err?.error?.message || err?.error || err?.message || 'Could not load presets');
+      })
+      .finally(() => { if (!cancelled) setPresetsLoading(false); });
+
+    setBinsLoading(true);
+    setBinsError(null);
+    window.leaderpassAPI.call('list_media_bins')
+      .then((res) => {
+        if (cancelled) return;
+        setBins(Array.isArray(res?.data?.bins) ? res.data.bins : []);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setBins([]);
+        setBinsError(err?.error?.message || err?.error || err?.message || 'Could not load bins');
+      })
+      .finally(() => { if (!cancelled) setBinsLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [open, connected]);
 
   // Escape-to-close (matches AtemIngestOverlay / ResultOverlay)
   React.useEffect(() => {
@@ -292,27 +352,69 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   function renderConfigure() {
     return (
       <div className="atem-configure">
-        {/* Preset + bin */}
+        {/* Preset + bin — dropdowns sourced from Resolve when available. The
+            persisted value always appears as an option even if the fetched
+            list doesn't contain it (offline, fetch error, or a Resolve
+            project that doesn't have that preset/bin yet) so the editor can
+            still queue and lp_base_export will surface the actual mismatch. */}
         <div className="export-field-row">
           <div className="atem-dest-section" style={{ flex: 1 }}>
             <p className="atem-field-label">Render preset</p>
-            <input
+            <select
               className="settings-input"
-              type="text"
               value={presetName}
               onChange={(e) => setPresetName(e.target.value)}
-              placeholder={DEFAULT_PRESET}
-            />
+              disabled={presetsLoading}
+            >
+              {(() => {
+                const options = [...presets];
+                if (presetName && !options.includes(presetName)) options.unshift(presetName);
+                if (options.length === 0) options.push(DEFAULT_PRESET);
+                return options.map((name) => (
+                  <option key={name} value={name}>
+                    {name}{!presets.includes(name) && presets.length > 0 ? ' (not in this project)' : ''}
+                  </option>
+                ));
+              })()}
+            </select>
+            <p className="atem-dest-hint" style={{ marginTop: 6 }}>
+              {presetsLoading
+                ? 'Loading presets from Resolve…'
+                : presetsError
+                  ? `Couldn't load presets — using your last setting. (${presetsError})`
+                  : presets.length === 0
+                    ? 'No presets detected — using your last setting.'
+                    : `${presets.length} preset${presets.length === 1 ? '' : 's'} from the current Resolve project.`}
+            </p>
           </div>
           <div className="atem-dest-section" style={{ flex: 1 }}>
             <p className="atem-field-label">Export bin</p>
-            <input
+            <select
               className="settings-input"
-              type="text"
               value={exportBin}
               onChange={(e) => setExportBin(e.target.value)}
-              placeholder={DEFAULT_BIN}
-            />
+              disabled={binsLoading}
+            >
+              {(() => {
+                const options = [...bins];
+                if (exportBin && !options.includes(exportBin)) options.unshift(exportBin);
+                if (options.length === 0) options.push(DEFAULT_BIN);
+                return options.map((name) => (
+                  <option key={name} value={name}>
+                    {name}{!bins.includes(name) && bins.length > 0 ? ' (not in this project)' : ''}
+                  </option>
+                ));
+              })()}
+            </select>
+            <p className="atem-dest-hint" style={{ marginTop: 6 }}>
+              {binsLoading
+                ? 'Loading bins from Resolve…'
+                : binsError
+                  ? `Couldn't load bins — using your last setting. (${binsError})`
+                  : bins.length === 0
+                    ? 'No top-level bins detected — using your last setting.'
+                    : `${bins.length} top-level bin${bins.length === 1 ? '' : 's'} from the current Resolve project.`}
+            </p>
           </div>
         </div>
 

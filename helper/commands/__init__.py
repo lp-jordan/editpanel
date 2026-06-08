@@ -18,6 +18,8 @@ from .list_timelines import handle_list_timelines
 from .flag_timelines import handle_flag_timelines
 from .focus_comment import handle_focus_comment
 from .delete_comment_marker import handle_delete_comment_marker
+from .list_render_presets import handle_list_render_presets
+from .list_media_bins import handle_list_media_bins
 
 
 RESOLVE_HANDLERS = {
@@ -40,6 +42,8 @@ RESOLVE_HANDLERS = {
     "flag_timelines": handle_flag_timelines,
     "focus_comment": handle_focus_comment,
     "delete_comment_marker": handle_delete_comment_marker,
+    "list_render_presets": handle_list_render_presets,
+    "list_media_bins": handle_list_media_bins,
 }
 
 # Reserved for future media worker commands (audit mode, etc.)
