@@ -1423,31 +1423,63 @@ function maybeUpdateOrphanProgress(jobId, liveJob) {
   try { row = jobsDb.getExportRun(orphanId); } catch (_) { return; }
   if (!row || row.source !== 'reconciled') return;
 
-  // Phase 3.5.4 (2026-06-08): if a user_dismissed tombstone's JobId reappears
-  // in Resolve's queue as non-terminal (Rendering / Ready), the editor clicked
-  // "Render Again" on a previously-dismissed queue item. Resolve keeps the
-  // JobId stable across re-runs of the same queue job, so the 3.5.3 tombstone
-  // (which kept the JobId in trackedJobIds to prevent re-discovery) ends up
-  // silently swallowing the re-render's progress. Revive: un-tombstone the
-  // row back to 'rendering' so the existing progress/completion logic below
-  // takes over normally. Don't revive on status=Complete — Resolve keeps
-  // completed jobs in the queue indefinitely, and that's exactly the case
-  // 3.5.3's tombstone is supposed to absorb. The non-terminal signal is the
-  // unambiguous "the user actively re-ran this" trigger.
+  // Phase 3.5.5 (2026-06-08) — generalization of 3.5.4's user_dismissed-only
+  // revive. The same bug class affects EVERY terminal state where the row
+  // remains in trackedJobIds: when Resolve says the JobId is actively
+  // rendering again (non-terminal status = Rendering / Ready), the editor
+  // re-ran the queue item via "Render Again" and our row should transition
+  // back to 'rendering' so the existing progress/completion logic below takes
+  // over. Without this, the row stays stuck in its prior terminal state
+  // (failed / canceled / interrupted / complete_unassigned / user_dismissed)
+  // and the re-render is silently swallowed.
   //
-  // Edge case not handled: a re-render that completes between consecutive
-  // reconcile ticks (3s window) — we'd never see status=Rendering and the
-  // revive wouldn't fire. The user would need to render again. Acceptable
-  // tradeoff vs. the risk of false-positive revives on plain re-listings.
-  if (row.state === 'user_dismissed' && !liveJob.terminal) {
+  // Resolve keeps a JobId STABLE across re-runs of the same render-queue
+  // item — that's the whole reason this bug class exists. Our row's primary
+  // key (orphan_<jobId>) still matches the same Resolve job after a Render
+  // Again, so the reconciler routes the JobId here instead of creating a
+  // fresh orphan via the INSERT OR IGNORE path (which would silently drop
+  // anyway due to export_id collision).
+  //
+  // Status=Complete (terminal) does NOT trigger revive — Resolve keeps
+  // completed jobs in the queue indefinitely, and a "still complete" tick
+  // is the no-op case 3.5.3's tombstone is supposed to absorb.
+  //
+  // States deliberately NOT revived:
+  //   - `delivered` / `partial` — have LPOS-side state. Silently invalidating
+  //     would orphan the LPOS upload. Editor must manually delete + re-render
+  //     if they really mean to overwrite a delivered asset.
+  //   - `dismissed_in_resolve` — special-cased by `collectTrackedJobIds`
+  //     (excluded from trackedJobIds), so a reappearing JobId routes to the
+  //     orphan-creation branch instead of here. Separate latent bug: that
+  //     branch does INSERT OR IGNORE so the row never gets revived. Flagged
+  //     as follow-up; not addressed here.
+  //
+  // Edge case: a re-render that completes between consecutive 3s reconcile
+  // ticks would never be observed as Rendering — the revive wouldn't fire,
+  // and the editor would need to Render Again again. Acceptable vs. the
+  // false-positive risk of revive-on-any-terminal-status heuristics.
+  const REVIVABLE_TERMINAL_STATES = new Set([
+    'complete_unassigned', 'failed', 'canceled', 'interrupted', 'user_dismissed'
+  ]);
+  if (REVIVABLE_TERMINAL_STATES.has(row.state) && !liveJob.terminal) {
+    const previousState = row.state;
     try {
-      jobsDb.setExportState(orphanId, 'rendering');
+      // Clear error + finishedAt so the row looks like a fresh render. The
+      // stale 'Resolve render <status>' message from a prior 'failed' run
+      // shouldn't hang around once the row is actively rendering again.
+      jobsDb.setExportState(orphanId, 'rendering', {
+        error: null,
+        finishedAt: null
+      });
       jobsDb.setExportHiddenFromJobpanel(orphanId, false);
-      // Clear the Phase 3 prune counter so it doesn't accumulate misses
-      // against a row that's now actively rendering again.
+      // Clear both prune-debounce counters — a revived row shouldn't carry
+      // stale miss counts from when it was tombstoned (Phase 3) or rendering-
+      // dismissed (Phase 2).
       userDismissedPruneCounters.delete(orphanId);
+      reconcileMissCounters.delete(orphanId);
       broadcastExport('export-reconciled', {
-        exportId: orphanId, jobId, state: 'rendering', revived: true
+        exportId: orphanId, jobId, state: 'rendering',
+        revived: true, previousState
       });
     } catch (_) { return; }
     // Re-read so the row reflects the new 'rendering' state for the gate
