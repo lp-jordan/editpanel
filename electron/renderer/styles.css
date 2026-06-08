@@ -1509,6 +1509,12 @@ button.status-bar-chip-btn:hover {
 
 .job-panel-body {
   overflow-y: auto;
+  /* Reserve scrollbar gutter even when content fits — otherwise switching
+     between a content-heavy tab (All, with many exports) and an empty one
+     (Spellcheck, "No runs yet") changes the body width by ~15px, which is
+     enough to push the tab row above into overflow and squish the pills.
+     Stable gutter = identical body width on every tab. */
+  scrollbar-gutter: stable;
   flex: 1;
   padding: 10px 14px 14px;
   display: flex;
@@ -1537,7 +1543,10 @@ button.status-bar-chip-btn:hover {
   border-radius: 999px;
   align-self: flex-start;
   max-width: 100%;
-  overflow-x: auto;
+  /* No overflow-x: auto here — there are exactly 4 fixed tabs and they
+     should always fit (the body's scrollbar-gutter keeps width stable).
+     If they ever do overflow it should be a visible bug to fix, not
+     silently chevron-hidden behind a scrollbar. */
 }
 .job-panel-tab {
   appearance: none;
