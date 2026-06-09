@@ -54,69 +54,114 @@ async function main() {
     return;
   }
 
-  if (existsSync(PYTHON_EXE)) {
-    log(`already present at ${VENDOR_DIR} — skipping fetch`);
+  if (!existsSync(PYTHON_EXE)) {
+    mkdirSync(VENDOR_DIR, { recursive: true });
+    const tmpZip = join(VENDOR_DIR, `_download.${process.pid}.zip`);
+
+    log(`downloading ${PYTHON_URL}`);
+    await downloadTo(PYTHON_URL, tmpZip);
+    log(`download complete (${statSync(tmpZip).size} bytes)`);
+
+    const actualMd5 = await md5OfFile(tmpZip);
+    if (actualMd5 !== PYTHON_MD5) {
+      rmSync(tmpZip, { force: true });
+      throw new Error(`MD5 mismatch for ${PYTHON_URL}: expected ${PYTHON_MD5}, got ${actualMd5}`);
+    }
+    log(`MD5 verified: ${actualMd5}`);
+
+    log(`extracting to ${VENDOR_DIR}`);
+    const unzip = process.platform === 'win32'
+      ? spawnSync(
+          'powershell',
+          ['-Command', `Expand-Archive -Path '${tmpZip}' -DestinationPath '${VENDOR_DIR}' -Force`],
+          { stdio: 'inherit', shell: true },
+        )
+      : spawnSync('unzip', ['-o', tmpZip, '-d', VENDOR_DIR], { stdio: 'inherit' });
+
+    if (unzip.status !== 0) {
+      throw new Error(`unzip failed with exit code ${unzip.status}`);
+    }
+
+    rmSync(tmpZip, { force: true });
+  } else {
+    log(`Python ${PYTHON_VERSION} already present at ${VENDOR_DIR}`);
+  }
+
+  // _pth patching is idempotent and runs on EVERY invocation — that way
+  // re-running `node scripts/fetch-python.mjs` after a script upgrade
+  // (e.g. 1.2.1 → 1.2.3 adding `..\..`) heals an existing broken install
+  // without needing to delete vendor/ and re-download.
+  patchPthFile();
+
+  log(`done — bundled Python ${PYTHON_VERSION} at ${VENDOR_DIR}`);
+}
+
+// Patch python310._pth so the bundled interpreter can find helper/ at runtime.
+//
+// The embed-amd64 zip ships a _pth file that pins sys.path to ONLY:
+//   python310.zip   ← stdlib
+//   .               ← directory containing python.exe
+// and the mere presence of a _pth disables PYTHONPATH + cwd-on-sys.path entirely.
+// So whatever dir contains helper/ has to be expressible as a _pth entry
+// relative to the python.exe directory.
+//
+// Two real-world layouts, both supported by adding both entries:
+//
+//   PACKAGED install (electron-builder extraResources):
+//     <install>/resources/python/python.exe
+//     <install>/resources/python/python310._pth
+//     <install>/resources/helper/                ← `..` from python/ = resources/
+//
+//   DEV tree on Windows (only used when EP_USE_VENDOR_PYTHON=1):
+//     editpanel/vendor/python-win32/python.exe
+//     editpanel/vendor/python-win32/python310._pth
+//     editpanel/helper/                          ← `..\..` from python-win32/
+//
+// Both `..` and `..\..` are written. Extra path-lookups are cheap and
+// harmless; missing the right one is a hard ModuleNotFoundError on every
+// worker spawn.
+//
+// Also: re-enables `import site` (uncomments it) so faulthandler hooks
+// + standard sys.path[0] handling work.
+function patchPthFile() {
+  if (!existsSync(PTH_FILE)) {
+    log(`warning: ${PTH_FILE} not found; helper imports may fail at runtime`);
+    return;
+  }
+  const before = readFileSync(PTH_FILE, 'utf8');
+  const present = new Set(before.split('\n').map((l) => l.trim()));
+  const REQUIRED_PATHS = ['..', '..\\..'];
+  const missingPaths = REQUIRED_PATHS.filter((p) => !present.has(p));
+
+  // `import site` may be present-and-commented or absent entirely.
+  const hasSite = present.has('import site');
+  const sitePattern = /^#\s*import\s+site\s*$/m;
+  const willUncommentSite = !hasSite && sitePattern.test(before);
+  const willAppendSite = !hasSite && !willUncommentSite;
+
+  if (missingPaths.length === 0 && hasSite) {
+    log(`${PTH_FILE} already patched — no changes needed`);
     return;
   }
 
-  mkdirSync(VENDOR_DIR, { recursive: true });
-  const tmpZip = join(VENDOR_DIR, `_download.${process.pid}.zip`);
-
-  log(`downloading ${PYTHON_URL}`);
-  await downloadTo(PYTHON_URL, tmpZip);
-  log(`download complete (${statSync(tmpZip).size} bytes)`);
-
-  const actualMd5 = await md5OfFile(tmpZip);
-  if (actualMd5 !== PYTHON_MD5) {
-    rmSync(tmpZip, { force: true });
-    throw new Error(`MD5 mismatch for ${PYTHON_URL}: expected ${PYTHON_MD5}, got ${actualMd5}`);
+  let after = before;
+  if (willUncommentSite) {
+    after = after.replace(sitePattern, 'import site');
   }
-  log(`MD5 verified: ${actualMd5}`);
-
-  log(`extracting to ${VENDOR_DIR}`);
-  const unzip = process.platform === 'win32'
-    ? spawnSync(
-        'powershell',
-        ['-Command', `Expand-Archive -Path '${tmpZip}' -DestinationPath '${VENDOR_DIR}' -Force`],
-        { stdio: 'inherit', shell: true },
-      )
-    : spawnSync('unzip', ['-o', tmpZip, '-d', VENDOR_DIR], { stdio: 'inherit' });
-
-  if (unzip.status !== 0) {
-    throw new Error(`unzip failed with exit code ${unzip.status}`);
+  if (!after.endsWith('\n')) after += '\n';
+  for (const p of missingPaths) {
+    after += `${p}\n`;
   }
-
-  rmSync(tmpZip, { force: true });
-
-  // Patch python310._pth so the bundled interpreter can find helper/ at runtime.
-  //
-  // The embed-amd64 zip ships a _pth file that pins sys.path to ONLY:
-  //   python310.zip   ← stdlib
-  //   .               ← directory containing python.exe (i.e. <resources>/python/)
-  // and the mere presence of a _pth disables PYTHONPATH + cwd-on-sys.path entirely.
-  //
-  // At install time the layout is:
-  //   <resources>/python/python.exe
-  //   <resources>/python/python310._pth
-  //   <resources>/helper/...   ← spawned with `python -m helper.resolve_worker`
-  //
-  // Adding `..` makes <resources>/ findable, so `import helper.resolve_worker`
-  // resolves. Uncommenting `import site` re-enables the standard site machinery
-  // (faulthandler hooks, sys.path[0] handling, etc.).
-  if (existsSync(PTH_FILE)) {
-    const before = readFileSync(PTH_FILE, 'utf8');
-    if (!before.split('\n').some((line) => line.trim() === '..')) {
-      const after = before.replace(/^#\s*import site\s*$/m, 'import site') + '\n..\n';
-      writeFileSync(PTH_FILE, after, 'utf8');
-      log(`patched ${PTH_FILE} (added .. + import site)`);
-    } else {
-      log(`${PTH_FILE} already patched — skipping edit`);
-    }
-  } else {
-    log(`warning: ${PTH_FILE} not found; helper imports may fail at runtime`);
+  if (willAppendSite) {
+    after += 'import site\n';
   }
-
-  log(`done — bundled Python ${PYTHON_VERSION} at ${VENDOR_DIR}`);
+  writeFileSync(PTH_FILE, after, 'utf8');
+  const changes = [
+    ...missingPaths.map((p) => `+'${p}'`),
+    ...(willUncommentSite ? ["uncommented 'import site'"] : []),
+    ...(willAppendSite ? ["appended 'import site'"] : []),
+  ];
+  log(`patched ${PTH_FILE}: ${changes.join(', ')}`);
 }
 
 function downloadTo(url, dest) {

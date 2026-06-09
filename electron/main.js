@@ -71,19 +71,28 @@ const WIN_ACCESS_VIOLATION_EXIT = 3221225477;
 const FAST_CRASH_UPTIME_MS = 2000;
 const FAST_CRASH_THRESHOLD = 2;
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
-// PYTHON_CMD — bundled Python 3.10 on packaged Windows builds eliminates the
-// lp2-class failure mode (wrong system Python loaded fusionscript.dll and
-// segfaulted; see docs/project history.md 2026-06-02 + docs/new-machine-setup.md).
-// macOS dev keeps system python3 (packaging is Windows-only); Windows dev
-// prefers the vendor/ copy if scripts/fetch-python.mjs has materialized it,
-// else falls back to system python.
+// PYTHON_CMD — bundled Python 3.10 ONLY on packaged Windows builds, where the
+// resources/python/ + resources/helper/ layout makes the python310._pth `..`
+// hint resolve to a dir containing helper/. Eliminates the lp2-class failure
+// (wrong system Python loaded fusionscript.dll and segfaulted; see
+// docs/project history.md 2026-06-02 + docs/new-machine-setup.md).
+//
+// Dev DOES NOT use the vendor/ copy by default — the dev tree layout
+// (editpanel/vendor/python-win32/ + editpanel/helper/) needs `..\..`, not `..`,
+// for _pth to find helper. System Python on PATH has worked on dev for months
+// because Python's default sys.path includes cwd (=editpanel/, which contains
+// helper/). Set EP_USE_VENDOR_PYTHON=1 in dev to opt-in to the bundled
+// interpreter codepath (requires fetch-python.mjs ≥1.2.3, which patches
+// python310._pth with both `..` and `..\..`).
 const PYTHON_CMD = (() => {
   if (process.platform !== 'win32') return 'python3';
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'python', 'python.exe');
   }
-  const vendor = path.join(__dirname, '..', 'vendor', 'python-win32', 'python.exe');
-  if (fs.existsSync(vendor)) return vendor;
+  if (process.env.EP_USE_VENDOR_PYTHON === '1') {
+    const vendor = path.join(__dirname, '..', 'vendor', 'python-win32', 'python.exe');
+    if (fs.existsSync(vendor)) return vendor;
+  }
   return 'python';
 })();
 const EP_LINK_SCHEME = 'lpos-editpanel';
