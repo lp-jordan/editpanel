@@ -85,10 +85,14 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
   }
 
   // ── 5c.10 action handlers ────────────────────────────────────────────────
+  // The preload (electron/preload.js) exposes focusComment + setCommentCompleted
+  // under window.lposAPI, not window.commentsAPI. Earlier drafts checked the
+  // wrong namespace, which made both buttons silently no-op (guard returned
+  // before the IPC ever fired).
   async function handleJump(timelineUid, frame) {
-    if (!window.commentsAPI?.focusComment) return;
+    if (!window.lposAPI?.focusComment) return;
     try {
-      const res = await window.commentsAPI.focusComment({ timelineUid, frame });
+      const res = await window.lposAPI.focusComment({ timelineUid, frame });
       if (!res?.ok) {
         // Silent fail; the report doesn't have a toast surface yet. The
         // background log surfaces errors elsewhere if needed.
@@ -101,13 +105,13 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
 
   async function handleSetCompleted(timeline, comment, completed) {
     const cid = comment.commentId;
-    if (!cid || !window.commentsAPI?.setCommentCompleted) return;
+    if (!cid || !window.lposAPI?.setCommentCompleted) return;
     if (busyComments[cid]) return;
     setBusyComments(prev => ({ ...prev, [cid]: true }));
     // Optimistic UI: flip the state immediately. Confirm/revert on response.
     setCompletionState(prev => ({ ...prev, [cid]: completed ? 'completing' : 'reopening' }));
     try {
-      const res = await window.commentsAPI.setCommentCompleted({
+      const res = await window.lposAPI.setCommentCompleted({
         projectId:   timeline.lposProjectId,
         assetId:     timeline.assetId,
         commentId:   cid,
