@@ -1651,6 +1651,23 @@ button.status-bar-chip-btn:hover {
   white-space: nowrap;
 }
 
+/* Muted "unassigned" hint sitting next to the headline inside the chunky
+   in-flight row (RenderingExportRow). The compact terminal-row equivalent is
+   the louder .job-panel-row-chip; here we want it quieter — the actionable
+   status (rendering / uploading / etc.) is already carried by the badge on
+   the right, so the assignment state is just background information until
+   the editor opens the Deliver page. */
+.job-panel-headline-hint {
+  flex-shrink: 0;
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+  margin-left: 8px;
+  cursor: help;
+}
+
 /* Small muted pill that flags a row as "caught from Resolve, not yet routed
    to an LPOS project." Visually quieter than the state icon and the age
    chips so it adds information without competing for attention. */

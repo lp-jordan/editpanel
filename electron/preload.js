@@ -248,6 +248,13 @@ contextBridge.exposeInMainWorld('exportsAPI', {
   cancel() {
     return ipcRenderer.invoke('export:cancel');
   },
+  /** Stop a Resolve-queued (orphan) render from the JobPanel chunky row.
+   *  Same Resolve mechanism as cancel() but doesn't touch the in-memory
+   *  activeExport — the reconcile tick will write state='failed' once it
+   *  sees the Cancelled status (~3s). */
+  stopRendering(exportId) {
+    return ipcRenderer.invoke('exports:stop-rendering', exportId);
+  },
   /** Delete a finished export run from the recent list. */
   deleteRun(exportId) {
     return ipcRenderer.invoke('export:delete-run', exportId);

@@ -25,6 +25,161 @@ const TABS = [
   { key: 'comments',   label: 'Comments' }
 ];
 
+// Static SVGs hoisted out of JobPanel so the chunky-row component can use the
+// same iconography without prop-drilling.
+const X_ICON = (
+  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true">
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+
+const CHEVRON_ICON = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="9 6 15 12 9 18" />
+  </svg>
+);
+
+/**
+ * Chunky export row — the "in-flight" presentation shared by editpanel-queued
+ * exports (driven by the in-memory activeExport singleton) and Resolve-queued
+ * orphans in a non-terminal state (driven by the export_runs DB row that the
+ * reconcile tick keeps updated). Both surfaces want the same affordances —
+ * collapse, headline, per-state badge, full-width progress bar, per-timeline
+ * breakdown, substep line — so we render through a single component instead
+ * of forking the markup.
+ *
+ * Props are deliberately normalised (no activeExport / row mix at this layer):
+ *  - jobs: [{id, name, mark}] where `mark` is already formatted (e.g. "47%",
+ *    "✓", "↑12%"). For orphans we synthesise the mark from the row-level
+ *    percent since the reconciler doesn't keep per-job percents fresh; for
+ *    editpanel-queued exports it comes from exportJobMark(activeExport.jobs[i]).
+ *  - unassigned: render a muted "unassigned" hint after the headline. Used
+ *    only for orphans that haven't been routed to an LPOS project yet.
+ *  - onStart / onClearQueued: only the editpanel-queued path uses them (queued
+ *    state is unreachable for orphans, which are by definition Started in
+ *    Resolve before we discover them).
+ */
+function RenderingExportRow({
+  headline,
+  unassigned,
+  state,
+  percent,
+  uploadPercent,
+  jobs,
+  jobsDone,
+  jobCount,
+  targetDir,
+  projectName,
+  collapsed,
+  onToggleCollapse,
+  onStart,
+  onStop,
+  onClearQueued
+}) {
+  const queued    = state === 'queued';
+  const uploading = state === 'uploading';
+  const pct       = uploading ? (uploadPercent ?? 0) : queued ? 0 : (percent ?? 0);
+  const count     = jobCount ?? (jobs ? jobs.length : 0);
+  const badge     = queued
+    ? `Queued · ${count} timeline${count !== 1 ? 's' : ''}`
+    : uploading
+    ? `Uploading ${pct}%`
+    : `${jobsDone ?? 0}/${count} · ${pct}%`;
+  return (
+    <div className="job-panel-row active">
+      <div className="job-panel-row-top">
+        <div className="job-panel-export-head-left">
+          <button
+            className={`job-panel-collapse-btn${collapsed ? '' : ' open'}`}
+            onClick={onToggleCollapse}
+            aria-label={collapsed ? 'Expand' : 'Collapse'}
+            aria-expanded={!collapsed}
+            title={collapsed ? 'Expand' : 'Collapse'}
+          >
+            {CHEVRON_ICON}
+          </button>
+          <span className="job-panel-name">{headline}</span>
+          {unassigned && (
+            <span
+              className="job-panel-headline-hint"
+              title="Caught from Resolve's render queue — pick a destination project on the Deliver page"
+            >
+              unassigned
+            </span>
+          )}
+        </div>
+        <div className="job-panel-row-actions">
+          <span className="job-panel-step-badge">{badge}</span>
+          {queued && onStart ? (
+            <React.Fragment>
+              <button
+                className="job-panel-review-btn done"
+                onClick={onStart}
+                title="Start rendering"
+              >
+                Start
+              </button>
+              {onClearQueued && (
+                <button
+                  className="job-panel-delete-btn"
+                  onClick={onClearQueued}
+                  title="Clear queued export"
+                  aria-label="Clear queued export"
+                >
+                  {X_ICON}
+                </button>
+              )}
+            </React.Fragment>
+          ) : (
+            <button
+              className="job-panel-cancel-btn"
+              onClick={onStop}
+              title={uploading ? 'Stop upload' : 'Stop render'}
+            >
+              Stop
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="job-panel-progress-track">
+        <div
+          className={`job-panel-progress-fill${uploading ? ' result' : ''}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {!collapsed && jobs && jobs.length > 0 && (
+        <div className="job-panel-export-jobs">
+          {jobs.map(j => (
+            <div
+              key={j.id}
+              className={`job-panel-export-job${j.mark === '✓' ? ' done' : ''}`}
+            >
+              <span className="job-panel-export-job-name">{j.name}</span>
+              <span className="job-panel-export-job-mark">{queued ? '·' : j.mark}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {!collapsed && (
+        <p className="job-panel-substep">
+          {queued
+            ? 'Queued in Resolve — press Start when ready'
+            : uploading
+            ? `Uploading to ${projectName || 'LPOS'}…`
+            : (targetDir || '')}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Non-terminal export states render through RenderingExportRow regardless of
+// whether the row came from the in-memory activeExport singleton or the
+// export_runs DB (orphan path). Mirrors the activeExport lifecycle: once a
+// render reaches a terminal state, the row falls back to the compact display.
+const RENDERING_STATES = new Set(['queued', 'rendering', 'uploading']);
+
 function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onViewResults, onReviewExports }) {
   const [runs, setRuns] = React.useState([]);
   const [loadingRuns, setLoadingRuns] = React.useState(false);
@@ -261,12 +416,11 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     }
   }
 
-  const xIcon = (
-    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true">
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
-  );
+  const xIcon = X_ICON;
+
+  async function handleStopOrphan(exportId) {
+    try { await window.exportsAPI.stopRendering(exportId); } catch (_) {}
+  }
 
   return (
     <div className={`job-panel${open ? ' open' : ''}`} role="dialog" aria-label="Jobs">
@@ -317,111 +471,89 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
             <section className="job-panel-section">
               <p className="job-panel-section-label">Exports</p>
 
-              {activeExport && (() => {
-                const queued    = activeExport.state === 'queued';
-                const uploading = activeExport.state === 'uploading';
-                const rendering = activeExport.state === 'rendering';
-                const pct = uploading ? (activeExport.uploadPercent ?? 0) : queued ? 0 : (activeExport.percent ?? 0);
-                const count = activeExport.jobs.length;
-                const badge = queued
-                  ? `Queued · ${count} timeline${count !== 1 ? 's' : ''}`
-                  : uploading
-                  ? `Uploading ${pct}%`
-                  : `${activeExport.jobsDone}/${count} · ${pct}%`;
-                const collapsed = collapsedExports.has(activeExport.exportId);
-                return (
-                  <div className="job-panel-row active">
-                    <div className="job-panel-row-top">
-                      <div className="job-panel-export-head-left">
-                        <button
-                          className={`job-panel-collapse-btn${collapsed ? '' : ' open'}`}
-                          onClick={() => toggleExportCollapsed(activeExport.exportId)}
-                          aria-label={collapsed ? 'Expand' : 'Collapse'}
-                          aria-expanded={!collapsed}
-                          title={collapsed ? 'Expand' : 'Collapse'}
-                        >
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                            <polyline points="9 6 15 12 9 18" />
-                          </svg>
-                        </button>
-                        <span className="job-panel-name">
-                          {activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
-                        </span>
-                      </div>
-                      <div className="job-panel-row-actions">
-                        <span className="job-panel-step-badge">{badge}</span>
-                        {queued ? (
-                          <React.Fragment>
-                            <button
-                              className="job-panel-review-btn done"
-                              onClick={handleStartExport}
-                              title="Start rendering"
-                            >
-                              Start
-                            </button>
-                            <button
-                              className="job-panel-delete-btn"
-                              onClick={handleCancelExport}
-                              title="Clear queued export"
-                              aria-label="Clear queued export"
-                            >
-                              {xIcon}
-                            </button>
-                          </React.Fragment>
-                        ) : (
-                          <button
-                            className="job-panel-cancel-btn"
-                            onClick={handleCancelExport}
-                            title={uploading ? 'Stop upload' : 'Stop render'}
-                          >
-                            Stop
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <div className="job-panel-progress-track">
-                      <div
-                        className={`job-panel-progress-fill${uploading ? ' result' : ''}`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                    {!collapsed && (
-                      <div className="job-panel-export-jobs">
-                        {activeExport.jobs.map(job => {
-                          const mark = queued ? '·' : exportJobMark(job);
-                          return (
-                            <div
-                              key={job.job_id}
-                              className={`job-panel-export-job${mark === '✓' ? ' done' : ''}`}
-                            >
-                              <span className="job-panel-export-job-name">{job.name}</span>
-                              <span className="job-panel-export-job-mark">{mark}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {!collapsed && (
-                      <p className="job-panel-substep">
-                        {queued
-                          ? 'Queued in Resolve — press Start when ready'
-                          : uploading
-                          ? `Uploading to ${activeExport.projectName || 'LPOS'}…`
-                          : (activeExport.targetDir || '')}
-                      </p>
-                    )}
-                  </div>
-                );
-              })()}
+              {activeExport && (
+                <RenderingExportRow
+                  headline={activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
+                  unassigned={false}
+                  state={activeExport.state}
+                  percent={activeExport.percent ?? 0}
+                  uploadPercent={activeExport.uploadPercent ?? 0}
+                  jobs={activeExport.jobs.map(j => ({
+                    id: j.job_id,
+                    name: j.name,
+                    mark: exportJobMark(j)
+                  }))}
+                  jobsDone={activeExport.jobsDone}
+                  jobCount={activeExport.jobs.length}
+                  targetDir={activeExport.targetDir}
+                  projectName={activeExport.projectName}
+                  collapsed={collapsedExports.has(activeExport.exportId)}
+                  onToggleCollapse={() => toggleExportCollapsed(activeExport.exportId)}
+                  onStart={handleStartExport}
+                  onStop={handleCancelExport}
+                  onClearQueued={handleCancelExport}
+                />
+              )}
 
               {recentExports
                 .filter(e => e.export_id !== activeExport?.exportId)
                 .map(e => {
                   // Orphan = caught from Resolve's render queue, not queued via
                   // editpanel. Until the editor assigns an LPOS project the row
-                  // stays in this in-between state; the chip makes that explicit
-                  // so it doesn't read as "just another finished render."
+                  // stays in this in-between state; the chip / muted hint
+                  // makes that explicit so it doesn't read as "just another
+                  // finished render."
                   const isUnassignedOrphan = e.source === 'reconciled' && !e.project_name;
+
+                  // Non-terminal rows (orphan rendering through the reconcile
+                  // tick, post-assignment uploads, the rare orphan in queued)
+                  // get the chunky in-flight presentation that mirrors the
+                  // editpanel-queued activeExport row — progress bar, badge,
+                  // per-timeline breakdown, Stop button. Once the row goes
+                  // terminal it falls back to the compact display.
+                  if (RENDERING_STATES.has(e.state)) {
+                    // Normalize the jobs_json shape (uppercased keys) into the
+                    // {id, name, mark} contract RenderingExportRow expects.
+                    // Per-job percent inside jobs_json isn't kept fresh by the
+                    // reconciler — only the row-level `percent` is — so we
+                    // synthesise each timeline's mark from the row-level value.
+                    // For the typical single-timeline orphan this is exactly
+                    // what the editor would expect to see.
+                    const rowPct = e.percent ?? 0;
+                    const normalizedJobs = (e.jobs || []).map(j => ({
+                      id: String(j.JobId || j.job_id || ''),
+                      name: j.TimelineName || j.CustomName || j.OutputFilename || j.RenderJobName || j.name || String(j.JobId || j.job_id || ''),
+                      mark: e.state === 'uploading'
+                        ? `↑${rowPct}%`
+                        : e.state === 'rendering'
+                        ? `${rowPct}%`
+                        : '·'
+                    }));
+                    const headline = e.project_name
+                      ? `→ ${e.project_name}`
+                      : exportRowLabel(e);
+                    return (
+                      <RenderingExportRow
+                        key={e.export_id}
+                        headline={headline}
+                        unassigned={isUnassignedOrphan}
+                        state={e.state}
+                        percent={rowPct}
+                        uploadPercent={rowPct}
+                        jobs={normalizedJobs}
+                        jobsDone={e.jobs_done ?? 0}
+                        jobCount={e.job_count ?? normalizedJobs.length}
+                        targetDir={e.target_dir}
+                        projectName={e.project_name}
+                        collapsed={collapsedExports.has(e.export_id)}
+                        onToggleCollapse={() => toggleExportCollapsed(e.export_id)}
+                        onStart={null}
+                        onStop={() => handleStopOrphan(e.export_id)}
+                        onClearQueued={null}
+                      />
+                    );
+                  }
+
                   const titleParts = [];
                   if (e.project_name) titleParts.push(`LPOS: ${e.project_name}`);
                   if (e.target_dir)   titleParts.push(`Output: ${e.target_dir}`);

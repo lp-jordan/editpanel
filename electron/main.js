@@ -2973,6 +2973,23 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
+  // Stop a Resolve-queued (orphan) render from the JobPanel. The chunky mirror
+  // row gives orphans a Stop button just like editpanel-queued exports get;
+  // this is what it calls. Same Resolve mechanism as export:cancel (the
+  // project's StopRendering() is queue-wide, not per-JobId), but the in-memory
+  // activeExport tracker isn't touched — the orphan lives in export_runs only,
+  // and the reconcile tick will observe the status flip to Cancelled within
+  // ~3s and write state='failed' with error='Resolve render cancelled' via
+  // maybeUpdateOrphanProgress. Caveat: if both an editpanel-queued export and
+  // an orphan are in flight, Resolve only renders one job at a time anyway,
+  // so the user clicking Stop on whichever orphan row stops whichever JobId
+  // Resolve currently has on the rollers — which is the natural thing to do.
+  ipcMain.handle('exports:stop-rendering', async (_e, exportId) => {
+    if (!exportId) return { ok: false, error: 'Missing exportId' };
+    try { await sendWorkerRequest({ cmd: 'stop_render' }, WORKERS.resolve); } catch (_) { /* best effort */ }
+    return { ok: true };
+  });
+
   // "Delete" from JobPanel: hide the row from the JobPanel "Recent exports"
   // section WITHOUT removing it from the underlying DB or from the ExportsPanel
   // on /deliver. ExportsPanel is the concrete record of every render the editor
