@@ -40,6 +40,14 @@ const COMMAND_OWNER = Object.freeze({
   // upstream Frame.io completion lands.
   focus_comment: WORKERS.resolve,
   delete_comment_marker: WORKERS.resolve,
+  // ExportDeliverOverlay dropdowns (2026-06-08, v1.1.16): enumerate the
+  // active project's render presets and top-level media-pool bins so the
+  // overlay picker can show real choices instead of free-text. Read-only,
+  // no payload — but they still need to be registered here, otherwise
+  // validateRequestEnvelope rejects them as "unknown command" before the
+  // request ever reaches the Python worker.
+  list_render_presets: WORKERS.resolve,
+  list_media_bins: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -104,6 +112,8 @@ const COMMAND_SCHEMAS = Object.freeze({
     required: ['timeline_uid', 'comment_id'],
     types: { timeline_uid: 'string', comment_id: 'string' }
   },
+  list_render_presets: { required: [] },
+  list_media_bins: { required: [] },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });
