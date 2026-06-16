@@ -4,11 +4,30 @@
     <meta charset="UTF-8" />
     <title>EditPanel</title>
     <link rel="stylesheet" href="./styles.css" />
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script>
+      // Catch any top-level JS errors and show them on-screen so a blank
+      // page can be diagnosed without opening DevTools.
+      window.addEventListener('error', function(e) {
+        var el = document.getElementById('startup-error');
+        if (el) {
+          el.style.display = 'flex';
+          var msg = document.getElementById('startup-error-msg');
+          if (msg) msg.textContent = (e.message || String(e)) + (e.filename ? '\n' + e.filename + ':' + e.lineno : '');
+        }
+      });
+    </script>
+    <script src="./vendor/react.js"></script>
+    <script src="./vendor/react-dom.js"></script>
+    <script src="./vendor/babel.min.js"></script>
   </head>
   <body>
+    <!-- Fallback shown when a top-level JS error prevents React from mounting.
+         Visible without DevTools so a remote machine can self-report the cause. -->
+    <div id="startup-error" style="display:none;position:fixed;inset:0;background:#1a1a1a;color:#f87171;font-family:monospace;font-size:13px;padding:32px;flex-direction:column;gap:12px;z-index:99999;">
+      <div style="font-size:15px;font-weight:600;">EditPanel failed to start</div>
+      <pre id="startup-error-msg" style="white-space:pre-wrap;margin:0;"></pre>
+      <div style="color:#9ca3af;font-size:12px;">Check that this machine has the latest EditPanel installed. If the problem persists, share the error text above with the LPOS admin.</div>
+    </div>
     <div id="root"></div>
     <script type="text/babel" src="./components/SlideoutConsole.jsx" data-presets="react"></script>
     <script type="text/babel" src="./components/SpellcheckReport.jsx" data-presets="react"></script>

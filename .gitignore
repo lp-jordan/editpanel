@@ -17,4 +17,6 @@ dist/
 
 # Bundled Python (fetched on `npm install` via scripts/fetch-python.mjs)
 vendor/
+# Vendor JS libraries committed for offline renderer use
+!electron/renderer/vendor/
 
