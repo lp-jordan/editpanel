@@ -71,22 +71,31 @@ const WIN_ACCESS_VIOLATION_EXIT = 3221225477;
 const FAST_CRASH_UPTIME_MS = 2000;
 const FAST_CRASH_THRESHOLD = 2;
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
-// PYTHON_CMD — bundled Python 3.10 ONLY on packaged Windows builds, where the
-// resources/python/ + resources/helper/ layout makes the python310._pth `..`
-// hint resolve to a dir containing helper/. Eliminates the lp2-class failure
-// (wrong system Python loaded fusionscript.dll and segfaulted; see
-// docs/project history.md 2026-06-02 + docs/new-machine-setup.md).
+// PYTHON_CMD — bundled Python 3.10 on packaged Windows builds by default.
+// The bundled copy guarantees a known-good interpreter on machines where
+// no suitable system Python is installed (LP3-class machines).
 //
-// Dev DOES NOT use the vendor/ copy by default — the dev tree layout
-// (editpanel/vendor/python-win32/ + editpanel/helper/) needs `..\..`, not `..`,
-// for _pth to find helper. System Python on PATH has worked on dev for months
-// because Python's default sys.path includes cwd (=editpanel/, which contains
-// helper/). Set EP_USE_VENDOR_PYTHON=1 in dev to opt-in to the bundled
-// interpreter codepath (requires fetch-python.mjs ≥1.2.3, which patches
-// python310._pth with both `..` and `..\..`).
+// Some machines have a Resolve version whose fusionscript.dll was compiled
+// against a different Python (e.g. 3.6 or 3.9) and will AV with the
+// bundled 3.10. For those machines, set useSystemPython: true in
+// preferences.json (Settings → Python → "Use system Python") to fall back
+// to whatever `python` is on PATH — the version that was working before
+// the bundled-Python change.
+//
+// Dev DOES NOT use the vendor/ copy by default. Set EP_USE_VENDOR_PYTHON=1
+// to opt-in.
 const PYTHON_CMD = (() => {
   if (process.platform !== 'win32') return 'python3';
   if (app.isPackaged) {
+    // Check preferences.json early (synchronous read) for the per-machine
+    // useSystemPython flag. Fall back gracefully if the file isn't readable.
+    const prefsPath = path.join(app.getPath('userData'), 'preferences.json');
+    let useSystemPython = false;
+    try {
+      const raw = fs.readFileSync(prefsPath, 'utf8');
+      useSystemPython = Boolean(JSON.parse(raw).useSystemPython);
+    } catch (_) { /* file absent or unparseable — default to bundled */ }
+    if (useSystemPython) return 'python';
     return path.join(process.resourcesPath, 'python', 'python.exe');
   }
   if (process.env.EP_USE_VENDOR_PYTHON === '1') {

@@ -206,7 +206,7 @@ function App() {
   const [anchored, setAnchored] = React.useState(false);
 
   // Settings state
-  const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '', atemHost: '' });
+  const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '', atemHost: '', useSystemPython: false });
   const [settingsSaved, setSettingsSaved] = React.useState(false);
   const [lposUrl, setLposUrl] = React.useState('');
   // 'unconfigured' | 'ok' | 'error' | 'signed-out'
@@ -240,7 +240,8 @@ function App() {
         // Stored under lposBaseUrl (the canonical key written on save)
         const url = prefs.lposBaseUrl || 'https://lpos.tail856ed3.ts.net';
         const atem = prefs.atemFtpHost || '172.20.10.241';
-        setSettingsDraft({ displayName: name, lposUrl: url, atemHost: atem });
+        const useSystemPython = Boolean(prefs.useSystemPython);
+        setSettingsDraft({ displayName: name, lposUrl: url, atemHost: atem, useSystemPython });
         setLposUrl(url);
         setEpUserEmail(prefs.epUserEmail || '');
         setEpMachineName(prefs.epMachineName || '');
@@ -638,7 +639,8 @@ function App() {
     window.electronAPI.updatePreferences({
       displayName: settingsDraft.displayName,
       lposBaseUrl: settingsDraft.lposUrl,
-      atemFtpHost: settingsDraft.atemHost
+      atemFtpHost: settingsDraft.atemHost,
+      useSystemPython: settingsDraft.useSystemPython
     }).then(() => {
       setLposUrl(settingsDraft.lposUrl);
       setLposStatus('unconfigured');        // will re-check on next poll cycle
@@ -974,6 +976,29 @@ function App() {
                     {signinMessage}
                   </p>
                 )}
+              </div>
+            </section>
+
+            <section className="panel settings-section">
+              <div className="list-header">
+                <p className="eyebrow">Python</p>
+                <h2 className="section-title">Interpreter</h2>
+                <p className="section-copy">Controls which Python runs the Resolve helper. Only change this if the Resolve connection crashes immediately on startup.</p>
+              </div>
+              <div className="settings-field">
+                <label className="settings-label" style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={settingsDraft.useSystemPython}
+                    onChange={(e) => setSettingsDraft((prev) => ({ ...prev, useSystemPython: e.target.checked }))}
+                  />
+                  Use system Python instead of the bundled interpreter
+                </label>
+                <p className="settings-hint">
+                  Default (unchecked): EditPanel uses its bundled Python 3.10 — recommended for most machines.
+                  Check this box if your Resolve version ships a fusionscript.dll built for a different Python version
+                  (symptoms: immediate "Windows access violation" crash on connect). Requires a restart to take effect.
+                </p>
               </div>
             </section>
 
