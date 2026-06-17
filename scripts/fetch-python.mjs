@@ -104,7 +104,9 @@ async function main() {
   rmSync(tmpExtractDir, { recursive: true, force: true });
   mkdirSync(tmpExtractDir, { recursive: true });
 
-  const tmpNupkg = join(tmpExtractDir, 'python.nupkg');
+  // PowerShell's Expand-Archive does a literal extension check and rejects
+  // `.nupkg` even though .nupkg is just a zip. Save with .zip suffix.
+  const tmpNupkg = join(tmpExtractDir, 'python-nupkg.zip');
 
   log(`downloading ${NUGET_URL}`);
   await downloadTo(NUGET_URL, tmpNupkg);
