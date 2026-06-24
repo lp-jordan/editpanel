@@ -139,12 +139,15 @@ def _load_fusionscript():
     spec = importlib.util.spec_from_loader('fusionscript', loader, origin=lib_path)
     if spec is None:
         raise ImportError(f"Could not build module spec for {lib_path}")
-    module = importlib.util.module_from_spec(spec)
 
     # Log right before the native load so we know which DLL the loader tried
-    # even when exec_module access-violates. Without this, an AV produces a
-    # silent process death and we have to infer "it tried to load <default
-    # path>" from the absence of the success message below.
+    # even when it access-violates. This MUST come before module_from_spec():
+    # for a C-extension, module_from_spec() -> loader.create_module() is where
+    # the .dll/.so is mapped in and its PyInit_* runs, so that's the call that
+    # access-violates on an ABI/version mismatch (exec_module() for a
+    # single-phase extension is effectively a no-op afterward). Logging after
+    # module_from_spec() meant this line never printed on the exact failure it
+    # was meant to diagnose — a silent process death with no DLL identity.
     try:
         st = os.stat(lib_path)
         logger.info(
@@ -155,6 +158,7 @@ def _load_fusionscript():
         logger.info("Attempting native load: %s (stat failed: %s)", lib_path, exc)
     sys.stderr.flush()
 
+    module = importlib.util.module_from_spec(spec)  # native PyInit runs here
     loader.exec_module(module)
     _script_module = module
     logger.info("Loaded fusionscript from %s", lib_path)
