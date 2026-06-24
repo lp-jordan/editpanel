@@ -354,6 +354,9 @@ function handleWorkerLine(state, line) {
   state.pending.delete(normalized.envelope.id);
 
   const response = {
+    // Echo the correlation id so the renderer's `leaderpassAPI.call` can match
+    // this response to the right in-flight promise (see preload.js).
+    id: normalized.envelope.id,
     ok: normalized.envelope.ok,
     data: normalized.envelope.data,
     error: normalized.envelope.error,
@@ -2042,6 +2045,7 @@ app.whenReady().then(() => {
     try {
       sendWorkerRequest(payload, WORKERS.resolve, event).catch(error => {
         event.reply('helper-response', {
+          id: payload && payload.id,
           ok: false,
           data: null,
           error: normalizeError(error),
@@ -2050,6 +2054,7 @@ app.whenReady().then(() => {
       });
     } catch (error) {
       event.reply('helper-response', {
+        id: payload && payload.id,
         ok: false,
         data: null,
         error: normalizeError(error),

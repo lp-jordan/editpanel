@@ -48,6 +48,13 @@ const COMMAND_OWNER = Object.freeze({
   // request ever reaches the Python worker.
   list_render_presets: WORKERS.resolve,
   list_media_bins: WORKERS.resolve,
+  // "Open Sequences" edit function (2026-06-24): list_bin_sequences enumerates
+  // the timelines in a chosen top-level bin; open_sequence makes one of them
+  // current. The renderer fetches the list once, then opens them one at a time
+  // with a settle delay so the worker keeps answering health pings between
+  // sequences (a single long blocking Python loop would trip the watchdog).
+  list_bin_sequences: WORKERS.resolve,
+  open_sequence: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -114,6 +121,10 @@ const COMMAND_SCHEMAS = Object.freeze({
   },
   list_render_presets: { required: [] },
   list_media_bins: { required: [] },
+  list_bin_sequences: { required: ['bin_name'], types: { bin_name: 'string' } },
+  // uid/name are both optional scalars (at least one required — enforced in the
+  // Python handler); only type-check them when present.
+  open_sequence: { required: [], types: { uid: 'string', name: 'string' } },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });

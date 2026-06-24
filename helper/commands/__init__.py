@@ -20,6 +20,8 @@ from .focus_comment import handle_focus_comment
 from .delete_comment_marker import handle_delete_comment_marker
 from .list_render_presets import handle_list_render_presets
 from .list_media_bins import handle_list_media_bins
+from .list_bin_sequences import handle_list_bin_sequences
+from .open_sequence import handle_open_sequence
 
 
 RESOLVE_HANDLERS = {
@@ -44,6 +46,8 @@ RESOLVE_HANDLERS = {
     "delete_comment_marker": handle_delete_comment_marker,
     "list_render_presets": handle_list_render_presets,
     "list_media_bins": handle_list_media_bins,
+    "list_bin_sequences": handle_list_bin_sequences,
+    "open_sequence": handle_open_sequence,
 }
 
 # Reserved for future media worker commands (audit mode, etc.)

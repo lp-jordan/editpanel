@@ -184,6 +184,7 @@ function App() {
   const [atemIngestOpen, setAtemIngestOpen]   = React.useState(false);
   const [exportOpen, setExportOpen]           = React.useState(false);
   const [activeExport, setActiveExport]       = React.useState(null);
+  const [openSeqOpen, setOpenSeqOpen]         = React.useState(false);
   // Phase 3.5: bumps when the Jobs-tab "exports awaiting assignment" pill is
   // clicked. ExportsPanel observes the change and expands itself filtered to
   // 'unassigned'. We use a counter instead of a boolean so successive clicks
@@ -694,6 +695,16 @@ function App() {
           actionLabel: 'Pull Comments',
           onClick: handlePullComments,
           requiresResolve: true
+        },
+        {
+          // 2026-06-24: open every timeline in a chosen bin, one at a time,
+          // with a settle between each (OpenSequencesOverlay).
+          key: 'open-sequences',
+          label: 'Open Sequences',
+          description: 'Open every sequence in a chosen bin, one after another.',
+          actionLabel: 'Open Sequences',
+          onClick: () => setOpenSeqOpen(true),
+          requiresResolve: true
         }
       ]
     },
@@ -1148,6 +1159,14 @@ function App() {
           lposReady={lposStatus === 'ok'}
           onLog={appendLog}
           onOpenJobs={() => { setExportOpen(false); setJobPanelOpen(true); }}
+        />
+      )}
+      {openSeqOpen && (
+        <OpenSequencesOverlay
+          open={openSeqOpen}
+          onClose={() => setOpenSeqOpen(false)}
+          connected={connected}
+          onLog={appendLog}
         />
       )}
       <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />

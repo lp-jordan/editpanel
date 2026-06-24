@@ -1,17 +1,31 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Monotonic per-renderer correlation id. Every helper-request carries a unique
+// `id` and the main process echoes it back on the shared `helper-response`
+// channel; `call` only settles on the response whose id matches. Without this,
+// two concurrent calls (e.g. list_render_presets + list_media_bins fired from
+// the same effect) would both latch onto whichever response arrived first —
+// the second call resolved with the first call's payload, silently returning
+// the wrong shape (the cause of the empty Export-bin dropdown).
+let __helperCallSeq = 0;
+
 contextBridge.exposeInMainWorld('leaderpassAPI', {
   call(cmd, params = {}) {
+    const callId = `r${++__helperCallSeq}`;
     return new Promise((resolve, reject) => {
-      ipcRenderer.once('helper-response', (_event, result) => {
-        if (result && result.ok) {
+      const handler = (_event, result) => {
+        // Ignore responses belonging to other in-flight calls.
+        if (!result || result.id !== callId) return;
+        ipcRenderer.removeListener('helper-response', handler);
+        if (result.ok) {
           resolve(result);
         } else {
           reject(result);
         }
-      });
-
-      ipcRenderer.send('helper-request', { cmd, ...params });
+      };
+      ipcRenderer.on('helper-response', handler);
+      // `id` last so it always wins over any stray id in params.
+      ipcRenderer.send('helper-request', { cmd, ...params, id: callId });
     });
   }
 });
