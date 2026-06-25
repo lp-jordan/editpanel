@@ -59,6 +59,9 @@ ipc_handlers:
   fs:stat: {owner: platform, routes_to: main, tag: platform}
   spellcheck:misspellings: {owner: platform, routes_to: main, tag: platform}
   spellcheck:suggestions: {owner: platform, routes_to: main, tag: platform}
+  spellcheck:list-allowlist: {owner: platform, routes_to: main, tag: platform}
+  spellcheck:add-word: {owner: platform, routes_to: main, tag: platform}
+  spellcheck:remove-word: {owner: platform, routes_to: main, tag: platform}
 
 helper_commands:
   connect: {owner: resolve_worker, tag: resolve}
@@ -81,6 +84,14 @@ helper_commands:
 
 - Connect → `connect`
 - Spellcheck → `spellcheck`
+  - Custom dictionary (allowlist): words the editor adds are treated as correct
+    and never flagged. Backed by a writable `spellcheck_allowlist.txt` in
+    Electron's `userData` dir (seeded once from the bundled copy; survives app
+    upgrades). Managed two ways: Settings → Custom Dictionary (view/add/remove)
+    and right-click on a flagged word in the spellcheck review overlay
+    ("Add to dictionary", which also skips every remaining item for that word).
+    IPC: `spellcheck:list-allowlist` / `:add-word` / `:remove-word`
+    (see `electron/spellcheck.js`).
 - Transcribe Folder → `audio:transcribe-folder` → `transcribe_folder`
 - LP Base Export → `lp_base_export`
 

@@ -4,7 +4,13 @@ const os = require('os');
 const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
-const { misspellings, suggestions } = require('./spellcheck');
+const {
+  misspellings,
+  suggestions,
+  listAllowlist,
+  addAllowWord,
+  removeAllowWord
+} = require('./spellcheck');
 const { LposClient } = require('./workers/lpos_client');
 const { JobsDb } = require('./store/jobs-db');
 const { listSessions: atemListSessions, ingestSessions: atemIngestSessions } = require('./workers/atem_ftp');
@@ -2141,6 +2147,9 @@ app.whenReady().then(() => {
 
   ipcMain.handle('spellcheck:misspellings', misspellings);
   ipcMain.handle('spellcheck:suggestions', suggestions);
+  ipcMain.handle('spellcheck:list-allowlist', listAllowlist);
+  ipcMain.handle('spellcheck:add-word', addAllowWord);
+  ipcMain.handle('spellcheck:remove-word', removeAllowWord);
 
   // --- Result items IPC ---
   // Stores per-item reviewable state in SQLite so reviews survive restarts.

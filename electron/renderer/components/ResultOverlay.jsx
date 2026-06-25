@@ -65,6 +65,8 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
   const [scopeProject, setScopeProject] = React.useState('');
   const [scopeTimeline, setScopeTimeline] = React.useState('');
   const [applyError, setApplyError] = React.useState('');
+  // Right-click "Add to dictionary" menu: { x, y, word } or null.
+  const [wordMenu, setWordMenu] = React.useState(null);
   const customInputRef = React.useRef(null);
 
   // Load items on mount
@@ -238,6 +240,60 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
     goNextPending();
   }
 
+  // Lower-case + straighten the curly apostrophe so renderer-side word matching
+  // mirrors the main-process allowlist key (see spellcheck.js normalizeWord).
+  function normalizeWord(w) {
+    return String(w ?? '').replace(/’/g, "'").trim().toLowerCase();
+  }
+
+  // Right-click on a flagged word → add it to the custom dictionary. The word
+  // becomes permanently allowed, so every still-pending item flagged for the
+  // same word is skipped in one go (they're no longer misspellings).
+  async function handleAddToDictionary(word) {
+    setWordMenu(null);
+    if (saving || !word || !window.spellcheckAPI?.addWord) return;
+    setSaving(true);
+    setApplyError('');
+
+    const res = await window.spellcheckAPI.addWord(word).catch(err => ({ ok: false, error: err?.message || String(err) }));
+    if (!res || res.ok === false) {
+      setApplyError(res?.error || 'Could not add the word to the dictionary.');
+      setSaving(false);
+      return;
+    }
+
+    // Skip every pending item flagged for this same word.
+    const target = normalizeWord(word);
+    const toSkip = items.filter(
+      it => it.state === 'pending' && it.item_type === 'spellcheck' && normalizeWord(it.item_data?.word) === target
+    );
+    for (const it of toSkip) {
+      await window.resultsAPI?.skipItem(jobId, it.item_key).catch(() => {});
+    }
+    const skipKeys = new Set(toSkip.map(it => it.item_key));
+    setItems(prev => prev.map(it => (skipKeys.has(it.item_key) ? { ...it, state: 'skipped' } : it)));
+
+    setSaving(false);
+    goNextPending();
+  }
+
+  // Dismiss the word menu on outside click / Escape.
+  React.useEffect(() => {
+    if (!wordMenu) return;
+    function handleDown(e) {
+      if (!e.target.closest?.('.suggestion-menu')) setWordMenu(null);
+    }
+    function handleKey(e) {
+      if (e.key === 'Escape') setWordMenu(null);
+    }
+    document.addEventListener('mousedown', handleDown);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleDown);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [wordMenu]);
+
   async function handleReopen() {
     if (!currentItem || saving) return;
     setSaving(true);
@@ -282,7 +338,15 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
         <div className="result-item-context">
           {parts.map((part, i) =>
             part.toLowerCase() === word.toLowerCase()
-              ? <mark key={i} className="result-item-mark">{part}</mark>
+              ? <mark
+                  key={i}
+                  className="result-item-mark"
+                  title="Right-click to add to dictionary"
+                  onContextMenu={e => {
+                    e.preventDefault();
+                    setWordMenu({ x: e.clientX, y: e.clientY, word });
+                  }}
+                >{part}</mark>
               : <span key={i}>{part}</span>
           )}
         </div>
@@ -472,6 +536,18 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
             Next Pending →
           </button>
         </footer>
+      )}
+
+      {/* Right-click "Add to dictionary" menu (positioned at the cursor). */}
+      {wordMenu && (
+        <ul
+          className="suggestion-menu"
+          style={{ position: 'fixed', top: wordMenu.y, left: wordMenu.x }}
+        >
+          <li onClick={() => handleAddToDictionary(wordMenu.word)}>
+            Add “{wordMenu.word}” to dictionary
+          </li>
+        </ul>
       )}
     </div>
   );

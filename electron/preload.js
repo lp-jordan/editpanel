@@ -32,7 +32,13 @@ contextBridge.exposeInMainWorld('leaderpassAPI', {
 
 contextBridge.exposeInMainWorld('spellcheckAPI', {
   misspellings: text => ipcRenderer.invoke('spellcheck:misspellings', text),
-  suggestions: word => ipcRenderer.invoke('spellcheck:suggestions', word)
+  suggestions: word => ipcRenderer.invoke('spellcheck:suggestions', word),
+  /** Current custom-dictionary allowlist: { ok, words: string[] }. */
+  listAllowlist: () => ipcRenderer.invoke('spellcheck:list-allowlist'),
+  /** Add a word to the custom dictionary; returns updated { ok, words }. */
+  addWord: word => ipcRenderer.invoke('spellcheck:add-word', word),
+  /** Remove a word from the custom dictionary; returns updated { ok, words }. */
+  removeWord: word => ipcRenderer.invoke('spellcheck:remove-word', word)
 });
 
 contextBridge.exposeInMainWorld('electronAPI', {

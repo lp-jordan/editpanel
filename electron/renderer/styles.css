@@ -1203,6 +1203,58 @@ button.status-bar-chip-btn:hover {
   padding-bottom: 8px;
 }
 
+/* ─── Spellcheck custom-dictionary (allowlist) ───────────────── */
+
+.allowlist-add-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.allowlist-add-row .settings-input {
+  flex: 1;
+}
+
+.allowlist-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.allowlist-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-inset);
+  color: var(--text);
+  font-size: 0.84rem;
+}
+
+.allowlist-chip-remove {
+  appearance: none;
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted-soft);
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  line-height: 1;
+  font-size: 0.95rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.allowlist-chip-remove:hover {
+  background: rgba(214, 90, 90, 0.18);
+  color: var(--danger);
+}
+
 /* ─── Slideout console ────────────────────────────────────── */
 
 .slideout-console {

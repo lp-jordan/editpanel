@@ -218,6 +218,11 @@ function App() {
   const [signinBusy, setSigninBusy] = React.useState(false);
   const [signinMessage, setSigninMessage] = React.useState('');
 
+  // Spellcheck custom-dictionary (allowlist) state
+  const [allowlist, setAllowlist] = React.useState([]);
+  const [allowlistDraft, setAllowlistDraft] = React.useState('');
+  const [allowlistError, setAllowlistError] = React.useState('');
+
   const appendLog = React.useCallback((msg) => {
     setLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-250));
   }, []);
@@ -253,6 +258,42 @@ function App() {
   React.useEffect(() => {
     loadPreferences();
   }, [loadPreferences]);
+
+  // Load the spellcheck custom dictionary (allowlist) once on mount.
+  const loadAllowlist = React.useCallback(() => {
+    if (!window.spellcheckAPI?.listAllowlist) return;
+    window.spellcheckAPI.listAllowlist()
+      .then((res) => { if (res?.ok) setAllowlist(res.words || []); })
+      .catch(() => null);
+  }, []);
+
+  React.useEffect(() => {
+    loadAllowlist();
+  }, [loadAllowlist]);
+
+  const handleAddAllowWord = React.useCallback(() => {
+    const word = allowlistDraft.trim();
+    if (!word || !window.spellcheckAPI?.addWord) return;
+    setAllowlistError('');
+    window.spellcheckAPI.addWord(word)
+      .then((res) => {
+        if (res?.ok) {
+          setAllowlist(res.words || []);
+          setAllowlistDraft('');
+        } else {
+          setAllowlistError(res?.error || 'Could not add the word.');
+        }
+      })
+      .catch((err) => setAllowlistError(err?.message || String(err)));
+  }, [allowlistDraft]);
+
+  const handleRemoveAllowWord = React.useCallback((word) => {
+    if (!window.spellcheckAPI?.removeWord) return;
+    setAllowlistError('');
+    window.spellcheckAPI.removeWord(word)
+      .then((res) => { if (res?.ok) setAllowlist(res.words || []); })
+      .catch(() => null);
+  }, []);
 
   // Listen for the SSO callback result — fires after the user approves on /ep/link.
   React.useEffect(() => {
@@ -1030,6 +1071,57 @@ function App() {
                   onChange={(e) => setSettingsDraft((prev) => ({ ...prev, atemHost: e.target.value }))}
                 />
                 <p className="settings-hint">The local IP address of the ATEM ISO Extreme SDI. Only needs changing if your network layout differs.</p>
+              </div>
+            </section>
+
+            <section className="panel settings-section">
+              <div className="list-header">
+                <p className="eyebrow">Spellcheck</p>
+                <h2 className="section-title">Custom Dictionary</h2>
+                <p className="section-copy">Words listed here are treated as correctly spelled and never flagged during a spellcheck. Add names, brands, and jargon the built-in dictionary doesn't know.</p>
+              </div>
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="allowlist-word">Add a word</label>
+                <div className="allowlist-add-row">
+                  <input
+                    id="allowlist-word"
+                    type="text"
+                    className="settings-input"
+                    placeholder="e.g. LeaderPass"
+                    value={allowlistDraft}
+                    onChange={(e) => setAllowlistDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddAllowWord(); } }}
+                  />
+                  <button type="button" className="btn" onClick={handleAddAllowWord} disabled={!allowlistDraft.trim()}>
+                    Add
+                  </button>
+                </div>
+                {allowlistError && (
+                  <p className="settings-hint" style={{ color: 'var(--danger)' }}>{allowlistError}</p>
+                )}
+              </div>
+              <div className="settings-field">
+                <label className="settings-label">Dictionary ({allowlist.length})</label>
+                {allowlist.length ? (
+                  <div className="allowlist-chips">
+                    {allowlist.map((word) => (
+                      <span key={word} className="allowlist-chip">
+                        {word}
+                        <button
+                          type="button"
+                          className="allowlist-chip-remove"
+                          aria-label={`Remove ${word}`}
+                          title={`Remove "${word}"`}
+                          onClick={() => handleRemoveAllowWord(word)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="settings-hint" style={{ marginTop: 0 }}>No custom words yet. Words you add here — or via right-click during a spellcheck — will appear in this list.</p>
+                )}
               </div>
             </section>
 
