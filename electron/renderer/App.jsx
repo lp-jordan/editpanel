@@ -703,11 +703,6 @@ function App() {
           requiresResolve: false,
           comingSoon: false
         },
-        // B2 Backup Manager task card removed 2026-05-27 — see LPOS /settings/storage.
-      ]
-    },
-    '/edit': {
-      tasks: [
         {
           key: 'project-setup',
           label: 'Project Setup',
@@ -716,6 +711,11 @@ function App() {
           onClick: handleNewProjectBins,
           requiresResolve: true
         },
+        // B2 Backup Manager task card removed 2026-05-27 — see LPOS /settings/storage.
+      ]
+    },
+    '/edit': {
+      tasks: [
         {
           key: 'spellcheck',
           label: 'Spellcheck',
