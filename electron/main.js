@@ -1387,6 +1387,20 @@ const reconcileMissCounters = new Map();
 // rebuild blips, same as the existing dismissed_in_resolve debounce.
 const userDismissedPruneCounters = new Map();
 
+// Phase 3.5.6 (2026-06-26) — orphan-discovery suppression during EditPanel's
+// own queue dispatch. Counts export:start handlers currently in flight (a
+// counter, not a boolean, so overlapping dispatches nest safely). While > 0
+// the reconciler must NOT create orphan rows: lp_base_export adds each render
+// job to Resolve's queue one-by-one (~1s settle per timeline), so for a
+// multi-clip batch the JobIds are live in GetRenderJobList for several seconds
+// BEFORE export:start writes the batch's export_runs row. A reconcile tick
+// landing in that window would mis-classify those still-being-queued jobs as
+// direct-in-Resolve orphans — producing a duplicate per-clip row for every
+// timeline alongside the single batch row. A fixed tick-debounce can't fix
+// this (a large enough batch outlasts any fixed threshold); gating on the
+// actual dispatch duration is exact regardless of clip count.
+let exportQueueInFlight = 0;
+
 function startReconcileLoop() {
   stopReconcileLoop();
   if (!jobsDb) return;
@@ -1650,6 +1664,14 @@ async function reconcileTick() {
     }
 
     // c) True orphan — insert.
+    // Suppress while EditPanel is mid-queue: these may be jobs lp_base_export
+    // is still adding to Resolve's queue before export:start records the batch
+    // row. Skipping is safe — once dispatch finishes the batch row exists and
+    // the JobIds are tracked (branch a), so they never reach here; a genuine
+    // direct-in-Resolve render is simply discovered on the next tick after the
+    // queue operation completes. See exportQueueInFlight declaration.
+    if (exportQueueInFlight > 0) continue;
+
     const isComplete = j.terminal && j.status === 'Complete';
     const isFailed   = j.terminal && (j.status === 'Failed' || j.status === 'Cancelled');
     const initialState = isComplete ? 'complete_unassigned' : (isFailed ? 'failed' : 'rendering');
@@ -2886,6 +2908,11 @@ app.whenReady().then(() => {
   // the Jobs panel — independent of whether the picker overlay stays open.
   ipcMain.handle('export:start', async (_e, opts = {}) => {
     const { targetDir, presetName, exportBin, startRender = true, projectId, projectName } = opts;
+    // Hold off orphan reconciliation for the whole dispatch — from the first
+    // AddRenderJob inside lp_base_export through startExportTracking writing the
+    // batch's export_runs row. Otherwise a reconcile tick mid-dispatch would
+    // discover the still-being-queued JobIds as orphans (see exportQueueInFlight).
+    exportQueueInFlight++;
     try {
       const payload = { cmd: 'lp_base_export' };
       if (presetName) payload.preset_name = presetName;
@@ -2941,6 +2968,10 @@ app.whenReady().then(() => {
     } catch (err) {
       const msg = err?.error?.message || err?.error || err?.message || String(err);
       return { ok: false, error: msg };
+    } finally {
+      // Always release the suppression, even on the empty/early-return and
+      // error paths — never leave the reconciler permanently muted.
+      exportQueueInFlight = Math.max(0, exportQueueInFlight - 1);
     }
   });
 
