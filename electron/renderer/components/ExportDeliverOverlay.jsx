@@ -30,9 +30,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   // Burn-in works by selecting a paired preset whose only difference is the
   // Deliver-page "Burn into video" subtitle setting (which the Resolve scripting
   // API can't toggle directly). The editor keeps matching pairs named
-  // "<preset>" and "<preset> - Subtitle"; flipping the toggle just swaps which
+  // "<preset>" and "<preset> - Subtitles"; flipping the toggle just swaps which
   // name we queue with. One constant so the convention lives in a single place.
-  const BURN_IN_SUFFIX = ' - Subtitle';
+  const BURN_IN_SUFFIX = ' - Subtitles';
 
   // ── Stage ──────────────────────────────────────────────
   const [stage, setStage] = React.useState('configure'); // 'configure' | 'preflight' | 'confirm' | 'running' | 'done'

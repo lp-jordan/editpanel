@@ -187,17 +187,17 @@ burned-in video is the single deliverable.
 The Resolve scripting API can't toggle the Deliver-page subtitle/burn-in setting
 via `SetRenderSettings` (it's not in the settable whitelist), so burn-in is
 carried by a **paired render preset**. The editor maintains matching pairs named
-`<preset>` and `<preset> - Subtitle`, where the `- Subtitle` variant has
+`<preset>` and `<preset> - Subtitles`, where the `- Subtitles` variant has
 "Burn into video" enabled in its Deliver settings. EditPanel does nothing more
 than swap which preset name it queues:
 
-1. `BURN_IN_SUFFIX = ' - Subtitle'` (one constant in `ExportDeliverOverlay.jsx`).
+1. `BURN_IN_SUFFIX = ' - Subtitles'` (one constant in `ExportDeliverOverlay.jsx`).
 2. The counterpart name (`${selectedPreset}${BURN_IN_SUFFIX}`) is validated
    against the already-fetched `list_render_presets` list. If absent (and the
    list loaded), the toggle is disabled with explanatory copy. If the list
    couldn't load, the toggle fails open — `lp_base_export` logs loudly if the
    name is bad.
-3. When on, `doStart` sends the resolved `- Subtitle` preset as `presetName`.
+3. When on, `doStart` sends the resolved `- Subtitles` preset as `presetName`.
    `main.js` `export:start` and `lp_base_export.py` are unchanged — they just
    `LoadRenderPreset` whichever name they receive.
 
