@@ -1881,7 +1881,17 @@ async function reconcileTick() {
   // 2. Detect orphans whose JobId vanished from Resolve's queue. Only counts
   //    against still-rendering orphans (terminal ones shouldn't transition to
   //    dismissed). Debounced over RECONCILE_DISMISS_THRESHOLD consecutive ticks
-  //    so a transient queue-rebuild blip doesn't trip the dismissal.
+  //    so a transient queue-rebuild blip doesn't trip the deletion.
+  //
+  //    The editor removed this render from Resolve before it finished, so they
+  //    don't want EditPanel tracking it anymore — we hard-DELETE the row rather
+  //    than keeping a `dismissed_in_resolve` tombstone. This is safe precisely
+  //    because the JobId is already absent from Resolve's queue (that absence
+  //    is the trigger): there's nothing left to re-discover, so the tombstone
+  //    that protected against re-discovery elsewhere serves no purpose here. If
+  //    Resolve genuinely re-queues the same JobId after the debounce window
+  //    (queue rebuild), re-discovering it as a fresh orphan is the correct,
+  //    desired behavior.
   let openOrphans;
   try {
     openOrphans = jobsDb.listExportRuns({ source: 'reconciled', state: 'rendering', limit: 500 });
@@ -1906,12 +1916,12 @@ async function reconcileTick() {
     reconcileMissCounters.set(orphan.export_id, misses);
     if (misses >= RECONCILE_DISMISS_THRESHOLD) {
       try {
-        jobsDb.setExportState(orphan.export_id, 'dismissed_in_resolve', { finishedAt: Date.now() });
+        jobsDb.deleteExportRun(orphan.export_id);
       } catch (_) { /* non-fatal */ }
       reconcileMissCounters.delete(orphan.export_id);
       broadcastExport('export-reconciled', {
         exportId: orphan.export_id,
-        state: 'dismissed_in_resolve',
+        state: 'deleted',
         dismissed: true
       });
     }
@@ -3113,11 +3123,21 @@ app.whenReady().then(() => {
       // JobPanel is the transient monitor — filter out rows the user has
       // dismissed from it. ExportsPanel uses exports:list which has no such
       // filter (concrete record of every render touched).
+      //
+      // Orphans (`complete_unassigned`) are also excluded here: they read as
+      // noise in the live pipeline and the editor manages them deliberately
+      // from the Exports tab (the "Push to LPOS…" action). The lightweight
+      // UnassignedExportsPill still nudges that there are some awaiting
+      // assignment — that's driven by countUnassignedExports, not this list.
+      // `dismissed_in_resolve` is excluded too as belt-and-suspenders for any
+      // legacy rows; the reconciler no longer creates that state (it deletes
+      // the row instead).
       return {
         ok: true,
         data: jobsDb.listExportRuns({
           limit: Number(limit) || 10,
-          hiddenFromJobpanel: false
+          hiddenFromJobpanel: false,
+          excludeState: ['complete_unassigned', 'dismissed_in_resolve']
         })
       };
     } catch (err) {

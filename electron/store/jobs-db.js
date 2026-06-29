@@ -147,6 +147,16 @@ class JobsDb {
          WHERE state = 'user_dismissed'`
       );
     } catch (_) { /* non-fatal */ }
+
+    // 2026-06-29 — retire the `dismissed_in_resolve` state. When an editor
+    // pulls a render from Resolve's queue before it finishes, EditPanel now
+    // simply forgets it (the reconciler hard-DELETEs the orphan row) instead
+    // of keeping a tombstone. Clear out any tombstones left by older builds so
+    // they stop showing in ExportsPanel. Safe to run repeatedly — zero rows
+    // after the first pass.
+    try {
+      this.db.exec(`DELETE FROM export_runs WHERE state = 'dismissed_in_resolve'`);
+    } catch (_) { /* non-fatal */ }
   }
 
   /**

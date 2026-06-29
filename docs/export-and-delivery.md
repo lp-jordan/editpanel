@@ -82,6 +82,31 @@ IPC in `electron/main.js`, `exportsAPI` in `electron/preload.js`, the Exports
 section in `electron/renderer/components/JobPanel.jsx`, `export_runs` in
 `electron/store/jobs-db.js`.
 
+### Orphan exports & Jobs-panel visibility (updated 2026-06-29)
+
+A reconcile tick (`reconcileTick` in `main.js`, every `RECONCILE_INTERVAL_MS`)
+sweeps Resolve's render queue and records any render EditPanel didn't queue
+itself as an **orphan** row (`source='reconciled'`). A finished orphan lands in
+state `complete_unassigned` — done in Resolve, but not yet assigned to an LPOS
+project.
+
+- **Orphans do not appear in the live Jobs panel.** They read as noise there and
+  the editor assigns them deliberately. The `export:recent` feed (which drives
+  JobPanel) passes `excludeState: ['complete_unassigned', 'dismissed_in_resolve']`.
+  Orphans show only in the **Exports tab** (`/deliver`, `ExportsPanel.jsx`, fed by
+  `exports:list`), each with a **Push to LPOS…** button.
+- A lightweight clearable **pill** ("N exports awaiting assignment → Review") still
+  nudges in the Jobs panel. It's driven by `countUnassignedExports()` (a separate
+  count query), not by the row list, so excluding the rows doesn't silence it.
+- **Dismissed-in-Resolve = forgotten.** If a rendering orphan's JobId vanishes
+  from Resolve's queue (the editor pulled it before it finished), reconcile Phase 2
+  hard-DELETEs the row after a 3-tick debounce — EditPanel stops tracking it
+  entirely. There is no `dismissed_in_resolve` tombstone anymore; a one-time
+  migration in `jobs-db.js` deletes any left by older builds. Deleting is safe
+  because the JobId is already gone from Resolve's queue, so it can't be
+  re-discovered; if Resolve genuinely re-queues it later, it's re-discovered as a
+  fresh orphan (the desired behavior).
+
 ### Current status / known gaps
 - The **Upload to LPOS** toggle uploads finished renders into the chosen project
   automatically (Phase 2, below).
