@@ -75,7 +75,11 @@ function RenderingExportRow({
   onToggleCollapse,
   onStart,
   onStop,
-  onClearQueued
+  onClearQueued,
+  selectable,
+  selected,
+  onToggleSelect,
+  upNext
 }) {
   const queued    = state === 'queued';
   const uploading = state === 'uploading';
@@ -90,6 +94,16 @@ function RenderingExportRow({
     <div className="job-panel-row active">
       <div className="job-panel-row-top">
         <div className="job-panel-export-head-left">
+          {selectable && (
+            <input
+              type="checkbox"
+              className="job-panel-export-select"
+              checked={Boolean(selected)}
+              onChange={onToggleSelect}
+              title="Select for chained export"
+              aria-label="Select this batch to run in a chain"
+            />
+          )}
           <button
             className={`job-panel-collapse-btn${collapsed ? '' : ' open'}`}
             onClick={onToggleCollapse}
@@ -111,26 +125,32 @@ function RenderingExportRow({
         </div>
         <div className="job-panel-row-actions">
           <span className="job-panel-step-badge">{badge}</span>
-          {queued && onStart ? (
-            <React.Fragment>
-              <button
-                className="job-panel-review-btn done"
-                onClick={onStart}
-                title="Start rendering"
-              >
-                Start
-              </button>
-              {onClearQueued && (
+          {queued ? (
+            onStart ? (
+              <React.Fragment>
                 <button
-                  className="job-panel-delete-btn"
-                  onClick={onClearQueued}
-                  title="Clear queued export"
-                  aria-label="Clear queued export"
+                  className="job-panel-review-btn done"
+                  onClick={onStart}
+                  title="Start rendering this batch now"
                 >
-                  {X_ICON}
+                  Start
                 </button>
-              )}
-            </React.Fragment>
+                {onClearQueued && (
+                  <button
+                    className="job-panel-delete-btn"
+                    onClick={onClearQueued}
+                    title="Clear queued export"
+                    aria-label="Clear queued export"
+                  >
+                    {X_ICON}
+                  </button>
+                )}
+              </React.Fragment>
+            ) : upNext ? (
+              <span className="job-panel-headline-hint" title="Will start automatically after the current export finishes">
+                Up next
+              </span>
+            ) : null
           ) : (
             <button
               className="job-panel-cancel-btn"
@@ -164,7 +184,9 @@ function RenderingExportRow({
       {!collapsed && (
         <p className="job-panel-substep">
           {queued
-            ? 'Queued in Resolve — press Start when ready'
+            ? (upNext
+                ? 'Up next — starts automatically after the current export'
+                : 'Queued — select it (or press Start) to render')
             : uploading
             ? `Uploading to ${projectName || 'LPOS'}…`
             : (targetDir || '')}
@@ -188,6 +210,8 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
   const [reloadTick, setReloadTick] = React.useState(0);
   // Export rows the user has collapsed (keyed by export id).
   const [collapsedExports, setCollapsedExports] = React.useState(() => new Set());
+  // Queued batches the editor has ticked to run as a sequential chain.
+  const [selectedQueued, setSelectedQueued] = React.useState(() => new Set());
   // Active tab (component-local — resets to 'all' each session, which is the
   // right default for a quick-look panel).
   const [activeTab, setActiveTab] = React.useState('all');
@@ -358,6 +382,59 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     try { await window.exportsAPI.startRender(); } catch (_) {}
   }
 
+  // ── Multi-batch chain ──────────────────────────────────────────────────
+  // An export is "in flight" whenever there's an active render/upload. While
+  // that holds, queued batches can't be started (keep-it-simple: one chain at a
+  // time) and the pending members of the running chain show an "Up next" badge.
+  const exportBusy   = Boolean(activeExport);
+  const pendingChain = React.useMemo(
+    () => new Set(activeExport?.chainPending || []),
+    [activeExport]
+  );
+  // Editpanel-queued batches awaiting a start, newest-first (pipeline order).
+  const queuedBatches = React.useMemo(
+    () => recentExports.filter(e =>
+      e.export_id !== activeExport?.exportId &&
+      e.state === 'queued' &&
+      e.source !== 'reconciled'),
+    [recentExports, activeExport]
+  );
+
+  // Drop selections that are no longer queued (started, cleared, completed).
+  React.useEffect(() => {
+    setSelectedQueued(prev => {
+      if (prev.size === 0) return prev;
+      const live = new Set(queuedBatches.map(e => e.export_id));
+      const next = new Set([...prev].filter(id => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [queuedBatches]);
+
+  function toggleQueuedSelected(exportId) {
+    setSelectedQueued(prev => {
+      const next = new Set(prev);
+      if (next.has(exportId)) next.delete(exportId); else next.add(exportId);
+      return next;
+    });
+  }
+
+  // Start the selected batches as a chain, in pipeline (display) order.
+  async function handleStartChain() {
+    if (exportBusy || selectedQueued.size === 0) return;
+    const ordered = queuedBatches
+      .map(e => e.export_id)
+      .filter(id => selectedQueued.has(id));
+    if (ordered.length === 0) return;
+    try { await window.exportsAPI.startChain(ordered); } catch (_) {}
+    setSelectedQueued(new Set());
+  }
+
+  // Start a single queued batch now (a chain of one).
+  async function handleStartOneQueued(exportId) {
+    if (exportBusy) return;
+    try { await window.exportsAPI.startChain([exportId]); } catch (_) {}
+  }
+
   async function handleCancelJob(jobId) {
     try { await window.electronAPI.cancelJob(jobId); } catch (_) {}
     setReloadTick(t => t + 1);
@@ -471,6 +548,36 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
             <section className="job-panel-section">
               <p className="job-panel-section-label">Exports</p>
 
+              {/* Chain action bar — select queued batches and run them back-to-
+                  back. Hidden while an export is in flight (one chain at a time). */}
+              {queuedBatches.length > 0 && !exportBusy && (
+                <div className="job-panel-chain-bar">
+                  <button
+                    className="job-panel-chain-select"
+                    onClick={() => setSelectedQueued(prev =>
+                      prev.size === queuedBatches.length
+                        ? new Set()
+                        : new Set(queuedBatches.map(e => e.export_id)))}
+                    title={selectedQueued.size === queuedBatches.length ? 'Deselect all' : 'Select all queued batches'}
+                  >
+                    {selectedQueued.size === queuedBatches.length ? 'Clear' : 'Select all'}
+                  </button>
+                  <button
+                    className="job-panel-review-btn done"
+                    disabled={selectedQueued.size === 0}
+                    onClick={handleStartChain}
+                    title="Render the selected batches one after another"
+                  >
+                    Start {selectedQueued.size > 0 ? `${selectedQueued.size} ` : ''}selected
+                  </button>
+                </div>
+              )}
+              {exportBusy && pendingChain.size > 0 && (
+                <p className="job-panel-chain-note">
+                  Rendering a chain — {pendingChain.size} batch{pendingChain.size !== 1 ? 'es' : ''} queued to follow.
+                </p>
+              )}
+
               {activeExport && (
                 <RenderingExportRow
                   headline={activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
@@ -505,12 +612,46 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                   // finished render."
                   const isUnassignedOrphan = e.source === 'reconciled' && !e.project_name;
 
+                  // Editpanel-queued batch awaiting a start. Gets a checkbox +
+                  // per-row Start when idle, or an "Up next" badge when it's a
+                  // pending member of the running chain. (Orphans are never in
+                  // 'queued' — they're discovered already rendering — so this
+                  // branch is editpanel-queued batches only.)
+                  if (e.state === 'queued' && e.source !== 'reconciled') {
+                    const inChain = pendingChain.has(e.export_id);
+                    return (
+                      <RenderingExportRow
+                        key={e.export_id}
+                        headline={e.project_name ? `→ ${e.project_name}` : exportRowLabel(e)}
+                        unassigned={false}
+                        state="queued"
+                        percent={0}
+                        jobs={(e.jobs || []).map(j => ({
+                          id: String(j.job_id || j.JobId || ''),
+                          name: j.name || j.TimelineName || j.CustomName || String(j.job_id || ''),
+                          mark: '·'
+                        }))}
+                        jobsDone={0}
+                        jobCount={e.job_count ?? (e.jobs || []).length}
+                        targetDir={e.target_dir}
+                        projectName={e.project_name}
+                        collapsed={collapsedExports.has(e.export_id)}
+                        onToggleCollapse={() => toggleExportCollapsed(e.export_id)}
+                        onStart={exportBusy ? null : () => handleStartOneQueued(e.export_id)}
+                        onClearQueued={exportBusy ? null : () => handleDeleteExportRun(e.export_id)}
+                        selectable={!exportBusy}
+                        selected={selectedQueued.has(e.export_id)}
+                        onToggleSelect={() => toggleQueuedSelected(e.export_id)}
+                        upNext={inChain}
+                      />
+                    );
+                  }
+
                   // Non-terminal rows (orphan rendering through the reconcile
-                  // tick, post-assignment uploads, the rare orphan in queued)
-                  // get the chunky in-flight presentation that mirrors the
-                  // editpanel-queued activeExport row — progress bar, badge,
-                  // per-timeline breakdown, Stop button. Once the row goes
-                  // terminal it falls back to the compact display.
+                  // tick, post-assignment uploads) get the chunky in-flight
+                  // presentation that mirrors the editpanel-queued activeExport
+                  // row — progress bar, badge, per-timeline breakdown, Stop
+                  // button. Once the row goes terminal it falls back to compact.
                   if (RENDERING_STATES.has(e.state)) {
                     // Normalize the jobs_json shape (uppercased keys) into the
                     // {id, name, mark} contract RenderingExportRow expects.

@@ -1885,6 +1885,48 @@ button.status-bar-chip-btn:hover {
   border-color: rgba(151, 185, 137, 0.25);
 }
 
+.job-panel-review-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Multi-batch chain action bar (select queued batches → run sequentially) */
+.job-panel-chain-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+
+.job-panel-chain-select {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--muted-soft);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 3px 6px;
+  margin-right: auto;
+}
+
+.job-panel-chain-select:hover { color: var(--text); }
+
+.job-panel-chain-note {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  color: var(--muted-soft);
+}
+
+/* Checkbox that tags a queued batch for the chain */
+.job-panel-export-select {
+  flex-shrink: 0;
+  margin-right: 2px;
+  cursor: pointer;
+  accent-color: var(--accent-blue, #6ea8fe);
+}
+
 .job-panel-state-icon {
   font-size: 0.8rem;
   font-weight: 700;

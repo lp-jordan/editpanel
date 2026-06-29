@@ -62,9 +62,9 @@ going (and reporting) after the picker overlay is closed.
   health-check forgives missed pings only while a command is *inflight*, and a
   blocking render would have frozen all Resolve interaction for the whole render.
 - The **Jobs panel** has an "Exports" section. A **queued** export (auto-start
-  off) shows a **Start** button (`export:start-render` → `start_render` + begins
-  polling); a **rendering**/**uploading** export shows progress + a **Stop**
-  button; plus a list of recent exports. The active/queued row is **collapsible**
+  off) shows a **Start** button and a select checkbox (started via the chain —
+  see "Sequential multi-batch chain" below); a **rendering**/**uploading** export
+  shows progress + a **Stop** button; plus a list of recent exports. The active/queued row is **collapsible**
   (chevron) — collapsed it shows just the name, progress bar + badge, and the
   Start/Stop button, hiding the per-timeline list; collapse state is per export id
   (`collapsedExports` in `JobPanel.jsx`). The floating Jobs pill shows
@@ -221,5 +221,58 @@ version-conflict confirm machinery (a second warning section).
 Key files: `ExportDeliverOverlay.jsx` (`BURN_IN_SUFFIX`, `burnIn`/`subtitleGaps`
 state, `runPreflight`, confirm stage), `helper/commands/export_preflight.py`
 (`subtitle_tracks`).
+
+## Sequential multi-batch chain (shipped 2026-06-29)
+
+### What it does
+Lets the editor queue several **independent** batches (each with its own preset,
+burn-in choice, destination, and LPOS upload target), then select some of them in
+the Jobs panel and run them **back-to-back**: the top selected batch renders, and
+when it finishes the next selected batch starts automatically, each with the
+settings it was queued with.
+
+### Why it's simple
+Settings are **baked into Resolve's render queue at queue time** — `lp_base_export`
+runs (LoadRenderPreset + SetRenderSettings + AddRenderJob per timeline) when you
+queue, not when you start. So a queued batch's `export_runs` row only needs to
+remember its JobIds + upload target; starting it later is just
+`StartRendering(its JobIds)`. No settings are replayed.
+
+### How it works
+- **Queue without clobbering** — queue-only (and auto-start-while-busy) now call
+  `persistQueuedBatch()`: it writes a `queued` `export_runs` row and does **not**
+  touch the in-memory `activeExport`. Batches accumulate as rows. (Previously a
+  second queue overwrote the single `activeExport` slot and stranded the first.)
+- **The chain** — `runChain` (main.js) is an ordered list of `export_id`s waiting
+  to run after `activeExport`. `export:start-chain(exportIds)` validates each is
+  still `queued`, sets `runChain`, and `advanceChain()` starts the first.
+- **Advance on finish** — `finalizeExport` (the single place a batch ends and
+  `activeExport` is nulled) calls `advanceChain()`, which rehydrates the next
+  queued row into `activeExport` (`activateQueuedRow`) and `StartRendering`s it.
+- **Skip & continue on failure** — advance fires for completed AND failed/
+  interrupted batches, so one failure doesn't stall the rest. An explicit user
+  **Cancel** clears `runChain` first, so cancelling the active batch stops the
+  whole chain.
+- **One chain at a time** — `export:start-chain` is blocked while anything is in
+  flight (`isExportBusy`). Appending to a running chain is a deliberate follow-up.
+- **UI** — queued batches render with a select checkbox + per-row **Start**; a
+  "Start N selected" / "Select all" bar drives the chain in pipeline (display)
+  order. While a chain runs, its pending members show an **"Up next"** badge
+  (driven by `chainPending` on the export snapshot) and selection is hidden.
+
+### Status / gaps
+- Resolve renders one job at a time regardless, so the chain is "queue all, drain
+  back-to-back" — not parallel.
+- A queued batch is session-only: an EditPanel restart marks non-terminal rows
+  `interrupted` (re-queue to drive them again). The Resolve queue still holds the
+  jobs.
+- Appending batches to an already-running chain isn't supported yet (blocked with
+  a clear error); start the next chain once the current finishes.
+
+Key files: `runChain` / `persistQueuedBatch` / `activateQueuedRow` /
+`advanceChain` / `export:start-chain` in `electron/main.js`; `startChain` +
+`onQueued` in `electron/preload.js`; the chain bar, queued-row branch, and
+`RenderingExportRow` selection/`upNext` props in
+`electron/renderer/components/JobPanel.jsx`.
 
 See also: `lpos-contract.md` (EditPanel ↔ LPOS ownership boundaries).

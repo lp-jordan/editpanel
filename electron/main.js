@@ -922,6 +922,13 @@ const EXPORT_POLL_INTERVAL_MS = 2500;
 const EXPORT_POLL_MAX_FAILURES = 8; // ~20s of lost contact before giving up
 
 let activeExport = null;
+// Sequential multi-batch chain. Holds the export_ids of queued batches waiting
+// to render AFTER the current activeExport finishes. The editor selects several
+// queued batches in the JobPanel and starts them as one chain; each batch keeps
+// the render settings baked into Resolve's queue at queue time, so advancing is
+// just StartRendering(nextBatch.jobIds). Drained one at a time on finalizeExport
+// (the single point where a batch ends and activeExport is nulled).
+let runChain = [];
 let exportPollTimer = null;
 let exportPollFailures = 0;
 let exportSawRendering = false; // becomes true once Resolve reports active rendering
@@ -943,7 +950,39 @@ function broadcastExport(channel, payload) {
 
 function exportSnapshot() {
   if (!activeExport) return null;
-  return { ...activeExport, jobs: activeExport.jobs.map(j => ({ ...j })) };
+  // chainPending lets the renderer badge the queued batches that will run after
+  // this one ("Up next") and distinguish them from unrelated queued batches.
+  return { ...activeExport, chainPending: [...runChain], jobs: activeExport.jobs.map(j => ({ ...j })) };
+}
+
+// True while a render/upload is in flight or a chain still has batches to run.
+// Starting a new chain (or an auto-start export) is blocked while this holds.
+function isExportBusy() {
+  return Boolean(activeExport) || runChain.length > 0;
+}
+
+// Canonical per-job tracking shape, built fresh from either lp_base_export's
+// return dicts or a persisted export_runs row (both carry the same key names).
+// Transient render/upload fields are reset so a rehydrated queued batch starts
+// clean. `started` only sets the initial status label (Ready vs Queued).
+function freshTrackedJobs(rawJobs, { started }) {
+  return (rawJobs || []).map(j => ({
+    job_id: String(j.job_id),
+    name: j.name || j.job_id,
+    status: started ? 'Ready' : 'Queued',
+    percent: 0,
+    terminal: false,
+    outputPath: null,
+    enqueued: false,
+    uploadStatus: 'pending',
+    uploadPercent: 0,
+    assetId: null,
+    uploadError: null,
+    timelineUid: j.timelineUid || null,
+    timelineStartTimecode: j.timelineStartTimecode || null,
+    timelineFps: typeof j.timelineFps === 'number' ? j.timelineFps : null,
+    resolveProjectName: j.resolveProjectName || null,
+  }));
 }
 
 function stopExportPoll() {
@@ -1006,6 +1045,12 @@ function finalizeExport(state, error = null) {
   persistActiveExport();
   broadcastExport('export-complete', exportSnapshot());
   activeExport = null;
+
+  // Sequential chain: start the next selected batch (if any). Skip & continue —
+  // this fires for completed AND failed/interrupted batches, so a failure in one
+  // batch doesn't stall the rest. An explicit user cancel clears runChain first
+  // (see export:cancel), so cancelling the active batch stops the whole chain.
+  if (runChain.length > 0) advanceChain();
 }
 
 async function pollRenderStatus() {
@@ -1289,27 +1334,11 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
   stopExportPoll();
   activeExport = {
     exportId,
-    jobs: jobs.map(j => ({
-      job_id: String(j.job_id),
-      name: j.name || j.job_id,
-      status: started ? 'Ready' : 'Queued',
-      percent: 0,
-      terminal: false,
-      outputPath: null,
-      enqueued: false,          // pushed onto the upload queue yet?
-      uploadStatus: 'pending',  // pending | verifying | uploading | uploaded | failed | skipped
-      uploadPercent: 0,
-      assetId: null,
-      uploadError: null,
-      // Phase 5c.1 tether fields. Null when Resolve couldn't supply a uid (e.g.
-      // older builds without Timeline.GetUniqueId), in which case the upload
-      // worker omits renderMeta from the finalize call and no editorial_links
-      // row is written LPOS-side — the asset still uploads cleanly.
-      timelineUid: j.timelineUid || null,
-      timelineStartTimecode: j.timelineStartTimecode || null,
-      timelineFps: typeof j.timelineFps === 'number' ? j.timelineFps : null,
-      resolveProjectName: j.resolveProjectName || null,
-    })),
+    // Per-job tracking. uploadStatus: pending | verifying | uploading | uploaded
+    // | failed | skipped. Tether fields (timelineUid/…) are null on older Resolve
+    // builds without GetUniqueId; the upload worker then omits renderMeta and no
+    // editorial_links row is written LPOS-side — the asset still uploads cleanly.
+    jobs: freshTrackedJobs(jobs, { started }),
     targetDir: targetDir || null,
     projectId: projectId || null,
     projectName: projectName || null,
@@ -1335,6 +1364,89 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
   broadcastExport('export-progress', exportSnapshot());
 
   if (started) beginExportPolling();
+}
+
+// Persist a batch as a queued export_runs row WITHOUT making it the active
+// export. This is the multi-batch foundation: queueing a second (third, …)
+// batch no longer clobbers the in-memory activeExport — each batch's render
+// jobs are already configured in Resolve's queue (lp_base_export ran at queue
+// time), so the row only needs to remember which JobIds + upload target belong
+// to it. Started later via a chain.
+function persistQueuedBatch({ exportId, jobs, targetDir, projectId, projectName }) {
+  const built = freshTrackedJobs(jobs, { started: false });
+  if (jobsDb) {
+    try {
+      jobsDb.createExportRun({
+        exportId,
+        targetDir: targetDir || null,
+        projectId: projectId || null,
+        projectName: projectName || null,
+        jobs: built
+      });
+      // createExportRun hardcodes state='rendering'; flip it to queued.
+      jobsDb.updateExportRun(exportId, { state: 'queued' });
+    } catch (_) { /* non-fatal */ }
+  }
+  // Nudge the JobPanel / Exports list to reload so the queued batch appears.
+  broadcastExport('export-queued', { exportId });
+}
+
+// Rehydrate a queued export_runs row into activeExport and start rendering it.
+// Used by the chain runner. Resolve still holds the batch's render jobs with
+// their original settings, so this is just StartRendering(its JobIds) + poll.
+async function activateQueuedRow(row) {
+  stopExportPoll();
+  const jobs = freshTrackedJobs(row.jobs || [], { started: true });
+  activeExport = {
+    exportId: row.export_id,
+    jobs,
+    targetDir: row.target_dir || null,
+    projectId: row.project_id || null,
+    projectName: row.project_name || null,
+    started: true,
+    startedAt: Date.now(),
+    finishedAt: null,
+    state: 'rendering',
+    percent: 0,
+    uploadPercent: 0,
+    jobsDone: 0,
+    uploadEnabled: false,
+    rendersStopped: false,
+    error: null
+  };
+  uploadQueue = [];
+  uploadWorkerActive = false;
+  persistActiveExport();
+  broadcastExport('export-progress', exportSnapshot());
+
+  try {
+    await sendWorkerRequest(
+      { cmd: 'start_render', job_ids: jobs.map(j => j.job_id) },
+      WORKERS.resolve
+    );
+  } catch (err) {
+    // Skip & continue: a batch that won't start is marked failed and the chain
+    // moves on to the next one rather than stalling the whole run.
+    const msg = err?.error?.message || err?.error || err?.message || String(err);
+    finalizeExport('failed', `Could not start render: ${msg}`);
+    return;
+  }
+  beginExportPolling();
+}
+
+// Pop the next queued batch off the chain and start it. Skips rows that have
+// gone missing or are no longer queued (e.g. cleared from the Exports page
+// between selection and reaching them). Called only when activeExport is null.
+function advanceChain() {
+  while (runChain.length > 0) {
+    const nextId = runChain.shift();
+    const row = jobsDb ? jobsDb.getExportRun(nextId) : null;
+    if (!row || row.state !== 'queued') continue;
+    activateQueuedRow(row).catch(() => {});
+    return;
+  }
+  // Chain drained — nothing left to start.
+  broadcastExport('export-queued', { exportId: null, chainDrained: true });
 }
 
 // Start (or restart) the render-status poll loop for the active export.
@@ -2943,28 +3055,36 @@ app.whenReady().then(() => {
       }).filter(j => j.job_id != null);
       if (jobs.length === 0) return { ok: true, empty: true };
 
-      // Both paths become a tracked export. Auto-start renders immediately and
-      // begins polling; queue-only is tracked as a 'queued' pending job the user
-      // can start later from the Jobs panel (export:start-render).
       const exportId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      if (startRender) {
-        // Scope StartRendering to ONLY the IDs lp_base_export just added so
-        // any pre-existing entries in the operator's Resolve render queue
-        // (completed, aborted, manually queued) aren't re-rendered alongside.
-        await sendWorkerRequest(
-          { cmd: 'start_render', job_ids: jobs.map(j => j.job_id) },
-          WORKERS.resolve
-        );
+      const resolvedTargetDir = data.target_dir || targetDir;
+
+      // Queue-only, OR auto-start while another export is already in flight:
+      // persist as a queued batch without touching the active export. Each
+      // batch's render jobs already carry their settings in Resolve's queue, so
+      // the row just remembers its JobIds + upload target until a chain starts
+      // it. This is what lets the editor stack up multiple independent batches.
+      if (!startRender || isExportBusy()) {
+        persistQueuedBatch({ exportId, jobs, targetDir: resolvedTargetDir, projectId, projectName });
+        return { ok: true, exportId, jobs, started: false, queuedWhileBusy: Boolean(startRender) };
       }
+
+      // Auto-start with nothing in flight: render this batch immediately.
+      // Scope StartRendering to ONLY the IDs lp_base_export just added so any
+      // pre-existing entries in the operator's Resolve render queue (completed,
+      // aborted, manually queued) aren't re-rendered alongside.
+      await sendWorkerRequest(
+        { cmd: 'start_render', job_ids: jobs.map(j => j.job_id) },
+        WORKERS.resolve
+      );
       startExportTracking({
         exportId,
         jobs,
-        targetDir: data.target_dir || targetDir,
+        targetDir: resolvedTargetDir,
         projectId,
         projectName,
-        started: startRender
+        started: true
       });
-      return { ok: true, exportId, jobs, started: startRender };
+      return { ok: true, exportId, jobs, started: true };
     } catch (err) {
       const msg = err?.error?.message || err?.error || err?.message || String(err);
       return { ok: false, error: msg };
@@ -3019,9 +3139,35 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
+  // Start a sequence of queued batches back-to-back. exportIds are run in the
+  // given order: the first becomes the active render, the rest wait in runChain
+  // and each starts when the prior one finalizes (finalizeExport → advanceChain).
+  // Blocked while anything is already in flight (keep-it-simple: finish the
+  // current run before starting another — appending mid-run is a later follow-up).
+  ipcMain.handle('export:start-chain', async (_e, exportIds = []) => {
+    if (isExportBusy()) return { ok: false, error: 'An export is already running — wait for it to finish.' };
+    if (!jobsDb) return { ok: false, error: 'Export store unavailable' };
+    const ids = (Array.isArray(exportIds) ? exportIds : []).filter(Boolean);
+    if (ids.length === 0) return { ok: false, error: 'No batches selected' };
+
+    // Keep only ids that are still genuinely queued, preserving caller order.
+    const valid = ids.filter(id => {
+      const row = jobsDb.getExportRun(id);
+      return row && row.state === 'queued';
+    });
+    if (valid.length === 0) return { ok: false, error: 'Selected batches are no longer queued' };
+
+    runChain = valid;     // first is shifted off and started by advanceChain
+    advanceChain();
+    return { ok: true, started: valid[0], count: valid.length };
+  });
+
   ipcMain.handle('export:cancel', async () => {
     // For a rendering export stop_render halts Resolve; for a queued one it's a
-    // harmless no-op and we just drop the tracked job.
+    // harmless no-op and we just drop the tracked job. An explicit cancel also
+    // abandons the rest of the chain — clear it BEFORE finalize so advanceChain
+    // (called inside finalizeExport) sees nothing left to start.
+    runChain = [];
     try { await sendWorkerRequest({ cmd: 'stop_render' }, WORKERS.resolve); } catch (_) { /* best effort */ }
     if (activeExport) finalizeExport('canceled');
     return { ok: true };

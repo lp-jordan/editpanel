@@ -264,6 +264,12 @@ contextBridge.exposeInMainWorld('exportsAPI', {
   startRender() {
     return ipcRenderer.invoke('export:start-render');
   },
+  /** Start a sequence of queued batches back-to-back, in the given order.
+   *  Resolves { ok, started, count } or { ok:false, error } if something's
+   *  already running or nothing is selected. */
+  startChain(exportIds = []) {
+    return ipcRenderer.invoke('export:start-chain', exportIds);
+  },
   /** Stop the current render / drop a queued export. */
   cancel() {
     return ipcRenderer.invoke('export:cancel');
@@ -297,6 +303,14 @@ contextBridge.exposeInMainWorld('exportsAPI', {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('export-complete', handler);
     return () => ipcRenderer.removeListener('export-complete', handler);
+  },
+  /** Fires when a batch is queued (without auto-starting) or a chain drains,
+   *  so the JobPanel can refresh its queued-batch list live. Payload:
+   *  { exportId } on queue, { exportId: null, chainDrained: true } when done. */
+  onQueued(callback) {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('export-queued', handler);
+    return () => ipcRenderer.removeListener('export-queued', handler);
   },
 
   // ── Phase 3.5 — orphan reconciliation + Exports history surface ─────

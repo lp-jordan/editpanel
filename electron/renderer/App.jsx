@@ -413,7 +413,12 @@ function App() {
         appendLog(`[export] ${snap.state}${snap.error ? ` — ${snap.error}` : ''} · ${snap.jobs?.length || 0} timeline(s)${uploadNote}`);
       }
     });
-    return () => { offProgress && offProgress(); offComplete && offComplete(); };
+    // A queued batch (or a drained chain) bumps the version so the JobPanel's
+    // queued-batch list refreshes without needing to be reopened.
+    const offQueued = window.exportsAPI.onQueued
+      ? window.exportsAPI.onQueued(() => setExportVersion((v) => v + 1))
+      : null;
+    return () => { offProgress && offProgress(); offComplete && offComplete(); offQueued && offQueued(); };
   }, [appendLog]);
 
   React.useEffect(() => {
