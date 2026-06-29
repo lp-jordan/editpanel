@@ -170,7 +170,14 @@ function _formatTargetComment(comment) {
   // timeline frame, so skip them entirely (orchestrator counts these separately
   // so the editor sees they exist but weren't placed).
   if (typeof comment?.timestamp !== 'number') return null;
-  if (!comment.id) return null;
+  // Frame.io comment-decoupling Step 3: `id` is now the stable LPOS comment_id,
+  // and the Frame.io comment id is a separate `frameioCommentId` field. Our
+  // Resolve markers tether on the Frame.io id (custom_data `frameio:{...}`), so
+  // key the marker on frameioCommentId — NOT `id` — to keep already-placed
+  // markers reconciling. The LPOS EP route filters out comments with a null
+  // frameioCommentId, but guard defensively: skip placement if it's missing
+  // rather than tagging a marker with null/undefined.
+  if (!comment.frameioCommentId) return null;
 
   // ASCII-only name. Resolve's marker UI renders multibyte sequences as Latin-1
   // (the leading UTF-8 C2 byte shows as "Â", so "·" became "Â·"). 5c.8 fix:
@@ -185,7 +192,8 @@ function _formatTargetComment(comment) {
   }
 
   return {
-    commentId: comment.id,
+    // The Frame.io comment id — this is the marker tether key (frameio:{...}).
+    commentId: comment.frameioCommentId,
     timestamp_s: comment.timestamp,
     duration_s: typeof comment.duration === 'number' ? comment.duration : null,
     name,
@@ -2668,9 +2676,11 @@ app.whenReady().then(() => {
           // (author, full text, replies) for the report UI. Also index the
           // ORIGINAL raw Frame.io comment so the report can show author avatar
           // and the un-mangled text/replies separately.
+          // Both maps key on the Frame.io comment id (commentId), since that's
+          // what the sync helper echoes back in placed/kept/removed records.
           const targetByCid = new Map(targetComments.map(t => [t.commentId, t]));
           const rawByCid = new Map(
-            unresolved.filter(c => c && c.id).map(c => [c.id, c])
+            unresolved.filter(c => c && c.frameioCommentId).map(c => [c.frameioCommentId, c])
           );
 
           const syncRes = await sendWorkerRequest({
