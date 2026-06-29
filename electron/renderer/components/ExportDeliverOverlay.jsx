@@ -758,7 +758,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const canRun = connected && !busy;
 
   return (
-    <div className="result-overlay atem-overlay" role="dialog" aria-label="LP Base Export">
+    <div className="result-overlay atem-overlay" role="dialog" aria-label="Export">
       {/* Header */}
       <header className="result-overlay-header">
         <button className="result-overlay-back" onClick={() => { if (!busy) onClose?.(); }} aria-label="Close">
@@ -767,7 +767,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
-        <span className="result-overlay-title">LP Base Export</span>
+        <span className="result-overlay-title">Export</span>
         <div className="atem-stage-pills">
           {['configure', 'running', 'done'].map((s, i) => (
             <span key={s} className={`atem-stage-pill${stage === s ? ' active' : ''}`}>{i + 1}</span>

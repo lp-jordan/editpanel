@@ -559,7 +559,7 @@ function App() {
 
   const handleLPBaseExport = React.useCallback(() => {
     if (!window.leaderpassAPI) {
-      appendLog('Leaderpass API not available; cannot export LP Base');
+      appendLog('Leaderpass API not available; cannot export');
       return;
     }
     // Opens the destination picker; the overlay drives lp_base_export +
@@ -758,8 +758,8 @@ function App() {
       tasks: [
         {
           key: 'deliver-export',
-          label: 'LP Base Export',
-          description: 'Choose a destination, set up the render queue from the EXPORT bin, and start the export.',
+          label: 'Export',
+          description: 'Queue videos for export.',
           actionLabel: 'Set Up Export',
           onClick: handleLPBaseExport,
           requiresResolve: true
