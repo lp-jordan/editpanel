@@ -43,10 +43,21 @@ def handle_export_preflight(payload: Dict[str, Any], log_func=None) -> Dict[str,
             export_names.append(nm)
 
     matched: List[str] = []
+    # Per-timeline subtitle track count, keyed by timeline name. Powers the
+    # burn-in pre-export warning: a "… - Subtitle" preset on a timeline with no
+    # subtitle track renders an uncaptioned video with no error, so EditPanel
+    # flags the gap before queuing. Always an int (0 on any Resolve hiccup) so
+    # the UI can treat "missing key" and "0 tracks" the same way.
+    subtitle_tracks: Dict[str, int] = {}
     timeline_count = int(project.GetTimelineCount() or 0)
     for idx in range(1, timeline_count + 1):
         tl = project.GetTimelineByIndex(idx)
         if tl and tl.GetName() in export_names:
-            matched.append(tl.GetName())
+            name = tl.GetName()
+            matched.append(name)
+            try:
+                subtitle_tracks[name] = int(tl.GetTrackCount("subtitle") or 0)
+            except Exception:
+                subtitle_tracks[name] = 0
 
-    return {"names": matched, "bin_found": True}
+    return {"names": matched, "subtitle_tracks": subtitle_tracks, "bin_found": True}

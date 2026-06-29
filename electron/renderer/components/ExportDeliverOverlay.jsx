@@ -27,6 +27,12 @@
 function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposReady, onLog, onOpenJobs }) {
   const DEFAULT_PRESET = 'General LP Export';
   const DEFAULT_BIN = 'EXPORT';
+  // Burn-in works by selecting a paired preset whose only difference is the
+  // Deliver-page "Burn into video" subtitle setting (which the Resolve scripting
+  // API can't toggle directly). The editor keeps matching pairs named
+  // "<preset>" and "<preset> - Subtitle"; flipping the toggle just swaps which
+  // name we queue with. One constant so the convention lives in a single place.
+  const BURN_IN_SUFFIX = ' - Subtitle';
 
   // ── Stage ──────────────────────────────────────────────
   const [stage, setStage] = React.useState('configure'); // 'configure' | 'preflight' | 'confirm' | 'running' | 'done'
@@ -37,6 +43,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const [exportBin, setExportBin]   = React.useState(DEFAULT_BIN);
   // Off (default) = queue only, start from Jobs later. On = render immediately.
   const [autoStart, setAutoStart]   = React.useState(false);
+  // Burn subtitles into the video by queuing the "<preset> - Subtitle" pair.
+  const [burnIn, setBurnIn]         = React.useState(false);
 
   // ── Preset / bin dropdown sources ──────────────────────
   // Fetched from Resolve when the overlay opens (and we're connected). Empty
@@ -61,6 +69,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const [busy, setBusy]     = React.useState(false);
   const [result, setResult] = React.useState(null); // { jobs, targetDir, started, project, warning, error }
   const [conflicts, setConflicts]     = React.useState([]);   // timeline names that already exist in the project
+  const [subtitleGaps, setSubtitleGaps] = React.useState([]); // matched timelines with no subtitle track (burn-in only)
   const [pendingStart, setPendingStart] = React.useState(true); // startRender flag held across the confirm step
 
   // Reset + seed from preferences when the overlay opens
@@ -69,10 +78,12 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     setStage('configure');
     setUploadToLpos(false);
     setAutoStart(false);
+    setBurnIn(false);
     setProjectsError(null);
     setBusy(false);
     setResult(null);
     setConflicts([]);
+    setSubtitleGaps([]);
     setPendingStart(true);
 
     if (!window.electronAPI?.getPreferences) {
@@ -182,6 +193,20 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     [projects, selectedProjectId]
   );
 
+  // The burn-in counterpart for the currently-selected preset, and whether it
+  // actually exists. When the preset list loaded and the pair is absent we know
+  // burn-in can't work, so the toggle is disabled. When the list couldn't load
+  // (offline / fetch error) we can't prove the pair is missing, so we fail open
+  // and let the toggle through — lp_base_export logs loudly if the name is bad.
+  const burnInPresetName = `${presetName}${BURN_IN_SUFFIX}`;
+  const burnInAvailable  = presets.length === 0 || presets.includes(burnInPresetName);
+
+  // If the selected preset has no burn-in pair, force the toggle back off so we
+  // can never queue a burn-in export against a preset that can't deliver it.
+  React.useEffect(() => {
+    if (!burnInAvailable && burnIn) setBurnIn(false);
+  }, [burnInAvailable, burnIn]);
+
   // ── Actions ─────────────────────────────────────────────
 
   async function loadProjects() {
@@ -251,7 +276,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   // name-based pre-export check against the chosen project first; otherwise go
   // straight to the export.
   function beginExport(startRender) {
-    if (uploadToLpos && selectedProjectId) {
+    // Run the pre-export check whenever there's something to verify: the LPOS
+    // version-conflict check (upload) and/or the subtitle-track check (burn-in).
+    if ((uploadToLpos && selectedProjectId) || burnIn) {
       runPreflight(startRender);
     } else {
       doStart(startRender);
@@ -263,16 +290,27 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     setBusy(true);
     setStage('preflight');
     setPendingStart(startRender);
+    const wantVersionCheck = uploadToLpos && selectedProjectId;
     try {
-      const [namesRes, assetsRes] = await Promise.all([
+      const [pfRes, assetsRes] = await Promise.all([
         window.leaderpassAPI.call('export_preflight', { export_bin_name: exportBin }),
-        window.lposAPI.listProjectAssets(selectedProjectId)
+        wantVersionCheck ? window.lposAPI.listProjectAssets(selectedProjectId) : Promise.resolve(null)
       ]);
-      const names  = namesRes?.data?.names || [];
-      const assets = assetsRes?.ok ? (assetsRes.data?.assets || []) : [];
-      const found  = computeConflicts(names, assets);
-      if (found.length > 0) {
+      const names          = pfRes?.data?.names || [];
+      const subtitleTracks = pfRes?.data?.subtitle_tracks || {};
+
+      const found = wantVersionCheck
+        ? computeConflicts(names, (assetsRes?.ok ? (assetsRes.data?.assets || []) : []))
+        : [];
+      // Burn-in onto a timeline with no subtitle track silently produces an
+      // uncaptioned video, so flag those timelines before queuing.
+      const gaps = burnIn
+        ? names.filter((n) => !(Number(subtitleTracks[n]) > 0))
+        : [];
+
+      if (found.length > 0 || gaps.length > 0) {
         setConflicts(found);
+        setSubtitleGaps(gaps);
         setBusy(false);
         setStage('confirm');
         return;
@@ -280,7 +318,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     } catch (err) {
       // Fail open — a flaky pre-check shouldn't block the export.
       const msg = err?.error?.message || err?.error || err?.message || String(err);
-      onLog?.(`[export] Version pre-check skipped: ${msg}`);
+      onLog?.(`[export] Pre-export check skipped: ${msg}`);
     }
     setBusy(false);
     doStart(startRender);
@@ -290,9 +328,12 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     if (busy) return;
     setBusy(true);
     setStage('running');
-    onLog?.(`[export] ${startRender ? 'Queue & render' : 'Queue'}${targetDir ? ` → ${targetDir}` : ' (preset location)'}…`);
+    // When burning in, queue the paired "<preset> - Subtitle" preset instead.
+    const effectivePreset = burnIn ? burnInPresetName : presetName;
+    onLog?.(`[export] ${startRender ? 'Queue & render' : 'Queue'}${burnIn ? ' (burn-in subtitles)' : ''}${targetDir ? ` → ${targetDir}` : ' (preset location)'}…`);
 
-    // Save selections for next time
+    // Save selections for next time. Persist the BASE preset the editor picked,
+    // not the burn-in variant — burn-in is a per-export toggle, not a default.
     persistPrefs({
       lastExportDir: targetDir,
       lastExportPreset: presetName,
@@ -306,7 +347,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       // overlay is closed.
       const res = await window.exportsAPI.start({
         targetDir: targetDir || undefined,
-        presetName,
+        presetName: effectivePreset,
         exportBin,
         startRender,
         projectId:   uploadToLpos && selectedProjectId ? selectedProjectId : undefined,
@@ -460,6 +501,32 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           </div>
         </div>
 
+        {/* Burn-in subtitles toggle */}
+        <div className={`atem-resolve-toggle${burnInAvailable ? '' : ' disabled'}`}>
+          <div className="atem-resolve-toggle-inner">
+            <div>
+              <p className="atem-field-label">Burn in subtitles</p>
+              <p className="atem-resolve-sub">
+                {!burnInAvailable
+                  ? `No "${burnInPresetName}" preset in this project — burn-in needs a matching pair.`
+                  : burnIn
+                    ? `Queues "${burnInPresetName}" so each timeline's subtitle track is baked into the video.`
+                    : `Renders the subtitle track into the picture using the "${burnInPresetName}" preset.`}
+              </p>
+            </div>
+            <button
+              type="button"
+              className={`export-switch${burnIn ? ' on' : ''}`}
+              role="switch"
+              aria-checked={burnIn}
+              disabled={!burnInAvailable}
+              onClick={() => setBurnIn(v => !v)}
+            >
+              <span className="export-switch-knob" />
+            </button>
+          </div>
+        </div>
+
         {/* Upload-to-LPOS toggle */}
         <div className={`atem-resolve-toggle${lposReady ? '' : ' disabled'}`}>
           <div className="atem-resolve-toggle-inner">
@@ -545,7 +612,11 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     return (
       <div className="atem-loading" style={{ padding: '32px 0' }}>
         <span className="status-bar-spinner" style={{ width: 18, height: 18 }} />
-        <span>Checking {selectedProject?.name || 'the project'} for existing versions…</span>
+        <span>
+          {uploadToLpos && selectedProjectId
+            ? `Checking ${selectedProject?.name || 'the project'} for existing versions…`
+            : 'Checking timelines before export…'}
+        </span>
       </div>
     );
   }
@@ -553,29 +624,63 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   function renderConfirm() {
     return (
       <div className="atem-configure">
-        <div className="atem-summary-card">
-          <p className="atem-summary-line">
-            <strong>{conflicts.length}</strong> of these already exist
-          </p>
-          <p className="atem-summary-line">in <strong>{selectedProject?.name || 'the project'}</strong></p>
-        </div>
-        <p className="atem-dest-hint" style={{ fontSize: '0.84rem', color: 'var(--text)' }}>
-          These will upload as <strong>new versions</strong> of existing assets when their renders finish —
-          continuing is your sign-off, so LPOS won't ask again. (Identical files are skipped.)
-        </p>
-        <div className="atem-session-list export-project-list">
-          {conflicts.map((n) => (
-            <div key={n} className="atem-session-row">
-              <div className="atem-session-info">
-                <span className="atem-session-name">{n}</span>
-                <span className="atem-session-meta">existing asset</span>
-              </div>
-              <span className="atem-coming-soon-badge" style={{ background: 'var(--accent-blue-soft)' }}>New version</span>
+        {/* Burn-in: timelines with no subtitle track would render uncaptioned. */}
+        {subtitleGaps.length > 0 && (
+          <>
+            <div className="atem-summary-card">
+              <p className="atem-summary-line">
+                <strong>{subtitleGaps.length}</strong> of these {subtitleGaps.length === 1 ? 'timeline has' : 'timelines have'} no subtitle track
+              </p>
+              <p className="atem-summary-line">but burn-in is on</p>
             </div>
-          ))}
-        </div>
+            <p className="atem-dest-hint" style={{ fontSize: '0.84rem', color: 'var(--text)' }}>
+              With burn-in enabled, {subtitleGaps.length === 1 ? 'this timeline' : 'these timelines'} will render
+              as <strong>uncaptioned video</strong> — there's no subtitle track to bake in. Add a subtitle track in
+              Resolve first, or continue to render {subtitleGaps.length === 1 ? 'it' : 'them'} without captions.
+            </p>
+            <div className="atem-session-list export-project-list">
+              {subtitleGaps.map((n) => (
+                <div key={n} className="atem-session-row">
+                  <div className="atem-session-info">
+                    <span className="atem-session-name">{n}</span>
+                    <span className="atem-session-meta">no subtitle track</span>
+                  </div>
+                  <span className="atem-coming-soon-badge" style={{ background: 'var(--accent-gold-soft, var(--accent-blue-soft))' }}>Uncaptioned</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* LPOS upload: name collisions become new versions. */}
+        {conflicts.length > 0 && (
+          <>
+            <div className="atem-summary-card">
+              <p className="atem-summary-line">
+                <strong>{conflicts.length}</strong> of these already exist
+              </p>
+              <p className="atem-summary-line">in <strong>{selectedProject?.name || 'the project'}</strong></p>
+            </div>
+            <p className="atem-dest-hint" style={{ fontSize: '0.84rem', color: 'var(--text)' }}>
+              These will upload as <strong>new versions</strong> of existing assets when their renders finish —
+              continuing is your sign-off, so LPOS won't ask again. (Identical files are skipped.)
+            </p>
+            <div className="atem-session-list export-project-list">
+              {conflicts.map((n) => (
+                <div key={n} className="atem-session-row">
+                  <div className="atem-session-info">
+                    <span className="atem-session-name">{n}</span>
+                    <span className="atem-session-meta">existing asset</span>
+                  </div>
+                  <span className="atem-coming-soon-badge" style={{ background: 'var(--accent-blue-soft)' }}>New version</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
         <p className="export-lpos-note">
-          This is a name match only — nothing has rendered or uploaded yet. Continuing signs off on creating these new versions; go back to change the project or turn off upload.
+          This is a name match only — nothing has rendered or uploaded yet. Go back to adjust the preset, project, or toggles.
         </p>
       </div>
     );
@@ -607,6 +712,11 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
               ? `${jobs.length} timeline${jobs.length !== 1 ? 's' : ''} rendering in the background — track progress in Jobs.`
               : `${jobs.length} timeline${jobs.length !== 1 ? 's' : ''} queued — press Start in Jobs to begin rendering.`}
           </p>
+          {burnIn && (
+            <p className="atem-done-sub" style={{ marginTop: 4 }}>
+              Subtitles are burned into the picture (<strong>{burnInPresetName}</strong>).
+            </p>
+          )}
         </div>
 
         {result?.targetDir && (

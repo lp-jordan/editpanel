@@ -175,4 +175,51 @@ under `app/api/ep/projects/[projectId]/media/upload/` (lpos-dashboard),
 `LposClient.uploadFileToProject` in `electron/workers/lpos_client.js`, and
 `uploadExportFiles`/`onRenderFinished` in `electron/main.js`.
 
+## Burn in subtitles (shipped 2026-06-29)
+
+### What it does
+A per-batch "Burn in subtitles" toggle in the configure stage. When on, each
+timeline's existing subtitle track is baked into the picture instead of being
+delivered clean. There is no separate clean master or sidecar `.srt` — the
+burned-in video is the single deliverable.
+
+### How it works
+The Resolve scripting API can't toggle the Deliver-page subtitle/burn-in setting
+via `SetRenderSettings` (it's not in the settable whitelist), so burn-in is
+carried by a **paired render preset**. The editor maintains matching pairs named
+`<preset>` and `<preset> - Subtitle`, where the `- Subtitle` variant has
+"Burn into video" enabled in its Deliver settings. EditPanel does nothing more
+than swap which preset name it queues:
+
+1. `BURN_IN_SUFFIX = ' - Subtitle'` (one constant in `ExportDeliverOverlay.jsx`).
+2. The counterpart name (`${selectedPreset}${BURN_IN_SUFFIX}`) is validated
+   against the already-fetched `list_render_presets` list. If absent (and the
+   list loaded), the toggle is disabled with explanatory copy. If the list
+   couldn't load, the toggle fails open — `lp_base_export` logs loudly if the
+   name is bad.
+3. When on, `doStart` sends the resolved `- Subtitle` preset as `presetName`.
+   `main.js` `export:start` and `lp_base_export.py` are unchanged — they just
+   `LoadRenderPreset` whichever name they receive.
+
+### Trackless-timeline preflight
+Burn-in onto a timeline with **no subtitle track** silently renders uncaptioned
+video (no error). So `export_preflight` now also returns `subtitle_tracks`
+(timeline name → `GetTrackCount("subtitle")`), and when burn-in is on EditPanel
+runs the pre-export check even without an LPOS upload, flagging trackless
+timelines in the confirm stage before queuing. The check shares the existing
+version-conflict confirm machinery (a second warning section).
+
+### Status / gaps
+- **Load-bearing assumption to verify in Resolve:** that `LoadRenderPreset` on a
+  burn-in preset actually carries "Burn into video" through `AddRenderJob`. The
+  code is safe either way — a misconfigured preset just renders uncaptioned —
+  but confirm one burned render before relying on it for a client delivery.
+- Assumes exactly one subtitle track per timeline (no multi-language picker).
+- `export_runs` does not yet record a `burn_in` flag (no badging in the Exports
+  panel) — deferred polish, not required for the feature.
+
+Key files: `ExportDeliverOverlay.jsx` (`BURN_IN_SUFFIX`, `burnIn`/`subtitleGaps`
+state, `runPreflight`, confirm stage), `helper/commands/export_preflight.py`
+(`subtitle_tracks`).
+
 See also: `lpos-contract.md` (EditPanel ↔ LPOS ownership boundaries).
