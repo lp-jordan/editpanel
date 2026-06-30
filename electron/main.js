@@ -1051,11 +1051,56 @@ function finalizeExport(state, error = null) {
   activeExport.finishedAt = Date.now();
   if (error) activeExport.error = error;
 
+  // Multi-file upload-off export → split into one complete_unassigned row per
+  // file so the editor can push each to a SEPARATE LPOS project. One
+  // export_run historically carries the whole batch and pushes to a single
+  // project (exports:push-to-lpos uploads every output_path to one chosen
+  // project); a combined row therefore can't fan out to different projects.
+  // Splitting also keeps the one-click case: the Unassigned view groups rows
+  // by Resolve project, so files sharing a project still get a "Push all (N)…"
+  // group button — differing destinations use each row's own button. Each
+  // child row carries its single output file + its originating job (so the
+  // per-job timeline tether survives into push-to-lpos renderMeta). Only the
+  // upload-off path reaches here; upload-on exports already went to one project.
+  const completedJobs = activeExport.jobs.filter(j => j.status === 'Complete' && j.outputPath);
+  let didSplit = false;
+  if (jobsDb && effectiveState === 'complete_unassigned' && completedJobs.length > 1) {
+    const batchId   = activeExport.exportId;
+    const startedAt = activeExport.startedAt || Date.now();
+    const finishedAt = Date.now();
+    completedJobs.forEach((j, i) => {
+      const childId = `${batchId}__f${i}`;
+      try {
+        jobsDb.createExportRun({
+          exportId:    childId,
+          targetDir:   activeExport.targetDir,
+          projectId:   null,
+          projectName: null,
+          jobs:        [j]
+        });
+        jobsDb.updateExportRun(childId, {
+          state:      'complete_unassigned',
+          jobsDone:   1,
+          percent:    100,
+          finishedAt
+        });
+        jobsDb.setExportOutputPaths(childId, [j.outputPath]);
+      } catch (_) { /* non-fatal */ }
+    });
+    // Drop the combined batch row — its files now live as per-file rows. Its
+    // JobIds stay accounted for via the child rows' jobs_json, so the
+    // reconciler won't re-discover them as fresh orphans.
+    try { jobsDb.deleteExportRun(batchId); } catch (_) { /* non-fatal */ }
+    didSplit = true;
+    void startedAt;
+  }
+
   // Phase 3.5: capture on-disk paths + LPOS delivery info on the row before
   // the in-memory activeExport is dropped. Powers the Exports history page's
   // "Local" and "LPOS" links. Failures here are non-fatal — the existing
   // persistActiveExport below still records the export's state either way.
-  if (jobsDb && activeExport) {
+  // Skipped when we split above: the combined row no longer exists.
+  if (jobsDb && activeExport && !didSplit) {
     try {
       if (outputs.length > 0) {
         jobsDb.setExportOutputPaths(activeExport.exportId, outputs);
@@ -1076,7 +1121,10 @@ function finalizeExport(state, error = null) {
     }
   }
 
-  persistActiveExport();
+  // When we split the batch into per-file rows the combined row was deleted —
+  // don't persist it back. The export-complete broadcast still fires so the
+  // Exports tab / JobPanel refresh and pick up the new per-file rows.
+  if (!didSplit) persistActiveExport();
   broadcastExport('export-complete', exportSnapshot());
   activeExport = null;
 

@@ -1,6 +1,6 @@
 {
   "name": "editpanel",
-  "version": "1.2.23",
+  "version": "1.2.24",
   "description": "EditPanel — DaVinci Resolve companion app for the LPOS ecosystem",
   "author": "LeaderPass <tools@leaderpass.com>",
   "main": "electron/main.js",

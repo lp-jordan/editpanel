@@ -128,6 +128,16 @@ awaiting-assignment pill.
   A one-time `jobs-db.js` migration flips any such pre-1.2.23 stranded rows
   (editpanel-sourced, completed, no project, no delivery, output files present)
   to `complete_unassigned` so they become pushable.
+- **Per-file rows (added 1.2.24).** A multi-file upload-off export is split into
+  one `complete_unassigned` row per output file, so each file can be pushed to a
+  **separate** LPOS project. `exports:push-to-lpos` uploads every `output_path`
+  of a row to a single project, so a combined batch row couldn't fan out. The
+  split happens in `finalizeExport` (new exports) and via a one-time `jobs-db.js`
+  migration (rows that already landed combined). Because the Unassigned view
+  groups rows by Resolve project, files sharing a project still get a one-click
+  **"Push all (N)…"** group button; differing destinations use each row's own
+  button. Each child row (`<batch>__f<i>`) carries its single file plus its
+  originating job so the per-timeline tether survives into push renderMeta.
 
 ### Current status / known gaps
 - The **Upload to LPOS** toggle uploads finished renders into the chosen project

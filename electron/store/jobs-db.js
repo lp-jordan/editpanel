@@ -183,6 +183,57 @@ class JobsDb {
             AND output_paths_json != '[]'`
       );
     } catch (_) { /* non-fatal */ }
+
+    // 2026-06-30 (b) — split combined multi-file unassigned exports into one
+    // row per file so each can be pushed to a SEPARATE LPOS project. A single
+    // export_run pushes all its output files to one project, so a multi-file
+    // batch can't fan out. New exports split at finalize (main.js); this
+    // back-fills rows that already landed combined (incl. the ones the re-label
+    // migration above just surfaced). Per-file rows reuse 'orphan_'-free child
+    // ids '<batch>__f<i>', carry their single output path + matching job (so the
+    // timeline tether survives into push renderMeta), and the combined row is
+    // deleted. Scoped to unassigned + editpanel + >1 output; idempotent (zero
+    // multi-file matches after the first pass). Wrapped per-row in a txn so a
+    // malformed row can't leave a half-split state.
+    try {
+      const combined = this.db.prepare(
+        `SELECT export_id, target_dir, jobs_json, output_paths_json, started_at, finished_at
+           FROM export_runs
+          WHERE state = 'complete_unassigned'
+            AND source = 'editpanel'
+            AND output_paths_json IS NOT NULL`
+      ).all();
+      const insertChild = this.db.prepare(
+        `INSERT OR IGNORE INTO export_runs
+           (export_id, target_dir, project_id, project_name, job_count, jobs_done,
+            percent, state, jobs_json, started_at, finished_at, source, output_paths_json)
+         VALUES (?, ?, NULL, NULL, 1, 1, 100, 'complete_unassigned', ?, ?, ?, 'editpanel', ?)`
+      );
+      const deleteBatch = this.db.prepare(`DELETE FROM export_runs WHERE export_id = ?`);
+      const splitRow = this.db.transaction((row) => {
+        let outs = [];
+        let jobs = [];
+        try { outs = JSON.parse(row.output_paths_json || '[]'); } catch (_) { outs = []; }
+        try { jobs = JSON.parse(row.jobs_json || '[]'); } catch (_) { jobs = []; }
+        if (!Array.isArray(outs) || outs.length <= 1) return;
+        outs.forEach((outPath, i) => {
+          // Index-map file → job (all-completed exports align by index); fall
+          // back to the first job, then to an empty job, so a missing entry
+          // never aborts the split.
+          const job = (Array.isArray(jobs) ? (jobs[i] || jobs[0]) : null) || {};
+          insertChild.run(
+            `${row.export_id}__f${i}`,
+            row.target_dir || null,
+            JSON.stringify([job]),
+            row.started_at,
+            row.finished_at || null,
+            JSON.stringify([outPath])
+          );
+        });
+        deleteBatch.run(row.export_id);
+      });
+      for (const row of combined) splitRow(row);
+    } catch (_) { /* non-fatal */ }
   }
 
   /**
