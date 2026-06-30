@@ -1018,7 +1018,36 @@ function finalizeExport(state, error = null) {
   stopExportPoll();
   uploadQueue = [];  // abandon any not-yet-started uploads
   if (!activeExport) return;
-  activeExport.state = state;
+
+  // On-disk outputs from cleanly-rendered jobs. Computed up front because it
+  // both feeds setExportOutputPaths below and decides the terminal state for
+  // the upload-off path next.
+  const outputs = activeExport.jobs
+    .filter(j => j.status === 'Complete' && j.outputPath)
+    .map(j => j.outputPath);
+
+  // Upload-off, no-project export → route into the unassigned/push pipeline.
+  // The editor rendered through EditPanel with "Upload to LPOS" left off,
+  // meaning to push later. A plain 'completed' strands the row: the Exports
+  // tab's Unassigned filter and its "Push to LPOS" button both gate on
+  // 'complete_unassigned', and the Delivered filter needs an lpos_delivery —
+  // so a project-less completed export shows up nowhere actionable (only under
+  // "All", mislabeled "Delivered", with no push action). Re-label a clean
+  // completion as 'complete_unassigned' (the same state Resolve-discovered
+  // orphans use) so exports:push-to-lpos can later assign + upload it. Guarded
+  // on having real output files and no project bound — an upload-on export
+  // whose auto-upload failed keeps its normal terminal state.
+  let effectiveState = state;
+  if (
+    state === 'completed'
+    && !activeExport.projectId
+    && !activeExport.uploadEnabled
+    && outputs.length > 0
+  ) {
+    effectiveState = 'complete_unassigned';
+  }
+
+  activeExport.state = effectiveState;
   activeExport.finishedAt = Date.now();
   if (error) activeExport.error = error;
 
@@ -1028,9 +1057,6 @@ function finalizeExport(state, error = null) {
   // persistActiveExport below still records the export's state either way.
   if (jobsDb && activeExport) {
     try {
-      const outputs = activeExport.jobs
-        .filter(j => j.status === 'Complete' && j.outputPath)
-        .map(j => j.outputPath);
       if (outputs.length > 0) {
         jobsDb.setExportOutputPaths(activeExport.exportId, outputs);
       }

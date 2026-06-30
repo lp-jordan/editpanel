@@ -107,6 +107,28 @@ project.
   re-discovered; if Resolve genuinely re-queues it later, it's re-discovered as a
   fresh orphan (the desired behavior).
 
+### Upload-off exports are pushable later (added 2026-06-30)
+
+The Export overlay's **Upload to LPOS** toggle defaults off. When an editor
+renders through EditPanel with it off, no project is chosen and the render is
+**not** uploaded — the intent is "deliver later." Such an export now finalizes
+in state `complete_unassigned` (not `completed`), exactly like a
+Resolve-discovered orphan, so it lands in the Exports tab's **Unassigned**
+filter with a working **Push to LPOS…** button and bumps the
+awaiting-assignment pill.
+
+- The re-label happens in `finalizeExport` (`main.js`): a clean `completed`
+  outcome with **no project bound**, **upload disabled**, and **real output
+  files** becomes `complete_unassigned`. A project-bound export whose auto-upload
+  failed keeps its normal terminal state.
+- Before 1.2.23 these landed in `completed` with no project and no
+  `lpos_delivery` — a dead zone: the Unassigned filter and its push button gate
+  on `complete_unassigned`, and the Delivered filter needs `lpos_delivery`, so
+  the row showed only under **All**, mislabeled "Delivered", with no push action.
+  A one-time `jobs-db.js` migration flips any such pre-1.2.23 stranded rows
+  (editpanel-sourced, completed, no project, no delivery, output files present)
+  to `complete_unassigned` so they become pushable.
+
 ### Current status / known gaps
 - The **Upload to LPOS** toggle uploads finished renders into the chosen project
   automatically (Phase 2, below).

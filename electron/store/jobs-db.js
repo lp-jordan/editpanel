@@ -157,6 +157,32 @@ class JobsDb {
     try {
       this.db.exec(`DELETE FROM export_runs WHERE state = 'dismissed_in_resolve'`);
     } catch (_) { /* non-fatal */ }
+
+    // 2026-06-30 — make pre-1.2.23 upload-off exports pushable. Before 1.2.23 an
+    // EditPanel export rendered with "Upload to LPOS" left off finalized as
+    // state='completed' with no project and no lpos_delivery — a dead zone in
+    // the Exports tab: not 'complete_unassigned' (so the Unassigned filter and
+    // its "Push to LPOS" button skipped it) and no lpos_delivery (so the
+    // Delivered filter skipped it too). It showed only under "All", mislabeled
+    // "Delivered", with no push action. Flip those stranded rows to
+    // 'complete_unassigned' so they flow through the same assign-and-push
+    // pipeline new upload-off exports now use (see finalizeExport in main.js).
+    // Tightly scoped — editpanel-sourced, completed, never assigned, never
+    // delivered, with real output files recorded (push-to-lpos requires them).
+    // This precisely targets the upload-off path; project-bound or delivered
+    // rows are untouched. Safe to run repeatedly — zero rows after first pass.
+    try {
+      this.db.exec(
+        `UPDATE export_runs
+            SET state = 'complete_unassigned'
+          WHERE state = 'completed'
+            AND source = 'editpanel'
+            AND project_id IS NULL
+            AND lpos_delivery_json IS NULL
+            AND output_paths_json IS NOT NULL
+            AND output_paths_json != '[]'`
+      );
+    } catch (_) { /* non-fatal */ }
   }
 
   /**
