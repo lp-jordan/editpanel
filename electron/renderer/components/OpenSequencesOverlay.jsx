@@ -29,6 +29,8 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
 
   // Bin dropdown source — same shape/behaviour as ExportDeliverOverlay.
   const [bins, setBins]               = React.useState([]);
+  // Hierarchical view: [{ path, name, depth }] so sub-bins can be indented.
+  const [binTree, setBinTree]         = React.useState([]);
   const [binsLoading, setBinsLoading] = React.useState(false);
   const [binsError, setBinsError]     = React.useState(null);
 
@@ -63,7 +65,7 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
   React.useEffect(() => {
     if (!open) return;
     if (!connected) {
-      setBins([]); setBinsError(null); setBinsLoading(false);
+      setBins([]); setBinTree([]); setBinsError(null); setBinsLoading(false);
       return;
     }
     let cancelled = false;
@@ -73,10 +75,11 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
       .then((res) => {
         if (cancelled) return;
         setBins(Array.isArray(res?.data?.bins) ? res.data.bins : []);
+        setBinTree(Array.isArray(res?.data?.bin_tree) ? res.data.bin_tree : []);
       })
       .catch((err) => {
         if (cancelled) return;
-        setBins([]);
+        setBins([]); setBinTree([]);
         setBinsError(err?.error?.message || err?.error || err?.message || 'Could not load bins');
       })
       .finally(() => { if (!cancelled) setBinsLoading(false); });
@@ -192,14 +195,27 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
             disabled={binsLoading}
           >
             {(() => {
-              const options = [...bins];
-              if (binName && !options.includes(binName)) options.unshift(binName);
-              if (options.length === 0) options.push(DEFAULT_BIN);
-              return options.map((name) => (
-                <option key={name} value={name}>
-                  {name}{!bins.includes(name) && bins.length > 0 ? ' (not in this project)' : ''}
-                </option>
-              ));
+              // Prefer the hierarchical tree (indented sub-bins); fall back to
+              // the flat path list. `value` is always the full bin path.
+              const tree = binTree.length
+                ? binTree
+                : bins.map((p) => ({ path: p, name: p, depth: 1 }));
+              const paths = tree.map((b) => b.path);
+              const options = [...tree];
+              if (binName && !paths.includes(binName)) {
+                options.unshift({ path: binName, name: binName, depth: 1 });
+              }
+              if (options.length === 0) options.push({ path: DEFAULT_BIN, name: DEFAULT_BIN, depth: 1 });
+              return options.map((b) => {
+                // Non-breaking spaces: <option> trims leading ASCII spaces.
+                const indent = b.depth > 1 ? '   '.repeat(b.depth - 1) : '';
+                const missing = !paths.includes(b.path) && paths.length > 0;
+                return (
+                  <option key={b.path} value={b.path}>
+                    {indent}{b.name}{missing ? ' (not in this project)' : ''}
+                  </option>
+                );
+              });
             })()}
           </select>
           <p className="atem-dest-hint" style={{ marginTop: 6 }}>
@@ -208,8 +224,8 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
               : binsError
                 ? `Couldn't load bins — using your last setting. (${binsError})`
                 : bins.length === 0
-                  ? 'No top-level bins detected — using your last setting.'
-                  : `${bins.length} top-level bin${bins.length === 1 ? '' : 's'} from the current Resolve project.`}
+                  ? 'No bins detected — using your last setting.'
+                  : `${bins.length} bin${bins.length === 1 ? '' : 's'} (incl. sub-bins) from the current Resolve project.`}
           </p>
         </div>
         <p className="export-lpos-note">

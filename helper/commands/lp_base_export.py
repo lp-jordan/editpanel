@@ -47,6 +47,7 @@ def _capture_timeline_metadata(timeline: Any, project_name: Optional[str]) -> Di
 def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Queue render jobs for timelines matching items in EXPORT bin."""
     from .. import resolve_helper as rh
+    from .bin_tree import resolve_folder_by_path
 
     if not rh.project:
         raise RuntimeError("No active project")
@@ -78,12 +79,10 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
                 f"Could not create or access target directory '{target_dir}': {exc}"
             )
 
-    # Find the EXPORT bin
-    export_folder = None
-    for folder in (root_folder.GetSubFolderList() or []):
-        if folder.GetName() == export_bin_name:
-            export_folder = folder
-            break
+    # Find the EXPORT bin. export_bin_name may be a bare top-level name
+    # ("EXPORT") or a nested path ("SEQUENCES / MC") — resolve_folder_by_path
+    # handles both (bare-name match first, then a segment-by-segment walk).
+    export_folder = resolve_folder_by_path(root_folder, export_bin_name)
     if not export_folder:
         raise RuntimeError(f"The '{export_bin_name}' bin was not found in the Media Pool")
 

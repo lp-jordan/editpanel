@@ -1,26 +1,33 @@
-"""Enumerate the top-level bins (folders) in the current Resolve project's
-media pool.
+"""Enumerate the bins (folders) in the current Resolve project's media pool,
+including nested sub-bins.
 
-Powers the Export bin dropdown in ExportDeliverOverlay. We mirror the lookup
-already used by lp_base_export.handle_lp_base_export and export_preflight:
-both match the chosen bin against the root folder's immediate subfolders
-only — nested bins are out of scope here for the same reason they're out of
-scope in the matcher (lp_base_export iterates `root_folder.GetSubFolderList()`
-once, no recursion).
+Powers the bin dropdowns in ExportDeliverOverlay and OpenSequencesOverlay. The
+whole folder tree is walked (see bin_tree.enumerate_bin_paths); each nested bin
+is identified by its full path from the root, joined with BIN_PATH_SEPARATOR
+("SEQUENCES / MC"), while top-level bins keep their bare name. The matchers
+(lp_base_export, export_preflight, list_bin_sequences) resolve the chosen path
+back to a folder via bin_tree.resolve_folder_by_path, so a selected sub-bin
+actually exports / opens.
 
 Output:
-  { "bins": [str, ...] }   # top-level subfolder names, original order
+  {
+    "bins": [str, ...],                                  # full paths, preorder
+    "bin_tree": [ { "path": str, "name": str, "depth": int }, ... ]
+  }
 
-The DEFAULT_EXPORT_BIN_NAME ("EXPORT") is not injected by this handler — the
-renderer keeps its own constant and shows it as a placeholder/fallback when
-the dropdown can't be built (Resolve disconnected, fetch error, etc.).
+`bins` stays a flat string list (back-compat: the value the renderer persists
+and the matcher receives). `bin_tree` carries depth so the dropdown can indent
+sub-bins. The DEFAULT_EXPORT_BIN_NAME ("EXPORT") is not injected here — the
+renderer keeps its own constant and shows it as a placeholder/fallback when the
+dropdown can't be built (Resolve disconnected, fetch error, etc.).
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 
 def handle_list_media_bins(_payload: Dict[str, Any]) -> Dict[str, Any]:
     from .. import resolve_helper as rh
+    from .bin_tree import enumerate_bin_paths
 
     if not rh.project:
         raise RuntimeError("No active project")
@@ -32,13 +39,8 @@ def handle_list_media_bins(_payload: Dict[str, Any]) -> Dict[str, Any]:
     if not root_folder:
         raise RuntimeError("Could not retrieve the root folder of the Media Pool")
 
-    bins: List[str] = []
-    for folder in (root_folder.GetSubFolderList() or []):
-        try:
-            name = folder.GetName()
-        except Exception:
-            name = None
-        if name:
-            bins.append(name)
-
-    return {"bins": bins}
+    entries = enumerate_bin_paths(root_folder)
+    return {
+        "bins": [entry["path"] for entry in entries],
+        "bin_tree": entries,
+    }

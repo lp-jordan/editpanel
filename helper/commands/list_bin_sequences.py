@@ -1,11 +1,11 @@
-"""Enumerate the sequences (timelines) that live in a chosen top-level media
-pool bin.
+"""Enumerate the sequences (timelines) that live in a chosen media pool bin,
+which may be a top-level bin or a nested sub-bin.
 
 Powers the "Open Sequences" edit function (OpenSequencesOverlay). The bin
-picker uses the same top-level-bin lookup as the Export bin dropdown
-(list_media_bins / lp_base_export): we match the chosen bin against the root
-folder's immediate subfolders only — nested bins are out of scope for the same
-reason they are in the matcher.
+picker uses the same lookup as the Export bin dropdown (list_media_bins /
+lp_base_export): the chosen bin arrives as either a bare top-level name
+("SEQUENCES") or a full path ("SEQUENCES / MC") and is resolved via
+bin_tree.resolve_folder_by_path.
 
 A bin holds MediaPoolItems; the ones that are timelines share their name with a
 Project timeline. There is no MediaPoolItem -> Timeline accessor in the Resolve
@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 
 def handle_list_bin_sequences(payload: Dict[str, Any]) -> Dict[str, Any]:
     from .. import resolve_helper as rh
+    from .bin_tree import resolve_folder_by_path
 
     if not rh.project:
         raise RuntimeError("No active project")
@@ -50,15 +51,8 @@ def handle_list_bin_sequences(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not root_folder:
         raise RuntimeError("Could not retrieve the root folder of the Media Pool")
 
-    # Find the chosen top-level bin (immediate subfolders only).
-    target_folder = None
-    for folder in (root_folder.GetSubFolderList() or []):
-        try:
-            if folder.GetName() == bin_name:
-                target_folder = folder
-                break
-        except Exception:
-            continue
+    # Resolve the chosen bin — a bare top-level name or a nested path.
+    target_folder = resolve_folder_by_path(root_folder, bin_name)
     if not target_folder:
         return {"bin_found": False, "bin_name": bin_name, "sequences": []}
 

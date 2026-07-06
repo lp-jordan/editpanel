@@ -54,6 +54,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const [presetsLoading, setPresetsLoading] = React.useState(false);
   const [presetsError, setPresetsError]     = React.useState(null);
   const [bins, setBins]                     = React.useState([]);
+  // Hierarchical view of `bins`: [{ path, name, depth }] so the dropdown can
+  // indent sub-bins. Falls back to `bins` when list_media_bins is older/empty.
+  const [binTree, setBinTree]               = React.useState([]);
   const [binsLoading, setBinsLoading]       = React.useState(false);
   const [binsError, setBinsError]           = React.useState(null);
 
@@ -121,7 +124,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     if (!open) return;
     if (!connected) {
       setPresets([]); setPresetsError(null); setPresetsLoading(false);
-      setBins([]);    setBinsError(null);    setBinsLoading(false);
+      setBins([]);    setBinTree([]);        setBinsError(null);    setBinsLoading(false);
       return;
     }
     let cancelled = false;
@@ -146,10 +149,11 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       .then((res) => {
         if (cancelled) return;
         setBins(Array.isArray(res?.data?.bins) ? res.data.bins : []);
+        setBinTree(Array.isArray(res?.data?.bin_tree) ? res.data.bin_tree : []);
       })
       .catch((err) => {
         if (cancelled) return;
-        setBins([]);
+        setBins([]); setBinTree([]);
         setBinsError(err?.error?.message || err?.error || err?.message || 'Could not load bins');
       })
       .finally(() => { if (!cancelled) setBinsLoading(false); });
@@ -437,14 +441,26 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
               disabled={binsLoading}
             >
               {(() => {
-                const options = [...bins];
-                if (exportBin && !options.includes(exportBin)) options.unshift(exportBin);
-                if (options.length === 0) options.push(DEFAULT_BIN);
-                return options.map((name) => (
-                  <option key={name} value={name}>
-                    {name}{!bins.includes(name) && bins.length > 0 ? ' (not in this project)' : ''}
-                  </option>
-                ));
+                // Prefer the hierarchical tree (indented sub-bins); fall back
+                // to the flat path list. `value` is always the full bin path.
+                const tree = binTree.length
+                  ? binTree
+                  : bins.map((p) => ({ path: p, name: p, depth: 1 }));
+                const paths = tree.map((b) => b.path);
+                const options = [...tree];
+                if (exportBin && !paths.includes(exportBin)) {
+                  options.unshift({ path: exportBin, name: exportBin, depth: 1 });
+                }
+                if (options.length === 0) options.push({ path: DEFAULT_BIN, name: DEFAULT_BIN, depth: 1 });
+                return options.map((b) => {
+                  const indent = b.depth > 1 ? '   '.repeat(b.depth - 1) : '';
+                  const missing = !paths.includes(b.path) && paths.length > 0;
+                  return (
+                    <option key={b.path} value={b.path}>
+                      {indent}{b.name}{missing ? ' (not in this project)' : ''}
+                    </option>
+                  );
+                });
               })()}
             </select>
             <p className="atem-dest-hint" style={{ marginTop: 6 }}>
@@ -453,8 +469,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
                 : binsError
                   ? `Couldn't load bins — using your last setting. (${binsError})`
                   : bins.length === 0
-                    ? 'No top-level bins detected — using your last setting.'
-                    : `${bins.length} top-level bin${bins.length === 1 ? '' : 's'} from the current Resolve project.`}
+                    ? 'No bins detected — using your last setting.'
+                    : `${bins.length} bin${bins.length === 1 ? '' : 's'} (incl. sub-bins) from the current Resolve project.`}
             </p>
           </div>
         </div>

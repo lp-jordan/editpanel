@@ -33,7 +33,12 @@ the render. The operator no longer has to set the Deliver-page location by hand.
 
 ### Data flow
 1. Overlay → `window.leaderpassAPI.call('lp_base_export', { target_dir, preset_name, export_bin_name })`.
-2. Helper: find `EXPORT` bin → collect clip names → match to timelines by name.
+2. Helper: resolve the chosen bin → collect clip names → match to timelines by
+   name. `export_bin_name` may be a bare top-level name (`EXPORT`) or a nested
+   sub-bin path (`SEQUENCES / MC`); `bin_tree.resolve_folder_by_path` walks the
+   media-pool tree to locate it. The bin dropdown lists every bin including
+   sub-bins (indented), fed by `list_media_bins` (`bins` = flat paths,
+   `bin_tree` = `{ path, name, depth }`).
 3. Per matched timeline: `SetCurrentTimeline` → `LoadRenderPreset` →
    `SetRenderSettings({ TargetDir, CustomName: <timeline>, UniqueFilename: true })`
    → `AddRenderJob()`. The order matters: the preset restores its own saved

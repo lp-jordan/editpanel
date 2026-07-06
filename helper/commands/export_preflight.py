@@ -13,6 +13,7 @@ def handle_export_preflight(payload: Dict[str, Any], log_func=None) -> Dict[str,
     make the advisory warning slightly off, never break an actual export.
     """
     from .. import resolve_helper as rh
+    from .bin_tree import resolve_folder_by_path
 
     if not rh.project:
         raise RuntimeError("No active project")
@@ -25,11 +26,9 @@ def handle_export_preflight(payload: Dict[str, Any], log_func=None) -> Dict[str,
 
     export_bin_name = payload.get("export_bin_name") or DEFAULT_EXPORT_BIN_NAME
 
-    export_folder = None
-    for folder in (root_folder.GetSubFolderList() or []):
-        if folder.GetName() == export_bin_name:
-            export_folder = folder
-            break
+    # Resolve a bare name ("EXPORT") or a nested path ("SEQUENCES / MC"),
+    # matching lp_base_export so the advisory reflects what would actually queue.
+    export_folder = resolve_folder_by_path(root_folder, export_bin_name)
     if not export_folder:
         return {"names": [], "bin_found": False}
 
