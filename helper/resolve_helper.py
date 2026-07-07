@@ -97,12 +97,44 @@ project_manager = None
 project = None
 timeline = None
 
+def _resolve_project_manager() -> Any:
+    """Probe the live Resolve handle. Returns the ProjectManager, or None on failure.
+
+    A shutting-down / stale Resolve object does not simply return None — its methods
+    can vanish, so `resolve.GetProjectManager` becomes None and calling it raises
+    `TypeError: 'NoneType' object is not callable`. Every access to the handle must
+    therefore be treated as fallible, not just falsy.
+    """
+    if not resolve:
+        return None
+    try:
+        return resolve.GetProjectManager()
+    except Exception:
+        return None
+
+
+def _safe_name(obj: Any) -> Optional[str]:
+    """GetName() on a Resolve object without letting a stale handle raise."""
+    try:
+        return obj.GetName() if obj else None
+    except Exception:
+        return None
+
+
 def _update_context() -> None:
-    """Refresh global project and timeline references."""
+    """Refresh global project and timeline references. Never raises.
+
+    Resolve can tear down between calls, so a handle that was live a moment ago may
+    raise here. Swallow it and null the context rather than killing the caller
+    (previously an uncaught raise here crashed the monitor thread).
+    """
     global project_manager, project, timeline
-    project_manager = resolve.GetProjectManager() if resolve else None
-    project = project_manager.GetCurrentProject() if project_manager else None
-    timeline = project.GetCurrentTimeline() if project else None
+    try:
+        project_manager = _resolve_project_manager()
+        project = project_manager.GetCurrentProject() if project_manager else None
+        timeline = project.GetCurrentTimeline() if project else None
+    except Exception:
+        project_manager = project = timeline = None
 
 def _status_event(ok: bool, code: str, msg: Optional[str] = None) -> None:
     """Emit an async status event (no id)."""
@@ -123,16 +155,17 @@ def _monitor_resolve(poll_seconds: float = 1.5) -> None:
     """Background thread: monitor Resolve and emit status on disconnect."""
     global resolve, project_manager, project, timeline
     logger.info("Monitoring Resolve session")
-    prev_project = project.GetName() if project else None
-    prev_timeline = timeline.GetName() if timeline else None
+    prev_project = _safe_name(project)
+    prev_timeline = _safe_name(timeline)
     while True:
         time.sleep(poll_seconds)
         if not resolve:
             break
-        try:
-            pm = resolve.GetProjectManager()
-        except Exception:
-            pm = None
+        # A single probe, fully guarded — treat both None and a raised exception
+        # as "session lost" so a mid-teardown Resolve can never crash this thread.
+        # If it did, the stale `resolve` handle would never be cleared and the
+        # connect handler would forever report "already connected" (see connect.py).
+        pm = _resolve_project_manager()
         if not pm:
             logger.warning("Lost Resolve session")
             resolve = None
@@ -141,8 +174,8 @@ def _monitor_resolve(poll_seconds: float = 1.5) -> None:
             break
         else:
             _update_context()
-            curr_project = project.GetName() if project else None
-            curr_timeline = timeline.GetName() if timeline else None
+            curr_project = _safe_name(project)
+            curr_timeline = _safe_name(timeline)
             if curr_project != prev_project or curr_timeline != prev_timeline:
                 _status_event(True, "CONNECTED")
                 prev_project, prev_timeline = curr_project, curr_timeline
