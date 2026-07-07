@@ -67,6 +67,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const [projectsLoading, setProjectsLoading] = React.useState(false);
   const [projectsError, setProjectsError]     = React.useState(null);
   const [selectedProjectId, setSelectedProjectId] = React.useState('');
+  const [projectQuery, setProjectQuery]       = React.useState('');
 
   // ── Run state ──────────────────────────────────────────
   const [busy, setBusy]     = React.useState(false);
@@ -80,6 +81,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     if (!open) return;
     setStage('configure');
     setUploadToLpos(false);
+    setProjectQuery('');
     setAutoStart(false);
     setBurnIn(false);
     setProjectsError(null);
@@ -182,15 +184,32 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   }
 
   const groupedProjects = React.useMemo(() => {
+    const q = projectQuery.trim().toLowerCase();
     const map = new Map();
     for (const p of projects) {
       if (p.archived) continue;
-      const client = p.clientName || 'Unassigned';
-      if (!map.has(client)) map.set(client, []);
-      map.get(client).push(p);
+      const name   = (p.name || p.projectName || '').toLowerCase();
+      const client = (p.clientName || '').toLowerCase();
+      if (q && !name.includes(q) && !client.includes(q)) continue;
+      const key = p.clientName || 'Unassigned';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(p);
     }
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [projects]);
+  }, [projects, projectQuery]);
+
+  // Post-filter count — drives the "no matches" copy and the match tally.
+  const filteredProjectCount = React.useMemo(
+    () => groupedProjects.reduce((acc, [, list]) => acc + list.length, 0),
+    [groupedProjects]
+  );
+
+  // Are there any non-archived projects at all (ignoring the search query)?
+  // Lets us tell "nothing in LPOS" apart from "nothing matched your search".
+  const hasAnyProjects = React.useMemo(
+    () => projects.some((p) => !p.archived),
+    [projects]
+  );
 
   const selectedProject = React.useMemo(
     () => projects.find((p) => p.projectId === selectedProjectId) || null,
@@ -575,8 +594,36 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
                 </div>
               )}
               {projectsError && <p className="atem-error">{projectsError}</p>}
-              {!projectsLoading && !projectsError && groupedProjects.length === 0 && (
+              {!projectsLoading && !projectsError && !hasAnyProjects && (
                 <p className="atem-empty">No projects found in LPOS.</p>
+              )}
+              {!projectsLoading && !projectsError && hasAnyProjects && (
+                <div className="export-project-search">
+                  <input
+                    type="search"
+                    className="export-project-search-input"
+                    placeholder="Search projects or clients…"
+                    value={projectQuery}
+                    onChange={(e) => setProjectQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape' && projectQuery) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setProjectQuery('');
+                      }
+                    }}
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                  {projectQuery && (
+                    <span className="export-project-search-meta">
+                      {filteredProjectCount} match{filteredProjectCount !== 1 ? 'es' : ''}
+                    </span>
+                  )}
+                </div>
+              )}
+              {!projectsLoading && !projectsError && hasAnyProjects && filteredProjectCount === 0 && (
+                <p className="atem-empty">No projects match “{projectQuery.trim()}”.</p>
               )}
               {!projectsLoading && !projectsError && groupedProjects.length > 0 && (
                 <div className="atem-session-list export-project-list">

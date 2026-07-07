@@ -3374,11 +3374,47 @@ button.status-bar-chip-btn:hover {
 }
 
 .export-project-list {
-  max-height: 240px;
+  max-height: 420px;
   overflow-y: auto;
   /* Without overflow-y, children rendered past max-height bleed into the
      hint <p> that follows in the .export-project-area flex column. */
   padding-right: 4px;
+}
+
+.export-project-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-project-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text-strong);
+  font-size: 0.86rem;
+  outline: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.export-project-search-input:focus {
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.export-project-search-input::placeholder {
+  color: var(--muted-soft);
+}
+
+.export-project-search-meta {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  color: var(--muted-soft);
+  white-space: nowrap;
 }
 
 .export-project-group + .export-project-group {

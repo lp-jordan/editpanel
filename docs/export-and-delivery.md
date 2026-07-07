@@ -144,6 +144,18 @@ awaiting-assignment pill.
   button. Each child row (`<batch>__f<i>`) carries its single file plus its
   originating job so the per-timeline tether survives into push renderMeta.
 
+### Destination picker search (added 1.2.27)
+
+The inline project list shown under the **Upload to LPOS** toggle
+(`ExportDeliverOverlay.jsx`) now has a filter-as-you-type search box and a taller
+scroll area (240px → 420px). Typing filters the client-grouped radio list by
+project **or** client name (case-insensitive), shows a live match count, and Esc
+clears the query. When a query matches nothing an inline "No projects match …"
+line replaces the list; the "No projects found in LPOS" empty state is now keyed
+off whether any non-archived project exists at all (independent of the query).
+This mirrors the search already on the Exports-page `ProjectPicker`
+(`ExportsPanel.jsx`) but stays inline rather than opening a modal.
+
 ### Current status / known gaps
 - The **Upload to LPOS** toggle uploads finished renders into the chosen project
   automatically (Phase 2, below).
