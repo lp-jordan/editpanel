@@ -256,6 +256,93 @@ def describe_item(item: Any, fps: float, tl_start_frame: int) -> Dict[str, Any]:
     return info, mpi, (clip_start_tc, src_start_f, src_end_f, rec_start_f, rec_end_f)
 
 
+def derive_and_report_spans(tl: Any, fps: float, tl_start_frame: int) -> None:
+    """MECHANIC 0 — the preferred approach: derive recording spans purely from
+    where the stacked clips start/stop on a reference angle track. NO ATEM slate
+    events needed for boundaries; the clip edges carry the true embedded TC (the
+    slate's ATEM timestamps are only LPOS system-clock approximations).
+
+    Merges gapless chunks (ATEM splitting one long recording into multiple files —
+    source TOD stays continuous across the split) into a single span; a real time
+    gap between clips = a real recording boundary.
+    """
+    hr("MECHANIC 0 — spans from clip boundaries (no ATEM events needed)")
+    track_count = _safe(lambda: int(tl.GetTrackCount("video")), 0) or 0
+
+    # Reference track = the video track carrying the most clips (an angle track).
+    # Cameras start/stop together (confirmed), so any one angle gives the spans.
+    best_tno, best_items = None, []
+    for tno in range(1, track_count + 1):
+        items = _safe(lambda: tl.GetItemListInTrack("video", tno), []) or []
+        if len(items) > len(best_items):
+            best_tno, best_items = tno, items
+    if not best_items:
+        print("  [stop] no clips on any video track")
+        return
+    print(f"  reference track: V{best_tno} ({len(best_items)} clip(s))")
+
+    rows: List[Dict[str, Any]] = []
+    for item in best_items:
+        mpi = _safe(lambda: item.GetMediaPoolItem())
+        start_tc = _safe(lambda: mpi.GetClipProperty("Start TC")) if mpi else None
+        ssf = _safe(lambda: int(item.GetSourceStartFrame()))
+        sef = _safe(lambda: int(item.GetSourceEndFrame()))
+        rec_s = _safe(lambda: int(item.GetStart()))
+        rec_e = _safe(lambda: int(item.GetEnd()))
+        src_in_f = src_out_f = None
+        drop = _is_drop_frame(start_tc) if start_tc else False
+        if start_tc and ssf is not None:
+            base = tc_to_frames(start_tc, fps)
+            src_in_f = base + ssf
+            src_out_f = (base + sef) if sef is not None else None
+        rows.append({
+            "name": _safe(lambda: item.GetName(), "?"),
+            "src_in_f": src_in_f, "src_out_f": src_out_f,
+            "rec_s": rec_s, "rec_e": rec_e, "drop": drop,
+        })
+    rows.sort(key=lambda r: (r["rec_s"] if r["rec_s"] is not None else 0))
+
+    def _rel(f):
+        return (f - tl_start_frame) if f is not None else None
+
+    def _tc(f, drop):
+        return frames_to_tc(f, fps, drop) if f is not None else "?"
+
+    print("\n  per-clip boundaries (record-relative | source TOD):")
+    for r in rows:
+        print(f"    {str(r['name'])[:40]:40}  rec[{_rel(r['rec_s'])}..{_rel(r['rec_e'])}]  "
+              f"src[{_tc(r['src_in_f'], r['drop'])}..{_tc(r['src_out_f'], r['drop'])}]")
+
+    # Merge gapless chunks: next clip's source-in TOD ≈ prev clip's source-out TOD.
+    MERGE_TOLERANCE = 2  # frames of source-TOD discontinuity tolerated
+    spans: List[Dict[str, Any]] = []
+    for r in rows:
+        prev = spans[-1] if spans else None
+        contiguous = (
+            prev is not None
+            and r["src_in_f"] is not None
+            and prev["src_out_f"] is not None
+            and abs(r["src_in_f"] - prev["src_out_f"]) <= MERGE_TOLERANCE
+        )
+        if contiguous:
+            prev["src_out_f"] = r["src_out_f"]
+            prev["rec_e"] = r["rec_e"]
+            prev["chunks"] += 1
+        else:
+            spans.append({**r, "chunks": 1})
+
+    print(f"\n  → derived {len(spans)} recording span(s) after merging gapless chunks:")
+    for i, s in enumerate(spans, 1):
+        rin, rout = _rel(s["rec_s"]), _rel(s["rec_e"])
+        dur = (rout - rin) if (rin is not None and rout is not None) else None
+        print(f"    span {i}: src[{_tc(s['src_in_f'], s['drop'])} → {_tc(s['src_out_f'], s['drop'])}]  "
+              f"rec[{rin}..{rout}]  {dur} frames  ({s['chunks']} chunk(s))")
+    print("\n  These src[in→out] ranges are exactly what each sequence would cut to,")
+    print("  and the source TC window is what we'd use to pull the codes that name")
+    print("  each span + drop the in-span markers. Compare span src-TC to the slate:")
+    print("  do the ATEM 'Recording started/stopped' timestamps roughly match?")
+
+
 def main() -> None:
     resolve = get_resolve()
     pm = resolve.GetProjectManager()
@@ -314,6 +401,9 @@ def main() -> None:
         print("  [note] No item reported Type=Multicam. Either the sequence isn't")
         print("         built from a multicam clip, or this Resolve build doesn't")
         print("         surface the type. Source-TC mapping still works per-clip.")
+
+    # Mechanic 0: derive spans purely from clip edges (the approach we're testing).
+    derive_and_report_spans(tl, fps, tl_start_frame)
 
     if first_mpi is None or first_coords is None:
         print("\n[stop] No timeline item with a backing MediaPoolItem — cannot run")

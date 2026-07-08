@@ -6,9 +6,13 @@ real project before we build the real feature.
 
 ## `spike_slate_multicam.py`
 
-Proves the three mechanics the planned **slate-driven auto-sequencing** feature
+Proves the mechanics the planned **slate-driven auto-sequencing** feature
 depends on:
 
+0. **Spans from clip edges** — derive the recording spans purely from where the
+   stacked clips start/stop on a reference angle track (merging gapless ATEM
+   chunks), so boundaries come from Resolve, not from the softer ATEM slate
+   timestamps. Codes are then only used to name each span + drop markers.
 1. **Source-TC read** — read a multicam clip's *source* timecode (= slate
    wall-clock, because the ATEM jams time-of-day TC) and map a slate timestamp
    to a timeline frame.
