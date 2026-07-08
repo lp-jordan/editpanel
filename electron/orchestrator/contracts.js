@@ -55,6 +55,11 @@ const COMMAND_OWNER = Object.freeze({
   // sequences (a single long blocking Python loop would trip the watchdog).
   list_bin_sequences: WORKERS.resolve,
   open_sequence: WORKERS.resolve,
+  // Slate auto-sequencing Step 1 (2026-07-08): read-only diagnostic that derives
+  // recording spans from the open multicam's clip edges and streams them to the
+  // console. Must be registered here or validateRequestEnvelope rejects it as an
+  // unknown command before it reaches the Python worker (see note above).
+  slate_span_report: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -125,6 +130,9 @@ const COMMAND_SCHEMAS = Object.freeze({
   // uid/name are both optional scalars (at least one required — enforced in the
   // Python handler); only type-check them when present.
   open_sequence: { required: [], types: { uid: 'string', name: 'string' } },
+  // Slate auto-sequencing Step 1 (2026-07-08): no payload, operates on the
+  // current timeline.
+  slate_span_report: { required: [] },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });

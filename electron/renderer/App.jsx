@@ -578,7 +578,12 @@ function App() {
           `See the streamed lines above for per-span source TCs.`
         );
       })
-      .catch((err) => appendLog(`Slate span report error: ${err?.error || err}`));
+      // The worker returns `error` as a normalized object {category, message,
+      // details}; reach for .message before falling back, so we never log
+      // "[object Object]".
+      .catch((err) => appendLog(
+        `Slate span report error: ${err?.error?.message || err?.error || err?.message || 'unknown error'}`
+      ));
   }, [appendLog]);
 
   const handleLPBaseExport = React.useCallback(() => {
