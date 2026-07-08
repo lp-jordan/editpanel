@@ -557,6 +557,30 @@ function App() {
       .catch((err) => appendLog(`Project bin creation error: ${err?.error || err}`));
   }, [appendLog]);
 
+  // Slate auto-sequencing — Step 1 (read-only): derive the recording spans of
+  // the open multicam timeline from its clip edges and stream them to the
+  // console. Precursor to actually cutting per-span sequences; does NOT modify
+  // the project. Open the console so the operator can watch the streamed report.
+  const handleSlateSpanReport = React.useCallback(() => {
+    if (!window.leaderpassAPI) {
+      appendLog('Leaderpass API not available; cannot run slate span report');
+      return;
+    }
+    setConsoleOpen(true);
+    appendLog('Slate span report — reading the current timeline…');
+    window.leaderpassAPI.call('slate_span_report')
+      .then((res) => {
+        const d = res?.data || {};
+        const spans = d.spans || [];
+        appendLog(
+          `Slate span report: ${spans.length} span(s) on ` +
+          `"${d.timeline_name || '?'}" (ref V${d.reference_track ?? '?'}). ` +
+          `See the streamed lines above for per-span source TCs.`
+        );
+      })
+      .catch((err) => appendLog(`Slate span report error: ${err?.error || err}`));
+  }, [appendLog]);
+
   const handleLPBaseExport = React.useCallback(() => {
     if (!window.leaderpassAPI) {
       appendLog('Leaderpass API not available; cannot export');
@@ -751,6 +775,18 @@ function App() {
           actionLabel: 'Open Sequences',
           onClick: () => setOpenSeqOpen(true),
           requiresResolve: true
+        },
+        {
+          // 2026-07-08: slate auto-sequencing Step 1 (read-only diagnostic).
+          // Derives recording spans from the open multicam's clip edges and
+          // streams them to the console. Precursor to cutting per-span
+          // sequences named from the slate codes.
+          key: 'slate-spans',
+          label: 'Slate Spans',
+          description: 'Derive recording spans from the open multicam’s clip edges (read-only; watch the console).',
+          actionLabel: 'Report Spans',
+          onClick: handleSlateSpanReport,
+          requiresResolve: true
         }
       ]
     },
@@ -776,7 +812,7 @@ function App() {
         }
       ]
     }
-  }), [handleLPBaseExport, handleNewProjectBins, handleSpellcheck, handlePullComments]);
+  }), [handleLPBaseExport, handleNewProjectBins, handleSpellcheck, handlePullComments, handleSlateSpanReport]);
 
   const currentWorkspace = workspaceConfig[route];
 
