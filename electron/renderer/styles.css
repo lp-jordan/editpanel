@@ -3638,6 +3638,22 @@ button.status-bar-chip-btn:hover {
   text-decoration: underline;
 }
 
+/* Active sort mode: solid pill so the current ordering is unmistakable. */
+.comment-pull-section-actions .link-btn.active {
+  color: var(--text-primary, #fff);
+  background: rgba(143, 182, 232, 0.18);
+  border-radius: 4px;
+}
+
+.comment-pull-section-actions .link-btn.active:hover {
+  text-decoration: none;
+}
+
+.comment-pull-section-sep {
+  opacity: 0.4;
+  margin: 0 2px;
+}
+
 .comment-pull-timelines {
   display: flex;
   flex-direction: column;

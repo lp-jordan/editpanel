@@ -25,11 +25,175 @@
  * categorically wrong — the editor may have intentionally opened a
  * different project to review.
  */
+// ── Pure formatting helpers (module scope) ──────────────────────────────────
+// These are referentially stable, so the row components below can be defined at
+// module scope too. That stability matters: CommentRow/SkippedRow used to live
+// *inside* CommentPullReport, which gave them a fresh function identity on every
+// parent re-render (e.g. marking a comment complete). React then treated each
+// row as a brand-new component type and remounted the whole list, collapsing the
+// scroll container back to the top. Hoisting them out keeps the DOM (and scroll
+// position) stable across state updates.
+function fmtHMS(seconds) {
+  const total = Math.max(0, Math.floor(seconds || 0));
+  const m = Math.floor(total / 60);
+  const ss = total % 60;
+  return `${m}:${ss.toString().padStart(2, '0')}`;
+}
+
+function fmtTimecode(startTC, offsetS, fps) {
+  // Best-effort: parse "HH:MM:SS:FF" (non-drop) and add offsetS seconds.
+  // Drop-frame TC math is non-trivial; we just show m:ss-from-start if
+  // start TC isn't parseable.
+  if (!startTC || typeof startTC !== 'string' || !Number.isFinite(fps) || fps <= 0) {
+    return fmtHMS(offsetS);
+  }
+  const parts = startTC.split(':');
+  if (parts.length !== 4) return fmtHMS(offsetS);
+  const [hh, mm, ss, ff] = parts.map(p => parseInt(p, 10));
+  if ([hh, mm, ss, ff].some(n => !Number.isFinite(n))) return fmtHMS(offsetS);
+  const startSeconds = hh * 3600 + mm * 60 + ss + (ff / fps);
+  const total = startSeconds + (offsetS || 0);
+  const outH = Math.floor(total / 3600);
+  const outM = Math.floor((total % 3600) / 60);
+  const outS = Math.floor(total % 60);
+  const outF = Math.max(0, Math.min(fps - 1, Math.round((total - Math.floor(total)) * fps)));
+  return `${String(outH).padStart(2, '0')}:${String(outM).padStart(2, '0')}:${String(outS).padStart(2, '0')}:${String(outF).padStart(2, '0')}`;
+}
+
+// ── Sort keys ────────────────────────────────────────────────────────────────
+// Timeline position: every placed/kept/removed record carries a numeric `frame`
+// (removed records are pass-through {commentId, frame}); fall back to
+// timestamp_s, then push position-less records to the end.
+function _frameSortKey(rec) {
+  if (typeof rec?.frame === 'number') return rec.frame;
+  if (typeof rec?.timestamp_s === 'number') return rec.timestamp_s;
+  return Number.MAX_SAFE_INTEGER;
+}
+// Recency: only decorated (placed/kept) records carry createdAt; removed records
+// have none, so they sort oldest (to the bottom in newest-first order).
+function _createdSortKey(rec) {
+  const t = rec?.createdAt ? Date.parse(rec.createdAt) : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+// Merge the three outcome groups into a single list ordered by the chosen mode.
+// Array.prototype.sort is stable in V8, so equal keys keep the placed→kept→
+// removed insertion order as a tiebreak. Skipped rows are rendered separately.
+function orderedComments(t, sortMode) {
+  const rows = [
+    ...(t.placed  || []).map(c => ({ c, outcome: 'placed'  })),
+    ...(t.kept    || []).map(c => ({ c, outcome: 'kept'    })),
+    ...(t.removed || []).map(c => ({ c, outcome: 'removed' })),
+  ];
+  const cmp = sortMode === 'newest'
+    ? (a, b) => _createdSortKey(b.c) - _createdSortKey(a.c)
+    : (a, b) => _frameSortKey(a.c) - _frameSortKey(b.c);
+  rows.sort(cmp);
+  return rows;
+}
+
+function CommentRow({ comment, outcome, startTC, fps, timeline, completionState, busyComments, onJump, onSetCompleted }) {
+  // outcome: 'placed' | 'kept' | 'removed' | 'skipped'
+  const cid = comment.commentId;
+  const localState = cid ? completionState[cid] : null;
+  const isCompleted = localState === 'completed' || localState === 'completing';
+  const isBusy = cid ? !!busyComments[cid] : false;
+  const isActionable = (outcome === 'placed' || outcome === 'kept')
+    && timeline
+    && cid
+    && typeof comment.frame === 'number';
+
+  const offsetLabel = comment.timestamp_s != null ? fmtHMS(comment.timestamp_s) : '?';
+  const absLabel    = comment.timestamp_s != null ? fmtTimecode(startTC, comment.timestamp_s, fps) : null;
+
+  return (
+    <div className={`comment-pull-comment outcome-${outcome}${isCompleted ? ' is-completed' : ''}${localState === 'error' ? ' has-error' : ''}`}>
+      <div className="comment-pull-comment-header">
+        <span className={`comment-pull-outcome-pill outcome-${isCompleted ? 'completed' : outcome}`}>
+          {isCompleted ? 'completed' : outcome}
+        </span>
+        {comment.authorName && <span className="comment-pull-comment-author">{comment.authorName}</span>}
+        <span className="comment-pull-comment-tc" title={absLabel || ''}>
+          {offsetLabel}{absLabel ? `  ·  ${absLabel}` : ''}
+        </span>
+        {isActionable && (
+          <div className="comment-pull-comment-actions">
+            <button
+              className="comment-action-btn jump"
+              onClick={() => onJump(timeline.timelineUid, comment.frame)}
+              disabled={isBusy}
+              title="Jump to this marker in Resolve"
+            >
+              Jump
+            </button>
+            {isCompleted ? (
+              <button
+                className="comment-action-btn reopen"
+                onClick={() => onSetCompleted(timeline, comment, false)}
+                disabled={isBusy}
+                title="Reopen this comment in Frame.io"
+              >
+                {isBusy ? '…' : 'Reopen'}
+              </button>
+            ) : (
+              <button
+                className="comment-action-btn complete"
+                onClick={() => onSetCompleted(timeline, comment, true)}
+                disabled={isBusy}
+                title="Mark complete in Frame.io and drop the marker"
+              >
+                {isBusy ? '…' : 'Mark complete'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {comment.text && (
+        <div className="comment-pull-comment-text">{comment.text}</div>
+      )}
+      {Array.isArray(comment.replies) && comment.replies.length > 0 && (
+        <div className="comment-pull-comment-replies">
+          {comment.replies.map((r, i) => (
+            <div key={i} className="comment-pull-comment-reply">
+              <span className="comment-pull-comment-reply-arrow">↳</span>
+              <span className="comment-pull-comment-reply-author">{r.authorName || '?'}:</span>
+              <span className="comment-pull-comment-reply-text">{r.text || ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {outcome === 'removed' && !comment.text && (
+        <div className="comment-pull-comment-text dim">
+          (no longer in LPOS — marker removed)
+        </div>
+      )}
+      {localState === 'error' && (
+        <div className="comment-pull-comment-text dim">
+          (Couldn't update — try again, or pull comments to resync state.)
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkippedRow({ skipped }) {
+  return (
+    <div className="comment-pull-comment outcome-skipped">
+      <div className="comment-pull-comment-header">
+        <span className="comment-pull-outcome-pill outcome-skipped">skipped</span>
+        <span className="comment-pull-comment-tc">frame {skipped.frame}</span>
+      </div>
+      <div className="comment-pull-comment-text dim">{skipped.reason || 'AddMarker rejected'}</div>
+    </div>
+  );
+}
+
 function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected }) {
   const [items, setItems]   = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [runLabel, setRunLabel] = React.useState('');
   const [expanded, setExpanded] = React.useState({}); // timelineUid -> bool
+  const [sortMode, setSortMode] = React.useState('timecode'); // 'timecode' | 'newest'
   // 5c.10: per-comment local completion state (commentId -> 'completing' | 'completed' | 'error').
   // The actual upstream truth is Frame.io's `completed` flag; this is local
   // mirror state for the UI's optimistic-then-confirmed transition.
@@ -75,13 +239,6 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
   }
   function collapseAll() {
     setExpanded({});
-  }
-
-  function fmtHMS(seconds) {
-    const total = Math.max(0, Math.floor(seconds || 0));
-    const m = Math.floor(total / 60);
-    const ss = total % 60;
-    return `${m}:${ss.toString().padStart(2, '0')}`;
   }
 
   // ── 5c.10 action handlers ────────────────────────────────────────────────
@@ -130,122 +287,6 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
     } finally {
       setBusyComments(prev => ({ ...prev, [cid]: false }));
     }
-  }
-
-  function fmtTimecode(startTC, offsetS, fps) {
-    // Best-effort: parse "HH:MM:SS:FF" (non-drop) and add offsetS seconds.
-    // Drop-frame TC math is non-trivial; we just show m:ss-from-start if
-    // start TC isn't parseable.
-    if (!startTC || typeof startTC !== 'string' || !Number.isFinite(fps) || fps <= 0) {
-      return fmtHMS(offsetS);
-    }
-    const parts = startTC.split(':');
-    if (parts.length !== 4) return fmtHMS(offsetS);
-    const [hh, mm, ss, ff] = parts.map(p => parseInt(p, 10));
-    if ([hh, mm, ss, ff].some(n => !Number.isFinite(n))) return fmtHMS(offsetS);
-    const startSeconds = hh * 3600 + mm * 60 + ss + (ff / fps);
-    const total = startSeconds + (offsetS || 0);
-    const outH = Math.floor(total / 3600);
-    const outM = Math.floor((total % 3600) / 60);
-    const outS = Math.floor(total % 60);
-    const outF = Math.max(0, Math.min(fps - 1, Math.round((total - Math.floor(total)) * fps)));
-    return `${String(outH).padStart(2, '0')}:${String(outM).padStart(2, '0')}:${String(outS).padStart(2, '0')}:${String(outF).padStart(2, '0')}`;
-  }
-
-  function CommentRow({ comment, outcome, startTC, fps, timeline }) {
-    // outcome: 'placed' | 'kept' | 'removed' | 'skipped'
-    const cid = comment.commentId;
-    const localState = cid ? completionState[cid] : null;
-    const isCompleted = localState === 'completed' || localState === 'completing';
-    const isBusy = cid ? !!busyComments[cid] : false;
-    const isActionable = (outcome === 'placed' || outcome === 'kept')
-      && timeline
-      && cid
-      && typeof comment.frame === 'number';
-
-    const offsetLabel = comment.timestamp_s != null ? fmtHMS(comment.timestamp_s) : '?';
-    const absLabel    = comment.timestamp_s != null ? fmtTimecode(startTC, comment.timestamp_s, fps) : null;
-
-    return (
-      <div className={`comment-pull-comment outcome-${outcome}${isCompleted ? ' is-completed' : ''}${localState === 'error' ? ' has-error' : ''}`}>
-        <div className="comment-pull-comment-header">
-          <span className={`comment-pull-outcome-pill outcome-${isCompleted ? 'completed' : outcome}`}>
-            {isCompleted ? 'completed' : outcome}
-          </span>
-          {comment.authorName && <span className="comment-pull-comment-author">{comment.authorName}</span>}
-          <span className="comment-pull-comment-tc" title={absLabel || ''}>
-            {offsetLabel}{absLabel ? `  ·  ${absLabel}` : ''}
-          </span>
-          {isActionable && (
-            <div className="comment-pull-comment-actions">
-              <button
-                className="comment-action-btn jump"
-                onClick={() => handleJump(timeline.timelineUid, comment.frame)}
-                disabled={isBusy}
-                title="Jump to this marker in Resolve"
-              >
-                Jump
-              </button>
-              {isCompleted ? (
-                <button
-                  className="comment-action-btn reopen"
-                  onClick={() => handleSetCompleted(timeline, comment, false)}
-                  disabled={isBusy}
-                  title="Reopen this comment in Frame.io"
-                >
-                  {isBusy ? '…' : 'Reopen'}
-                </button>
-              ) : (
-                <button
-                  className="comment-action-btn complete"
-                  onClick={() => handleSetCompleted(timeline, comment, true)}
-                  disabled={isBusy}
-                  title="Mark complete in Frame.io and drop the marker"
-                >
-                  {isBusy ? '…' : 'Mark complete'}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-        {comment.text && (
-          <div className="comment-pull-comment-text">{comment.text}</div>
-        )}
-        {Array.isArray(comment.replies) && comment.replies.length > 0 && (
-          <div className="comment-pull-comment-replies">
-            {comment.replies.map((r, i) => (
-              <div key={i} className="comment-pull-comment-reply">
-                <span className="comment-pull-comment-reply-arrow">↳</span>
-                <span className="comment-pull-comment-reply-author">{r.authorName || '?'}:</span>
-                <span className="comment-pull-comment-reply-text">{r.text || ''}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {outcome === 'removed' && !comment.text && (
-          <div className="comment-pull-comment-text dim">
-            (no longer in LPOS — marker removed)
-          </div>
-        )}
-        {localState === 'error' && (
-          <div className="comment-pull-comment-text dim">
-            (Couldn't update — try again, or pull comments to resync state.)
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  function SkippedRow({ skipped }) {
-    return (
-      <div className="comment-pull-comment outcome-skipped">
-        <div className="comment-pull-comment-header">
-          <span className="comment-pull-outcome-pill outcome-skipped">skipped</span>
-          <span className="comment-pull-comment-tc">frame {skipped.frame}</span>
-        </div>
-        <div className="comment-pull-comment-text dim">{skipped.reason || 'AddMarker rejected'}</div>
-      </div>
-    );
   }
 
   if (loading) {
@@ -401,6 +442,22 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
             <div className="comment-pull-section-header">
               <span>Per timeline</span>
               <div className="comment-pull-section-actions">
+                <span className="dim">Sort</span>
+                <button
+                  className={`link-btn${sortMode === 'timecode' ? ' active' : ''}`}
+                  onClick={() => setSortMode('timecode')}
+                  title="Order comments by their position on the timeline"
+                >
+                  Timecode
+                </button>
+                <button
+                  className={`link-btn${sortMode === 'newest' ? ' active' : ''}`}
+                  onClick={() => setSortMode('newest')}
+                  title="Order comments by when they were posted (newest first)"
+                >
+                  Newest
+                </button>
+                <span className="comment-pull-section-sep dim">|</span>
                 <button className="link-btn" onClick={expandAll}>Expand all</button>
                 <span className="dim">·</span>
                 <button className="link-btn" onClick={collapseAll}>Collapse all</button>
@@ -439,17 +496,19 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
                               : `Sync failed: ${t.error}`}
                           </div>
                         )}
-                        {(t.placed || []).map(c => (
-                          <CommentRow key={`p-${c.commentId}`} comment={c} outcome="placed"
-                            startTC={t.timelineStartTimecode} fps={t.fps} timeline={t} />
-                        ))}
-                        {(t.kept || []).map(c => (
-                          <CommentRow key={`k-${c.commentId}`} comment={c} outcome="kept"
-                            startTC={t.timelineStartTimecode} fps={t.fps} timeline={t} />
-                        ))}
-                        {(t.removed || []).map(c => (
-                          <CommentRow key={`r-${c.commentId}`} comment={c} outcome="removed"
-                            startTC={t.timelineStartTimecode} fps={t.fps} timeline={t} />
+                        {orderedComments(t, sortMode).map(({ c, outcome }) => (
+                          <CommentRow
+                            key={`${outcome[0]}-${c.commentId}`}
+                            comment={c}
+                            outcome={outcome}
+                            startTC={t.timelineStartTimecode}
+                            fps={t.fps}
+                            timeline={t}
+                            completionState={completionState}
+                            busyComments={busyComments}
+                            onJump={handleJump}
+                            onSetCompleted={handleSetCompleted}
+                          />
                         ))}
                         {(t.skipped || []).map((s, i) => (
                           <SkippedRow key={`s-${i}`} skipped={s} />
