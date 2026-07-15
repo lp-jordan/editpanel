@@ -213,6 +213,28 @@ select,
 .navbar-gear {
   -webkit-app-region: no-drag;
 }
+/* Carve a no-drag hole in the navbar's top-left corner so the window-controls
+   island underneath stays hoverable/clickable. The navbar is a full-width drag
+   region that overlaps the controls; an app-region: drag element wins the
+   hit-test over a non-descendant no-drag element regardless of z-index, so the
+   controls (a separate fixed element, NOT a navbar child) got swallowed on every
+   page that renders the navbar (i.e. everything but Home). This cutout IS a
+   navbar descendant, so its no-drag correctly excludes the corner. Width matches
+   the breadcrumb's 96px clearance so it covers the controls in both normal and
+   anchored widths. pointer-events:none so it never intercepts anything itself —
+   the app-region carve applies independently of pointer-events (same trick the
+   .window-drag-handle uses in reverse). */
+.navbar-corner-nodrag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 96px;
+  height: 100%;
+  -webkit-app-region: no-drag;
+  /* Canonical no-drag carve: keep it interactive (pointer-events: auto is the
+     default). The window-controls sit above it at z-60 so their clicks land;
+     this element just reliably tells the compositor "the corner isn't drag". */
+}
 
 /* ─── Custom window controls (frameless) ─────────────────────────────── */
 /* Top-left island of three small colored circles — close / minimize / anchor.
@@ -229,11 +251,15 @@ select,
   left: 10px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 9px;
+  /* Generous padding = larger invisible hover/hit area so users don't have to
+     land pixel-perfect on the 12px circles. */
+  padding: 8px 13px;
   z-index: 60;
   -webkit-app-region: no-drag;
-  opacity: 0;
+  /* Visible baseline on every page (was 0 = fully hidden until hover, which made
+     them undiscoverable on non-Home pages). Brightens to full on hover/focus. */
+  opacity: 0.72;
   transition: opacity 160ms ease;
   border-radius: 999px;
 }

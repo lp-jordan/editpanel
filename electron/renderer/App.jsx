@@ -95,6 +95,9 @@ function WindowControls({ anchored }) {
 function HoverNav({ route, onNavigate }) {
   return (
     <nav className="navbar">
+      {/* Non-drag cutout so the top-left window-controls stay clickable — the
+          navbar is a full-width drag region that otherwise swallows them. */}
+      <div className="navbar-corner-nodrag" aria-hidden="true" />
       <div className="navbar-pill">
         <button type="button" className="navbar-home" aria-label="Home" onClick={() => onNavigate('/')}>
           <HomeIcon />
