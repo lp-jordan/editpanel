@@ -23,6 +23,7 @@ from .list_media_bins import handle_list_media_bins
 from .list_bin_sequences import handle_list_bin_sequences
 from .open_sequence import handle_open_sequence
 from .slate_span_report import handle_slate_span_report
+from .import_media import handle_import_media
 
 
 RESOLVE_HANDLERS = {
@@ -50,6 +51,7 @@ RESOLVE_HANDLERS = {
     "list_bin_sequences": handle_list_bin_sequences,
     "open_sequence": handle_open_sequence,
     "slate_span_report": handle_slate_span_report,
+    "import_media": handle_import_media,
 }
 
 # Reserved for future media worker commands (audit mode, etc.)

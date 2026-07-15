@@ -1,7 +1,7 @@
 # ATEM Ingest → Resolve Import (Phase 6)
 
-Status: **spec + spike** (not yet wired). The FTP ingest half is fully shipped;
-this doc covers the remaining "Import into Resolve" step.
+Status: **SHIPPED 2026-07-15** (awaits real-project testing). The FTP ingest half
+was already live; the "Import into Resolve" step is now wired end-to-end.
 
 ## What ships today
 
@@ -16,9 +16,8 @@ The ATEM footage ingest is complete end-to-end:
   (browse → configure → progress).
 - `electron/store/jobs-db.js` — `atem_ingest_log` / `atem_ingest_files` tables + CRUD.
 
-The **only** unbuilt piece is the "Import into Resolve" toggle in the configure
-stage (`AtemIngestOverlay.jsx` — `{/* Future: Resolve import toggle */}`,
-currently a disabled `Soon` badge with no handler).
+The "Import into Resolve" toggle in the configure stage is now real (was a
+disabled `Soon` badge). See **What shipped for import** below.
 
 ## Goal
 
@@ -75,29 +74,40 @@ overlay (destPaths + camInfo per file, chosen parentBin)
               return { imported, failed, perBin: [...] }
 ```
 
-## Work items
+## What shipped for import
 
-| # | Piece | Est | Notes |
-|---|-------|-----|-------|
-| 1 | `helper/commands/import_media.py` + register in `HANDLERS` | ~2–3h | Reuses `bin_tree.resolve_folder_by_path`; `AddSubFolder` pattern from `create_project_bins.py`; `MediaPool.ImportMedia`. |
-| 2 | IPC `atem:import-to-resolve` + `preload.js` bridge | ~1–2h | Forward to `sendWorkerRequest(..., WORKERS.resolve)`. |
-| 3 | Wire toggle + bin dropdown in `AtemIngestOverlay.jsx` | ~3–4h | Enable when `resolveConnected`; fetch `list_media_bins`; default `FOOTAGE / ATEM`; gather `destPath`s from `file-done`; fire after `ingest-complete`; result line. |
-| 4 | Edge cases / polish | ~½ day | Resolve dropping mid-ingest; partial-failure reporting; empty/failed bin fetch fallback; whether import runs per-session or one batch at the end. |
+- **`helper/commands/import_media.py`** (registered in `RESOLVE_HANDLERS` as
+  `import_media`). Payload `{ parent_bin, files: [{ local_path, session,
+  cam_number }] }`. Resolves the parent via `bin_tree.resolve_folder_by_path`
+  (creates the path if absent), groups files by `<session>/CAM <n>`, find-or-
+  creates each nested bin (`AddSubFolder`), `SetCurrentFolder`, then
+  `MediaPool.ImportMedia`. Returns `{ imported, failed, per_bin }`. Per-bin
+  failures are isolated — one bad path doesn't abort the rest.
+- **`electron/workers/atem_ftp.js`** — the `file-skipped` event now carries
+  `destPath` + `camInfo`, so already-on-disk files are importable too (not just
+  freshly-downloaded ones).
+- **`AtemIngestOverlay.jsx`** — the configure toggle is live (enabled only when
+  `resolveConnected`, subtext shows `resolveProject`). When on, a **bin dropdown**
+  (populated by `list_media_bins`, default `FOOTAGE / ATEM`, indented sub-bins)
+  chooses the parent. During ingest, each landed file's `{ local_path, session,
+  cam_number }` accumulates in a ref; when ingest finishes cleanly an effect
+  fires `leaderpassAPI.call('import_media', …)` and the completion card shows
+  running / imported-N / failed status.
 
-**Estimate: ~1–1.5 days**, most of it assembling existing parts.
+No dedicated IPC was needed — the renderer calls the worker directly via the
+existing generic `leaderpassAPI.call` → `helper-request` → resolve-worker bridge
+(same path `list_media_bins` uses).
 
-## Open unknown → spike first
+## Testing (real project, on the Windows/Resolve machine)
 
-`spikes/spike_import_media.py` proves the three uncertain mechanics against a
-real open project + real ingested clips **before** wiring:
+1. Open the target project in Resolve.
+2. Prep → ATEM Footage → select sessions → pick a destination.
+3. Enable **Import into Resolve**, confirm the dropdown lists the project's bins
+   and defaults to `FOOTAGE / ATEM`.
+4. Start ingest; on completion the card should report the import count, and the
+   footage should appear under `FOOTAGE / ATEM / <Session> / CAM <n>`.
 
-1. Nested sub-bin creation + `SetCurrentFolder` actually targets the leaf.
-2. `MediaPool.ImportMedia` accepts the multicam `.mp4` ISO clips, returns one
-   item per file, and how long importing several large clips blocks (decides
-   fire-and-forget vs. progress feedback).
-3. `Resolution` / `FPS` / `Start TC` / `Duration` read correctly on imported ATEM
-   clips (the ATEM jams time-of-day TC — downstream slate/marker features rely on
-   this being present and correct).
-
-Run it on the Windows/Resolve machine, paste the report back, then lock the
-worker's import path + bin scheme.
+Watch for: whether `ImportMedia` accepts the multicam `.mp4` ISO clips and reads
+their time-of-day TC correctly (downstream slate/marker features depend on it),
+and whether importing many large clips blocks the worker noticeably (if so, add
+progress feedback in a follow-up).

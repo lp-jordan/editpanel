@@ -9,9 +9,11 @@
  *   open           — boolean
  *   onClose        — () => void
  *   atemHost       — string (from preferences, default 172.20.10.241)
- *   resolveConnected — boolean (future Resolve import toggle)
- *   resolveProject   — string  (future Resolve import toggle)
+ *   resolveConnected — boolean (gates the Import-into-Resolve toggle)
+ *   resolveProject   — string  (open project name, shown on the toggle)
  */
+const IMPORT_DEFAULT_BIN = 'FOOTAGE / ATEM';
+
 function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveProject, onLog }) {
   const DEFAULT_HOST = atemHost || '172.20.10.241';
 
@@ -28,6 +30,20 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
 
   // ── Configure state ────────────────────────────────────
   const [destination, setDestination] = React.useState('');
+
+  // ── Import-into-Resolve state ──────────────────────────
+  const [importToResolve, setImportToResolve] = React.useState(false);
+  const [importBin, setImportBin]   = React.useState(IMPORT_DEFAULT_BIN);
+  const [bins, setBins]             = React.useState([]);
+  const [binTree, setBinTree]       = React.useState([]);
+  const [binsLoading, setBinsLoading] = React.useState(false);
+  // Local paths + camera info accumulated as files land, so the post-ingest
+  // import knows exactly what to pull into Resolve (survives event-handler
+  // closures by living in a ref).
+  const doneFilesRef = React.useRef([]);
+  const [importState, setImportState]   = React.useState('idle'); // 'idle'|'running'|'done'|'error'
+  const [importResult, setImportResult] = React.useState(null);   // { imported, failed }
+  const [importError, setImportError]   = React.useState(null);
 
   // ── Progress state ─────────────────────────────────────
   const [progressItems, setProgressItems] = React.useState([]); // [{ session, file, state, camInfo }]
@@ -52,7 +68,46 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     setFilesDone(0);
     setFilesTotal(0);
     setHost(DEFAULT_HOST);
+    doneFilesRef.current = [];
+    setImportState('idle');
+    setImportResult(null);
+    setImportError(null);
+    // Keep importToResolve/importBin choices across reopen only within a session
+    // is not desirable here — reset the toggle so it never fires unexpectedly.
+    setImportToResolve(false);
+    setImportBin(IMPORT_DEFAULT_BIN);
   }, [open]);
+
+  // Load the current Resolve project's bins for the import dropdown. Best-effort:
+  // on disconnect/error we fall back to the default bin path as the sole option.
+  // Mirrors ExportDeliverOverlay's list_media_bins fetch.
+  React.useEffect(() => {
+    if (!open || !resolveConnected || !window.leaderpassAPI) {
+      setBins([]); setBinTree([]); setBinsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setBinsLoading(true);
+    window.leaderpassAPI.call('list_media_bins')
+      .then(res => {
+        if (cancelled) return;
+        setBins(Array.isArray(res?.data?.bins) ? res.data.bins : []);
+        setBinTree(Array.isArray(res?.data?.bin_tree) ? res.data.bin_tree : []);
+      })
+      .catch(() => { if (!cancelled) { setBins([]); setBinTree([]); } })
+      .finally(() => { if (!cancelled) setBinsLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, resolveConnected]);
+
+  // Fire the Resolve import once the ingest finishes cleanly and the toggle is on.
+  // Runs from an effect (not inside the progress handler) so it reads fresh
+  // importBin/importToResolve state rather than a stale event-handler closure.
+  React.useEffect(() => {
+    if (!ingestDone || ingestError) return;
+    if (!importToResolve || !resolveConnected) return;
+    if (importState !== 'idle') return;
+    runResolveImport();
+  }, [ingestDone, ingestError, importToResolve, resolveConnected, importState]);
 
   // Escape-to-close — second escape route in case the X button gets eaten
   // by an OS drag region or some other Electron quirk. ResultOverlay has
@@ -195,6 +250,15 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
       setCurrentProgress(prev => prev ? { ...prev, bytes: event.bytes } : prev);
     } else if (event.type === 'file-done' || event.type === 'file-skipped') {
       setFilesDone(prev => prev + 1);
+      // Record the on-disk path + camera so the post-ingest import can pull it
+      // into Resolve. Both done and skipped (already-on-disk) carry destPath.
+      if (event.destPath) {
+        doneFilesRef.current.push({
+          local_path: event.destPath,
+          session:    event.session,
+          cam_number: event.camInfo?.camNumber ?? null,
+        });
+      }
       setProgressItems(prev => prev.map(item =>
         item.session === event.session && item.file === event.file
           ? { ...item, state: event.type === 'file-skipped' ? 'skipped' : 'done', camInfo: event.camInfo ?? item.camInfo }
@@ -218,6 +282,34 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
 
   async function handleCancel() {
     await window.atemAPI?.cancelIngest();
+  }
+
+  async function runResolveImport() {
+    const files = doneFilesRef.current;
+    if (!window.leaderpassAPI || files.length === 0) {
+      setImportResult({ imported: 0, failed: 0 });
+      setImportState('done');
+      return;
+    }
+    setImportState('running');
+    setImportError(null);
+    onLog?.(`[ATEM] Importing ${files.length} clip(s) into Resolve → ${importBin}…`);
+    try {
+      const res = await window.leaderpassAPI.call('import_media', {
+        parent_bin: importBin || IMPORT_DEFAULT_BIN,
+        files,
+      });
+      const data = res?.data || {};
+      setImportResult({ imported: data.imported ?? 0, failed: data.failed ?? 0 });
+      setImportState('done');
+      onLog?.(`[ATEM] Resolve import: ${data.imported ?? 0} clip(s) into ${importBin}` +
+        (data.failed ? ` · ${data.failed} failed` : ''));
+    } catch (err) {
+      const msg = err?.error?.message || err?.error || err?.message || 'import failed';
+      setImportError(String(msg));
+      setImportState('error');
+      onLog?.(`[ATEM] Resolve import failed: ${msg}`);
+    }
   }
 
   // ── Selected summary ────────────────────────────────────
@@ -325,9 +417,10 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
           )}
         </div>
 
-        {/* Future: Resolve import toggle */}
+        {/* Import into Resolve — enabled only when a project is open, since the
+            Resolve API can only import into the currently-open project. */}
         <div className={`atem-resolve-toggle${resolveConnected ? '' : ' disabled'}`}>
-          <div className="atem-resolve-toggle-inner">
+          <label className="atem-resolve-toggle-inner" style={{ cursor: resolveConnected ? 'pointer' : 'default' }}>
             <div>
               <p className="atem-field-label">Import into Resolve</p>
               <p className="atem-resolve-sub">
@@ -336,8 +429,54 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
                   : 'Resolve not connected — open a project first'}
               </p>
             </div>
-            <span className="atem-coming-soon-badge">Soon</span>
-          </div>
+            <input
+              type="checkbox"
+              className="atem-session-checkbox"
+              checked={importToResolve}
+              disabled={!resolveConnected}
+              onChange={e => setImportToResolve(e.target.checked)}
+            />
+          </label>
+
+          {resolveConnected && importToResolve && (
+            <div className="atem-dest-section" style={{ marginTop: 10 }}>
+              <p className="atem-field-label">Import bin</p>
+              <select
+                className="settings-input"
+                value={importBin}
+                onChange={e => setImportBin(e.target.value)}
+                disabled={binsLoading}
+              >
+                {(() => {
+                  const tree = binTree.length
+                    ? binTree
+                    : bins.map(p => ({ path: p, name: p, depth: 1 }));
+                  const paths = tree.map(b => b.path);
+                  const options = [...tree];
+                  if (importBin && !paths.includes(importBin)) {
+                    options.unshift({ path: importBin, name: importBin, depth: 1 });
+                  }
+                  if (options.length === 0) {
+                    options.push({ path: IMPORT_DEFAULT_BIN, name: IMPORT_DEFAULT_BIN, depth: 1 });
+                  }
+                  return options.map(b => {
+                    const indent = b.depth > 1 ? '   '.repeat(b.depth - 1) : '';
+                    const missing = !paths.includes(b.path) && paths.length > 0;
+                    return (
+                      <option key={b.path} value={b.path}>
+                        {indent}{b.name}{missing ? ' (will be created)' : ''}
+                      </option>
+                    );
+                  });
+                })()}
+              </select>
+              <p className="atem-dest-hint" style={{ marginTop: 6 }}>
+                {binsLoading
+                  ? 'Loading bins from Resolve…'
+                  : `Footage imports into ${importBin} / <session> / CAM <n>, mirroring the folder layout.`}
+              </p>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -389,6 +528,23 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
               {filesDone} file{filesDone !== 1 ? 's' : ''} ingested
               {errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? 's' : ''}` : ''}
             </p>
+            {importToResolve && (
+              <p className="atem-resolve-sub" style={{ marginTop: 8, textAlign: 'center' }}>
+                {importState === 'running' && (
+                  <>
+                    <span className="status-bar-spinner" style={{ display: 'inline-block', width: 10, height: 10, marginRight: 6 }} />
+                    Importing into Resolve ({importBin})…
+                  </>
+                )}
+                {importState === 'done' && importResult && (
+                  `Imported ${importResult.imported} clip${importResult.imported !== 1 ? 's' : ''} into ${importBin}` +
+                  (importResult.failed ? ` · ${importResult.failed} failed` : '')
+                )}
+                {importState === 'error' && (
+                  <span style={{ color: 'var(--danger, #e5484d)' }}>Resolve import failed: {importError}</span>
+                )}
+              </p>
+            )}
           </div>
         )}
 

@@ -213,7 +213,9 @@ async function ingestSessions(host, port = DEFAULT_PORT, sessions, destination, 
         try {
           const stat = fs.statSync(fileDestPath);
           if (file.size > 0 && stat.size === file.size) {
-            onProgress({ type: 'file-skipped', session: session.name, file: file.name, fileIndex: i, fileTotal: session.files.length, logId });
+            // Include destPath + camInfo so an already-on-disk file can still be
+            // imported into Resolve (the import step needs the local path + camera).
+            onProgress({ type: 'file-skipped', session: session.name, file: file.name, fileIndex: i, fileTotal: session.files.length, destPath: fileDestPath, camInfo, logId });
             continue;
           }
         } catch (_err) { /* doesn't exist yet */ }
