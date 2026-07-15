@@ -98,6 +98,14 @@ No dedicated IPC was needed — the renderer calls the worker directly via the
 existing generic `leaderpassAPI.call` → `helper-request` → resolve-worker bridge
 (same path `list_media_bins` uses).
 
+**Gotcha:** a new worker command must be registered in **three** places or it's
+rejected before it runs: the Python `RESOLVE_HANDLERS`/`HANDLERS` map
+(`helper/commands/__init__.py`) **and** the JS orchestrator's `COMMAND_OWNER` +
+`COMMAND_SCHEMAS` in `electron/orchestrator/contracts.js`. `validateRequestEnvelope`
+throws `unknown command: <cmd>` synchronously if `COMMAND_OWNER` is missing the
+entry — which is exactly what happened on first test (the Python handler was
+present but the JS allowlist wasn't).
+
 ## Testing (real project, on the Windows/Resolve machine)
 
 1. Open the target project in Resolve.

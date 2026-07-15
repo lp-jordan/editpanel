@@ -60,6 +60,11 @@ const COMMAND_OWNER = Object.freeze({
   // console. Must be registered here or validateRequestEnvelope rejects it as an
   // unknown command before it reaches the Python worker (see note above).
   slate_span_report: WORKERS.resolve,
+  // ATEM ingest → Resolve import (2026-07-15): import already-ingested footage
+  // into the open project's media pool, nested by session/camera. Must be
+  // registered here or validateRequestEnvelope rejects it as an unknown command
+  // before the request reaches the Python worker (see note above).
+  import_media: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -133,6 +138,10 @@ const COMMAND_SCHEMAS = Object.freeze({
   // Slate auto-sequencing Step 1 (2026-07-08): no payload, operates on the
   // current timeline.
   slate_span_report: { required: [] },
+  // ATEM import (2026-07-15). `files` is an array of {local_path, session,
+  // cam_number}; the schema layer only checks top-level scalars, so per-item
+  // validation lives in the Python handler (handle_import_media).
+  import_media: { required: ['files'], types: { parent_bin: 'string' } },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });
