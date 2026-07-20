@@ -108,6 +108,19 @@ class LposClient {
   }
 
   /**
+   * Get the production-slate notes + shoot-day tabs for a project. Used by the
+   * Timeline Setup task to name per-recording timelines from the video codes and
+   * drop code markers. Distinct from getProjectNotes (general ProjectNotes).
+   * Returns { notes: [{ timestamp, code, note, tabId }], tabs: [{ id, name }] }.
+   * @param {string} projectId
+   * @param {string} [tabId] optional shoot-day tab filter
+   */
+  async getSlateNotes(projectId, tabId) {
+    const q = tabId ? `?tab=${encodeURIComponent(tabId)}` : '';
+    return this._request('GET', `/api/ep/projects/${encodeURIComponent(projectId)}/slate-notes${q}`);
+  }
+
+  /**
    * Get Frame.io comments for an asset (for comment markers).
    * @param {string} projectId
    * @param {string} assetId

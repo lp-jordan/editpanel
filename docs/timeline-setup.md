@@ -153,8 +153,9 @@ a `TimelineSetupOverlay`:
 
 ## Build order
 
-1. lpos-dashboard: `/api/ep/projects/:id/slate-notes` endpoint (+ lpos_client
-   `getSlateNotes`).
+1. ✅ **DONE** — lpos-dashboard: `/api/ep/projects/:id/slate-notes` endpoint
+   (reads slate-notes.json + tabs, EP-token, optional `?tab=`; `readNotes`/
+   `readTabs` exported from slate-service) + editpanel `lpos_client.getSlateNotes`.
 2. editpanel worker: `list_multicam_clips` + `timeline_setup_preview` (port TC
    helpers from `slate_span_report`) + register in all three places.
 3. editpanel UI: `TimelineSetupOverlay` + tile; wire preview.
