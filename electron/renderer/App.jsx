@@ -575,9 +575,11 @@ function App() {
       .then((res) => {
         const d = res?.data || {};
         const spans = d.spans || [];
+        const src = d.mode === 'media_pool'
+          ? `bin "${d.bin || '?'}"`
+          : `timeline "${d.timeline_name || '?'}" (ref V${d.reference_track ?? '?'})`;
         appendLog(
-          `Slate span report: ${spans.length} span(s) on ` +
-          `"${d.timeline_name || '?'}" (ref V${d.reference_track ?? '?'}). ` +
+          `Slate span report: ${spans.length} span(s) from ${src}. ` +
           `See the streamed lines above for per-span source TCs.`
         );
       })

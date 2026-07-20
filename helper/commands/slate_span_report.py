@@ -96,25 +96,66 @@ def _safe(fn, default=None):
 MERGE_TOLERANCE = 2  # frames of source-TOD discontinuity tolerated when merging chunks
 
 
+def _parse_fps_setting(raw: Any, default: Optional[float]) -> Optional[float]:
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return v if v > 0 else default
+
+
 def handle_slate_span_report(_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Dispatcher: prefer the current timeline; fall back to the media pool.
+
+    Fetches the current timeline FRESH from the project rather than trusting the
+    cached `rh.timeline` (which the monitor thread only refreshes every ~1.5s and
+    which is None while a multicam clip — not a timeline — is in the viewer).
+    """
     from .. import resolve_helper as rh
 
-    if not rh.project:
+    project = rh.project
+    if not project:
+        pm = _safe(lambda: rh._resolve_project_manager())
+        project = _safe(lambda: pm.GetCurrentProject()) if pm else None
+    if not project:
         raise RuntimeError("No active project — connect to Resolve first")
-    tl = rh.timeline
-    if not tl:
-        raise RuntimeError("No current timeline — open your multicam sequence first")
 
+    page = _safe(lambda: rh.resolve.GetCurrentPage()) if rh.resolve else None
+    proj_name = _safe(lambda: project.GetName(), "?")
+    tl_count = _safe(lambda: int(project.GetTimelineCount()), 0) or 0
+    rh.log(f"Resolve state — project '{proj_name}', page '{page}', {tl_count} timeline(s).")
+
+    tl = _safe(lambda: project.GetCurrentTimeline()) or rh.timeline
+    if tl:
+        rh.log(f"Current timeline: '{_safe(lambda: tl.GetName(), '?')}' — reading spans from clip edges.")
+        return _report_from_timeline(rh, tl)
+
+    # No open timeline. The multicam CLIP in the source viewer is not a timeline,
+    # and the API can't read a collapsed multicam clip's internal angle sub-clips.
+    # Fall back to deriving spans from the source clips in the current bin — each
+    # ATEM recording is its own clip whose Start TC + duration IS a span.
+    rh.log("No current timeline open (a multicam clip in the viewer is NOT a timeline).")
+    if tl_count:
+        names = []
+        for i in range(1, tl_count + 1):
+            t = _safe(lambda: project.GetTimelineByIndex(i))
+            if t:
+                names.append(_safe(lambda: t.GetName(), "?"))
+        rh.log(f"Timelines that exist: {', '.join(names)}. To use the timeline path, "
+               f"open the stacked/synced one (Edit page) and run again.")
+    rh.log("Falling back to source clips in the current media-pool bin…")
+    return _report_from_media_pool(rh, project)
+
+
+def _report_from_timeline(rh: Any, tl: Any) -> Dict[str, Any]:
     tl_name = _safe(lambda: tl.GetName(), "?")
-    fps_raw = _safe(lambda: tl.GetSetting("timelineFrameRate"))
-    try:
-        fps = float(fps_raw)
-    except (TypeError, ValueError):
+    fps = _parse_fps_setting(_safe(lambda: tl.GetSetting("timelineFrameRate")), None)
+    if fps is None:
         fps = 24.0
-        rh.log(f"⚠ couldn't read timeline frame rate ({fps_raw!r}); assuming {fps}")
+        rh.log(f"⚠ couldn't read timeline frame rate; assuming {fps}")
     tl_start_frame = _safe(lambda: int(tl.GetStartFrame()), 0)
 
-    rh.log(f"Slate span report — timeline '{tl_name}' @ {fps}fps")
+    rh.log(f"Timeline '{tl_name}' @ {fps}fps")
 
     # Reference track = the video track carrying the most clips (an angle track).
     track_count = _safe(lambda: int(tl.GetTrackCount("video")), 0) or 0
@@ -199,9 +240,114 @@ def handle_slate_span_report(_payload: Dict[str, Any]) -> Dict[str, Any]:
     rh.log("Done. Compare span source-TCs to the slate's ATEM Recording "
            "started/stopped timestamps — do they roughly line up?")
     return {
+        "mode": "timeline",
         "timeline_name": tl_name,
         "fps": fps,
         "reference_track": best_tno,
         "clips": clips_out,
         "spans": spans_out,
     }
+
+
+def _report_from_media_pool(rh: Any, project: Any) -> Dict[str, Any]:
+    """Derive spans from the source clips in the current media-pool bin.
+
+    Each ATEM recording is its own clip: Start TC = the recording's TOD in-point,
+    Start TC + Frames = its out-point. So the recording spans are just the clips'
+    own timecode ranges — no timeline and no multicam internals needed. Gapless
+    chunks (same recording split across files) merge into one span.
+    """
+    mp = _safe(lambda: project.GetMediaPool())
+    folder = _safe(lambda: mp.GetCurrentFolder()) if mp else None
+    folder_name = _safe(lambda: folder.GetName(), "?") if folder else None
+    clips = (_safe(lambda: folder.GetClipList(), []) or []) if folder else []
+    rh.log(f"Current bin '{folder_name}': {len(clips)} clip(s).")
+
+    # Working frame rate: first source clip's FPS, else the project timeline setting.
+    fps: Optional[float] = None
+    for c in clips:
+        fps = _parse_fps_setting(_safe(lambda: c.GetClipProperty("FPS")), None)
+        if fps:
+            break
+    if not fps:
+        fps = _parse_fps_setting(_safe(lambda: project.GetSetting("timelineFrameRate")), 24.0)
+    rh.log(f"Working frame rate: {fps}fps")
+
+    rows: List[Dict[str, Any]] = []
+    multicam: List[Dict[str, Any]] = []
+    for c in clips:
+        ctype = str(_safe(lambda: c.GetClipProperty("Type")) or "")
+        name = _safe(lambda: c.GetName(), "?")
+        start_tc = _safe(lambda: c.GetClipProperty("Start TC"))
+        if "multicam" in ctype.lower():
+            multicam.append({"name": name, "type": ctype, "start_tc": start_tc})
+            continue
+        if not start_tc:
+            continue  # not a timecoded video clip (audio, still, etc.)
+        try:
+            frames = int(str(_safe(lambda: c.GetClipProperty("Frames"))))
+        except (TypeError, ValueError):
+            frames = None
+        drop = _is_drop_frame(start_tc)
+        try:
+            src_in_f = tc_to_frames(start_tc, fps)
+        except Exception:
+            continue
+        src_out_f = (src_in_f + frames) if frames is not None else None
+        rows.append({"name": name, "src_in_f": src_in_f,
+                     "src_out_f": src_out_f, "drop": drop})
+
+    if multicam:
+        rh.log(f"Found {len(multicam)} multicam clip(s) (internals not readable via API): "
+               + ", ".join(m["name"] for m in multicam))
+    if not rows:
+        rh.log("No timecoded source clips in this bin. Select the bin that holds the "
+               "camera recordings (e.g. an angle's clips) and run again — or open the "
+               "stacked timeline.")
+        return {"mode": "media_pool", "bin": folder_name, "fps": fps,
+                "source_clips": [], "multicam_clips": multicam, "spans": []}
+
+    rows.sort(key=lambda r: (r["src_in_f"] if r["src_in_f"] is not None else 0))
+
+    def tc(f: Optional[int], drop: bool) -> Optional[str]:
+        return frames_to_tc(f, fps, drop) if f is not None else None
+
+    clips_out: List[Dict[str, Any]] = []
+    rh.log("Source clips (name | source TOD in→out):")
+    for r in rows:
+        sin, sout = tc(r["src_in_f"], r["drop"]), tc(r["src_out_f"], r["drop"])
+        rh.log(f"  {str(r['name'])[:44]}  src[{sin or '?'}..{sout or '?'}]")
+        clips_out.append({"name": r["name"], "src_in_tc": sin, "src_out_tc": sout})
+
+    # Merge gapless chunks (next clip's TOD in ≈ prev clip's TOD out) into spans.
+    spans: List[Dict[str, Any]] = []
+    for r in rows:
+        prev = spans[-1] if spans else None
+        contiguous = (
+            prev is not None
+            and r["src_in_f"] is not None
+            and prev["src_out_f"] is not None
+            and abs(r["src_in_f"] - prev["src_out_f"]) <= MERGE_TOLERANCE
+        )
+        if contiguous:
+            prev["src_out_f"] = r["src_out_f"]
+            prev["chunks"] += 1
+        else:
+            spans.append({**r, "chunks": 1})
+
+    rh.log(f"→ {len(spans)} recording span(s) after merging gapless chunks:")
+    spans_out: List[Dict[str, Any]] = []
+    for i, s in enumerate(spans, 1):
+        frames = ((s["src_out_f"] - s["src_in_f"])
+                  if (s["src_in_f"] is not None and s["src_out_f"] is not None) else None)
+        secs = round(frames / fps, 1) if frames is not None else None
+        sin, sout = tc(s["src_in_f"], s["drop"]), tc(s["src_out_f"], s["drop"])
+        rh.log(f"  span {i}: src[{sin or '?'} → {sout or '?'}]  "
+               f"{frames} frames (~{secs}s)  {s['chunks']} chunk(s)")
+        spans_out.append({"index": i, "src_in_tc": sin, "src_out_tc": sout,
+                          "frames": frames, "chunks": s["chunks"]})
+
+    rh.log("Done. Compare span source-TCs to the slate's ATEM Recording "
+           "started/stopped timestamps — do they roughly line up?")
+    return {"mode": "media_pool", "bin": folder_name, "fps": fps,
+            "source_clips": clips_out, "multicam_clips": multicam, "spans": spans_out}
