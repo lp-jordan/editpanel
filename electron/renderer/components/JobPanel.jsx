@@ -212,6 +212,12 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
   const [collapsedExports, setCollapsedExports] = React.useState(() => new Set());
   // Queued batches the editor has ticked to run as a sequential chain.
   const [selectedQueued, setSelectedQueued] = React.useState(() => new Set());
+  // Queued rows default to COLLAPSED (a large pending queue would otherwise
+  // dominate the panel). This set holds the queued rows the user has expanded —
+  // the inverse of `collapsedExports`, so the default without an entry is
+  // collapsed. Kept separate so it survives reloads (unlike seeding
+  // collapsedExports, which a manual expand + reload would fight).
+  const [expandedQueued, setExpandedQueued] = React.useState(() => new Set());
   // Active tab (component-local — resets to 'all' each session, which is the
   // right default for a quick-look panel).
   const [activeTab, setActiveTab] = React.useState('all');
@@ -239,6 +245,16 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
 
   function toggleExportCollapsed(id) {
     setCollapsedExports(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  // Queued rows are collapsed by default, so their toggle drives the
+  // `expandedQueued` allow-set instead of the `collapsedExports` deny-set.
+  function toggleQueuedCollapsed(id) {
+    setExpandedQueued(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
@@ -635,8 +651,8 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                         jobCount={e.job_count ?? (e.jobs || []).length}
                         targetDir={e.target_dir}
                         projectName={e.project_name}
-                        collapsed={collapsedExports.has(e.export_id)}
-                        onToggleCollapse={() => toggleExportCollapsed(e.export_id)}
+                        collapsed={!expandedQueued.has(e.export_id)}
+                        onToggleCollapse={() => toggleQueuedCollapsed(e.export_id)}
                         onStart={exportBusy ? null : () => handleStartOneQueued(e.export_id)}
                         onClearQueued={exportBusy ? null : () => handleDeleteExportRun(e.export_id)}
                         selectable={!exportBusy}

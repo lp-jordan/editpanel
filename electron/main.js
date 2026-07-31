@@ -3206,14 +3206,31 @@ app.whenReady().then(() => {
       // `dismissed_in_resolve` is excluded too as belt-and-suspenders for any
       // legacy rows; the reconciler no longer creates that state (it deletes
       // the row instead).
-      return {
-        ok: true,
-        data: jobsDb.listExportRuns({
-          limit: Number(limit) || 10,
-          hiddenFromJobpanel: false,
-          excludeState: ['complete_unassigned', 'dismissed_in_resolve']
-        })
-      };
+      //
+      // Queued batches are pulled in a SEPARATE, uncapped query so a large
+      // pending queue is never truncated by `limit`. Previously the single
+      // capped query let recent terminal rows crowd queued batches out of the
+      // newest-N window, hiding batches the editor still needed to start (the
+      // "can only queue 8" bug). The `limit` now bounds only the recent
+      // non-queued rows (terminal/in-flight); every queued batch always shows.
+      const cap = Number(limit) || 10;
+      const queued = jobsDb.listExportRuns({
+        state: 'queued',
+        hiddenFromJobpanel: false,
+        limit: 1000
+      });
+      const recent = jobsDb.listExportRuns({
+        limit: cap,
+        hiddenFromJobpanel: false,
+        excludeState: ['complete_unassigned', 'dismissed_in_resolve', 'queued']
+      });
+      // Merge and re-sort newest-first so the combined list keeps the same
+      // ordering contract the renderer relies on (queued batches stay in their
+      // queue order among themselves = pipeline/chain order).
+      const merged = [...queued, ...recent].sort(
+        (a, b) => (b.started_at || 0) - (a.started_at || 0)
+      );
+      return { ok: true, data: merged };
     } catch (err) {
       return { ok: false, error: err.message };
     }

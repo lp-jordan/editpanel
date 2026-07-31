@@ -334,6 +334,21 @@ remember its JobIds + upload target; starting it later is just
   order. While a chain runs, its pending members show an **"Up next"** badge
   (driven by `chainPending` on the export snapshot) and selection is hidden.
 
+### All queued batches are always visible
+The JobPanel's `export:recent` IPC previously ran a single `ORDER BY started_at
+DESC LIMIT N` query, so queued batches shared the newest-N window with the active
+export and recently-completed terminal rows. Past ~8, older queued batches fell
+off the window and became invisible/unselectable even though their `export_runs`
+rows still existed (the "can only queue 8" bug). The handler now runs **two**
+queries: an **uncapped** `state='queued'` fetch plus the capped recent-non-queued
+fetch (`limit` now bounds only terminal/in-flight rows), merged newest-first. So
+every queued batch always shows regardless of how many recent renders finished.
+
+To keep a large pending queue from dominating the panel, **queued rows default to
+collapsed** (compact: checkbox + Start + clear still work; only the per-timeline
+breakdown hides). The collapse state uses a dedicated `expandedQueued` allow-set
+in JobPanel (inverse of `collapsedExports`) so a manual expand survives reloads.
+
 ### Status / gaps
 - Resolve renders one job at a time regardless, so the chain is "queue all, drain
   back-to-back" — not parallel.
