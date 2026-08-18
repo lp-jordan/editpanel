@@ -124,8 +124,16 @@ awaiting-assignment pill.
 
 - The re-label happens in `finalizeExport` (`main.js`): a clean `completed`
   outcome with **no project bound**, **upload disabled**, and **real output
-  files** becomes `complete_unassigned`. A project-bound export whose auto-upload
-  failed keeps its normal terminal state.
+  files** becomes `complete_unassigned`.
+- **Failed uploads land here too (added 1.2.35).** An upload-ON export whose
+  renders all succeeded but whose uploads **all** failed (LPOS down past the
+  uploader's retry window) also finalizes `complete_unassigned`, with its LPOS
+  project binding cleared — nothing landed, so a later push can't duplicate
+  anything, and the alternative (`partial`) is a one-way door that leaves a
+  finished render with no route into LPOS but a re-render. A *mixed* run keeps
+  `partial`: pushing again would duplicate the files that did land. These rows
+  are **not** split per-file (see below) — the editor already chose one
+  destination for the batch, so a retry stays one click.
 - Before 1.2.23 these landed in `completed` with no project and no
   `lpos_delivery` — a dead zone: the Unassigned filter and its push button gate
   on `complete_unassigned`, and the Delivered filter needs `lpos_delivery`, so
@@ -233,6 +241,41 @@ Key files: `helper/commands/export_preflight.py`, `LposClient.listProjectAssets`
 `.../media/upload/[uploadId]/finalize/route.ts` (lpos-dashboard), and the
 `preflight`/`confirm` stages + `canonicalKey` in `ExportDeliverOverlay.jsx`.
 
+### LPOS outage resilience (added 1.2.35)
+
+A render push is a long-running background transfer aimed at a server that
+legitimately goes away for short stretches (LPOS nightly restart, deploy,
+Tailscale reconnect). Previously any of those threw on the first request and the
+upload was terminally `failed`. Now:
+
+- **Transient failures are retried against the same upload session.** Fetch-level
+  errors (ECONNREFUSED/ENOTFOUND/ECONNRESET, our own 120 s timeout) and
+  `408/425/429/500/502/503/504` back off `2s → 4s → 8s → 16s → 30s` (capped) for
+  up to **5 minutes per chunk**, and the budget **resets on every byte of forward
+  progress** — so a long upload can absorb several outages while a server that is
+  genuinely gone still fails inside one window. A real verdict from LPOS
+  (`400/401/403/404/410/415/507`) is **not** retried; it would only be repeated.
+- **Retries resume, they don't restart.** LPOS holds the partial temp file
+  against the `uploadId` and reports its own byte count via the 409
+  `offset_mismatch` payload, so a re-sent chunk either lands where it left off or
+  realigns. This also makes the retry safe against a *lost response*, not just a
+  lost request. Init and finalize are retried on the same policy.
+- **A retried finalize that finds the session already finalized is a success.**
+  LPOS answers 409 `Upload session is finalized`; the bytes landed and the asset
+  registered, so `uploadFileToProject` resolves `{ asset: null,
+  alreadyFinalized: true }`. Callers must treat a missing `assetId` as
+  "uploaded, id unknown" rather than a failure. The `assetId` can't be recovered:
+  `GET /api/ep/uploads/:uploadId/asset` gates on `status === 'complete'`, a value
+  the finalize route never writes (it writes `'finalized'`), so that endpoint
+  always answers `null` — an unused, latent lpos-dashboard bug.
+- **The UI says "retrying", not "stuck".** `uploadStatus` gains a `retrying`
+  state (JobPanel mark `↻NN%`) that clears on the next byte of progress; it
+  counts as pending, so an export never finalizes mid-retry.
+
+Constants live at the top of `electron/workers/lpos_client.js`
+(`UPLOAD_RETRY_WINDOW_MS`, `UPLOAD_RETRY_BASE_MS`, `UPLOAD_RETRY_MAX_MS`,
+`TRANSIENT_UPLOAD_STATUSES`).
+
 ### Notes / gaps
 - The pre-export screen is advisory (catches what it can pre-render); the EP
   finalize auto-resolve is the guarantee that nothing parks. A collision the
@@ -241,7 +284,13 @@ Key files: `helper/commands/export_preflight.py`, `LposClient.listProjectAssets`
   and the workflow is intentional re-exports.
 - Auth attribution: uploads are recorded against the EP token's user.
 - If the operator isn't signed in to LPOS at completion time, the render still
-  finalizes but nothing uploads.
+  finalizes but nothing uploads. (`uploadEnabled` checks that a base URL + token
+  exist, not that LPOS is reachable — unreachability is discovered at upload
+  time and handled by the retry policy above.)
+- An EditPanel crash or quit *during* an upload still leaves the row
+  `interrupted` (`clearStaleExportRuns`); it is not auto-reverted to
+  `complete_unassigned` because we can't tell from the row whether the last file
+  registered before the process died.
 - `export_runs` still isn't pruned by the 30-day sweep (follow-up).
 
 Key files: `helper/commands/render_status.py` (output paths), the EP routes

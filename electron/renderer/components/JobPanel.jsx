@@ -381,6 +381,10 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
   function exportJobMark(job) {
     if (job.uploadStatus === 'uploaded')  return '✓';
     if (job.uploadStatus === 'uploading') return `↑${job.uploadPercent ?? 0}%`;
+    // Retrying = LPOS went away mid-upload and the uploader is waiting to
+    // resume the same session. Its own mark (not a frozen ↑NN%) so a stalled
+    // bar doesn't read as a hang the editor should cancel out of.
+    if (job.uploadStatus === 'retrying')  return `↻${job.uploadPercent ?? 0}%`;
     if (job.uploadStatus === 'verifying') return '…';
     if (job.uploadStatus === 'failed')    return '✗';
     if (job.status === 'Complete')  return '✓';

@@ -1047,6 +1047,32 @@ function finalizeExport(state, error = null) {
     effectiveState = 'complete_unassigned';
   }
 
+  // Upload-ON export whose uploads ALL failed (the renders themselves clean) →
+  // route it into the same unassigned/push pipeline instead of parking it at
+  // 'partial'. 'partial' is a one-way door: exports:push-to-lpos gates on
+  // 'complete_unassigned', so an LPOS outage outlasting the uploader's retry
+  // window would otherwise leave a perfectly good render with no route into
+  // LPOS short of re-rendering it. Nothing landed, so a later push can't
+  // duplicate anything — it is a clean retry of an operation that was a no-op.
+  //
+  // Deliberately narrow. Every queued render must have succeeded and NO file
+  // may have uploaded. A mixed run keeps its 'partial'/'failed' state: pushing
+  // again would duplicate the files that did land, and a render failure is a
+  // signal the editor needs to see rather than have relabelled as "awaiting
+  // project".
+  let revertedToUnassigned = false;
+  if (
+    state === 'partial'
+    && activeExport.uploadEnabled
+    && outputs.length > 0
+    && !activeExport.jobs.some(j => j.status === 'Failed' || j.status === 'Cancelled')
+    && !activeExport.jobs.some(j => j.uploadStatus === 'uploaded')
+    && activeExport.jobs.some(j => j.uploadStatus === 'failed')
+  ) {
+    effectiveState = 'complete_unassigned';
+    revertedToUnassigned = true;
+  }
+
   activeExport.state = effectiveState;
   activeExport.finishedAt = Date.now();
   if (error) activeExport.error = error;
@@ -1060,11 +1086,20 @@ function finalizeExport(state, error = null) {
   // by Resolve project, so files sharing a project still get a "Push all (N)…"
   // group button — differing destinations use each row's own button. Each
   // child row carries its single output file + its originating job (so the
-  // per-job timeline tether survives into push-to-lpos renderMeta). Only the
-  // upload-off path reaches here; upload-on exports already went to one project.
+  // per-job timeline tether survives into push-to-lpos renderMeta).
+  //
+  // Restricted to the upload-off path. An upload-on export that reverted here
+  // (revertedToUnassigned) already had ONE project chosen for the whole batch,
+  // so splitting it would turn a single retry click into N project picks for a
+  // destination the editor has already told us.
   const completedJobs = activeExport.jobs.filter(j => j.status === 'Complete' && j.outputPath);
   let didSplit = false;
-  if (jobsDb && effectiveState === 'complete_unassigned' && completedJobs.length > 1) {
+  if (
+    jobsDb
+    && effectiveState === 'complete_unassigned'
+    && !revertedToUnassigned
+    && completedJobs.length > 1
+  ) {
     const batchId   = activeExport.exportId;
     const startedAt = activeExport.startedAt || Date.now();
     const finishedAt = Date.now();
@@ -1106,14 +1141,28 @@ function finalizeExport(state, error = null) {
         jobsDb.setExportOutputPaths(activeExport.exportId, outputs);
       }
     } catch (_) { /* non-fatal */ }
+    if (revertedToUnassigned) {
+      // Clear the LPOS assignment so the row is a genuine unassigned orphan.
+      // `complete_unassigned` carries the invariant "no LPOS project bound"
+      // — countUnassignedExports, the Unassigned filter and JobPanel's
+      // "→ {project}" label all read it that way — and leaving a stale
+      // project_name behind would advertise a delivery that never happened.
+      try { jobsDb.assignExportProject(activeExport.exportId, null, null); } catch (_) { /* non-fatal */ }
+      activeExport.projectId = null;
+      activeExport.projectName = null;
+    }
     if (activeExport.uploadEnabled) {
       try {
-        const uploaded = activeExport.jobs.filter(j => j.uploadStatus === 'uploaded' && j.assetId);
+        // Membership is uploadStatus, not assetId: a retried finalize can land
+        // the file without returning its id (alreadyFinalized), and such an
+        // export is still delivered — it just deep-links to the project rather
+        // than to each asset.
+        const uploaded = activeExport.jobs.filter(j => j.uploadStatus === 'uploaded');
         if (uploaded.length > 0) {
           jobsDb.setExportLposDelivery(activeExport.exportId, {
             project_id:   activeExport.projectId,
             project_name: activeExport.projectName,
-            file_ids:     uploaded.map(j => j.assetId),
+            file_ids:     uploaded.map(j => j.assetId).filter(Boolean),
             uploaded_at:  Date.now()
           });
         }
@@ -1246,7 +1295,8 @@ function hasPendingUploads() {
   return uploadWorkerActive
     || uploadQueue.length > 0
     || activeExport.jobs.some(j =>
-        j.uploadStatus === 'pending' || j.uploadStatus === 'verifying' || j.uploadStatus === 'uploading');
+        j.uploadStatus === 'pending' || j.uploadStatus === 'verifying'
+        || j.uploadStatus === 'uploading' || j.uploadStatus === 'retrying');
 }
 
 function recomputeUploadPercent() {
@@ -1344,8 +1394,23 @@ async function uploadOneFile(job) {
       fileName: path.basename(job.outputPath),
       isCancelled: () => !activeExport,
       renderMeta,
+      // The uploader now rides out transient LPOS outages by resuming the same
+      // session (see lpos_client UPLOAD_RETRY_*). Reflect that in the UI as a
+      // distinct 'retrying' state — a stalled progress bar with no explanation
+      // reads as a hang, and the editor needs to know the export is still alive
+      // rather than reaching for a re-render.
+      onRetry: ({ phase, attempt, waitMs, error }) => {
+        if (!activeExport) return;
+        job.uploadStatus = 'retrying';
+        job.uploadRetry  = { phase, attempt, waitMs, error, at: Date.now() };
+        broadcastExport('export-progress', exportSnapshot());
+      },
       onProgress: (p) => {
         if (!activeExport) return;
+        // Any forward progress means the connection recovered — drop back out
+        // of 'retrying' so the badge stops flashing after a one-off blip.
+        job.uploadStatus = 'uploading';
+        job.uploadRetry = null;
         job.uploadPercent = p.pct;
         recomputeUploadPercent();
         broadcastExport('export-progress', exportSnapshot());
@@ -1353,6 +1418,10 @@ async function uploadOneFile(job) {
     });
     job.uploadStatus = 'uploaded';
     job.uploadPercent = 100;
+    job.uploadRetry = null;
+    // A null assetId here is NOT a failure: lpos_client returns
+    // { asset: null, alreadyFinalized: true } when a retried finalize finds the
+    // session already complete. The file is in LPOS either way.
     job.assetId = res?.asset?.assetId || null;
   } catch (err) {
     job.uploadStatus = 'failed';
@@ -1416,8 +1485,8 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
   stopExportPoll();
   activeExport = {
     exportId,
-    // Per-job tracking. uploadStatus: pending | verifying | uploading | uploaded
-    // | failed | skipped. Tether fields (timelineUid/…) are null on older Resolve
+    // Per-job tracking. uploadStatus: pending | verifying | uploading | retrying
+    // | uploaded | failed | skipped. Tether fields (timelineUid/…) are null on older Resolve
     // builds without GetUniqueId; the upload worker then omits renderMeta and no
     // editorial_links row is written LPOS-side — the asset still uploads cleanly.
     jobs: freshTrackedJobs(jobs, { started }),
@@ -3545,17 +3614,28 @@ app.whenReady().then(() => {
     (async () => {
       const fileIds = [];
       let anyFailed = false;
+      let anyLanded = false;
+      let lastError = null;
       for (const filePath of outputs) {
         try {
           const res = await lposClient.uploadFileToProject(projectId, filePath, {
             fileName: path.basename(filePath),
-            renderMeta
+            renderMeta,
+            onRetry: ({ phase, attempt, waitMs, error }) => {
+              console.log(`[exports] push ${exportId}: ${phase} retry #${attempt} in ${waitMs}ms — ${error}`);
+            }
           });
+          // Success is "the call returned", NOT "we got an assetId back". A
+          // retried finalize that finds the session already complete resolves
+          // to { asset: null, alreadyFinalized: true } — the file IS in LPOS,
+          // and counting that as a failure would strand a delivered export (or
+          // worse, invite a duplicate re-push).
+          anyLanded = true;
           const assetId = res?.asset?.assetId;
           if (assetId) fileIds.push(assetId);
-          else anyFailed = true;
-        } catch (_err) {
+        } catch (err) {
           anyFailed = true;
+          lastError = err?.data?.error || err?.message || String(err);
         }
       }
 
@@ -3568,16 +3648,42 @@ app.whenReady().then(() => {
             uploaded_at:  Date.now()
           });
         }
-        // Final state: 'delivered' on a clean run; 'partial' if any file
-        // succeeded but at least one failed; 'failed' if nothing landed.
-        const finalState = anyFailed
-          ? (fileIds.length > 0 ? 'partial' : 'failed')
-          : 'delivered';
-        jobsDb.setExportState(exportId, finalState, { finishedAt: Date.now() });
+        // Final state: 'delivered' on a clean run; 'partial' if some files
+        // landed and others failed; and — when NOTHING landed — back to
+        // 'complete_unassigned' rather than 'failed'.
+        //
+        // That last case is the important one. Claiming the row flipped it out
+        // of 'complete_unassigned', and exports:push-to-lpos gates on exactly
+        // that state, so a terminal 'failed' here would permanently burn the
+        // row's only route into LPOS: an LPOS restart during the push and the
+        // editor is re-rendering a file that is sitting on disk, finished. A
+        // push that uploaded nothing is a no-op, so the honest terminal state
+        // is the one the row started in — retry becomes clicking Push again.
+        // The project binding is cleared with it, keeping the invariant that a
+        // 'complete_unassigned' row has no LPOS project attached.
+        let finalState;
+        if (!anyFailed) {
+          finalState = 'delivered';
+        } else if (anyLanded) {
+          finalState = 'partial';
+        } else {
+          finalState = 'complete_unassigned';
+          try { jobsDb.assignExportProject(exportId, null, null); } catch (_) { /* non-fatal */ }
+        }
+
+        // finished_at stays put on a revert — the row is going back to
+        // "awaiting project", which is not a finish — and the error is recorded
+        // either way so the Exports row can say why the push didn't take.
+        const extra = { error: lastError };
+        if (finalState !== 'complete_unassigned') extra.finishedAt = Date.now();
+        jobsDb.setExportState(exportId, finalState, extra);
+
         broadcastExport('export-reconciled', {
           exportId,
           state: finalState,
-          fileIds
+          fileIds,
+          error: lastError,
+          ...(finalState === 'complete_unassigned' ? { project_id: null, project_name: null } : {})
         });
       } catch (_) { /* non-fatal */ }
     })();

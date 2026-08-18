@@ -3,6 +3,67 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// ── Chunked-upload resilience ────────────────────────────────────────────────
+//
+// A render push is a long-running background transfer aimed at a server that
+// legitimately goes away for short stretches: the LPOS nightly restart, a
+// deploy, a Tailscale reconnect, a NAS hiccup behind the API. Until this was
+// added, any one of those turned into a terminal uploadStatus='failed' on the
+// very first throw — stranding an export that had nothing wrong with it, on a
+// row the Exports UI could no longer offer a push for.
+//
+// Retrying is cheap only because the transfer is genuinely resumable: LPOS
+// keeps the partial temp file keyed by `uploadId` and reports its own
+// authoritative byte count (the 409 `offset_mismatch` payload), so a retry
+// against the SAME session picks up where the wire died instead of re-sending
+// the file. The budget is therefore per-chunk and resets on every byte of
+// forward progress — a 40-minute upload can absorb several outages, while a
+// server that is genuinely gone still fails inside one window.
+const UPLOAD_RETRY_WINDOW_MS = 5 * 60_000;  // per-chunk budget, reset on progress
+const UPLOAD_RETRY_BASE_MS   = 2_000;       // 2s, 4s, 8s, 16s, 30s, 30s…
+const UPLOAD_RETRY_MAX_MS    = 30_000;
+
+// HTTP statuses worth waiting out. Everything else — 400/401/403/404/410/415,
+// and 507 (storage drive disconnected) — is a verdict LPOS has already reached
+// and would reach again, so we fail fast and surface it. 503 is in the set
+// because that is what the init route returns while the ingest queue is still
+// coming up, which is precisely the tail of a restart we want to ride out.
+const TRANSIENT_UPLOAD_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+/**
+ * True when a failed upload request is worth retrying against the same session.
+ * An error carrying no `status` came from fetch itself (ECONNREFUSED,
+ * ENOTFOUND, ECONNRESET, socket hang up) or from our own AbortController
+ * timeout — i.e. LPOS never rendered a verdict at all, which is exactly the
+ * "LPOS is down" case this policy exists for.
+ */
+function isTransientUploadError(err) {
+  if (!err) return false;
+  if (err.status === undefined || err.status === null) return true;
+  return TRANSIENT_UPLOAD_STATUSES.has(err.status);
+}
+
+/** Backoff for attempt N (1-based), capped at UPLOAD_RETRY_MAX_MS. */
+function retryBackoffMs(attempt) {
+  return Math.min(UPLOAD_RETRY_MAX_MS, UPLOAD_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1));
+}
+
+/**
+ * Sleep that bails out early when the caller cancels, so a cancelled export
+ * doesn't sit through a 30s backoff before noticing. Resolves either way —
+ * the caller re-checks isCancelled at the top of its loop and performs the
+ * real teardown (session DELETE) there, keeping cancellation in one place.
+ */
+function sleepUnlessCancelled(ms, isCancelled) {
+  return new Promise((resolve) => {
+    if (!isCancelled) { setTimeout(resolve, ms); return; }
+    const started = Date.now();
+    const tick = setInterval(() => {
+      if (isCancelled() || Date.now() - started >= ms) { clearInterval(tick); resolve(); }
+    }, 250);
+  });
+}
+
 /**
  * LposClient — read/write client for the lpos-dashboard /api/ep/ namespace.
  *
@@ -182,6 +243,31 @@ class LposClient {
   }
 
   /**
+   * Run a one-shot upload request under the transient-failure retry policy.
+   * Used for the init and finalize calls, which are single round-trips with
+   * nothing to resume; the chunk loop keeps its own inline retry because it
+   * must also handle offset realignment on the way through.
+   */
+  async _retryTransient(phase, fn, opts = {}) {
+    const windowMs = Number.isFinite(opts.retryWindowMs) ? opts.retryWindowMs : UPLOAD_RETRY_WINDOW_MS;
+    const deadline = Date.now() + windowMs;
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (!isTransientUploadError(err)) throw err;
+        if (opts.isCancelled && opts.isCancelled()) throw err;
+        attempt += 1;
+        const waitMs = retryBackoffMs(attempt);
+        if (Date.now() + waitMs > deadline) throw err;
+        if (opts.onRetry) opts.onRetry({ phase, attempt, waitMs, error: err.message });
+        await sleepUnlessCancelled(waitMs, opts.isCancelled);
+      }
+    }
+  }
+
+  /**
    * Upload a local file into an LPOS project as a media asset, chunked +
    * resumable. Returns the finalize payload ({ asset }) on success; throws on
    * failure (err.data.code carries duplicate_version / version_confirmation_required).
@@ -193,6 +279,12 @@ class LposClient {
    * @param {number} [opts.chunkSize]  bytes per chunk (default 8 MiB)
    * @param {(p: {bytesUploaded:number, fileSize:number, pct:number}) => void} [opts.onProgress]
    * @param {() => boolean} [opts.isCancelled]  abort the upload if this returns true
+   * @param {number} [opts.retryWindowMs]  per-chunk transient-failure budget
+   *   (default UPLOAD_RETRY_WINDOW_MS). Reset on every byte of forward
+   *   progress, so this bounds one stall, not the whole transfer.
+   * @param {(r: {phase:string, attempt:number, waitMs:number, offset?:number, error:string}) => void} [opts.onRetry]
+   *   Called before each backoff sleep so the UI can show "retrying" rather
+   *   than a frozen progress bar. phase is 'init' | 'chunk' | 'finalize'.
    * @param {object|null} [opts.renderMeta]  Phase 5c.1 (2026-06-02): editpanel
    *   render provenance — when present, sent on the finalize POST body so LPOS
    *   persists an editorial_links row tying this asset to a Resolve timeline.
@@ -209,13 +301,36 @@ class LposClient {
     const fileSize = stat.size;
     if (fileSize <= 0) throw new Error(`File is empty or missing: ${filePath}`);
 
-    const init = await this._uploadRequest('POST', `/api/ep/projects/${pid}/media/upload`, {
-      json: { filename: fileName, fileSize }
-    });
+    // Retry options shared by every phase of this upload.
+    const retryOpts = {
+      retryWindowMs: opts.retryWindowMs,
+      isCancelled:   opts.isCancelled,
+      onRetry:       opts.onRetry,
+    };
+
+    // Init is retried too, so an export that finishes rendering *during* an
+    // LPOS restart doesn't fail before it has sent a single byte. A retried
+    // init whose first attempt actually landed (response lost in flight)
+    // orphans an empty session server-side; LPOS's own stale-session sweep
+    // clears those after an hour, which is the right trade against failing
+    // the push outright.
+    const init = await this._retryTransient(
+      'init',
+      () => this._uploadRequest('POST', `/api/ep/projects/${pid}/media/upload`, {
+        json: { filename: fileName, fileSize }
+      }),
+      retryOpts,
+    );
     const uploadId = init.uploadId;
     let offset = init.bytesReceived || 0;
 
     const handle = await fs.promises.open(filePath, 'r');
+    // Retry bookkeeping for the chunk currently in flight. Both reset on every
+    // successful chunk (and on a realign), so the budget bounds a single stall
+    // rather than the whole transfer.
+    let chunkAttempt  = 0;
+    let chunkDeadline = 0;
+    const chunkWindowMs = Number.isFinite(opts.retryWindowMs) ? opts.retryWindowMs : UPLOAD_RETRY_WINDOW_MS;
     try {
       while (offset < fileSize) {
         if (opts.isCancelled && opts.isCancelled()) {
@@ -242,12 +357,32 @@ class LposClient {
           if (err.status === 409 && err.data && err.data.code === 'offset_mismatch'
               && Number.isFinite(err.data.expected)) {
             offset = err.data.expected;
+            chunkAttempt = 0;
+            chunkDeadline = 0;
             continue;
           }
-          throw err;
+
+          // Transient failure (LPOS restarting, network drop, gateway 5xx):
+          // wait, then re-send THIS chunk against the SAME uploadId. The server
+          // still holds the partial temp file, so this resumes rather than
+          // restarts. If the chunk actually landed before the connection died,
+          // the re-send comes back as offset_mismatch and realigns above — so
+          // the retry is safe against a lost response, not just a lost request.
+          if (!isTransientUploadError(err)) throw err;
+          if (!chunkDeadline) chunkDeadline = Date.now() + chunkWindowMs;
+          chunkAttempt += 1;
+          const waitMs = retryBackoffMs(chunkAttempt);
+          if (Date.now() + waitMs > chunkDeadline) throw err;
+          if (opts.onRetry) {
+            opts.onRetry({ phase: 'chunk', attempt: chunkAttempt, waitMs, offset, error: err.message });
+          }
+          await sleepUnlessCancelled(waitMs, opts.isCancelled);
+          continue;
         }
 
         offset = res.bytesReceived;
+        chunkAttempt = 0;
+        chunkDeadline = 0;
         if (opts.onProgress) {
           opts.onProgress({ bytesUploaded: offset, fileSize, pct: Math.round((offset / fileSize) * 100) });
         }
@@ -264,7 +399,27 @@ class LposClient {
     const finalizeOpts = opts.renderMeta
       ? { json: { renderMeta: opts.renderMeta } }
       : {};
-    return this._uploadRequest('POST', `/api/ep/projects/${pid}/media/upload/${uploadId}/finalize`, finalizeOpts);
+    try {
+      return await this._retryTransient(
+        'finalize',
+        () => this._uploadRequest('POST', `/api/ep/projects/${pid}/media/upload/${uploadId}/finalize`, finalizeOpts),
+        retryOpts,
+      );
+    } catch (err) {
+      // A finalize whose *response* was lost gets retried, and LPOS answers the
+      // second attempt with 409 "Upload session is finalized". The bytes did
+      // land and the asset did register — reporting that as a failure would
+      // strand (or duplicate) a file that is already in LPOS. Return success
+      // with a null asset: we can't recover the assetId here, because
+      // GET /api/ep/uploads/:uploadId/asset gates on status === 'complete',
+      // a value the finalize route never writes (it writes 'finalized'), so
+      // that endpoint always answers null. Callers must therefore treat a
+      // missing assetId as "uploaded, id unknown", not as a failure.
+      if (err.status === 409 && /is finalized/i.test(err.message || '')) {
+        return { asset: null, alreadyFinalized: true };
+      }
+      throw err;
+    }
   }
 
   /**

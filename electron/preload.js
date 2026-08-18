@@ -333,7 +333,9 @@ contextBridge.exposeInMainWorld('exportsAPI', {
   },
   /** Assign an orphan (state='complete_unassigned') to an LPOS project and
    *  kick the upload. Returns ok immediately; subsequent state changes arrive
-   *  via onReconciled (state: 'uploading' → 'delivered' | 'partial' | 'failed'). */
+   *  via onReconciled (state: 'uploading' → 'delivered' | 'partial', or back to
+   *  'complete_unassigned' when nothing landed, so the push can simply be
+   *  retried instead of the row becoming un-pushable). */
   pushToLpos({ exportId, projectId, projectName } = {}) {
     return ipcRenderer.invoke('exports:push-to-lpos', { exportId, projectId, projectName });
   },
