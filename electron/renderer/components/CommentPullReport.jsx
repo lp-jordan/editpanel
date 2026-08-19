@@ -116,6 +116,14 @@ function CommentRow({ comment, outcome, startTC, fps, timeline, completionState,
         <span className="comment-pull-comment-tc" title={absLabel || ''}>
           {offsetLabel}{absLabel ? `  ·  ${absLabel}` : ''}
         </span>
+        {comment.olderCut && (
+          <span
+            className="comment-pull-oldercut-pill"
+            title="Left on an earlier cut of this timeline — it may already have been actioned in a later render."
+          >
+            {typeof comment.versionNumber === 'number' ? `older cut · v${comment.versionNumber}` : 'older cut'}
+          </span>
+        )}
         {isActionable && (
           <div className="comment-pull-comment-actions">
             <button
@@ -417,6 +425,15 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
               <div>
                 <span className="dim">Timelines scanned</span> {summary.scannedCount}
                 <span className="dim"> · matched in LPOS </span>{summary.matchedCount ?? 0}
+                {summary.totalAssetsScanned != null && (
+                  <><span className="dim"> · assets checked </span>{summary.totalAssetsScanned}</>
+                )}
+              </div>
+            )}
+            {summary?.totalOlderCut > 0 && (
+              <div>
+                <span className="dim">From earlier cuts</span> {summary.totalOlderCut}
+                <span className="dim"> — notes left on a version that has since been re-rendered; check before actioning.</span>
               </div>
             )}
             {Array.isArray(summary?.involvedProjectNames) && summary.involvedProjectNames.length > 0 && (

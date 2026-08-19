@@ -3803,6 +3803,19 @@ button.status-bar-chip-btn:hover {
 .comment-pull-outcome-pill.outcome-removed { color: #c87d7d; background: rgba(200, 125, 125, 0.12); }
 .comment-pull-outcome-pill.outcome-skipped { color: #d3a960; background: rgba(211, 169, 96, 0.12); }
 
+/* Provenance badge: this note was left on a cut that has since been
+   re-rendered, so it may already have been actioned. */
+.comment-pull-oldercut-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: #d3a960;
+  background: rgba(211, 169, 96, 0.12);
+  white-space: nowrap;
+}
+
 .comment-pull-comment-author {
   font-weight: 600;
   color: var(--text-strong, #fff);

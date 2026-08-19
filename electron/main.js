@@ -165,7 +165,20 @@ function _formatHMS(seconds) {
   return `${m}:${ss.toString().padStart(2, '0')}`;
 }
 
-function _formatTargetComment(comment) {
+/**
+ * True when a comment came from a cut other than the one currently tethered to
+ * this timeline — either an older version of the asset (LPOS tells us via
+ * `isCurrentVersion`) or an older LPOS asset rendered from the same timeline.
+ * Defensive against an older LPOS that doesn't send `isCurrentVersion`: absent
+ * means "don't claim it's old".
+ */
+function _isOlderCutComment(comment, primaryAssetId) {
+  if (!comment) return false;
+  if (comment.isCurrentVersion === false) return true;
+  return Boolean(primaryAssetId && comment.sourceAssetId && comment.sourceAssetId !== primaryAssetId);
+}
+
+function _formatTargetComment(comment, primaryAssetId) {
   // Frame.io general comments have null timestamp — they can't be anchored to a
   // timeline frame, so skip them entirely (orchestrator counts these separately
   // so the editor sees they exist but weren't placed).
@@ -183,7 +196,15 @@ function _formatTargetComment(comment) {
   // (the leading UTF-8 C2 byte shows as "Â", so "·" became "Â·"). 5c.8 fix:
   // separator is " - " — no UTF-8 punctuation in the marker name.
   const author = comment.authorName || 'Unknown';
-  const name = `${author} - ${_formatHMS(comment.timestamp)}`;
+  // Mark notes that came from a superseded cut. Since the pull now reaches
+  // across every version and every asset behind a timeline, the editor needs to
+  // see at a glance that a marker may already have been actioned in a later
+  // render. ASCII only — see the note above about Resolve's marker UI.
+  const olderCut = _isOlderCutComment(comment, primaryAssetId);
+  const versionTag = olderCut
+    ? (typeof comment.versionNumber === 'number' ? ` [v${comment.versionNumber}]` : ' [older cut]')
+    : '';
+  const name = `${author} - ${_formatHMS(comment.timestamp)}${versionTag}`;
 
   let note = comment.text || '';
   const replies = Array.isArray(comment.replies) ? comment.replies : [];
@@ -198,6 +219,9 @@ function _formatTargetComment(comment) {
     duration_s: typeof comment.duration === 'number' ? comment.duration : null,
     name,
     note,
+    // Report-only provenance — the resolve worker ignores unknown keys.
+    versionNumber: typeof comment.versionNumber === 'number' ? comment.versionNumber : null,
+    olderCut,
   };
 }
 
@@ -2763,20 +2787,33 @@ app.whenReady().then(() => {
         }
       }
 
-      // 2. Group by timelineUid; keep the latest by renderedAt across all
-      //    LPOS projects in the pool. Comments live on the current cut.
-      const latestByUid = new Map();
+      // 2. Group by timelineUid, keeping EVERY asset tethered to that uid
+      //    (newest render first), not just the newest one.
+      //
+      //    The old code kept only the latest asset per uid on the theory that
+      //    "comments live on the current cut". They don't: a re-render that
+      //    lands as a separate LPOS asset leaves the reviewer's notes on the
+      //    asset they were actually watching, and that asset then dropped out
+      //    of the pull entirely. Same class of miss as the version drift the
+      //    LPOS route now handles internally — one uid can fan out to several
+      //    assets, each of which can carry several versions of comments.
+      const entriesByUid = new Map();
       for (const entry of pool) {
         const er = entry.asset.editpanelRender;
         if (!er || !er.timelineUid) continue;
-        const existing = latestByUid.get(er.timelineUid);
-        if (!existing) { latestByUid.set(er.timelineUid, entry); continue; }
-        const a = Date.parse(existing.asset.editpanelRender.renderedAt) || 0;
-        const b = Date.parse(er.renderedAt) || 0;
-        if (b > a) latestByUid.set(er.timelineUid, entry);
+        const list = entriesByUid.get(er.timelineUid) || [];
+        list.push(entry);
+        entriesByUid.set(er.timelineUid, list);
+      }
+      // Newest render first per uid — the first entry supplies the timeline's
+      // display metadata (fps, start TC, name) and wins ties on duplicate
+      // comment ids during the merge below.
+      for (const list of entriesByUid.values()) {
+        list.sort((a, b) => (Date.parse(b.asset.editpanelRender.renderedAt) || 0)
+                          - (Date.parse(a.asset.editpanelRender.renderedAt) || 0));
       }
 
-      if (latestByUid.size === 0) {
+      if (entriesByUid.size === 0) {
         return {
           ok: true,
           data: {
@@ -2791,9 +2828,12 @@ app.whenReady().then(() => {
       // 3. Per-timeline reconcile. Serial — resolve worker single-threaded.
       const timelineResults = [];
       const involvedProjectNames = new Set();
-      for (const [timelineUid, entry] of latestByUid.entries()) {
+      for (const [timelineUid, entries] of entriesByUid.entries()) {
+        const entry = entries[0];               // newest render — timeline metadata source
         const er = entry.asset.editpanelRender;
-        if (entry.projectName) involvedProjectNames.add(entry.projectName);
+        for (const e of entries) {
+          if (e.projectName) involvedProjectNames.add(e.projectName);
+        }
 
         const result = {
           timelineUid,
@@ -2812,16 +2852,53 @@ app.whenReady().then(() => {
           skipped: [],
           unresolvedCount: 0,
           generalCommentsSkipped: 0,
+          // How many of this timeline's unresolved comments came from a cut
+          // other than the current one (an older asset for this uid, or an
+          // older version of the same asset). Surfaced in the report so the
+          // editor knows a marker may already have been actioned.
+          olderCutCount: 0,
+          // Every LPOS asset consulted for this timeline, newest render first.
+          assetIds: entries.map(e => e.asset.assetId),
+          assetErrors: [],
           error: null,
         };
 
         try {
-          const commentsResp = await lposClient.getAssetComments(entry.projectId, entry.asset.assetId);
-          const allComments = Array.isArray(commentsResp?.comments) ? commentsResp.comments : [];
+          // Merge the comment sets of EVERY asset tethered to this timeline.
+          // Deduped by Frame.io comment id (the marker tether key) with the
+          // newest render winning, since `entries` is newest-first. One asset
+          // failing must not lose the others' comments — record and continue.
+          const byCommentId = new Map();
+          for (const e of entries) {
+            let resp;
+            try {
+              resp = await lposClient.getAssetComments(e.projectId, e.asset.assetId);
+            } catch (err) {
+              result.assetErrors.push({
+                assetId: e.asset.assetId,
+                error: (err && (err.error?.message || err.message)) || String(err),
+              });
+              continue;
+            }
+            const list = Array.isArray(resp?.comments) ? resp.comments : [];
+            for (const c of list) {
+              if (!c || !c.frameioCommentId) continue;
+              if (byCommentId.has(c.frameioCommentId)) continue;
+              byCommentId.set(c.frameioCommentId, { ...c, sourceAssetId: e.asset.assetId });
+            }
+          }
+          // Every asset we asked failed — surface it rather than reporting a
+          // clean "no comments" run.
+          if (byCommentId.size === 0 && result.assetErrors.length === entries.length) {
+            throw new Error(result.assetErrors[0].error);
+          }
+
+          const allComments = Array.from(byCommentId.values());
           const unresolved = allComments.filter(c => !c.completed);
-          const formatted = unresolved.map(_formatTargetComment);
+          const formatted = unresolved.map(c => _formatTargetComment(c, entry.asset.assetId));
           result.unresolvedCount = unresolved.length;
           result.generalCommentsSkipped = formatted.filter(c => c === null).length;
+          result.olderCutCount = unresolved.filter(c => _isOlderCutComment(c, entry.asset.assetId)).length;
           const targetComments = formatted.filter(c => c !== null);
 
           // Index target_comments by commentId so we can decorate placed/kept
@@ -2863,6 +2940,11 @@ app.whenReady().then(() => {
                 authorAvatar: raw?.authorAvatar ?? null,
                 createdAt:   raw?.createdAt ?? null,
                 replies:     Array.isArray(raw?.replies) ? raw.replies : [],
+                // Provenance so the report can badge a note that came from an
+                // older cut rather than the render currently on this timeline.
+                versionNumber: target?.versionNumber ?? (typeof raw?.versionNumber === 'number' ? raw.versionNumber : null),
+                olderCut:      target?.olderCut ?? false,
+                sourceAssetId: raw?.sourceAssetId ?? null,
               };
             };
             // 'removed' records have no target/raw data — the comment isn't in
@@ -2917,6 +2999,8 @@ app.whenReady().then(() => {
       const totalRemoved = timelineResults.reduce((s, r) => s + r.removed.length, 0);
       const totalKept    = timelineResults.reduce((s, r) => s + r.kept.length, 0);
       const totalSkipped = timelineResults.reduce((s, r) => s + (Array.isArray(r.skipped) ? r.skipped.length : 0), 0);
+      const totalOlderCut = timelineResults.reduce((s, r) => s + (r.olderCutCount || 0), 0);
+      const totalAssetsScanned = timelineResults.reduce((s, r) => s + (Array.isArray(r.assetIds) ? r.assetIds.length : 0), 0);
       const involved = Array.from(involvedProjectNames).filter(Boolean);
       const projectLabel = involved.length === 0
         ? scopeLabel
@@ -2941,8 +3025,11 @@ app.whenReady().then(() => {
               scope: scopeKind,
               resolveProject: resolveProjectName,
               scannedCount,                       // null in scoped mode
-              matchedCount: latestByUid.size,
+              matchedCount: entriesByUid.size,
               totalPlaced, totalRemoved, totalKept, totalSkipped,
+              // Fanout stats: how many LPOS assets backed those timelines, and
+              // how many notes came from a cut other than the current one.
+              totalAssetsScanned, totalOlderCut,
               involvedProjectNames: involved,
               generatedAt: new Date().toISOString(),
               // 5c.8: flag aggregate so the report can tell the editor to sort
@@ -2955,6 +3042,7 @@ app.whenReady().then(() => {
           const timelineItems = timelineResults
             .filter(r => r.placed.length > 0 || r.removed.length > 0 || r.kept.length > 0
                       || (Array.isArray(r.skipped) && r.skipped.length > 0)
+                      || (Array.isArray(r.assetErrors) && r.assetErrors.length > 0)
                       || r.error)
             .map(r => ({ key: r.timelineUid, data: { kind: 'timeline', ...r } }));
           jobsDb.initRun(jobId, 'comment_pull', label, [summaryItem, ...timelineItems], { projectName: projectLabel });
@@ -2967,7 +3055,9 @@ app.whenReady().then(() => {
           jobId,
           timelines: timelineResults,
           scannedCount,
-          matchedCount: latestByUid.size,
+          matchedCount: entriesByUid.size,
+          totalAssetsScanned,
+          totalOlderCut,
           totalPlaced,
           totalRemoved,
           totalKept,

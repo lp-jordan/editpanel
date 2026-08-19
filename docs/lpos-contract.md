@@ -38,3 +38,25 @@ placement when it is missing.
 
 The mark-complete PATCH (`.../comments/:commentId`) accepts either id, so
 EditPanel passes the same `frameioCommentId` it already keys markers on.
+
+### Coverage: all versions, all assets behind a timeline (2026-08-19)
+
+The route reads **every version** of the asset, not just the current one, and
+freshens each version's thread from Frame.io before returning. A re-render mints
+a new asset version and a new Frame.io file, so notes stay pinned to the cut the
+reviewer was watching; the old current-version-only read made those invisible to
+EditPanel (the LPOS browser UI has version chips to compensate — EditPanel has
+no such control). Each comment therefore also carries:
+
+- `assetVersionId` — the version the note was left on
+- `versionNumber` — that version's number, or `null` if unknown
+- `isCurrentVersion` — false when the note came from a superseded cut
+
+and the response carries `currentVersionId` + `versionCount`.
+
+EditPanel closes the matching gap on its side: a timeline uid can be tethered to
+more than one LPOS asset (each re-render pushed as its own asset), so the pull
+now queries **all** of them and merges by `frameioCommentId`, newest render
+winning. Notes from a superseded cut get a `[vN]` suffix on the Resolve marker
+name and an "older cut" badge in the pull report — they may already have been
+actioned in a later render.
