@@ -4664,3 +4664,254 @@ button.status-bar-chip-btn:hover {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-strong);
 }
+
+/* ─── Feedback / Feature Request overlay ─────────────────────────────────────
+   Editor-facing modal opened from the status-bar Feedback button. Submits to
+   the shared LPOS Wish List; every instance polls the same list. Centered
+   modal over a dim backdrop, mirroring the result-overlay visual language. */
+
+.status-bar-feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 4px;
+}
+
+.status-bar-feedback-btn svg {
+  opacity: 0.85;
+}
+
+.feedback-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 85; /* above other overlays (80) + slideout console */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  background: rgba(6, 6, 8, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: page-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  -webkit-app-region: no-drag;
+}
+
+.feedback-panel {
+  width: min(560px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(circle at 12% 0%, var(--page-glow-gold), transparent 34%),
+    linear-gradient(180deg, #1a1a1c 0%, var(--page-bg) 60%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md, 18px);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.feedback-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.feedback-header-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: -0.01em;
+}
+
+.feedback-header-title svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.feedback-close {
+  appearance: none;
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.feedback-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.feedback-intro {
+  margin: 0;
+  padding: 12px 18px 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.feedback-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 18px 4px;
+  flex-shrink: 0;
+}
+
+.feedback-input,
+.feedback-textarea {
+  width: 100%;
+  appearance: none;
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 12px);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.82rem;
+  padding: 9px 11px;
+  transition: border-color 140ms ease;
+}
+
+.feedback-textarea {
+  resize: vertical;
+  min-height: 58px;
+  line-height: 1.45;
+}
+
+.feedback-input:focus,
+.feedback-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.feedback-input::placeholder,
+.feedback-textarea::placeholder {
+  color: var(--muted-soft);
+}
+
+.feedback-input:disabled,
+.feedback-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.feedback-submit {
+  align-self: flex-end;
+  margin-top: 2px;
+}
+
+.feedback-notice {
+  margin: 0;
+  padding: 4px 18px 0;
+  font-size: 0.74rem;
+  color: var(--accent-strong);
+}
+
+.feedback-error {
+  margin: 0;
+  padding: 4px 18px 0;
+  font-size: 0.74rem;
+  color: var(--danger);
+}
+
+.feedback-list {
+  padding: 8px 18px 18px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 60px;
+}
+
+.feedback-list section + section {
+  margin-top: 12px;
+}
+
+.feedback-section-label {
+  margin: 6px 0 4px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted-soft);
+}
+
+.feedback-empty {
+  margin: 0;
+  padding: 18px 0;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--muted-soft);
+}
+
+.feedback-row {
+  display: flex;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.feedback-row:last-child {
+  border-bottom: none;
+}
+
+.feedback-status-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.feedback-status-dot.is-done {
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(151, 185, 137, 0.16);
+}
+
+.feedback-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.feedback-row--done .feedback-row-title {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.feedback-row-title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-strong);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.feedback-row-desc {
+  margin: 2px 0 0;
+  font-size: 0.76rem;
+  color: var(--muted-soft);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.feedback-row-meta {
+  margin: 3px 0 0;
+  font-size: 0.7rem;
+  color: var(--muted-soft);
+  opacity: 0.7;
+}

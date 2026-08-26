@@ -2690,6 +2690,46 @@ app.whenReady().then(() => {
     }
   });
 
+  // ─── Feature requests / Wish List ──────────────────────────────────────────
+  // Editors file feature requests from the Feedback button; the LPOS owner
+  // reviews them in the dashboard Wish List. The list is shared LPOS-side, so
+  // every EditPanel instance sees the same requests + status.
+  ipcMain.handle('lpos:wishes-list', async () => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    try {
+      const data = await lposClient.listWishes();
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('lpos:wishes-create', async (_, payload) => {
+    if (!lposClient || !lposClient.isConfigured()) {
+      return { ok: false, error: 'LPOS not configured' };
+    }
+    const title = (payload && payload.title || '').trim();
+    if (!title) {
+      return { ok: false, error: 'A title is required' };
+    }
+    try {
+      // Stamp the submitting machine so the dashboard shows which editor raised
+      // it. Prefer the user's configured display name, fall back to hostname.
+      const prefs = controlPlane ? controlPlane.getPreferences() : {};
+      const instance = (prefs && (prefs.displayName || prefs.epMachineName)) || os.hostname();
+      const data = await lposClient.createWish({
+        title,
+        description: (payload && payload.description || '').trim() || undefined,
+        instance
+      });
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   // ─── Phase 5c.3 + 5c.5 (2026-06-02): Pull comments → place markers ────────
   // One-click sync from the Edit tab. Auto-discovers which LPOS projects the
   // current Resolve project's timelines were uploaded to via the editorial_links

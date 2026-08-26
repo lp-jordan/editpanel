@@ -183,6 +183,7 @@ function App() {
   const [workerAvailability, setWorkerAvailability] = React.useState({ resolve: true, media: true });
   const [dashboard, setDashboard] = React.useState({ jobs: [], logs_by_job_step: {} });
   const [jobPanelOpen, setJobPanelOpen] = React.useState(false);
+  const [feedbackOpen, setFeedbackOpen] = React.useState(false);
   const [activeResultJobId, setActiveResultJobId] = React.useState(null);
   const [atemIngestOpen, setAtemIngestOpen]   = React.useState(false);
   const [exportOpen, setExportOpen]           = React.useState(false);
@@ -930,8 +931,19 @@ function App() {
             {lposStatus === 'unconfigured' && <span className="status-bar-chip">{lposUrl ? 'Connecting…' : 'Not configured'}</span>}
           </div>
 
-          {/* Right: Console toggle */}
+          {/* Right: Feedback + Console toggles */}
           <div className="status-bar-right">
+            <button
+              type="button"
+              className="status-bar-console-btn status-bar-feedback-btn"
+              onClick={() => setFeedbackOpen(true)}
+              title="Feedback & feature requests"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              Feedback
+            </button>
             <button
               type="button"
               className="status-bar-console-btn"
@@ -1313,6 +1325,7 @@ function App() {
         />
       )}
       <SlideoutConsole log={log} open={consoleOpen} onToggle={setConsoleOpen} />
+      <FeedbackOverlay open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
     </div>
   );
 }

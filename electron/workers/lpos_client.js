@@ -452,6 +452,27 @@ class LposClient {
     );
   }
 
+  // ── Feature requests / Wish List ─────────────────────────────────────────
+  //
+  // The shared LPOS Wish List, surfaced in EditPanel as a Feedback button so
+  // editors can file feature requests / to-dos that the LPOS owner reviews in
+  // the dashboard. Reads return the full list (all instances see the same
+  // thing); writes are stamped source='editpanel' server-side and attributed to
+  // this machine's linked LPOS user.
+
+  /** List all wishes (feature requests) — shared across every EditPanel instance. */
+  async listWishes() {
+    return this._request('GET', '/api/ep/wishes');
+  }
+
+  /**
+   * Submit a feature request from this machine.
+   * @param {{ title: string, description?: string, instance?: string }} payload
+   */
+  async createWish(payload) {
+    return this._request('POST', '/api/ep/wishes', { body: payload });
+  }
+
   // B2-related methods removed 2026-05-27. Cold-storage monitoring &
   // bucket management moved entirely LPOS-side — see lpos-dashboard
   // /settings/storage. EditPanel no longer touches B2.

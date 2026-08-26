@@ -189,6 +189,14 @@ contextBridge.exposeInMainWorld('lposAPI', {
     ipcRenderer.on('ep-link-result', handler);
     return () => ipcRenderer.removeListener('ep-link-result', handler);
   },
+  /** List all feature requests / wishes (shared across every EditPanel instance). */
+  listWishes() {
+    return ipcRenderer.invoke('lpos:wishes-list');
+  },
+  /** Submit a feature request. @param {{title: string, description?: string}} payload */
+  createWish(payload) {
+    return ipcRenderer.invoke('lpos:wishes-create', payload);
+  },
 });
 
 contextBridge.exposeInMainWorld('atemAPI', {
