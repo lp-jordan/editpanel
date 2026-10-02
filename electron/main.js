@@ -160,9 +160,9 @@ const workers = {
   // platform worker removed — editpanel uploads only to LPOS, never Frame.io directly
 };
 
-// ─── Phase 5c.3 helpers: format Frame.io comments for the sync_comment_markers
+// ─── Phase 5c.3 helpers: format LPOS comments for the sync_comment_markers
 // helper. Lives at module scope so the IPC handler stays focused on
-// orchestration. Schema match: FrameIOComment (lpos-dashboard) → target_comment
+// orchestration. Schema match: LPOS EP comments route → target_comment
 // (sync_comment_markers.py).
 function _formatHMS(seconds) {
   const total = Math.max(0, Math.floor(seconds || 0));
@@ -185,18 +185,13 @@ function _isOlderCutComment(comment, primaryAssetId) {
 }
 
 function _formatTargetComment(comment, primaryAssetId) {
-  // Frame.io general comments have null timestamp — they can't be anchored to a
+  // General comments have a null timestamp — they can't be anchored to a
   // timeline frame, so skip them entirely (orchestrator counts these separately
   // so the editor sees they exist but weren't placed).
   if (typeof comment?.timestamp !== 'number') return null;
-  // Frame.io comment-decoupling Step 3: `id` is now the stable LPOS comment_id,
-  // and the Frame.io comment id is a separate `frameioCommentId` field. Our
-  // Resolve markers tether on the Frame.io id (custom_data `frameio:{...}`), so
-  // key the marker on frameioCommentId — NOT `id` — to keep already-placed
-  // markers reconciling. The LPOS EP route filters out comments with a null
-  // frameioCommentId, but guard defensively: skip placement if it's missing
-  // rather than tagging a marker with null/undefined.
-  if (!comment.frameioCommentId) return null;
+  // `id` is the stable LPOS comment_id — the marker tag (custom_data
+  // `lpos:{id}`). Never tag a marker with null/undefined.
+  if (!comment.id) return null;
 
   // ASCII-only name. Resolve's marker UI renders multibyte sequences as Latin-1
   // (the leading UTF-8 C2 byte shows as "Â", so "·" became "Â·"). 5c.8 fix:
@@ -219,8 +214,11 @@ function _formatTargetComment(comment, primaryAssetId) {
   }
 
   return {
-    // The Frame.io comment id — this is the marker tether key (frameio:{...}).
-    commentId: comment.frameioCommentId,
+    // LPOS comment_id — the marker tag (lpos:{...}).
+    commentId: comment.id,
+    // Pre-2026-10-02 markers were tagged frameio:{...}; the sync helper uses
+    // this to re-tag them in place rather than placing a duplicate.
+    legacyCommentId: comment.frameioCommentId || null,
     timestamp_s: comment.timestamp,
     duration_s: typeof comment.duration === 'number' ? comment.duration : null,
     name,
@@ -1429,7 +1427,7 @@ async function uploadOneFile(job) {
   // + fps + project name at render dispatch, fold them into a renderMeta payload
   // for the finalize call. LPOS persists this as an editorial_links row tying
   // the asset back to the Resolve timeline so editpanel (any machine) can later
-  // pull Frame.io comments onto the correct timeline. A partial tether is worse
+  // pull LPOS comments onto the correct timeline. A partial tether is worse
   // than none — if any required field is missing we omit renderMeta entirely
   // and the asset uploads as untethered.
   let renderMeta = null;
@@ -2770,8 +2768,8 @@ app.whenReady().then(() => {
   // ─── Phase 5c.3 + 5c.5 (2026-06-02): Pull comments → place markers ────────
   // One-click sync from the Edit tab. Auto-discovers which LPOS projects the
   // current Resolve project's timelines were uploaded to via the editorial_links
-  // tether — no name-matching guesswork — and reconciles frameio:* markers per
-  // timeline against the unresolved Frame.io comment set.
+  // tether — no name-matching guesswork — and reconciles comment markers per
+  // timeline against the unresolved LPOS comment set.
   //
   // Two modes:
   //   - Scoped:   pullComments(projectId, …)   — restrict to one LPOS project
@@ -2942,7 +2940,7 @@ app.whenReady().then(() => {
 
         try {
           // Merge the comment sets of EVERY asset tethered to this timeline.
-          // Deduped by Frame.io comment id (the marker tether key) with the
+          // Deduped by LPOS comment id (the marker tag) with the
           // newest render winning, since `entries` is newest-first. One asset
           // failing must not lose the others' comments — record and continue.
           const byCommentId = new Map();
@@ -2959,9 +2957,9 @@ app.whenReady().then(() => {
             }
             const list = Array.isArray(resp?.comments) ? resp.comments : [];
             for (const c of list) {
-              if (!c || !c.frameioCommentId) continue;
-              if (byCommentId.has(c.frameioCommentId)) continue;
-              byCommentId.set(c.frameioCommentId, { ...c, sourceAssetId: e.asset.assetId });
+              if (!c || !c.id) continue;
+              if (byCommentId.has(c.id)) continue;
+              byCommentId.set(c.id, { ...c, sourceAssetId: e.asset.assetId });
             }
           }
           // Every asset we asked failed — surface it rather than reporting a
@@ -2979,15 +2977,15 @@ app.whenReady().then(() => {
           const targetComments = formatted.filter(c => c !== null);
 
           // Index target_comments by commentId so we can decorate placed/kept
-          // records returned by the helper with the rich Frame.io comment data
+          // records returned by the helper with the rich comment data
           // (author, full text, replies) for the report UI. Also index the
-          // ORIGINAL raw Frame.io comment so the report can show author avatar
+          // ORIGINAL raw LPOS comment so the report can show author avatar
           // and the un-mangled text/replies separately.
-          // Both maps key on the Frame.io comment id (commentId), since that's
+          // Both maps key on the LPOS comment id (commentId), since that's
           // what the sync helper echoes back in placed/kept/removed records.
           const targetByCid = new Map(targetComments.map(t => [t.commentId, t]));
           const rawByCid = new Map(
-            unresolved.filter(c => c && c.frameioCommentId).map(c => [c.frameioCommentId, c])
+            unresolved.filter(c => c && c.id).map(c => [c.id, c])
           );
 
           const syncRes = await sendWorkerRequest({
@@ -3009,7 +3007,7 @@ app.whenReady().then(() => {
                 commentId: cid || null,
                 frame: typeof rec?.frame === 'number' ? rec.frame : null,
                 // Target shape carries the marker name/note we computed; raw
-                // carries the un-flattened Frame.io fields for richer display.
+                // carries the un-flattened LPOS fields for richer display.
                 timestamp_s: target?.timestamp_s ?? (raw?.timestamp ?? null),
                 duration_s:  target?.duration_s  ?? (raw?.duration  ?? null),
                 text:        raw?.text ?? '',
@@ -3025,7 +3023,7 @@ app.whenReady().then(() => {
               };
             };
             // 'removed' records have no target/raw data — the comment isn't in
-            // the current Frame.io set. Pass through commentId+frame; the
+            // the current unresolved LPOS set. Pass through commentId+frame; the
             // report shows "Removed: <commentId> (no longer in LPOS)".
             const passThrough = (rec) => ({
               commentId: rec?.commentId || null,
@@ -3174,8 +3172,8 @@ app.whenReady().then(() => {
     }
   });
 
-  // Phase 5c.10 (2026-06-03): per-comment Mark-complete button. Writes the
-  // completion through to Frame.io via LPOS, then immediately removes the
+  // Phase 5c.10 (2026-06-03): per-comment Mark done button. Writes the
+  // completion to the LPOS comments system, then immediately removes the
   // local marker so the timeline visual state stays in sync with the report.
   // Local marker removal is best-effort — the upstream write is the source
   // of truth, and the next Pull Comments would clean up regardless.
@@ -3697,7 +3695,7 @@ app.whenReady().then(() => {
 
   // Push an orphan (state='complete_unassigned', project_id IS NULL) into the
   // chosen LPOS project. Reuses the existing chunked uploader and the same
-  // upload→registration→Frame.io pipeline that editpanel-queued exports use.
+  // upload→registration pipeline that editpanel-queued exports use.
   // Returns immediately after the state transition; the upload itself runs in
   // the background and reports through 'export-reconciled' events (state =
   // 'uploading' → 'delivered'/'partial'/'failed').

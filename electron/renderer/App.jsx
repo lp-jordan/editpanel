@@ -654,7 +654,7 @@ function App() {
     setExportOpen(true);
   }, [appendLog]);
 
-  // Phase 5c.3 + 5c.5 (2026-06-02): pull Frame.io comments → Resolve markers.
+  // Phase 5c.3 + 5c.5 (2026-06-02): pull LPOS comments → Resolve markers.
   // No project picker, no name match — the main process auto-discovers which
   // LPOS project(s) the current Resolve project's timelines were uploaded to
   // by walking timelineUids through the editorial_links tether. Editor clicks
@@ -840,7 +840,7 @@ function App() {
           requiresResolve: true
         },
         {
-          // Phase 5c.4 (2026-06-02): Frame.io comments → Resolve markers.
+          // Phase 5c.4 (2026-06-02): LPOS comments → Resolve markers.
           // Matches the current Resolve project to its LPOS counterpart by
           // name, then fans across every editpanel-uploaded timeline,
           // placing Red markers for unresolved comments and removing

@@ -1,9 +1,12 @@
-"""Phase 5c.10 (2026-06-03): delete one frameio:* marker from a specific
-timeline by commentId.
+"""Delete one comment marker from a specific timeline by commentId.
 
-Called by the orchestrator immediately after a successful Mark-complete
-through-write to LPOS, so the marker disappears from the timeline at the
-same moment the comment is resolved upstream — no stale visual cue.
+Called by the orchestrator immediately after a successful Mark done write to
+LPOS, so the marker disappears from the timeline at the same moment the comment
+is resolved — no stale visual cue.
+
+Markers are tagged `lpos:{commentId}`; markers placed before 2026-10-02 carry
+`frameio:{id}`. Both tags are tried, so a Mark done from a report saved by an
+older build (whose commentId is the legacy id) still clears its marker.
 
 Lighter-weight than running a full sync_comment_markers cycle just to drop
 one marker.
@@ -21,7 +24,7 @@ Output:
 from typing import Any, Dict, Optional
 
 
-FRAMEIO_TAG_PREFIX = "frameio:"
+TAG_PREFIXES = ("lpos:", "frameio:")
 
 
 def _find_timeline_by_uid(project: Any, target_uid: str) -> Optional[Any]:
@@ -37,6 +40,27 @@ def _find_timeline_by_uid(project: Any, target_uid: str) -> Optional[Any]:
         except Exception:
             continue
     return None
+
+
+def _delete_tagged(timeline: Any, custom_data: str) -> bool:
+    # DeleteMarkerByCustomData is the cleanest path. If Resolve doesn't have
+    # it (older builds), fall back to scanning + deleting by frame.
+    try:
+        if timeline.DeleteMarkerByCustomData(custom_data):
+            return True
+    except Exception:
+        pass
+    try:
+        markers = timeline.GetMarkers() or {}
+        for frame, marker in markers.items():
+            if not isinstance(marker, dict):
+                continue
+            cd = marker.get("customData") or marker.get("custom_data") or ""
+            if cd == custom_data:
+                return bool(timeline.DeleteMarkerAtFrame(int(frame)))
+    except Exception:
+        pass
+    return False
 
 
 def handle_delete_comment_marker(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -62,32 +86,10 @@ def handle_delete_comment_marker(payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    custom_data = f"{FRAMEIO_TAG_PREFIX}{comment_id}"
-
-    # DeleteMarkerByCustomData is the cleanest path. If Resolve doesn't have
-    # it (older builds), fall back to scanning + deleting by frame.
     deleted = False
-    try:
-        deleted = bool(timeline.DeleteMarkerByCustomData(custom_data))
-    except Exception:
-        deleted = False
-
-    if not deleted:
-        # Fallback path. GetMarkers returns {frame: marker_dict}; find ours and
-        # call DeleteMarkerAtFrame.
-        try:
-            markers = timeline.GetMarkers() or {}
-            for frame, marker in markers.items():
-                if not isinstance(marker, dict):
-                    continue
-                cd = marker.get("customData") or marker.get("custom_data") or ""
-                if cd == custom_data:
-                    try:
-                        deleted = bool(timeline.DeleteMarkerAtFrame(int(frame)))
-                    except Exception:
-                        deleted = False
-                    break
-        except Exception:
-            pass
+    for prefix in TAG_PREFIXES:
+        if _delete_tagged(timeline, f"{prefix}{comment_id}"):
+            deleted = True
+            break
 
     return {"result": True, "deleted": bool(deleted), "timeline_name": timeline_name}

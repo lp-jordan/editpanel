@@ -26,7 +26,7 @@ const COMMAND_OWNER = Object.freeze({
   lp_base_export: WORKERS.resolve,
   export_preflight: WORKERS.resolve,
   shutdown: WORKERS.resolve,
-  // Phase 5c.2 (2026-06-02): Frame.io comment-marker reconciliation per timeline.
+  // Phase 5c.2 (2026-06-02): LPOS comment-marker reconciliation per timeline.
   sync_comment_markers: WORKERS.resolve,
   // Phase 5c.5 (2026-06-02): enumerate current Resolve project's timelines for
   // auto-discovering which LPOS project(s) a Pull Comments call should target.
@@ -34,10 +34,10 @@ const COMMAND_OWNER = Object.freeze({
   // Phase 5c.8 (2026-06-02): flag timeline MediaPoolItems with a color after a
   // Pull Comments run so the editor can sort the bin by flag.
   flag_timelines: WORKERS.resolve,
-  // Phase 5c.10 (2026-06-03): per-comment Jump and Mark-complete buttons in
+  // Phase 5c.10 (2026-06-03): per-comment Jump and Mark done buttons in
   // the CommentPullReport. focus_comment switches timeline + sets playhead;
-  // delete_comment_marker removes a single frameio:* marker after the
-  // upstream Frame.io completion lands.
+  // delete_comment_marker removes a single comment marker after the LPOS
+  // completion lands.
   focus_comment: WORKERS.resolve,
   delete_comment_marker: WORKERS.resolve,
   // ExportDeliverOverlay dropdowns (2026-06-08, v1.1.16): enumerate the

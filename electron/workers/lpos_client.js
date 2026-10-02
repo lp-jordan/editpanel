@@ -182,7 +182,7 @@ class LposClient {
   }
 
   /**
-   * Get Frame.io comments for an asset (for comment markers).
+   * Get an asset's LPOS comments, all versions (for comment markers).
    * @param {string} projectId
    * @param {string} assetId
    */
@@ -426,22 +426,15 @@ class LposClient {
    * Phase 5c.10 (2026-06-03): toggle the completed/resolved state of a
    * comment from editpanel.
    *
-   * As of 2026-06-09 (local-comments refactor Phase 2, lpos-dashboard
-   * commit 02f75f5), the EP-token PATCH endpoint became local-first: LPOS
-   * flips the local media_comments row instantly and enqueues a
-   * media_comment_mirror_jobs row that the MediaCommentMirrorService
-   * worker drains to Frame.io eventually-consistently. The wire shape
-   * here is unchanged — the route still returns {ok, completed, commentId}
-   * — but the semantics are now "200 = local write committed, mirror
-   * pending" rather than "200 = Frame.io PATCH succeeded".
+   * Writes the LPOS comments system only (the source of truth); LP Share
+   * picks the change up on its next sync. Returns {ok, completed, commentId}.
    *
-   * The `commentId` may be a Frame.io comment id (what editpanel's
-   * Pull Comments report carries today) or a local LPOS comment_id; the
-   * server resolves either via getMediaCommentByEitherId.
+   * `commentId` is the LPOS comment_id. The server also accepts a legacy
+   * Frame.io id, which reports saved by builds before 2026-10-02 carry.
    *
    * @param {string} projectId
    * @param {string} assetId
-   * @param {string} commentId  Frame.io OR local id — server accepts both
+   * @param {string} commentId  LPOS comment_id (legacy id also accepted)
    * @param {boolean} completed
    */
   async setCommentCompleted(projectId, assetId, commentId, completed) {

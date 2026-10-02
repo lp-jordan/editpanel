@@ -145,7 +145,7 @@ contextBridge.exposeInMainWorld('lposAPI', {
     return ipcRenderer.invoke('lpos:asset-comments', projectId, assetId);
   },
   /**
-   * Phase 5c.3+5c.4 (2026-06-02): pull Frame.io comments → Resolve markers.
+   * Phase 5c.3+5c.4 (2026-06-02): pull LPOS comments → Resolve markers.
    * Fans across every editpanel-rendered timeline in the project (latest upload
    * wins per timelineUid), fetches unresolved comments, formats name/note
    * (replies inlined), and calls sync_comment_markers per timeline. Returns
@@ -167,9 +167,9 @@ contextBridge.exposeInMainWorld('lposAPI', {
     return ipcRenderer.invoke('comments:focus', payload);
   },
   /**
-   * Phase 5c.10 (2026-06-03): toggle a Frame.io comment's completed state via
-   * LPOS, and (when completing) delete the corresponding local marker. The
-   * editor's CommentPullReport's "Mark complete" button funnels through here.
+   * Phase 5c.10 (2026-06-03): toggle an LPOS comment's done state, and (when
+   * completing) delete the corresponding local marker. The CommentPullReport's
+   * "Mark done" button funnels through here.
    * @param {{projectId: string, assetId: string, commentId: string, completed: boolean, timelineUid?: string}} payload
    */
   setCommentCompleted(payload) {

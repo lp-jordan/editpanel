@@ -267,7 +267,7 @@ function CommentPullReport({ jobId, run, onClose, resolveProject, resolveConnect
   const [expanded, setExpanded] = React.useState({}); // timelineUid -> bool
   const [sortMode, setSortMode] = React.useState('timecode'); // 'timecode' | 'newest'
   // 5c.10: per-comment local completion state (commentId -> 'completing' | 'completed' | 'reopening' | 'open').
-  // The actual upstream truth is Frame.io's `completed` flag; this is local
+  // The actual truth is the LPOS comment's `completed` flag; this is local
   // mirror state for the UI's optimistic-then-confirmed transition.
   const [completionState, setCompletionState] = React.useState({});
   const [busyComments, setBusyComments] = React.useState({}); // commentId -> bool

@@ -1,19 +1,25 @@
-"""Phase 5c.2 (2026-06-02): desired-state reconciliation of Frame.io comment
-markers on a Resolve timeline.
+"""Desired-state reconciliation of LPOS review-comment markers on a Resolve
+timeline.
 
-This command is the only writer of `frameio:*`-tagged markers in editpanel. The
-orchestrator (electron/main.js, 5c.3) gathers comments from LPOS, drops anything
-already marked completed, formats name/note, and hands the unresolved set to
-this helper as the "desired state" for the timeline. The helper:
+This command is the only writer of comment markers in editpanel. The
+orchestrator (electron/main.js) gathers comments from the LPOS comments system,
+drops anything already marked done, formats name/note, and hands the unresolved
+set to this helper as the "desired state" for the timeline. The helper:
 
   1. Locates the timeline by uid (Resolve 20: Timeline.GetUniqueId()).
-  2. Reads existing markers and identifies the frameio:* tagged subset.
-  3. Removes any frameio:* marker whose commentId isn't in the target set —
-     covers BOTH "comment now completed in LPOS" AND "comment deleted upstream"
-     in one rule.
+  2. Reads existing markers and identifies the comment-tagged subset.
+  3. Removes any comment marker whose comment isn't in the target set —
+     covers BOTH "comment now done in LPOS" AND "comment deleted" in one rule.
   4. Adds any target comment that doesn't already have a marker.
-  5. Leaves markers whose commentId is still in target untouched — preserves
+  5. Leaves markers whose comment is still in target untouched — preserves
      manual note edits the editor made between pulls.
+
+Marker tag (customData): `lpos:{commentId}`, where commentId is the stable LPOS
+comment_id. Markers placed before 2026-10-02 are tagged `frameio:{frameioId}`;
+when a target comment carries that id as `legacyCommentId`, the legacy marker is
+re-tagged in place (same frame, colour, name, note and duration) instead of
+being removed and duplicated. Legacy markers with no matching target comment
+are removed like any other resolved comment.
 
 Out-of-range comment behaviour (locked 2026-06-02): no pre-check on
 GetEndFrame(). Just attempt the AddMarker and aggregate the API's return value
@@ -27,11 +33,12 @@ Input payload (from orchestrator):
     "fps": 23.976,              # captured at render time, NOT current timeline fps
     "target_comments": [
       {
-        "commentId":   "fio-...",  # used as the frameio:{...} tether tag
-        "timestamp_s": 42.3,        # seconds from output frame 0
-        "duration_s":  4.1 | None,
-        "name":        "Jane · 00:00:42",
-        "note":        "Audio drop\n  ↳ Bob: confirmed at 0:42"
+        "commentId":       "c_...",      # LPOS comment_id → lpos:{...} tag
+        "legacyCommentId": "fio-..." | None,  # pre-2026-10-02 frameio:{...} tag, if any
+        "timestamp_s":     42.3,         # seconds from output frame 0
+        "duration_s":      4.1 | None,
+        "name":            "Jane - 0:42",
+        "note":            "Audio drop\n  ↳ Bob: confirmed at 0:42"
       },
       ...
     ]
@@ -41,23 +48,19 @@ Output:
   Success → {
     "result":   True,
     "placed":   [{"commentId": str, "frame": int}, ...],   # newly added this pull
-    "removed":  [{"commentId": str, "frame": int}, ...],   # deleted (completed or upstream-deleted)
-    "kept":     [{"commentId": str, "frame": int}, ...],   # left untouched (still in target)
+    "removed":  [{"commentId": str, "frame": int}, ...],   # deleted (done or deleted in LPOS)
+    "kept":     [{"commentId": str, "frame": int}, ...],   # left in place (still in target; includes re-tagged legacy markers)
     "skipped":  [{"commentId": str, "frame": int, "reason": str}, ...],
     "timeline_name": str
   }
   Timeline missing → { "result": False, "reason": "timeline_not_found" }
-
-5c.7 (2026-06-02): placed/removed/kept now return record lists, not just counts.
-The orchestrator merges these against the original target_comments to surface
-which specific comments landed where in the CommentPullReport UI. Counts are
-trivially derivable as .length.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
 
 
-FRAMEIO_TAG_PREFIX = "frameio:"
+TAG_PREFIX = "lpos:"
+LEGACY_TAG_PREFIX = "frameio:"
 MARKER_COLOR = "Red"
 
 
@@ -85,32 +88,69 @@ def _find_timeline_by_uid(project: Any, target_uid: str) -> Optional[Any]:
     return None
 
 
-def _extract_existing_frameio_markers(timeline: Any) -> Dict[str, Tuple[int, Dict[str, Any]]]:
-    """Read every marker on the timeline, filter to those whose customData carries
-    the `frameio:` prefix, and return {commentId -> (frame, marker_dict)}.
+def _extract_comment_markers(timeline: Any) -> Tuple[
+        Dict[str, Tuple[int, Dict[str, Any]]], Dict[str, Tuple[int, Dict[str, Any]]]]:
+    """Read every marker on the timeline and split the comment-tagged ones into
+    ({lposId -> (frame, marker)}, {legacyFrameioId -> (frame, marker)}).
 
     Resolve's GetMarkers() returns a {frame -> marker_dict} mapping. Marker dicts
     have used both `customData` and `custom_data` keys across builds — read both
-    defensively. Markers without a frameio:* tag are left alone (manual editor
-    markers, recording/note markers from other phases).
+    defensively. Untagged markers are left alone (manual editor markers,
+    recording/note markers from other phases).
     """
     try:
         markers = timeline.GetMarkers() or {}
     except Exception:
-        return {}
-    result: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+        return {}, {}
+    current: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+    legacy: Dict[str, Tuple[int, Dict[str, Any]]] = {}
     for frame, marker in markers.items():
         if not isinstance(marker, dict):
             continue
-        # Defensive: Resolve has used both spellings of this field across versions.
         cd = marker.get("customData") or marker.get("custom_data") or ""
-        if not isinstance(cd, str) or not cd.startswith(FRAMEIO_TAG_PREFIX):
+        if not isinstance(cd, str):
             continue
-        comment_id = cd[len(FRAMEIO_TAG_PREFIX):].strip()
-        if not comment_id:
-            continue
-        result[comment_id] = (int(frame), marker)
-    return result
+        for prefix, bucket in ((TAG_PREFIX, current), (LEGACY_TAG_PREFIX, legacy)):
+            if cd.startswith(prefix):
+                key = cd[len(prefix):].strip()
+                if key:
+                    bucket[key] = (int(frame), marker)
+                break
+    return current, legacy
+
+
+def _delete_marker(timeline: Any, custom_data: str, frame: int) -> bool:
+    try:
+        if timeline.DeleteMarkerByCustomData(custom_data):
+            return True
+    except Exception:
+        pass
+    # Fallback: delete by frame if customData-based delete is unsupported.
+    try:
+        return bool(timeline.DeleteMarkerAtFrame(frame))
+    except Exception:
+        return False
+
+
+def _retag_legacy_marker(timeline: Any, frame: int, marker: Dict[str, Any],
+                         legacy_id: str, comment_id: str) -> bool:
+    """Swap a `frameio:` marker for an identical `lpos:` one at the same frame.
+    Resolve has no customData setter for an existing marker, so this is delete +
+    re-add with the marker's own colour/name/note/duration (the editor's edits
+    survive). Returns False if the re-add failed."""
+    if not _delete_marker(timeline, f"{LEGACY_TAG_PREFIX}{legacy_id}", frame):
+        return False
+    try:
+        duration = max(1, int(marker.get("duration") or 1))
+    except (TypeError, ValueError):
+        duration = 1
+    try:
+        return bool(timeline.AddMarker(frame, marker.get("color") or MARKER_COLOR,
+                                       str(marker.get("name") or ""),
+                                       str(marker.get("note") or ""),
+                                       duration, f"{TAG_PREFIX}{comment_id}"))
+    except Exception:
+        return False
 
 
 def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -148,32 +188,48 @@ def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
     # render-relative second X lands at frame round(X * fps_at_render) — we do
     # NOT add GetStartFrame() (that's the absolute project-coordinate frame of
     # the timeline start, which is NOT what AddMarker expects).
-    #
-    # 2026-06-02 first-cut bug: this code originally added GetStartFrame(),
-    # which for a 01:00:00:00-start timeline put markers ~86,400 frames past
-    # the visible content. AddMarker silently accepted (returned True) and
-    # the editor saw "1 placed" but no marker on the timeline. Verified by
-    # cross-checking add_marker.py which already places markers as 0-relative.
 
-    existing = _extract_existing_frameio_markers(timeline)
-    target_ids = set()
     target_by_cid: Dict[str, Dict[str, Any]] = {}
+    legacy_to_cid: Dict[str, str] = {}
     for c in target_comments:
         cid = c.get("commentId") if isinstance(c, dict) else None
         if isinstance(cid, str) and cid.strip():
-            target_ids.add(cid)
             target_by_cid[cid] = c
+            legacy = c.get("legacyCommentId")
+            if isinstance(legacy, str) and legacy.strip():
+                legacy_to_cid[legacy] = cid
+    target_ids = set(target_by_cid.keys())
+
+    existing, legacy_markers = _extract_comment_markers(timeline)
+
+    # ── Re-tag legacy frameio:* markers whose comment is still open ──────────
+    # Each becomes an lpos:* marker at the same frame and joins `existing`, so
+    # the rules below treat it exactly like a marker placed by this version.
+    # Legacy markers with no open comment (done/deleted in LPOS, or a duplicate
+    # of an lpos:* marker already present) are queued for removal.
+    skipped: List[Dict[str, Any]] = []
+    # (report id or None for a silent duplicate cleanup, frame, custom_data)
+    legacy_removals: List[Tuple[Optional[str], int, str]] = []
+    for legacy_id, (frame, marker) in legacy_markers.items():
+        cid = legacy_to_cid.get(legacy_id)
+        if cid and cid not in existing:
+            if _retag_legacy_marker(timeline, frame, marker, legacy_id, cid):
+                existing[cid] = (frame, marker)
+            # If the re-add failed, the legacy marker is already gone; the
+            # comment falls through to to_add below and is placed fresh.
+            continue
+        # cid set here means an lpos:* marker for the comment already exists —
+        # this is a stray duplicate, so clean it up without reporting a removal.
+        legacy_removals.append((None if cid else legacy_id, frame, f"{LEGACY_TAG_PREFIX}{legacy_id}"))
 
     existing_ids = set(existing.keys())
-    to_remove_ids = set(existing_ids - target_ids)  # comments now completed / deleted upstream
+    to_remove_ids = set(existing_ids - target_ids)  # comments now done / deleted in LPOS
 
-    # 5c.8 (2026-06-02) stale-marker re-placement: a marker whose underlying
-    # comment IS still in target but whose current frame is far from where it
-    # would land with correct math is treated as misplaced (almost always from
-    # the pre-5c.6 GetStartFrame bug) and re-placed. Editor manual nudges of a
-    # few seconds are preserved; nudges past tolerance are not. Without this,
-    # the 5c.6 fix can't recover already-broken markers — the reconciler would
-    # see the matching commentId and report them as kept forever.
+    # Stale-marker re-placement: a marker whose comment IS still in target but
+    # whose current frame is far from where it would land with correct math is
+    # treated as misplaced (almost always from the pre-5c.6 GetStartFrame bug)
+    # and re-placed. Editor manual nudges of a few seconds are preserved;
+    # nudges past tolerance are not.
     STALE_FRAME_TOLERANCE = 100  # frames (~4s at 24fps; well past any plausible editor nudge)
     misplaced_ids = set()
     for cid in (existing_ids & target_ids):
@@ -201,29 +257,17 @@ def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
         if cid not in misplaced_ids
     ]
 
-    # ── Remove (frameio:* markers no longer in target — completed in LPOS or
-    #    deleted upstream) ────────────────────────────────────────────────────
+    # ── Remove (markers whose comment is done or deleted in LPOS) ────────────
     removed_records: List[Dict[str, Any]] = []
-    for cid in to_remove_ids:
-        frame_for_record = existing[cid][0]
-        custom_data = f"{FRAMEIO_TAG_PREFIX}{cid}"
-        ok = False
-        try:
-            ok = bool(timeline.DeleteMarkerByCustomData(custom_data))
-        except Exception:
-            ok = False
-        if not ok:
-            # Fallback: delete by frame if customData-based delete is unsupported.
-            try:
-                ok = bool(timeline.DeleteMarkerAtFrame(frame_for_record))
-            except Exception:
-                ok = False
-        if ok:
-            removed_records.append({"commentId": cid, "frame": frame_for_record})
+    removals = [(cid, existing[cid][0], f"{TAG_PREFIX}{cid}") for cid in to_remove_ids]
+    for report_id, frame_for_record, custom_data in removals + legacy_removals:
+        if _delete_marker(timeline, custom_data, frame_for_record):
+            # Misplaced markers are re-added below and reported as placed.
+            if report_id and report_id not in misplaced_ids:
+                removed_records.append({"commentId": report_id, "frame": frame_for_record})
 
     # ── Add (target comments not yet on the timeline) ─────────────────────────
     placed_records: List[Dict[str, Any]] = []
-    skipped: List[Dict[str, Any]] = []
     for comment in to_add:
         cid = comment["commentId"]
         try:
@@ -242,7 +286,7 @@ def handle_sync_comment_markers(payload: Dict[str, Any]) -> Dict[str, Any]:
         duration_frames = max(1, int(round(duration_s * fps))) if duration_s > 0 else 1
         name = str(comment.get("name") or "")
         note = str(comment.get("note") or "")
-        custom_data = f"{FRAMEIO_TAG_PREFIX}{cid}"
+        custom_data = f"{TAG_PREFIX}{cid}"
 
         # Locked behaviour 2026-06-02: just attempt. Don't pre-check against
         # GetEndFrame — Resolve's own response is the source of truth for

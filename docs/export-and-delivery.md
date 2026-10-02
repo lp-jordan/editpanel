@@ -191,7 +191,7 @@ uploaded into that LPOS project automatically: the export tracker transitions
    and `finalize`) under `requireEpToken`. It mirrors the session-auth browser
    route but creates its own ingest-queue job, so an EditPanel upload shows up in
    the LPOS IngestTray and runs the full pipeline (register → transcode probe →
-   thumbnail → Frame.io). The live browser routes are left untouched; only the
+   thumbnail → Cloudflare). The live browser routes are left untouched; only the
    shared service layer (`finalizeUploadedAsset`, ingest queue, stores) is reused.
 3. **EditPanel uploader** (`LposClient.uploadFileToProject`): X-EP-Token,
    8 MiB chunks, resume-on-offset-mismatch, per-file progress callbacks.
