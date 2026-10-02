@@ -385,47 +385,18 @@ select,
   display: none;
 }
 
-/* Narrow-width readability pass. At ~460px wide, the default task-grid renders
-   two 200×200 squares with sub-12px body copy — readable from a desk but not
-   from a glance while editing. In anchored mode we collapse to a single full-
-   width row-style card, bump body copy, and tighten outer padding so the
-   content gets the real estate the chrome was eating. */
+/* Narrow-width pass (~460px wide). Task rows already fit a narrow window
+   (title + description left, button right), so only the outer padding
+   tightens to give content the real estate the chrome was eating. */
 
 /* Tighter outer padding — recover ~36px of horizontal space for content. */
 .app-shell.is-anchored .app-content {
   padding: 80px 14px 48px;
 }
 
-/* Single column. Drop the 1:1 aspect ratio so cards size to their content
-   instead of becoming squat squares. */
-.app-shell.is-anchored .task-grid {
-  grid-template-columns: 1fr;
-  gap: 12px;
-}
 .app-shell.is-anchored .task-card {
-  aspect-ratio: auto;
-  flex-direction: column;
-  align-items: flex-start;
-  text-align: left;
-  padding: 18px 18px 20px;
-  gap: 10px;
-}
-.app-shell.is-anchored .task-card-title {
-  font-size: 1.15rem;
-}
-/* Bump the description from 0.7rem (~11px, the offender the user called out)
-   to 0.88rem (~14px) — still secondary, but actually readable at a glance. */
-.app-shell.is-anchored .task-card-desc {
-  font-size: 0.88rem;
-  line-height: 1.45;
-  max-width: none;
-}
-.app-shell.is-anchored .task-card .btn,
-.app-shell.is-anchored .task-card .btn-secondary {
-  align-self: stretch;
-  min-height: 42px;
-  font-size: 0.9rem;
-  margin-top: 6px;
+  padding: 12px 14px;
+  gap: 12px;
 }
 
 /* Page-level type. The page-title already uses clamp() so it shrinks
@@ -514,13 +485,6 @@ select,
   color: var(--text-strong);
 }
 
-.home-subtitle {
-  margin: 8px 0 0;
-  color: var(--muted-soft);
-  font-size: 0.95rem;
-  letter-spacing: 0.06em;
-}
-
 .home-tiles {
   display: flex;
   gap: 20px;
@@ -594,10 +558,7 @@ select,
 
 .navbar-home,
 .navbar-link,
-.navbar-gear,
-.breadcrumb-back,
-.breadcrumb-home,
-.breadcrumb-link {
+.navbar-gear {
   appearance: none;
   border: none;
   background: none;
@@ -664,81 +625,13 @@ select,
   background: var(--accent-soft);
 }
 
-/* ─── Breadcrumbs ─────────────────────────────────────────── */
+/* ─── Content area ────────────────────────────────────────── */
 
 .app-content {
   padding: 72px 32px 64px;
   max-width: 1180px;
   margin: 0 auto;
   width: 100%;
-}
-
-.breadcrumb-bar {
-  position: fixed;
-  top: 20px;
-  /* Clears the window-controls island at top-left (extent ≈10–74px unanchored,
-     ≈10–84px anchored). 96px gives breathing room in both states without
-     pushing the crumbs visibly off-center on wider windows. */
-  left: 96px;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  gap: 0;
-  pointer-events: auto;
-}
-
-.breadcrumb-back {
-  border-radius: var(--radius-sm);
-  color: var(--text-dim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px 5px;
-  margin-right: 2px;
-}
-
-.breadcrumb-back:hover,
-.breadcrumb-home:hover,
-.breadcrumb-link:hover {
-  color: var(--text-muted);
-  background: var(--hover);
-}
-
-.breadcrumb-home {
-  color: var(--text-dim);
-  padding: 4px 6px;
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.breadcrumb-item {
-  display: flex;
-  align-items: center;
-}
-
-.breadcrumb-sep {
-  font-size: 0.74rem;
-  color: var(--border-strong);
-  padding: 0 3px;
-  user-select: none;
-}
-
-.breadcrumb-link,
-.breadcrumb-current {
-  font-size: 0.78rem;
-  font-weight: 600;
-  padding: 4px 6px;
-  border-radius: var(--radius-sm);
-}
-
-.breadcrumb-link {
-  color: var(--text-dim);
-}
-
-.breadcrumb-current {
-  color: var(--text-muted);
 }
 
 /* ─── Page layout ─────────────────────────────────────────── */
@@ -1100,56 +993,54 @@ select,
 
 /* ─── Task grid ───────────────────────────────────────────── */
 
+/* Compact task rows: title + description on the left, a short-verb button on
+   the right. The row itself is not interactive (no hover state); only the
+   button is. */
 .task-grid {
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 14px;
-  align-items: start;
+  grid-template-columns: 1fr;
+  gap: 10px;
 }
 
 .task-card {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 28px 20px;
-  border-radius: var(--radius-lg);
-  aspect-ratio: 1;
-  text-align: center;
-  cursor: pointer;
-  transition: border-color 160ms ease, background 160ms ease;
-}
-
-.task-card:hover {
-  border-color: var(--border-strong);
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: var(--radius-md);
+  text-align: left;
 }
 
 .task-card.soon {
   opacity: 0.55;
-  cursor: default;
+}
+
+.task-card-body {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
 }
 
 .task-card-title {
   margin: 0;
-  font-size: 1.2rem;
+  font-size: 1rem;
   font-weight: 700;
-  letter-spacing: -0.025em;
   color: var(--text-strong);
-  line-height: 1.1;
+  line-height: 1.25;
 }
 
 .task-card-desc {
   margin: 0;
-  font-size: 0.7rem;
-  color: var(--text-dim);
-  line-height: 1.3;
-  max-width: 22ch;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  line-height: 1.4;
 }
 
 .task-card .btn,
 .task-card .btn-secondary {
-  margin-top: 12px;
-  font-size: 0.8rem;
+  flex-shrink: 0;
+  min-width: 88px;
 }
 
 .list-header {
@@ -1190,9 +1081,9 @@ select,
   left: 0;
   right: 0;
   bottom: 28px; /* clears the status bar */
-  padding: 10px 16px;
+  padding: 8px 16px;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
   background: var(--surface-2);
   border-top: 2px solid var(--warning);
@@ -1203,13 +1094,8 @@ select,
   z-index: 44;
 }
 
-.resolve-advisory-icon {
-  font-size: 0.95rem;
-  color: var(--warning);
-  flex-shrink: 0;
-  line-height: 1.35;
-}
-
+/* Title + at most one line of body (ellipsis); full text in the tooltip and
+   the Console. Buttons are the standard .btn.small / .btn.small.ghost. */
 .resolve-advisory-body {
   flex: 1;
   min-width: 0;
@@ -1218,16 +1104,13 @@ select,
 .resolve-advisory-title {
   font-weight: 700;
   color: var(--warning);
-  margin-bottom: 2px;
 }
 
 .resolve-advisory-text {
-  color: var(--text);
-}
-
-.resolve-advisory-hint {
-  margin-top: 4px;
   color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .resolve-advisory-actions {
@@ -1235,32 +1118,6 @@ select,
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-}
-
-.resolve-advisory-btn {
-  background: transparent;
-  border: 1px solid var(--border-strong);
-  color: var(--text);
-  padding: 4px 10px;
-  font-size: 0.74rem;
-  font-weight: 600;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.resolve-advisory-btn:hover {
-  background: var(--hover);
-}
-
-.resolve-advisory-btn.primary {
-  background: var(--warning-soft);
-  border-color: var(--warning);
-  color: var(--warning);
-}
-
-.resolve-advisory-btn.primary:hover {
-  background: var(--warning-soft);
-  color: var(--text-strong);
 }
 
 /* ─── Persistent status bar ───────────────────────────────── */
@@ -1348,16 +1205,23 @@ select,
 .status-bar-chip.ok { color: var(--success); }
 .status-bar-chip.bad { color: var(--danger); }
 .status-bar-chip.dim { color: var(--muted-soft); }
+.status-bar-chip.accent { color: var(--accent-strong); }
 
-/* Clickable chip variant (e.g. Resolve Offline retry) — looks like span chip */
+/* Clickable chip variant (Resolve "Offline · Reconnect", LPOS "Sign in") —
+   looks like a span chip, underlines on hover so it reads as an action. */
 button.status-bar-chip-btn {
   background: none;
   border: none;
   padding: 0;
   font: inherit;
+  font-size: 0.74rem;
   cursor: pointer;
 }
-button.status-bar-chip-btn:hover {
+button.status-bar-chip-btn:hover:not(:disabled) {
+  text-decoration: underline;
+}
+button.status-bar-chip-btn:disabled {
+  cursor: default;
   opacity: 0.7;
 }
 
@@ -1369,7 +1233,67 @@ button.status-bar-chip-btn:hover {
 
 .settings-section {
   display: grid;
-  gap: 24px;
+  gap: 18px;
+}
+
+/* One heading per section. Settings section headings are a step smaller
+   than the default .section-title. */
+.settings-section .section-title {
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+/* Advanced: the section heading is a disclosure button (collapsed by default). */
+.settings-disclosure {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-disclosure-chevron {
+  color: var(--text-dim);
+  transition: transform 160ms ease;
+}
+
+.settings-disclosure[aria-expanded="true"] .settings-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+.settings-disclosure:hover .settings-disclosure-chevron {
+  color: var(--text);
+}
+
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.settings-signed-in {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--text-muted);
+}
+
+.settings-signed-in strong {
+  color: var(--text);
+}
+
+.settings-inline-btn {
+  justify-self: start;
 }
 
 .settings-field {
@@ -1662,6 +1586,65 @@ button.status-bar-chip-btn:hover {
 
 .status-bar-console-btn:hover {
   color: var(--text);
+}
+
+/* Console open: keep the "Console" label, highlight the button instead. */
+.status-bar-console-btn.is-active {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+/* ─── Toast ───────────────────────────────────────────────── */
+/* One transient result message (App.jsx showToast), bottom-left above the
+   status bar so it never sits under the floating Jobs button. Flat; status is
+   a left stripe. Moves up when the Resolve advisory banner is showing. */
+
+.app-toast-region {
+  position: fixed;
+  left: 16px;
+  bottom: 40px;
+  z-index: 57;
+  max-width: min(440px, calc(100vw - 230px));
+  pointer-events: none;
+}
+
+.app-toast-region.above-advisory {
+  bottom: 92px;
+}
+
+.app-toast {
+  pointer-events: auto;
+  display: grid;
+  gap: 2px;
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-float);
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  animation: toast-in 160ms ease both;
+}
+
+.app-toast.is-success { border-left-color: var(--success); }
+.app-toast.is-warning { border-left-color: var(--warning); }
+.app-toast.is-error   { border-left-color: var(--danger); }
+
+.app-toast-text {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.app-toast-detail {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+@keyframes toast-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* ─── Floating Jobs pill ──────────────────────────────────── */
@@ -3054,10 +3037,6 @@ button.status-bar-chip-btn:hover {
     padding: 80px 16px 64px;
   }
 
-  .breadcrumb-bar {
-    left: 16px;
-  }
-
   .home-tiles {
     flex-direction: column;
   }
@@ -4429,14 +4408,6 @@ button.status-bar-chip-btn:hover {
   color: var(--text);
 }
 
-.feedback-intro {
-  margin: 0;
-  padding: 12px 18px 0;
-  font-size: 0.76rem;
-  line-height: 1.45;
-  color: var(--muted);
-}
-
 .feedback-form {
   display: flex;
   flex-direction: column;
@@ -4538,19 +4509,6 @@ button.status-bar-chip-btn:hover {
 
 .feedback-row:last-child {
   border-bottom: none;
-}
-
-.feedback-status-dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  margin-top: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-.feedback-status-dot.is-done {
-  background: var(--success);
 }
 
 .feedback-row-body {
