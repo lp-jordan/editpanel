@@ -1912,6 +1912,15 @@ button.status-bar-chip-btn:disabled {
   color: var(--text-strong);
   background: var(--hover-strong);
 }
+/* Brief highlight on the row a just-run task opened the panel to. */
+.job-panel-row.is-highlighted {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--accent-soft);
+}
+.job-panel-row {
+  transition: background 0.4s ease, box-shadow 0.4s ease;
+}
+
 .job-panel-tab-label {
   overflow: hidden;
   text-overflow: ellipsis;

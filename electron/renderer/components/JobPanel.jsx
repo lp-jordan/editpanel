@@ -237,7 +237,7 @@ function RenderingExportRow({
 // render reaches a terminal state, the row falls back to the compact display.
 const RENDERING_STATES = new Set(['queued', 'rendering', 'uploading']);
 
-function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onViewResults, onReviewExports }) {
+function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, exportVersion, onViewResults, onReviewExports }) {
   const [runs, setRuns] = React.useState([]);
   const [loadingRuns, setLoadingRuns] = React.useState(false);
   const [recentExports, setRecentExports] = React.useState([]);
@@ -256,6 +256,21 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
   // Active tab (component-local — resets to 'all' each session, which is the
   // right default for a quick-look panel).
   const [activeTab, setActiveTab] = React.useState('all');
+  // Row to highlight briefly after a task opens the panel to it (focusRequest).
+  const [highlightId, setHighlightId] = React.useState(null);
+  React.useEffect(() => {
+    if (!focusRequest) return;
+    if (focusRequest.tab) setActiveTab(focusRequest.tab);
+    setHighlightId(focusRequest.highlightId || null);
+    if (!focusRequest.highlightId) return;
+    const t = setTimeout(() => setHighlightId(null), 2500);
+    return () => clearTimeout(t);
+  }, [focusRequest]);
+  React.useEffect(() => {
+    if (!highlightId) return;
+    const el = document.querySelector(`.job-panel [data-run-id="${CSS.escape(highlightId)}"]`);
+    if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [highlightId, runs]);
   // "Clearing…" guard so double-clicks on Clear-all don't fire concurrent
   // sweeps. The button is also visually disabled while truthy.
   const [clearing, setClearing] = React.useState(false);
@@ -845,7 +860,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                 const isCommentPull = run.item_type === 'comment_pull';
                 if (isCommentPull) {
                   return (
-                    <div key={run.job_id} className="job-panel-row comment-pull-row">
+                    <div key={run.job_id} data-run-id={run.job_id} className={`job-panel-row comment-pull-row${highlightId === run.job_id ? ' is-highlighted' : ''}`}>
                       <div className="job-panel-row-top">
                         <div>
                           <span className="job-panel-name">{run.label}</span>
@@ -880,7 +895,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                 const noItems = run.total === 0;
                 if (noItems) {
                   return (
-                    <div key={run.job_id} className="job-panel-row compact">
+                    <div key={run.job_id} data-run-id={run.job_id} className={`job-panel-row compact${highlightId === run.job_id ? ' is-highlighted' : ''}`}>
                       {renderStatus('succeeded')}
                       <span className="job-panel-name">{run.label}</span>
                       <span className="job-panel-age">No issues</span>
@@ -902,7 +917,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                   : 0;
                 const isDone = run.pending === 0 && run.total > 0;
                 return (
-                  <div key={run.job_id} className="job-panel-row">
+                  <div key={run.job_id} data-run-id={run.job_id} className={`job-panel-row${highlightId === run.job_id ? ' is-highlighted' : ''}`}>
                     <div className="job-panel-row-top">
                       <div>
                         <span className="job-panel-name">{run.label}</span>

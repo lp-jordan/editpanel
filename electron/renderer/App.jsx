@@ -209,6 +209,16 @@ function App() {
     toastTimerRef.current = setTimeout(() => setToast(null), duration);
   }, []);
 
+  // Open the Jobs panel on a specific tab, optionally highlighting one row
+  // (by result-run id). Used when a task the editor just ran reports into Jobs,
+  // so the panel lands on THAT task rather than whichever tab was last open.
+  // The status-bar Jobs button still toggles without changing the tab.
+  const [jobPanelFocus, setJobPanelFocus] = React.useState(null);
+  const openJobsTo = React.useCallback((tab, highlightId = null) => {
+    setJobPanelFocus({ tab, highlightId, n: Date.now() });
+    setJobPanelOpen(true);
+  }, []);
+
   const dismissToast = React.useCallback(() => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast(null);
@@ -730,8 +740,8 @@ function App() {
           : null;
       showToast(parts.join(' · '), { tone: problems > 0 ? 'warning' : 'success', detail, duration: 6000 });
     }
-    if (d.jobId) setJobPanelOpen(true);
-  }, [appendLog, project, setJobPanelOpen, showToast]);
+    if (d.jobId) openJobsTo('comments', d.jobId);
+  }, [appendLog, project, openJobsTo, showToast]);
 
   const handleSpellcheck = React.useCallback(() => {
     if (!window.leaderpassAPI) {
@@ -783,10 +793,16 @@ function App() {
         projectName:  scopeProject  || null,
         timelineName: scopeTimeline || null
       }).catch(() => {});
-      if (resultItems.length > 0) setActiveResultJobId(runId);
+      if (resultItems.length > 0) {
+        setActiveResultJobId(runId);
+      } else {
+        // Nothing to review: say so where the user clicked (the run is still
+        // recorded in Jobs → Spellcheck as "No issues").
+        showToast('No spelling issues found.', { tone: 'success' });
+      }
 
     }).catch((err) => appendLog(`Spellcheck error: ${err?.error || err}`));
-  }, [appendLog, project, timeline]);
+  }, [appendLog, project, timeline, showToast]);
 
   const handleSaveSettings = React.useCallback(() => {
     if (!window.electronAPI?.updatePreferences) return;
@@ -885,7 +901,7 @@ function App() {
             window.electronAPI?.dashboardSnapshot?.().then((result) => {
               setDashboard(result?.data || { jobs: [], logs_by_job_step: {} });
             }).catch(() => null);
-            setJobPanelOpen(true);
+            openJobsTo('all');
           },
           requiresResolve: false
         }
@@ -1369,6 +1385,7 @@ function App() {
       {renderStatusBar()}
       <JobPanel
         open={jobPanelOpen}
+        focusRequest={jobPanelFocus}
         onClose={() => setJobPanelOpen(false)}
         dashboard={dashboard}
         activeExport={activeExport}
@@ -1413,7 +1430,7 @@ function App() {
           resolveProject={project}
           lposReady={lposStatus === 'ok'}
           onLog={appendLog}
-          onOpenJobs={() => { setExportOpen(false); setJobPanelOpen(true); }}
+          onOpenJobs={() => { setExportOpen(false); openJobsTo('exports'); }}
         />
       )}
       {openSeqOpen && (
