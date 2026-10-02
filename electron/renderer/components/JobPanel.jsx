@@ -978,8 +978,14 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
 
         </div>
 
-        {tabCounts[activeTab] > 0 && (
+        {(tabCounts[activeTab] > 0 || (activeTab === 'exports' && onReviewExports)) && (
           <footer className="job-panel-footer">
+            {activeTab === 'exports' && onReviewExports && (
+              <button className="job-panel-clear-old-btn" onClick={() => onReviewExports('all')}>
+                See all exports
+              </button>
+            )}
+            {tabCounts[activeTab] > 0 && (
             <button
               className="job-panel-clear-old-btn"
               onClick={handleClearAll}
@@ -990,6 +996,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
             >
               {clearing ? 'Clearing…' : 'Clear finished'}
             </button>
+            )}
           </footer>
         )}
       </div>

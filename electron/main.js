@@ -3085,8 +3085,8 @@ app.whenReady().then(() => {
           ? involved[0]
           : `${involved.length} LPOS projects`;
       // Label intentionally compact — no equation. Counts live in the report's
-      // summary chips. JobPanel surfaces this as "Comment Pull - <project>".
-      const label = `Comment Pull - ${projectLabel}`;
+      // summary chips. JobPanel surfaces this as "Comment pull - <project>".
+      const label = `Comment pull - ${projectLabel}`;
       if (jobsDb) {
         try {
           // 5c.7: always write a __summary__ row carrying the aggregate stats

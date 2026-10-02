@@ -2134,7 +2134,11 @@ button.status-bar-chip-btn:disabled {
   border-top: 1px solid var(--line);
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
 }
+
+/* "See all exports" sits left when both footer actions are shown. */
+.job-panel-footer > :first-child:not(:last-child) { margin-right: auto; }
 
 .job-panel-clear-old-btn {
   appearance: none;

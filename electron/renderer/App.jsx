@@ -148,6 +148,7 @@ function App() {
   // 'unassigned'. We use a counter instead of a boolean so successive clicks
   // re-trigger the focus effect cleanly.
   const [exportsFocusToken, setExportsFocusToken] = React.useState(0);
+  const [exportsFocusFilter, setExportsFocusFilter] = React.useState('unassigned');
   const [exportVersion, setExportVersion]     = React.useState(0);
   // Sticky Resolve-worker advisory (e.g. external scripting disabled, crash
   // loop). Driven by `resolve-advisory` IPC; null when nothing actionable.
@@ -1091,7 +1092,7 @@ function App() {
               to browse every render (editpanel-queued + reconciled orphans).
               focusToken lets the Jobs-tab pill (above) snap the panel open +
               filter to Unassigned in one motion. */}
-          {route === '/deliver' && <ExportsPanel focusToken={exportsFocusToken} />}
+          {route === '/deliver' && <ExportsPanel focusToken={exportsFocusToken} focusFilter={exportsFocusFilter} />}
         </main>
       </div>
     );
@@ -1380,9 +1381,11 @@ function App() {
           setJobPanelOpen(false);
           setActiveResultJobId(runId);
         }}
-        onReviewExports={() => {
-          // Pill click: close Jobs, jump to Delivery, ask ExportsPanel to expand
-          // + snap its filter to 'unassigned' via the focus token.
+        onReviewExports={(filter) => {
+          // Pill click (unassigned) or "See all exports" ('all'): close Jobs,
+          // jump to Delivery, ask ExportsPanel to expand + snap its filter via
+          // the focus token. The pill passes a click event, hence the guard.
+          setExportsFocusFilter(typeof filter === 'string' ? filter : 'unassigned');
           setJobPanelOpen(false);
           navigateTo('/deliver');
           setExportsFocusToken(t => t + 1);

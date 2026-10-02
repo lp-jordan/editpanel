@@ -724,7 +724,7 @@ function ResolveProjectGroup({
 }
 
 // ── Panel ──────────────────────────────────────────────────────
-function ExportsPanel({ focusToken } = {}) {
+function ExportsPanel({ focusToken, focusFilter = 'unassigned' } = {}) {
   // Expanded by default (the history should be visible); the heading toggles.
   const [open, setOpen]       = React.useState(true);
   const [filter, setFilter]   = React.useState('all');
@@ -853,12 +853,12 @@ function ExportsPanel({ focusToken } = {}) {
   }, [open, refresh]);
 
   // External focus request — pill click in JobPanel bumps focusToken. We
-  // expand the panel and snap the filter to Unassigned. Each bump = one
+  // expand the panel and snap the filter (Unassigned by default). Each bump = one
   // action; we don't compare prev-vs-next, just react on every change.
   React.useEffect(() => {
     if (focusToken && focusToken > 0) {
       setOpen(true);
-      setFilter('unassigned');
+      setFilter(focusFilter);
     }
   }, [focusToken]);
 
