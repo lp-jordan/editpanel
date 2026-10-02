@@ -56,11 +56,18 @@ logging.basicConfig(
 logger = logging.getLogger("lp_resolve_helper")
 
 # ---------- JSON I/O ----------
+# Background threads (session monitor, timeline index) also write here; the
+# lock keeps two JSON lines from interleaving into one unparseable line.
+_print_lock = threading.Lock()
+
+
 def _print(obj: Dict[str, Any]) -> None:
     """Serialize *obj* to JSON and write it to stdout, flushing immediately."""
     try:
-        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        line = json.dumps(obj, ensure_ascii=False) + "\n"
+        with _print_lock:
+            sys.stdout.write(line)
+            sys.stdout.flush()
     except Exception as e:
         # If stdout is gone, exit quietly.
         logger.exception("Failed to write to stdout: %s", e)
@@ -155,10 +162,13 @@ def _monitor_resolve(poll_seconds: float = 1.5) -> None:
     """Background thread: monitor Resolve and emit status on disconnect."""
     global resolve, project_manager, project, timeline
     logger.info("Monitoring Resolve session")
+    from . import timeline_index
     prev_project = _safe_name(project)
     prev_timeline = _safe_name(timeline)
+    polls = 0
     while True:
         time.sleep(poll_seconds)
+        polls += 1
         if not resolve:
             break
         # A single probe, fully guarded — treat both None and a raised exception
@@ -176,6 +186,13 @@ def _monitor_resolve(poll_seconds: float = 1.5) -> None:
             _update_context()
             curr_project = _safe_name(project)
             curr_timeline = _safe_name(timeline)
+            if curr_project != prev_project:
+                # Different project open: its timeline list is a different list.
+                timeline_index.invalidate()
+                timeline_index.rebuild_in_background(project, log)
+            elif polls % 10 == 0:
+                # ~every 15s: one cheap call to notice added/deleted timelines.
+                timeline_index.note_possible_change(project, log)
             if curr_project != prev_project or curr_timeline != prev_timeline:
                 _status_event(True, "CONNECTED")
                 prev_project, prev_timeline = curr_project, curr_timeline

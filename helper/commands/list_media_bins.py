@@ -22,6 +22,7 @@ renderer keeps its own constant and shows it as a placeholder/fallback when the
 dropdown can't be built (Resolve disconnected, fetch error, etc.).
 """
 
+import time
 from typing import Any, Dict
 
 
@@ -39,7 +40,9 @@ def handle_list_media_bins(_payload: Dict[str, Any]) -> Dict[str, Any]:
     if not root_folder:
         raise RuntimeError("Could not retrieve the root folder of the Media Pool")
 
+    t0 = time.time()
     entries = enumerate_bin_paths(root_folder)
+    rh.log(f"[bins] Listed {len(entries)} bins ({time.time() - t0:.1f}s).")
     return {
         "bins": [entry["path"] for entry in entries],
         "bin_tree": entries,

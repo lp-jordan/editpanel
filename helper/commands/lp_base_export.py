@@ -48,7 +48,9 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Queue render jobs for timelines matching items in EXPORT bin."""
     from .. import resolve_helper as rh
     from .bin_tree import resolve_folder_by_path
+    from ..timeline_index import find_timelines, is_timeline_clip
 
+    t0 = time.time()
     if not rh.project:
         raise RuntimeError("No active project")
 
@@ -86,6 +88,8 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not export_folder:
         raise RuntimeError(f"The '{export_bin_name}' bin was not found in the Media Pool")
 
+    rh.log(f"[queue] Found bin '{export_bin_name}' ({time.time() - t0:.1f}s).")
+    t1 = time.time()
     media_pool.SetCurrentFolder(export_folder)
 
     # Collect names in EXPORT bin
@@ -95,6 +99,7 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"result": False}
 
     export_names: List[str] = []
+    timeline_names: List[str] = []
     for clip in clip_list:
         try:
             clip_name = clip.GetName()
@@ -102,18 +107,17 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
             clip_name = clip.GetClipProperty("File Name")
         rh.log(f" - {clip_name}")
         export_names.append(clip_name)
+        if is_timeline_clip(clip):
+            timeline_names.append(clip_name)
 
-    # Map to timelines by name
+    rh.log(f"[queue] Read {len(export_names)} clip names ({time.time() - t1:.1f}s).")
+
+    # Map to timelines by name (index-backed; see helper/timeline_index.py)
     matched_timelines = []
-    timeline_count = int(project.GetTimelineCount() or 0)
-    for idx in range(1, timeline_count + 1):
-        tl = project.GetTimelineByIndex(idx)
-        if not tl:
-            continue
-        tl_name = tl.GetName()
-        if tl_name in export_names:
-            matched_timelines.append(tl)
-            rh.log(f"Matched timeline: {tl_name}")
+    for tl_name, tl in find_timelines(project, export_names, rh.log, required=timeline_names):
+        matched_timelines.append(tl)
+        rh.log(f"Matched timeline: {tl_name}")
+    rh.log(f"[queue] Ready to queue {len(matched_timelines)} timelines ({time.time() - t0:.1f}s since start).")
 
     if not matched_timelines:
         rh.log(f"No matching timelines found based on names in '{export_bin_name}' bin.")
@@ -124,6 +128,7 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     render_jobs: List[Dict[str, Any]] = []
 
     for timeline in matched_timelines:
+        t_tl = time.time()
         timeline_name = timeline.GetName()
         project.SetCurrentTimeline(timeline)
         time.sleep(1.0)  # brief settle
@@ -165,7 +170,7 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
                     f"Warning: Timeline.GetUniqueId() unavailable for '{timeline_name}'; "
                     f"comment-marker tether will not be persisted for this job."
                 )
-            rh.log(f"Added timeline '{timeline_name}' to render queue. Job ID: {job_id}.")
+            rh.log(f"Added timeline '{timeline_name}' to render queue. Job ID: {job_id}. ({time.time() - t_tl:.1f}s)")
             render_jobs.append({
                 "name": timeline_name,
                 "id": job_id,
@@ -183,5 +188,5 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     else:
         rh.log("No render jobs were added.")
 
-    rh.log("Finished processing all matched timelines.")
+    rh.log(f"Finished processing all matched timelines ({time.time() - t0:.1f}s total).")
     return {"result": True, "jobs": render_jobs, "target_dir": target_dir or None}
