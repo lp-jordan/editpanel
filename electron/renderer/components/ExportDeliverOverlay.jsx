@@ -1,10 +1,17 @@
 /**
  * ExportDeliverOverlay — destination picker for the LP Base Export.
  *
- * Stage 1 — configure: pick a target folder (pushed into Resolve as TargetDir),
- *                       optionally toggle "Upload to LPOS" and choose a project.
- * Stage 2 — running:   queuing render jobs / starting the render.
- * Stage 3 — done:      summary of queued jobs + render-start state.
+ * Stages: configure → (preflight → confirm) → running → done.
+ *   configure: pick a target folder (pushed into Resolve as TargetDir),
+ *              optionally toggle "Upload to LPOS" and choose a project.
+ *   preflight/confirm: name-match check against the LPOS project and the
+ *              burn-in subtitle check; confirm only shows when something hit.
+ *   running:   queuing render jobs / starting the render.
+ *   done:      names of the queued timelines + render-start state.
+ *
+ * Chrome uses the shared .tool-overlay family (header / body--form / footer).
+ * UI copy follows the export glossary: Export / Exporting / Queued / Upload.
+ * Raw errors go to onLog; the screen shows a plain one-line message.
  *
  * EditPanel owns the whole queue setup here: it matches the EXPORT bin to
  * timelines (lp_base_export), overrides the per-timeline destination via
@@ -141,7 +148,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       .catch((err) => {
         if (cancelled) return;
         setPresets([]);
-        setPresetsError(err?.error?.message || err?.error || err?.message || 'Could not load presets');
+        const msg = err?.error?.message || err?.error || err?.message || 'Could not load presets';
+        setPresetsError(msg);
+        onLog?.(`[export] Couldn't load presets: ${msg}`);
       })
       .finally(() => { if (!cancelled) setPresetsLoading(false); });
 
@@ -156,7 +165,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       .catch((err) => {
         if (cancelled) return;
         setBins([]); setBinTree([]);
-        setBinsError(err?.error?.message || err?.error || err?.message || 'Could not load bins');
+        const msg = err?.error?.message || err?.error || err?.message || 'Could not load bins';
+        setBinsError(msg);
+        onLog?.(`[export] Couldn't load bins: ${msg}`);
       })
       .finally(() => { if (!cancelled) setBinsLoading(false); });
 
@@ -246,9 +257,11 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         setProjectsLoaded(true);
       } else {
         setProjectsError(res?.error || 'Could not load projects');
+        onLog?.(`[export] Couldn't load LPOS projects: ${res?.error || 'unknown error'}`);
       }
     } catch (err) {
       setProjectsError(err?.message || String(err));
+      onLog?.(`[export] Couldn't load LPOS projects: ${err?.message || String(err)}`);
     } finally {
       setProjectsLoading(false);
     }
@@ -378,13 +391,14 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       });
 
       if (!res?.ok) {
+        onLog?.(`[export] Error: ${res?.error || 'Export failed to start'}`);
         setResult({ error: res?.error || 'Export failed to start' });
         setStage('done');
         return;
       }
       if (res.empty) {
         setResult({
-          warning: `No matching timelines found. Check that the "${exportBin}" bin contains clips whose names match your timelines.`
+          warning: `Nothing in the "${exportBin}" bin matches a timeline name.`
         });
         setStage('done');
         onLog?.('[export] No matching timelines for the EXPORT bin.');
@@ -413,17 +427,31 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
 
   // ── Render stages ───────────────────────────────────────
 
+  // Loading / error hint under a Resolve-sourced dropdown. Nothing in the
+  // normal case; the raw error is in the Console and the tooltip.
+  function sourceHint(loading, error, noun) {
+    if (loading) return <p className="hint">Loading {noun}…</p>;
+    if (error) {
+      return (
+        <p className="hint" title={String(error)}>
+          Couldn't load {noun} from Resolve. Using your last setting.
+        </p>
+      );
+    }
+    return null;
+  }
+
   function renderConfigure() {
     return (
-      <div className="atem-configure">
+      <div className="export-form">
         {/* Preset + bin — dropdowns sourced from Resolve when available. The
             persisted value always appears as an option even if the fetched
             list doesn't contain it (offline, fetch error, or a Resolve
             project that doesn't have that preset/bin yet) so the editor can
             still queue and lp_base_export will surface the actual mismatch. */}
         <div className="export-field-row">
-          <div className="atem-dest-section" style={{ flex: 1 }}>
-            <p className="atem-field-label">Render preset</p>
+          <div className="export-field" style={{ flex: 1 }}>
+            <p className="export-field-label">Preset</p>
             <select
               className="settings-input"
               value={presetName}
@@ -441,18 +469,10 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
                 ));
               })()}
             </select>
-            <p className="atem-dest-hint" style={{ marginTop: 6 }}>
-              {presetsLoading
-                ? 'Loading presets from Resolve…'
-                : presetsError
-                  ? `Couldn't load presets — using your last setting. (${presetsError})`
-                  : presets.length === 0
-                    ? 'No presets detected — using your last setting.'
-                    : `${presets.length} preset${presets.length === 1 ? '' : 's'} from the current Resolve project.`}
-            </p>
+            {sourceHint(presetsLoading, presetsError, 'presets')}
           </div>
-          <div className="atem-dest-section" style={{ flex: 1 }}>
-            <p className="atem-field-label">Export bin</p>
+          <div className="export-field" style={{ flex: 1 }}>
+            <p className="export-field-label">Export bin</p>
             <select
               className="settings-input"
               value={exportBin}
@@ -472,7 +492,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
                 }
                 if (options.length === 0) options.push({ path: DEFAULT_BIN, name: DEFAULT_BIN, depth: 1 });
                 return options.map((b) => {
-                  const indent = b.depth > 1 ? '   '.repeat(b.depth - 1) : '';
+                  const indent = b.depth > 1 ? '   '.repeat(b.depth - 1) : '';
                   const missing = !paths.includes(b.path) && paths.length > 0;
                   return (
                     <option key={b.path} value={b.path}>
@@ -482,53 +502,45 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
                 });
               })()}
             </select>
-            <p className="atem-dest-hint" style={{ marginTop: 6 }}>
-              {binsLoading
-                ? 'Loading bins from Resolve…'
-                : binsError
-                  ? `Couldn't load bins — using your last setting. (${binsError})`
-                  : bins.length === 0
-                    ? 'No bins detected — using your last setting.'
-                    : `${bins.length} bin${bins.length === 1 ? '' : 's'} (incl. sub-bins) from the current Resolve project.`}
-            </p>
+            {sourceHint(binsLoading, binsError, 'bins')}
           </div>
         </div>
 
-        {/* Destination folder */}
-        <div className="atem-dest-section">
-          <p className="atem-field-label">Destination folder</p>
-          <div className="atem-dest-row">
-            <span className={`atem-dest-path${targetDir ? '' : ' placeholder'}`}>
-              {targetDir || "Using preset's saved location"}
+        {/* Destination folder (written into Resolve's TargetDir per timeline;
+            empty keeps the preset's own location). */}
+        <div className="export-field">
+          <p className="export-field-label">Destination folder</p>
+          <div className="export-dest-row">
+            <span className={`export-dest-path${targetDir ? '' : ' placeholder'}`} title={targetDir || undefined}>
+              {targetDir || "Preset's saved location"}
             </span>
             {targetDir && (
-              <button className="export-clear-btn" onClick={() => { setTargetDir(''); persistPrefs({ lastExportDir: '' }); }} title="Clear">
+              <button
+                type="button"
+                className="btn ghost small"
+                onClick={() => { setTargetDir(''); persistPrefs({ lastExportDir: '' }); }}
+                title="Use the preset's saved location"
+              >
                 Clear
               </button>
             )}
-            <button className="btn-secondary" onClick={handlePickFolder}>Choose…</button>
+            <button type="button" className="btn ghost small" onClick={handlePickFolder}>Choose…</button>
           </div>
-          <p className="atem-dest-hint">
-            EditPanel writes this into Resolve's render settings (TargetDir) for every matched timeline, named after the timeline. Leave empty to keep the preset's location.
-          </p>
         </div>
 
         {/* Auto-start toggle */}
-        <div className="atem-resolve-toggle">
-          <div className="atem-resolve-toggle-inner">
+        <div className="export-toggle">
+          <div className="export-toggle-inner">
             <div>
-              <p className="atem-field-label">Start rendering automatically</p>
-              <p className="atem-resolve-sub">
-                {autoStart
-                  ? 'The render begins as soon as the queue is built.'
-                  : "Off: jobs are queued and you press Start in Jobs when you're ready."}
-              </p>
+              <p className="export-field-label">Start exporting right away</p>
+              <p className="export-toggle-sub">When off, start it from Jobs.</p>
             </div>
             <button
               type="button"
               className={`export-switch${autoStart ? ' on' : ''}`}
               role="switch"
               aria-checked={autoStart}
+              aria-label="Start exporting right away"
               onClick={() => setAutoStart(v => !v)}
             >
               <span className="export-switch-knob" />
@@ -536,24 +548,21 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           </div>
         </div>
 
-        {/* Burn-in subtitles toggle */}
-        <div className={`atem-resolve-toggle${burnInAvailable ? '' : ' disabled'}`}>
-          <div className="atem-resolve-toggle-inner">
+        {/* Burn-in subtitles toggle (swaps to the "<preset> - Subtitles" pair) */}
+        <div className={`export-toggle${burnInAvailable ? '' : ' disabled'}`}>
+          <div className="export-toggle-inner">
             <div>
-              <p className="atem-field-label">Burn in subtitles</p>
-              <p className="atem-resolve-sub">
-                {!burnInAvailable
-                  ? `No "${burnInPresetName}" preset in this project — burn-in needs a matching pair.`
-                  : burnIn
-                    ? `Queues "${burnInPresetName}" so each timeline's subtitle track is baked into the video.`
-                    : `Renders the subtitle track into the picture using the "${burnInPresetName}" preset.`}
-              </p>
+              <p className="export-field-label">Burn in subtitles</p>
+              {!burnInAvailable && (
+                <p className="export-toggle-sub">No "{burnInPresetName}" preset in this project.</p>
+              )}
             </div>
             <button
               type="button"
               className={`export-switch${burnIn ? ' on' : ''}`}
               role="switch"
               aria-checked={burnIn}
+              aria-label="Burn in subtitles"
               disabled={!burnInAvailable}
               onClick={() => setBurnIn(v => !v)}
             >
@@ -563,21 +572,20 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         </div>
 
         {/* Upload-to-LPOS toggle */}
-        <div className={`atem-resolve-toggle${lposReady ? '' : ' disabled'}`}>
-          <div className="atem-resolve-toggle-inner">
+        <div className={`export-toggle${lposReady ? '' : ' disabled'}`}>
+          <div className="export-toggle-inner">
             <div>
-              <p className="atem-field-label">Upload to LPOS on completion</p>
-              <p className="atem-resolve-sub">
-                {lposReady
-                  ? 'Send the finished renders into an LPOS project.'
-                  : 'Sign in to LPOS in Settings to enable.'}
-              </p>
+              <p className="export-field-label">Upload to LPOS when done</p>
+              {!lposReady && (
+                <p className="export-toggle-sub">Sign in to LPOS in Settings to turn this on.</p>
+              )}
             </div>
             <button
               type="button"
               className={`export-switch${uploadToLpos ? ' on' : ''}`}
               role="switch"
               aria-checked={uploadToLpos}
+              aria-label="Upload to LPOS when done"
               disabled={!lposReady}
               onClick={handleToggleUpload}
             >
@@ -588,14 +596,21 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           {uploadToLpos && (
             <div className="export-project-area">
               {projectsLoading && (
-                <div className="atem-loading">
-                  <span className="status-bar-spinner" style={{ width: 14, height: 14 }} />
+                <div className="export-loading">
+                  <span className="spinner" />
                   <span>Loading projects…</span>
                 </div>
               )}
-              {projectsError && <p className="atem-error">{projectsError}</p>}
+              {projectsError && (
+                <div className="notice error" title={String(projectsError)}>
+                  <span>Couldn't load LPOS projects.</span>
+                  <button type="button" className="btn ghost small notice-action" onClick={loadProjects}>
+                    Try again
+                  </button>
+                </div>
+              )}
               {!projectsLoading && !projectsError && !hasAnyProjects && (
-                <p className="atem-empty">No projects found in LPOS.</p>
+                <p className="hint">No projects in LPOS.</p>
               )}
               {!projectsLoading && !projectsError && hasAnyProjects && (
                 <div className="export-project-search">
@@ -623,38 +638,33 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
                 </div>
               )}
               {!projectsLoading && !projectsError && hasAnyProjects && filteredProjectCount === 0 && (
-                <p className="atem-empty">No projects match “{projectQuery.trim()}”.</p>
+                <p className="hint">No projects match “{projectQuery.trim()}”.</p>
               )}
               {!projectsLoading && !projectsError && groupedProjects.length > 0 && (
-                <div className="atem-session-list export-project-list">
+                <div className="export-project-list">
                   {groupedProjects.map(([client, list]) => (
                     <div key={client} className="export-project-group">
                       <p className="export-client-name">{client}</p>
                       {list.map((p) => (
                         <label
                           key={p.projectId}
-                          className={`atem-session-row${selectedProjectId === p.projectId ? ' selected' : ''}`}
+                          className={`export-project-row${selectedProjectId === p.projectId ? ' selected' : ''}`}
                         >
                           <input
                             type="radio"
                             name="lpos-project"
-                            className="atem-session-checkbox"
+                            className="export-project-radio"
                             checked={selectedProjectId === p.projectId}
                             onChange={() => setSelectedProjectId(p.projectId)}
                           />
-                          <div className="atem-session-info">
-                            <span className="atem-session-name">{p.name}</span>
-                            {p.phase && <span className="atem-session-meta">{p.phase}</span>}
-                          </div>
+                          <span className="export-project-row-name">{p.name}</span>
+                          {p.phase && <span className="export-project-row-meta">{p.phase}</span>}
                         </label>
                       ))}
                     </div>
                   ))}
                 </div>
               )}
-              <p className="export-lpos-note">
-                When each render finishes, EditPanel uploads it into this LPOS project automatically. Watch progress in Jobs.
-              </p>
             </div>
           )}
         </div>
@@ -664,153 +674,121 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
 
   function renderRunning() {
     return (
-      <div className="atem-loading" style={{ padding: '32px 0' }}>
-        <span className="status-bar-spinner" style={{ width: 18, height: 18 }} />
-        <span>Setting up the render queue…</span>
+      <div className="export-loading export-loading--stage">
+        <span className="spinner" />
+        <span>Setting up the export…</span>
       </div>
     );
   }
 
   function renderPreflight() {
     return (
-      <div className="atem-loading" style={{ padding: '32px 0' }}>
-        <span className="status-bar-spinner" style={{ width: 18, height: 18 }} />
+      <div className="export-loading export-loading--stage">
+        <span className="spinner" />
         <span>
           {uploadToLpos && selectedProjectId
             ? `Checking ${selectedProject?.name || 'the project'} for existing versions…`
-            : 'Checking timelines before export…'}
+            : 'Checking timelines…'}
         </span>
       </div>
     );
   }
 
+  // Pre-export warning: per issue one heading, one sentence, names only.
   function renderConfirm() {
     return (
-      <div className="atem-configure">
-        {/* Burn-in: timelines with no subtitle track would render uncaptioned. */}
+      <div className="export-form">
+        {/* Burn-in: timelines with no subtitle track would export uncaptioned. */}
         {subtitleGaps.length > 0 && (
-          <>
-            <div className="atem-summary-card">
-              <p className="atem-summary-line">
-                <strong>{subtitleGaps.length}</strong> of these {subtitleGaps.length === 1 ? 'timeline has' : 'timelines have'} no subtitle track
-              </p>
-              <p className="atem-summary-line">but burn-in is on</p>
-            </div>
-            <p className="atem-dest-hint" style={{ fontSize: '0.84rem', color: 'var(--text)' }}>
-              With burn-in enabled, {subtitleGaps.length === 1 ? 'this timeline' : 'these timelines'} will render
-              as <strong>uncaptioned video</strong> — there's no subtitle track to bake in. Add a subtitle track in
-              Resolve first, or continue to render {subtitleGaps.length === 1 ? 'it' : 'them'} without captions.
+          <section className="export-check">
+            <h3 className="export-check-title">
+              {subtitleGaps.length === 1
+                ? '1 timeline has no subtitles'
+                : `${subtitleGaps.length} timelines have no subtitles`}
+            </h3>
+            <p className="export-check-text">
+              Burn-in is on, so {subtitleGaps.length === 1 ? 'it' : 'they'} will export without captions.
+              Add a subtitle track in Resolve, or export anyway.
             </p>
-            <div className="atem-session-list export-project-list">
-              {subtitleGaps.map((n) => (
-                <div key={n} className="atem-session-row">
-                  <div className="atem-session-info">
-                    <span className="atem-session-name">{n}</span>
-                    <span className="atem-session-meta">no subtitle track</span>
-                  </div>
-                  <span className="atem-coming-soon-badge" style={{ background: 'var(--accent-gold-soft, var(--accent-blue-soft))' }}>Uncaptioned</span>
-                </div>
-              ))}
-            </div>
-          </>
+            <ul className="export-name-list">
+              {subtitleGaps.map((n) => <li key={n}>{n}</li>)}
+            </ul>
+          </section>
         )}
 
         {/* LPOS upload: name collisions become new versions. */}
         {conflicts.length > 0 && (
-          <>
-            <div className="atem-summary-card">
-              <p className="atem-summary-line">
-                <strong>{conflicts.length}</strong> of these already exist
-              </p>
-              <p className="atem-summary-line">in <strong>{selectedProject?.name || 'the project'}</strong></p>
-            </div>
-            <p className="atem-dest-hint" style={{ fontSize: '0.84rem', color: 'var(--text)' }}>
-              These will upload as <strong>new versions</strong> of existing assets when their renders finish —
-              continuing is your sign-off, so LPOS won't ask again. (Identical files are skipped.)
+          <section className="export-check">
+            <h3 className="export-check-title">
+              {conflicts.length === 1 ? '1 timeline is' : `${conflicts.length} timelines are`} already
+              in {selectedProject?.name || 'the project'}
+            </h3>
+            <p className="export-check-text">
+              {conflicts.length === 1 ? 'It' : 'They'} will upload as a new version.
             </p>
-            <div className="atem-session-list export-project-list">
-              {conflicts.map((n) => (
-                <div key={n} className="atem-session-row">
-                  <div className="atem-session-info">
-                    <span className="atem-session-name">{n}</span>
-                    <span className="atem-session-meta">existing asset</span>
-                  </div>
-                  <span className="atem-coming-soon-badge" style={{ background: 'var(--accent-blue-soft)' }}>New version</span>
-                </div>
-              ))}
-            </div>
-          </>
+            <ul className="export-name-list">
+              {conflicts.map((n) => <li key={n}>{n}</li>)}
+            </ul>
+          </section>
         )}
-
-        <p className="export-lpos-note">
-          This is a name match only — nothing has rendered or uploaded yet. Go back to adjust the preset, project, or toggles.
-        </p>
       </div>
     );
   }
 
   function renderDone() {
     if (result?.error) {
-      return <p className="atem-error">Export failed: {result.error}</p>;
+      return (
+        <div className="notice error" title={String(result.error)}>
+          <span>Couldn't start the export. Details are in the Console.</span>
+        </div>
+      );
     }
     if (result?.warning) {
       return (
-        <div className="atem-done-state">
-          <p className="atem-done-title">Nothing queued</p>
-          <p className="atem-done-sub">{result.warning}</p>
+        <div className="export-done">
+          <p className="export-done-title">Nothing to export</p>
+          <p className="export-done-sub">{result.warning}</p>
         </div>
       );
     }
     const jobs = result?.jobs || [];
+    const n = jobs.length;
+    const noun = `${n} timeline${n !== 1 ? 's' : ''}`;
     return (
-      <div className="atem-progress-view">
-        <div className="atem-done-state">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--success)' }}>
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-            <polyline points="22 4 12 14.01 9 11.01" />
-          </svg>
-          <p className="atem-done-title">{result?.started ? 'Export started' : 'Queued'}</p>
-          <p className="atem-done-sub">
+      <div className="export-form">
+        <div className="export-done">
+          <p className="export-done-title">{result?.started ? 'Exporting' : 'Queued'}</p>
+          <p className="export-done-sub">
             {result?.started
-              ? `${jobs.length} timeline${jobs.length !== 1 ? 's' : ''} rendering in the background — track progress in Jobs.`
-              : `${jobs.length} timeline${jobs.length !== 1 ? 's' : ''} queued — press Start in Jobs to begin rendering.`}
+              ? `${noun} exporting. Track progress in Jobs.`
+              : `${noun} queued. Start ${n === 1 ? 'it' : 'them'} from Jobs.`}
           </p>
           {burnIn && (
-            <p className="atem-done-sub" style={{ marginTop: 4 }}>
-              Subtitles are burned into the picture (<strong>{burnInPresetName}</strong>).
+            <p className="export-done-sub">Subtitles are burned in.</p>
+          )}
+          {result?.project && (
+            <p className="export-done-sub">
+              Each file uploads to <strong>{result.project.name}</strong> when it's done.
             </p>
           )}
         </div>
 
         {result?.targetDir && (
-          <div className="atem-dest-section">
-            <p className="atem-field-label">Destination</p>
-            <div className="atem-dest-row">
-              <span className="atem-dest-path">{result.targetDir}</span>
+          <div className="export-field">
+            <p className="export-field-label">Destination</p>
+            <div className="export-dest-row">
+              <span className="export-dest-path" title={result.targetDir}>{result.targetDir}</span>
             </div>
           </div>
         )}
 
-        {jobs.length > 0 && (
-          <div className="atem-file-list">
+        {n > 0 && (
+          <ul className="export-name-list">
             {jobs.map((job, i) => {
               const name = Array.isArray(job) ? job[0] : (job?.name || job);
-              const id = Array.isArray(job) ? job[1] : (job?.job_id || job?.id || '');
-              return (
-                <div key={i} className="atem-file-row done">
-                  <span className="atem-file-state-icon">✓</span>
-                  <span className="atem-file-name">{name}</span>
-                  {id && <span className="atem-file-cam">Job {id}</span>}
-                </div>
-              );
+              return <li key={i}>{typeof name === 'string' && name ? name : 'Untitled timeline'}</li>;
             })}
-          </div>
-        )}
-
-        {result?.project && (
-          <p className="export-lpos-note">
-            After rendering, each file uploads to <strong>{result.project.name}</strong> ({result.project.clientName || 'Unassigned'}) automatically — watch progress in Jobs.
-          </p>
+          </ul>
         )}
       </div>
     );
@@ -821,27 +799,28 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const canRun = connected && !busy;
 
   return (
-    <div className="result-overlay atem-overlay" role="dialog" aria-label="Export">
-      {/* Header */}
-      <header className="result-overlay-header">
-        <button className="result-overlay-back" onClick={() => { if (!busy) onClose?.(); }} aria-label="Close">
+    <div className="tool-overlay export-overlay" role="dialog" aria-label="Export">
+      <header className="tool-header">
+        <h2 className="tool-title">Export</h2>
+        {resolveProject && <span className="tool-subtitle">{resolveProject}</span>}
+        <button
+          type="button"
+          className="tool-close"
+          onClick={() => { if (!busy) onClose?.(); }}
+          disabled={busy}
+          aria-label="Close"
+          title="Close"
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" />
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
-        <span className="result-overlay-title">Export</span>
-        <div className="atem-stage-pills">
-          {['configure', 'running', 'done'].map((s, i) => (
-            <span key={s} className={`atem-stage-pill${stage === s ? ' active' : ''}`}>{i + 1}</span>
-          ))}
-        </div>
       </header>
 
-      {/* Body */}
-      <div className="atem-overlay-body">
+      <div className="tool-body tool-body--form">
         {!connected && stage === 'configure' && (
-          <p className="atem-error">Resolve is not connected — open your project first.</p>
+          <div className="notice error"><span>Resolve not connected.</span></div>
         )}
         {stage === 'configure' && renderConfigure()}
         {stage === 'preflight' && renderPreflight()}
@@ -850,18 +829,21 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         {stage === 'done'      && renderDone()}
       </div>
 
-      {/* Footer */}
-      <footer className="result-overlay-actions">
-        {stage === 'configure' && (
-          <button className="btn" disabled={!canRun} onClick={() => beginExport(autoStart)}>
-            {autoStart ? 'Queue & Render' : 'Queue Export'}
+      <footer className="tool-footer tool-footer--form">
+        {(stage === 'configure' || stage === 'preflight' || stage === 'running') && (
+          <button
+            className="btn primary"
+            disabled={!canRun || stage !== 'configure'}
+            onClick={() => beginExport(autoStart)}
+          >
+            Export
           </button>
         )}
         {stage === 'confirm' && (
           <>
-            <button className="btn-secondary" onClick={() => setStage('configure')}>Back</button>
-            <button className="btn" onClick={() => doStart(pendingStart)}>
-              {pendingStart ? 'Continue & Render' : 'Continue & Queue'}
+            <button className="btn ghost" onClick={() => setStage('configure')}>Back</button>
+            <button className="btn primary" onClick={() => doStart(pendingStart)}>
+              Export anyway
             </button>
           </>
         )}
@@ -869,12 +851,12 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
           const tracked = result && !result.error && !result.warning;
           return (
             <>
-              {tracked && onOpenJobs && (
-                <button className="btn" onClick={onOpenJobs}>View in Jobs</button>
-              )}
-              <button className={tracked && onOpenJobs ? 'btn-secondary' : 'btn'} onClick={onClose}>
+              <button className={tracked && onOpenJobs ? 'btn ghost' : 'btn primary'} onClick={onClose}>
                 Done
               </button>
+              {tracked && onOpenJobs && (
+                <button className="btn primary" onClick={onOpenJobs}>View in Jobs</button>
+              )}
             </>
           );
         })()}
