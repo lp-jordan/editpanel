@@ -176,6 +176,11 @@ body {
     radial-gradient(circle at 12% 0%, var(--page-glow-gold), transparent 26%),
     radial-gradient(circle at 88% 8%, var(--page-glow-blue), transparent 30%),
     linear-gradient(180deg, #18181a 0%, var(--page-bg) 40%, var(--page-bg-deep) 100%);
+  /* Pin the gradient to the window. Unpinned, it was sized to one viewport and
+     tiled, so on a page taller than the window (Settings) it restarted mid-
+     scroll: a hard seam where the blue glow cut off and the gold one reappeared. */
+  background-attachment: fixed;
+  background-color: var(--page-bg-deep);
 }
 
 body::before {
