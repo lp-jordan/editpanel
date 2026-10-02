@@ -145,7 +145,10 @@ const workers = {
     cwd: HELPER_ROOT,
     env: {
       ...process.env,
-      ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {})
+      ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {}),
+      // Where the resolve worker saves per-project timeline indexes
+      // (helper/timeline_index.py).
+      EDITPANEL_DATA_DIR: app.getPath('userData')
     }
   }),
   [WORKERS.media]: createWorkerState(WORKERS.media, {

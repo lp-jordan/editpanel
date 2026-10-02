@@ -27,6 +27,6 @@ def handle_connect(_payload: Dict[str, Any]) -> Dict[str, Any]:
     threading.Thread(target=rh._monitor_resolve, daemon=True).start()
     # Build the timeline index now, off the command loop, so the first export
     # doesn't have to walk the whole project (see helper/timeline_index.py).
-    from ..timeline_index import rebuild_in_background
-    rebuild_in_background(rh.project, rh.log)
+    from ..timeline_index import load_or_rebuild
+    load_or_rebuild(rh.project, rh.log)
     return {"result": True}

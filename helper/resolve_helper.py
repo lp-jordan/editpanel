@@ -189,7 +189,7 @@ def _monitor_resolve(poll_seconds: float = 1.5) -> None:
             if curr_project != prev_project:
                 # Different project open: its timeline list is a different list.
                 timeline_index.invalidate()
-                timeline_index.rebuild_in_background(project, log)
+                timeline_index.load_or_rebuild(project, log)
             elif polls % 10 == 0:
                 # ~every 15s: one cheap call to notice added/deleted timelines.
                 timeline_index.note_possible_change(project, log)

@@ -21,8 +21,18 @@ How it works:
 
 Every lookup logs how it was answered and how long it took, so a slow export
 shows exactly where the time went.
+
+Persistence: each project's index is saved to
+$EDITPANEL_DATA_DIR/timeline-index/<project key>.json (the Electron userData
+folder), keyed by Resolve's project unique id (falling back to the name on
+builds without one). On connect or project switch the saved index loads
+instantly; a timeline-count mismatch then triggers a background rebuild. A
+stale saved index is harmless — every hit is still verified before use.
 """
 
+import hashlib
+import json
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -32,7 +42,7 @@ _CHUNK_PAUSE_S = 0.05  # yield between chunks so foreground commands get a turn
 
 _lock = threading.Lock()
 _state: Dict[str, Any] = {
-    "project": None,   # project name the index belongs to
+    "project": None,   # project key (unique id, else name) the index belongs to
     "count": None,     # GetTimelineCount() when the index was built
     "by_name": {},     # name -> [1-based index, ...]
     "built_at": None,
@@ -41,9 +51,55 @@ _building = threading.Event()
 _generation = 0  # bumped on invalidate so an in-flight background walk discards its result
 
 
-def _project_name(project: Any) -> Optional[str]:
+def _project_key(project: Any) -> Optional[str]:
+    """Resolve's project unique id when available (two projects can share a
+    name), else the project name."""
     try:
-        return project.GetName()
+        uid = project.GetUniqueId()
+        if uid:
+            return f"id:{uid}"
+    except Exception:
+        pass
+    try:
+        name = project.GetName()
+        return f"name:{name}" if name else None
+    except Exception:
+        return None
+
+
+def _index_path(key: str) -> Optional[str]:
+    base = os.environ.get("EDITPANEL_DATA_DIR")
+    if not base or not key:
+        return None
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    return os.path.join(base, "timeline-index", f"{digest}.json")
+
+
+def _save(key: Optional[str], count: int, by_name: Dict[str, List[int]]) -> None:
+    path = _index_path(key or "")
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"project": key, "count": count, "by_name": by_name,
+                       "saved_at": time.time()}, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass  # persistence is an optimisation; never fail a lookup over it
+
+
+def _load(key: Optional[str]) -> Optional[Dict[str, Any]]:
+    path = _index_path(key or "")
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if data.get("project") != key or not isinstance(data.get("by_name"), dict):
+            return None
+        return data
     except Exception:
         return None
 
@@ -70,9 +126,11 @@ def _walk(project: Any, count: int, pause: bool) -> Dict[str, List[int]]:
     return by_name
 
 
-def _store(project_name: Optional[str], count: int, by_name: Dict[str, List[int]]) -> None:
+def _store(key: Optional[str], count: int, by_name: Dict[str, List[int]], persist: bool = True) -> None:
     with _lock:
-        _state.update(project=project_name, count=count, by_name=by_name, built_at=time.time())
+        _state.update(project=key, count=count, by_name=by_name, built_at=time.time())
+    if persist:
+        _save(key, count, by_name)
 
 
 def invalidate() -> None:
@@ -94,7 +152,7 @@ def rebuild_in_background(project: Any, log: Optional[Callable[[str], None]] = N
     def _run() -> None:
         try:
             t0 = time.time()
-            name = _project_name(project)
+            name = _project_key(project)
             count = _timeline_count(project)
             by_name = _walk(project, count, pause=True)
             with _lock:
@@ -116,11 +174,28 @@ def note_possible_change(project: Any, log: Optional[Callable[[str], None]] = No
     project or its timeline count differs from what the index was built from."""
     if project is None:
         return
-    name = _project_name(project)
+    name = _project_key(project)
     count = _timeline_count(project)
     with _lock:
         same = _state["project"] == name and _state["count"] == count
     if not same:
+        rebuild_in_background(project, log)
+
+
+def load_or_rebuild(project: Any, log: Optional[Callable[[str], None]] = None) -> None:
+    """On connect / project switch: use this project's saved index if there is
+    one, then rebuild in the background if its timeline count is out of date."""
+    if project is None:
+        return
+    key = _project_key(project)
+    data = _load(key)
+    if data:
+        by_name = {str(k): [int(i) for i in v] for k, v in data["by_name"].items()}
+        _store(key, int(data.get("count") or 0), by_name, persist=False)
+        if log:
+            log(f"[timelines] Loaded saved index ({data.get('count')} timelines).")
+        note_possible_change(project, log)
+    else:
         rebuild_in_background(project, log)
 
 
@@ -149,7 +224,7 @@ def find_timelines(project: Any, names: List[str],
     if not wanted:
         return []
     t0 = time.time()
-    proj_name = _project_name(project)
+    proj_name = _project_key(project)
     count = _timeline_count(project)
 
     with _lock:
