@@ -1060,8 +1060,6 @@ function App() {
         <HoverNav route={route} onNavigate={navigateTo} />
 
         <main className="app-content">
-          {/* Compact task rows: title + one-line description on the left, a
-              short verb button on the right. Only the button is interactive. */}
           <div className="task-grid">
             {currentWorkspace.tasks.map((task) => {
               const disabled = (task.requiresResolve && !connected) || task.comingSoon;
@@ -1070,10 +1068,8 @@ function App() {
                   key={task.key}
                   className={`task-card${task.comingSoon ? ' soon' : ''}`}
                 >
-                  <div className="task-card-body">
-                    <h3 className="task-card-title">{task.label}</h3>
-                    <p className="task-card-desc">{task.description}</p>
-                  </div>
+                  <h3 className="task-card-title">{task.label}</h3>
+                  <p className="task-card-desc">{task.description}</p>
                   <button
                     type="button"
                     className="btn"

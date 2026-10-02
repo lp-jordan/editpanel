@@ -92,8 +92,8 @@
   --page-bg: #111113;
   --page-bg-deep: #0a0a0b;
   /* Retired glow tokens (kept defined so stale references resolve). */
-  --page-glow-gold: transparent;
-  --page-glow-blue: transparent;
+  --page-glow-gold: rgba(219, 175, 95, 0.12);
+  --page-glow-blue: rgba(91, 155, 213, 0.07);
 
   /* Surfaces (solid, flat) */
   --surface: #17171a;
@@ -167,10 +167,25 @@ body,
   height: 100%;
 }
 
+/* Page background: soft gold + blue glows over a charcoal gradient. Kept by
+   choice after the 2026-10-02 flattening pass (user reverted this one). */
 body {
   margin: 0;
   color: var(--text);
-  background: var(--page-bg);
+  background:
+    radial-gradient(circle at 12% 0%, var(--page-glow-gold), transparent 26%),
+    radial-gradient(circle at 88% 8%, var(--page-glow-blue), transparent 30%),
+    linear-gradient(180deg, #18181a 0%, var(--page-bg) 40%, var(--page-bg-deep) 100%);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at top, rgba(219, 175, 95, 0.05), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(91, 155, 213, 0.05), transparent 28%);
 }
 
 button,
@@ -385,18 +400,45 @@ select,
   display: none;
 }
 
-/* Narrow-width pass (~460px wide). Task rows already fit a narrow window
-   (title + description left, button right), so only the outer padding
-   tightens to give content the real estate the chrome was eating. */
+/* Narrow-width readability pass. At ~460px wide, the default task-grid renders
+   two 200×200 squares — readable from a desk but not from a glance while
+   editing. In anchored mode we collapse to a single full-width row-style card,
+   bump body copy, and tighten outer padding so the content gets the real
+   estate the chrome was eating. */
 
 /* Tighter outer padding — recover ~36px of horizontal space for content. */
 .app-shell.is-anchored .app-content {
   padding: 80px 14px 48px;
 }
 
-.app-shell.is-anchored .task-card {
-  padding: 12px 14px;
+/* Single column. Drop the 1:1 aspect ratio so cards size to their content
+   instead of becoming squat squares. */
+.app-shell.is-anchored .task-grid {
+  grid-template-columns: 1fr;
   gap: 12px;
+}
+.app-shell.is-anchored .task-card {
+  aspect-ratio: auto;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: 18px 18px 20px;
+  gap: 10px;
+}
+.app-shell.is-anchored .task-card-title {
+  font-size: 1.15rem;
+}
+.app-shell.is-anchored .task-card-desc {
+  font-size: 0.88rem;
+  line-height: 1.45;
+  max-width: none;
+}
+.app-shell.is-anchored .task-card .btn,
+.app-shell.is-anchored .task-card .btn-secondary {
+  align-self: stretch;
+  min-height: 42px;
+  font-size: 0.9rem;
+  margin-top: 6px;
 }
 
 /* Page-level type. The page-title already uses clamp() so it shrinks
@@ -993,54 +1035,69 @@ select,
 
 /* ─── Task grid ───────────────────────────────────────────── */
 
-/* Compact task rows: title + description on the left, a short-verb button on
-   the right. The row itself is not interactive (no hover state); only the
-   button is. */
+/* Task tiles: square cards, centred title + description + button (restored
+   2026-10-02 after the flattening pass at the user's request). Only the
+   button is interactive. */
 .task-grid {
-  grid-template-columns: 1fr;
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+  align-items: start;
 }
 
 .task-card {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: center;
-  gap: 16px;
-  padding: 14px 18px;
-  border-radius: var(--radius-md);
-  text-align: left;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px 20px;
+  border-radius: 14px;
+  aspect-ratio: 1;
+  text-align: center;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
+    var(--surface);
+  box-shadow: var(--shadow-float);
+  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+}
+
+.task-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
 }
 
 .task-card.soon {
   opacity: 0.55;
 }
 
-.task-card-body {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  gap: 3px;
+.task-card.soon:hover {
+  transform: none;
 }
 
 .task-card-title {
   margin: 0;
-  font-size: 1rem;
+  font-size: 1.2rem;
   font-weight: 700;
+  letter-spacing: -0.025em;
   color: var(--text-strong);
-  line-height: 1.25;
+  line-height: 1.1;
 }
 
+/* 0.8rem rather than the original 0.7rem, which was flagged as too small. */
 .task-card-desc {
   margin: 0;
-  font-size: 0.84rem;
-  color: var(--text-muted);
-  line-height: 1.4;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  line-height: 1.35;
+  max-width: 24ch;
 }
 
 .task-card .btn,
 .task-card .btn-secondary {
-  flex-shrink: 0;
-  min-width: 88px;
+  margin-top: 12px;
+  min-height: 36px;
+  font-size: 0.8rem;
+  padding: 0 16px;
 }
 
 .list-header {
