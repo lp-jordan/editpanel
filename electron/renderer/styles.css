@@ -12,6 +12,78 @@
   font-style: normal;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+ * EditPanel design system (flat). Read this before styling a component.
+ *
+ * Rules: flat surfaces (no gradients, glows, hover lifts, or blur); colours
+ * only through the tokens below; radius only --radius-sm/md/lg or 999px for
+ * pills; shadows only var(--shadow-float) on floating layers (dropdowns,
+ * dialogs, the jobs panel). Uppercase letter-spaced text only via
+ * .section-label. One primary button per view.
+ *
+ * Tokens (:root)
+ *   --page-bg / --page-bg-deep   window background / status bar background
+ *   --surface                    cards, rows, panels (solid)
+ *   --surface-2                  raised surface: dialogs, popovers, jobs panel
+ *   --surface-inset              inputs, code/log wells
+ *   --hover / --hover-strong     neutral hover/pressed tint for rows & icon buttons
+ *   --scrim                      dim backdrop behind a centred dialog
+ *   --border / --border-strong   hairlines / emphasised or hovered borders
+ *   --text                       body text
+ *   --text-strong                headings, titles, row names
+ *   --text-muted                 secondary text
+ *   --text-dim                   tertiary text: hints, timestamps, placeholders
+ *   --accent / --accent-strong / --accent-soft   gold: primary action, selection
+ *   --accent-contrast            text on a solid --accent fill
+ *   --info / --info-strong / --info-soft         blue: progress, links, info
+ *   --success / --success-soft   done / ok
+ *   --warning / --warning-soft   needs attention, not failed
+ *   --danger / --danger-soft     failed / destructive
+ *   --radius-sm (6px) / --radius-md (10px) / --radius-lg (14px)
+ *   --shadow-float               the only shadow; floating layers only
+ *   --focus-ring                 box-shadow for :focus-visible
+ *   Legacy names still work (aliases): --surface-1, --line, --line-strong,
+ *   --muted, --muted-soft, --accent-blue*, --shadow-sm/md/lg, --text-primary.
+ *
+ * Buttons
+ *   .btn                 regular 34px button; plain .btn renders as primary (gold)
+ *   .btn.primary         the one primary action (same look as plain .btn)
+ *   .btn.ghost           neutral/secondary action (.btn-secondary is an alias)
+ *   .btn.danger          destructive action (outlined red, red fill on hover)
+ *   .btn.small           compact 24px size; combine with any modifier
+ *
+ * Tool overlay family (full-window tool screens)
+ *   .tool-overlay        fixed full-window flex column (z-index 80); put
+ *                        .tool-header, .tool-body, .tool-footer inside
+ *   .tool-header         top bar: .tool-title, optional .tool-subtitle, any
+ *                        chips, then .tool-close LAST (it right-aligns itself)
+ *   .tool-title          overlay title (one line, ellipsis)
+ *   .tool-subtitle       muted one-line context after the title (project, timeline)
+ *   .tool-close          28px × button; :disabled is visibly disabled (use
+ *                        while a run is in progress)
+ *   .tool-body           scrolling content area (flex column, 16px gap)
+ *   .tool-body--form     content centred at max 640px (settings-style forms)
+ *   .tool-body--report   content centred at max 1080px (reports, lists)
+ *   .tool-footer         bottom action bar, actions right-aligned, primary
+ *                        last; add --form / --report to line it up with the body
+ *   .tool-footer-status  optional muted status text pinned to the footer's left
+ *
+ * Messages & small parts
+ *   .notice              one-line message box; add .error / .warning / .info /
+ *                        .success. Optional trailing .notice-action (button).
+ *   .error-text          inline error text (danger colour); .bad is an alias
+ *                        for colour only
+ *   .hint                muted small one-liner (loading / disabled / error help)
+ *   .dim                 tertiary text colour only
+ *   .section-label       THE uppercase letter-spaced label (.eyebrow = alias)
+ *   .status-dot          5px dot (status bar: .ok / .bad / .neutral). Row
+ *                        status: .is-pending / .is-active / .is-done /
+ *                        .is-error / .is-skipped (8px). Pair with a text label.
+ *   .spinner             14px spinner (blue); .spinner.small = 8px
+ *   .tag                 small neutral chip, sentence case; colour with
+ *                        .accent / .info / .success / .warning / .danger
+ * ═══════════════════════════════════════════════════════════════════════ */
+
 :root {
   color-scheme: dark;
   font-family: 'Metropolis', Aptos, 'Segoe UI', sans-serif;
@@ -19,47 +91,66 @@
   /* Base — neutral charcoal, no blue tint */
   --page-bg: #111113;
   --page-bg-deep: #0a0a0b;
-  --page-glow-gold: rgba(219, 175, 95, 0.12);
-  --page-glow-blue: rgba(91, 155, 213, 0.07);
+  /* Retired glow tokens (kept defined so stale references resolve). */
+  --page-glow-gold: transparent;
+  --page-glow-blue: transparent;
 
-  /* Surfaces */
-  --surface-1: rgba(20, 20, 22, 0.9);
-  --surface-2: rgba(26, 26, 29, 0.94);
-  --surface-inset: rgba(13, 13, 14, 0.78);
+  /* Surfaces (solid, flat) */
+  --surface: #17171a;
+  --surface-2: #1d1d21;
+  --surface-inset: #0d0d0f;
+  --hover: rgba(255, 255, 255, 0.05);
+  --hover-strong: rgba(255, 255, 255, 0.09);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --surface-1: var(--surface);
 
   /* Lines */
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.16);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --line: var(--border);
+  --line-strong: var(--border-strong);
 
   /* Text */
   --text: #f4eee2;
   --text-strong: #fff9ef;
-  --muted: #c4b8a8;
-  --muted-soft: #8a8078;
+  --text-muted: #c4b8a8;
+  --text-dim: #8a8078;
+  --text-primary: var(--text-strong);
+  --muted: var(--text-muted);
+  --muted-soft: var(--text-dim);
 
-  /* Accent gold — primary highlight */
+  /* Accent gold — primary action, selection */
   --accent: #dbaf5f;
   --accent-strong: #f2cf91;
   --accent-soft: rgba(219, 175, 95, 0.16);
+  --accent-contrast: #21160a;
 
-  /* Accent blue — secondary highlight */
-  --accent-blue: #5b9bd5;
-  --accent-blue-strong: #7db8e8;
-  --accent-blue-soft: rgba(91, 155, 213, 0.14);
+  /* Info blue — progress, links, informational */
+  --info: #5b9bd5;
+  --info-strong: #7db8e8;
+  --info-soft: rgba(91, 155, 213, 0.14);
+  --accent-blue: var(--info);
+  --accent-blue-strong: var(--info-strong);
+  --accent-blue-soft: var(--info-soft);
 
   /* Semantic */
   --success: #97b989;
+  --success-soft: rgba(151, 185, 137, 0.14);
+  --warning: #e3c25a;
+  --warning-soft: rgba(227, 194, 90, 0.13);
   --danger: #d88989;
+  --danger-soft: rgba(216, 137, 137, 0.14);
 
-  /* Shadows */
-  --shadow-lg: 0 28px 64px rgba(0, 0, 0, 0.44);
-  --shadow-md: 0 18px 36px rgba(0, 0, 0, 0.32);
-  --shadow-sm: 0 10px 22px rgba(0, 0, 0, 0.24);
+  /* Shadow — floating layers only */
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-lg: var(--shadow-float);
+  --shadow-md: var(--shadow-float);
+  --shadow-sm: var(--shadow-float);
 
   /* Radii */
-  --radius-lg: 24px;
-  --radius-md: 18px;
-  --radius-sm: 12px;
+  --radius-lg: 14px;
+  --radius-md: 10px;
+  --radius-sm: 6px;
 
   /* Focus */
   --focus-ring: 0 0 0 3px rgba(219, 175, 95, 0.22);
@@ -79,20 +170,7 @@ body,
 body {
   margin: 0;
   color: var(--text);
-  background:
-    radial-gradient(circle at 12% 0%, var(--page-glow-gold), transparent 26%),
-    radial-gradient(circle at 88% 8%, var(--page-glow-blue), transparent 30%),
-    linear-gradient(180deg, #18181a 0%, var(--page-bg) 40%, var(--page-bg-deep) 100%);
-}
-
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at top, rgba(219, 175, 95, 0.05), transparent 32%),
-    radial-gradient(circle at bottom right, rgba(91, 155, 213, 0.05), transparent 28%);
+  background: var(--page-bg);
 }
 
 button,
@@ -102,7 +180,7 @@ textarea {
 }
 
 button {
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease;
 }
 
 button:focus-visible,
@@ -162,7 +240,8 @@ select,
 [contenteditable="true"],
 .slideout-console,
 .spell-report,
-.result-overlay-body {
+.result-overlay-body,
+.tool-body {
   user-select: text;
   -webkit-user-select: text;
 }
@@ -184,22 +263,6 @@ select,
      (e.g. breadcrumb bar at z-index 40, page content at z-index auto)
      while still registering the region for OS-level window dragging. */
   pointer-events: none;
-}
-
-/* Subtle visible grabber — gives users an obvious place to put the cursor to
-   move the window. Sits in the very top margin (≈5px), above where the navbar
-   pill starts (~18px down), so it never competes with the nav. Drawn purely as
-   a visual hint; the OS drag region is the whole strip regardless of this. */
-.window-drag-handle::after {
-  content: "";
-  position: absolute;
-  top: 5px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 40px;
-  height: 4px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.14);
 }
 
 /* Make the navbar background area draggable (catches grabs above the pill).
@@ -291,15 +354,15 @@ select,
 }
 .window-control-close    { background: #ff5f57; }
 .window-control-minimize { background: #febc2e; }
-/* Anchor button uses the LPOS accent blue (--accent-blue: #5b9bd5) — gold
-   read too close to the yellow minimize button next to it. */
-.window-control-anchor   { background: #5b9bd5; }
+/* Anchor button uses the info blue — gold read too close to the yellow
+   minimize button next to it. */
+.window-control-anchor   { background: var(--info); }
 /* Stronger ring on the anchor button while active — the panel-mode state is
    the one piece of UI we really don't want the user losing track of, since
    it's their only obvious path back out. */
 .window-control-anchor.is-active {
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25),
-              0 0 0 2px rgba(91, 155, 213, 0.55);
+              0 0 0 2px var(--info);
 }
 /* In anchored mode, scale the controls up slightly and ensure they're clearly
    clickable — the editor's mouse is coming over from Resolve, not already on
@@ -416,10 +479,10 @@ select,
   height: 32px;
   padding: 0;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
-  opacity: 0.4;
+  opacity: 0.6;
   cursor: pointer;
   transition: opacity 160ms ease, background 160ms ease;
 }
@@ -427,7 +490,7 @@ select,
 .home-settings-btn:hover,
 .home-settings-btn:focus-visible {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--hover-strong);
 }
 
 .home-hero {
@@ -436,45 +499,7 @@ select,
   align-items: center;
   gap: 44px;
   padding: 40px 24px 80px;
-  isolation: isolate;
   position: relative;
-}
-
-.home-hero::before,
-.home-hero::after {
-  content: '';
-  pointer-events: none;
-  position: absolute;
-  top: -120px;
-  border-radius: 50%;
-  filter: blur(72px);
-  z-index: -1;
-}
-
-.home-hero::before {
-  width: 560px;
-  height: 280px;
-  left: -80px;
-  background: radial-gradient(circle, rgba(219, 175, 95, 0.2), transparent 68%);
-  animation: home-drift-a 32s ease-in-out infinite alternate;
-}
-
-.home-hero::after {
-  width: 400px;
-  height: 200px;
-  right: -60px;
-  background: radial-gradient(circle, rgba(91, 155, 213, 0.12), transparent 65%);
-  animation: home-drift-b 26s ease-in-out infinite alternate;
-}
-
-@keyframes home-drift-a {
-  from { transform: translateX(0); }
-  to { transform: translateX(160px); }
-}
-
-@keyframes home-drift-b {
-  from { transform: translateX(0); }
-  to { transform: translateX(-140px); }
 }
 
 .home-brand {
@@ -511,25 +536,17 @@ select,
   gap: 14px;
   width: 160px;
   height: 160px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01)),
-    var(--surface-1);
-  box-shadow: var(--shadow-md);
-  color: var(--muted);
+  background: var(--surface);
+  color: var(--text-muted);
   cursor: pointer;
 }
 
 .home-tile:hover {
-  border-color: rgba(219, 175, 95, 0.35);
-  background:
-    radial-gradient(circle at center, rgba(219, 175, 95, 0.09), transparent 70%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
-    var(--surface-1);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
   color: var(--accent-strong);
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-lg);
 }
 
 .home-tile-label {
@@ -553,7 +570,7 @@ select,
   display: flex;
   justify-content: center;
   padding: 18px 24px 28px;
-  opacity: 0.18;
+  opacity: 0.85;
   transition: opacity 240ms ease;
   pointer-events: auto;
 }
@@ -569,11 +586,9 @@ select,
   gap: 4px;
   padding: 6px 10px;
   border-radius: 999px;
-  background: rgba(10, 10, 11, 0.76);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-float);
   pointer-events: auto;
 }
 
@@ -596,18 +611,18 @@ select,
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--muted-soft);
+  color: var(--text-dim);
 }
 
 .navbar-home:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover);
 }
 
 .navbar-sep {
   width: 1px;
   height: 16px;
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--border);
   margin: 0 4px;
 }
 
@@ -616,18 +631,17 @@ select,
   border-radius: 999px;
   font-size: 0.84rem;
   font-weight: 600;
-  color: rgba(196, 184, 168, 0.65);
-  letter-spacing: 0.01em;
+  color: var(--text-muted);
 }
 
 .navbar-link:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--hover);
 }
 
 .navbar-link.active {
   color: var(--accent-strong);
-  background: rgba(219, 175, 95, 0.13);
+  background: var(--accent-soft);
 }
 
 .navbar-gear {
@@ -636,27 +650,18 @@ select,
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--muted-soft);
+  color: var(--text-dim);
   transition: color 160ms ease, background 160ms ease;
 }
 
 .navbar-gear:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
-}
-
-.navbar-gear:hover svg {
-  transform: rotate(28deg);
-  transition: transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.navbar-gear svg {
-  transition: transform 300ms ease;
+  background: var(--hover);
 }
 
 .navbar-gear.active {
-  color: var(--accent-blue-strong);
-  background: var(--accent-blue-soft);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
 }
 
 /* ─── Breadcrumbs ─────────────────────────────────────────── */
@@ -683,8 +688,8 @@ select,
 }
 
 .breadcrumb-back {
-  border-radius: 6px;
-  color: rgba(196, 184, 168, 0.35);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -695,14 +700,14 @@ select,
 .breadcrumb-back:hover,
 .breadcrumb-home:hover,
 .breadcrumb-link:hover {
-  color: rgba(196, 184, 168, 0.8);
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  background: var(--hover);
 }
 
 .breadcrumb-home {
-  color: rgba(196, 184, 168, 0.35);
+  color: var(--text-dim);
   padding: 4px 6px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -715,7 +720,7 @@ select,
 
 .breadcrumb-sep {
   font-size: 0.74rem;
-  color: rgba(255, 255, 255, 0.1);
+  color: var(--border-strong);
   padding: 0 3px;
   user-select: none;
 }
@@ -725,36 +730,35 @@ select,
   font-size: 0.78rem;
   font-weight: 600;
   padding: 4px 6px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .breadcrumb-link {
-  color: rgba(196, 184, 168, 0.42);
+  color: var(--text-dim);
 }
 
 .breadcrumb-current {
-  color: rgba(196, 184, 168, 0.72);
+  color: var(--text-muted);
 }
 
 /* ─── Page layout ─────────────────────────────────────────── */
 
 .page-stack,
-.task-grid,
-.stats-grid,
-.panel-list,
-.detail-stack,
-.actions-row,
-.status-row {
+.task-grid {
   display: grid;
   gap: 18px;
 }
 
-.eyebrow {
+/* .eyebrow is a legacy alias of .section-label (the only uppercase,
+   letter-spaced style). Use it for section labels only, never as a kicker
+   above a heading. */
+.eyebrow,
+.section-label {
   margin: 0;
-  color: var(--muted-soft);
+  color: var(--text-dim);
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
@@ -779,23 +783,16 @@ select,
 .section-copy,
 .muted {
   margin: 0;
-  color: var(--muted);
+  color: var(--text-muted);
   line-height: 1.6;
 }
 
 /* ─── Panels ──────────────────────────────────────────────── */
 
 .panel,
-.task-card,
-.stat-card,
-.list-item,
-.panel-note {
-  border: 1px solid var(--line);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
-    var(--surface-1);
-  box-shadow: var(--shadow-md);
-  backdrop-filter: blur(12px);
+.task-card {
+  border: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .panel {
@@ -803,66 +800,303 @@ select,
   padding: 24px;
 }
 
-.page-hero,
-.detail-panel {
-  display: grid;
-}
-
 .page-hero {
+  display: grid;
   gap: 14px;
 }
 
-.actions-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
 /* ─── Buttons ─────────────────────────────────────────────── */
+/* One button set: .btn (34px) / .btn.small (24px) × primary / ghost / danger.
+   Plain .btn renders as primary so existing primaries keep their look;
+   .btn-secondary is a legacy alias of .btn.ghost. */
 
 .btn,
 .btn-secondary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 44px;
-  padding: 0 20px;
-  border-radius: 999px;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
-.btn {
-  border: 1px solid rgba(219, 175, 95, 0.28);
-  background: linear-gradient(180deg, var(--accent-strong), var(--accent));
-  color: #21160a;
+.btn,
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
   font-weight: 700;
 }
 
-.btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 0 0 1px rgba(219, 175, 95, 0.16), var(--shadow-sm);
+.btn:hover:not(:disabled),
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
+.btn.ghost,
 .btn-secondary {
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
+  background: transparent;
+  border-color: var(--border-strong);
   color: var(--text);
   font-weight: 600;
 }
 
-.btn-secondary:hover {
-  border-color: var(--line-strong);
-  background: rgba(255, 255, 255, 0.06);
+.btn.ghost:hover:not(:disabled),
+.btn-secondary:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--border-strong);
+}
+
+.btn.danger {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+.btn.small {
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.76rem;
+  gap: 4px;
 }
 
 .btn:disabled,
 .btn-secondary:disabled {
   opacity: 0.4;
   cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
 }
+
+/* ─── Shared components ───────────────────────────────────── */
+/* See the header comment at the top of this file for usage. */
+
+/* Tool overlay family: full-window tool screens. */
+.tool-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  background: var(--page-bg);
+  color: var(--text);
+  -webkit-app-region: no-drag;
+  /* No fill-mode on purpose — see the .page-enter note above. */
+  animation: page-enter 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.tool-title {
+  margin: 0;
+  min-width: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tool-subtitle {
+  margin: 0;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tool-close {
+  appearance: none;
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  /* Same reasoning as .result-overlay-back: never let a drag region eat
+     the close click. */
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 1;
+}
+
+.tool-close svg {
+  pointer-events: none;
+}
+
+.tool-close:hover:not(:disabled) {
+  background: var(--hover-strong);
+  color: var(--text);
+}
+
+.tool-close:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.tool-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Centre the content column but keep the scroll container full-width, so
+   the scrollbar stays at the window edge. */
+.tool-body--form,
+.tool-footer--form {
+  padding-left: max(24px, calc((100% - 640px) / 2));
+  padding-right: max(24px, calc((100% - 640px) / 2));
+}
+
+.tool-body--report,
+.tool-footer--report {
+  padding-left: max(24px, calc((100% - 1080px) / 2));
+  padding-right: max(24px, calc((100% - 1080px) / 2));
+}
+
+.tool-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.tool-footer-status {
+  margin-right: auto;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* One-line message box. */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.notice.error   { background: var(--danger-soft);  border-left-color: var(--danger);  color: var(--danger); }
+.notice.warning { background: var(--warning-soft); border-left-color: var(--warning); color: var(--warning); }
+.notice.info    { background: var(--info-soft);    border-left-color: var(--info);    color: var(--info-strong); }
+.notice.success { background: var(--success-soft); border-left-color: var(--success); color: var(--success); }
+
+.notice-action {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.error-text {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.4;
+  color: var(--danger);
+}
+
+/* .bad: colour-only alias (also a modifier on .status-dot / .status-bar-chip). */
+.bad {
+  color: var(--danger);
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.dim {
+  color: var(--text-dim);
+}
+
+/* Spinner. */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--info);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+  flex-shrink: 0;
+}
+
+.spinner.small {
+  width: 8px;
+  height: 8px;
+  border-width: 1.5px;
+}
+
+/* Small chip. Sentence case, never uppercase. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--hover-strong);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tag.accent  { background: var(--accent-soft);  color: var(--accent-strong); }
+.tag.info    { background: var(--info-soft);    color: var(--info-strong); }
+.tag.success { background: var(--success-soft); color: var(--success); }
+.tag.warning { background: var(--warning-soft); color: var(--warning); }
+.tag.danger  { background: var(--danger-soft);  color: var(--danger); }
 
 /* ─── Task grid ───────────────────────────────────────────── */
 
@@ -879,25 +1113,20 @@ select,
   justify-content: center;
   gap: 8px;
   padding: 28px 20px;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   aspect-ratio: 1;
   text-align: center;
   cursor: pointer;
-  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+  transition: border-color 160ms ease, background 160ms ease;
 }
 
 .task-card:hover {
-  border-color: var(--line-strong);
-  transform: translateY(-2px);
+  border-color: var(--border-strong);
 }
 
 .task-card.soon {
   opacity: 0.55;
   cursor: default;
-}
-
-.task-card.soon:hover {
-  transform: none;
 }
 
 .task-card-title {
@@ -912,7 +1141,7 @@ select,
 .task-card-desc {
   margin: 0;
   font-size: 0.7rem;
-  color: var(--muted-soft);
+  color: var(--text-dim);
   line-height: 1.3;
   max-width: 22ch;
 }
@@ -920,62 +1149,12 @@ select,
 .task-card .btn,
 .task-card .btn-secondary {
   margin-top: 12px;
-  min-height: 36px;
   font-size: 0.8rem;
-  padding: 0 16px;
 }
 
 .list-header {
   display: grid;
   gap: 8px;
-}
-
-/* ─── Stats ───────────────────────────────────────────────── */
-
-.stats-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.stat-card {
-  padding: 18px;
-  border-radius: var(--radius-md);
-}
-
-.stat-label {
-  display: block;
-  margin: 0 0 10px;
-  color: var(--muted-soft);
-  font-size: 0.82rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.stat-value {
-  margin: 0;
-  color: var(--text-strong);
-  font-size: 1.5rem;
-}
-
-.panel-list {
-  gap: 12px;
-}
-
-.list-item,
-.panel-note {
-  display: grid;
-  gap: 6px;
-  padding: 16px 18px;
-  border-radius: var(--radius-md);
-}
-
-.list-item strong,
-.panel-note strong {
-  color: var(--text-strong);
-}
-
-.list-item span,
-.panel-note span {
-  color: var(--muted);
 }
 
 /* ─── Coming soon ─────────────────────────────────────────── */
@@ -985,22 +1164,19 @@ select,
   flex-direction: column;
   gap: 10px;
   padding: 20px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface);
 }
 
 .coming-soon-badge {
   display: inline-block;
-  padding: 4px 12px;
+  padding: 2px 10px;
   border-radius: 999px;
-  background: var(--accent-blue-soft);
-  border: 1px solid rgba(91, 155, 213, 0.22);
-  color: var(--accent-blue-strong);
+  background: var(--info-soft);
+  color: var(--info-strong);
   font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-weight: 600;
   width: fit-content;
 }
 
@@ -1018,20 +1194,18 @@ select,
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  background: rgba(46, 33, 8, 0.96);
-  border-top: 1px solid rgba(234, 179, 8, 0.55);
-  border-bottom: 1px solid rgba(234, 179, 8, 0.25);
-  color: rgba(255, 240, 200, 0.95);
+  background: var(--surface-2);
+  border-top: 2px solid var(--warning);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
   font-size: 0.78rem;
   line-height: 1.35;
   z-index: 44;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
 }
 
 .resolve-advisory-icon {
   font-size: 0.95rem;
-  color: #facc15;
+  color: var(--warning);
   flex-shrink: 0;
   line-height: 1.35;
 }
@@ -1043,18 +1217,17 @@ select,
 
 .resolve-advisory-title {
   font-weight: 700;
-  color: #fde68a;
+  color: var(--warning);
   margin-bottom: 2px;
 }
 
 .resolve-advisory-text {
-  color: rgba(255, 240, 200, 0.9);
+  color: var(--text);
 }
 
 .resolve-advisory-hint {
   margin-top: 4px;
-  color: rgba(255, 240, 200, 0.75);
-  font-style: italic;
+  color: var(--text-muted);
 }
 
 .resolve-advisory-actions {
@@ -1066,28 +1239,28 @@ select,
 
 .resolve-advisory-btn {
   background: transparent;
-  border: 1px solid rgba(234, 179, 8, 0.45);
-  color: rgba(255, 240, 200, 0.9);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
   padding: 4px 10px;
   font-size: 0.74rem;
   font-weight: 600;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 .resolve-advisory-btn:hover {
-  background: rgba(234, 179, 8, 0.12);
-  border-color: rgba(234, 179, 8, 0.7);
+  background: var(--hover);
 }
 
 .resolve-advisory-btn.primary {
-  background: rgba(234, 179, 8, 0.18);
-  border-color: rgba(234, 179, 8, 0.7);
-  color: #fef3c7;
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: var(--warning);
 }
 
 .resolve-advisory-btn.primary:hover {
-  background: rgba(234, 179, 8, 0.3);
+  background: var(--warning-soft);
+  color: var(--text-strong);
 }
 
 /* ─── Persistent status bar ───────────────────────────────── */
@@ -1098,9 +1271,8 @@ select,
   left: 0;
   right: 0;
   height: 28px;
-  background: rgba(8, 8, 9, 0.92);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: var(--page-bg-deep);
+  border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
   padding: 0 16px;
@@ -1117,12 +1289,16 @@ select,
 .status-bar-divider {
   width: 1px;
   height: 12px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--border);
   margin: 0 14px;
   flex-shrink: 0;
 }
 
+/* Status dot. Bare .status-dot is the 5px status-bar dot (.ok / .bad /
+   .neutral). Row status uses the .is-* modifiers (8px). Always pair the dot
+   with a text label. */
 .status-dot {
+  display: inline-block;
   width: 5px;
   height: 5px;
   border-radius: 50%;
@@ -1131,14 +1307,32 @@ select,
 
 .status-dot.ok { background: var(--success); }
 .status-dot.bad { background: var(--danger); }
-.status-dot.neutral { background: var(--muted-soft); }
+.status-dot.neutral { background: var(--text-dim); }
+
+.status-dot.is-pending,
+.status-dot.is-active,
+.status-dot.is-done,
+.status-dot.is-error,
+.status-dot.is-skipped {
+  width: 8px;
+  height: 8px;
+}
+
+.status-dot.is-pending { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-dim); }
+.status-dot.is-active  { background: var(--info); animation: status-pulse 1.2s ease-in-out infinite; }
+.status-dot.is-done    { background: var(--success); }
+.status-dot.is-error   { background: var(--danger); }
+.status-dot.is-skipped { background: var(--border-strong); }
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
 
 .status-bar-label {
-  font-size: 0.68rem;
-  font-weight: 700;
-  color: var(--muted-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-dim);
   flex-shrink: 0;
 }
 
@@ -1187,7 +1381,6 @@ button.status-bar-chip-btn:hover {
   font-size: 0.84rem;
   font-weight: 700;
   color: var(--text-strong);
-  letter-spacing: 0.01em;
 }
 
 .settings-input {
@@ -1207,8 +1400,8 @@ button.status-bar-chip-btn:hover {
 
 .settings-input:focus-visible {
   outline: none;
-  border-color: rgba(219, 175, 95, 0.4);
-  box-shadow: 0 0 0 3px rgba(219, 175, 95, 0.12);
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 
 .settings-input::placeholder {
@@ -1262,8 +1455,8 @@ button.status-bar-chip-btn:hover {
 .allowlist-chip-remove {
   appearance: none;
   border: none;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--muted-soft);
+  background: var(--hover-strong);
+  color: var(--text-dim);
   width: 18px;
   height: 18px;
   border-radius: 999px;
@@ -1277,7 +1470,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .allowlist-chip-remove:hover {
-  background: rgba(214, 90, 90, 0.18);
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
@@ -1295,15 +1488,16 @@ button.status-bar-chip-btn:hover {
 
 .slideout-console .console-content {
   pointer-events: auto;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  background: rgba(8, 8, 9, 0.96);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-inset);
   max-height: 0;
   overflow: auto;
   transition: max-height 0.2s ease;
 }
 
 .slideout-console.open .console-content {
+  box-shadow: var(--shadow-float);
   max-height: 260px;
   padding: 10px 12px;
 }
@@ -1312,7 +1506,7 @@ button.status-bar-chip-btn:hover {
   margin: 0;
   font-size: 0.76rem;
   white-space: pre-wrap;
-  color: #d8cfbf;
+  color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -1329,10 +1523,10 @@ button.status-bar-chip-btn:hover {
 }
 
 .spell-report .misspelled {
-  color: #ff8d8d;
+  color: var(--danger);
   cursor: pointer;
   text-decoration: underline;
-  text-decoration-color: rgba(255, 141, 141, 0.55);
+  text-decoration-color: var(--danger);
   text-decoration-thickness: 2px;
 }
 
@@ -1340,10 +1534,10 @@ button.status-bar-chip-btn:hover {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  border: 1px solid var(--line);
-  border-radius: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   overflow: hidden;
-  background: rgba(11, 11, 12, 0.5);
+  background: var(--surface);
 }
 
 .spell-report th,
@@ -1351,16 +1545,14 @@ button.status-bar-chip-btn:hover {
   padding: 0.65rem 0.8rem;
   text-align: left;
   vertical-align: top;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--border);
 }
 
 .spell-report th {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted-soft);
+  background: var(--hover);
+  color: var(--text-dim);
   font-size: 0.76rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .spell-report tbody tr:last-child td {
@@ -1386,11 +1578,15 @@ button.status-bar-chip-btn:hover {
 .spell-report .save-button {
   min-width: 42px;
   min-height: 42px;
-  border: 1px solid rgba(219, 175, 95, 0.3);
-  border-radius: 999px;
-  background: linear-gradient(180deg, var(--accent-strong), var(--accent));
-  color: #21160a;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--accent-contrast);
   cursor: pointer;
+}
+
+.spell-report .save-button:hover {
+  background: var(--accent-strong);
 }
 
 .spell-summary {
@@ -1401,34 +1597,34 @@ button.status-bar-chip-btn:hover {
 
 .spell-summary > div {
   padding: 12px 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--muted);
+  background: var(--surface);
+  color: var(--text-muted);
 }
 
 .suggestion-menu {
   position: absolute;
-  background: rgba(10, 10, 11, 0.97);
-  border: 1px solid rgba(219, 175, 95, 0.24);
-  border-radius: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
   list-style: none;
   padding: 6px;
   margin: 0;
   z-index: 1000;
   min-width: 180px;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-float);
 }
 
 .suggestion-menu li {
   padding: 0.5rem 0.7rem;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--text);
 }
 
 .suggestion-menu li:hover {
-  background: rgba(219, 175, 95, 0.1);
+  background: var(--accent-soft);
   color: var(--accent-strong);
 }
 
@@ -1458,10 +1654,9 @@ button.status-bar-chip-btn:hover {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 600;
-  letter-spacing: 0.02em;
   cursor: pointer;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   transition: color 140ms ease;
 }
 
@@ -1480,10 +1675,8 @@ button.status-bar-chip-btn:hover {
 
 .floating-jobs-btn {
   appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(14, 14, 16, 0.88);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
   color: var(--text);
   border-radius: 999px;
   padding: 7px 16px;
@@ -1493,18 +1686,19 @@ button.status-bar-chip-btn:hover {
   display: flex;
   align-items: center;
   gap: 7px;
-  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-float);
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
 .floating-jobs-btn:hover {
-  background: rgba(28, 28, 32, 0.96);
-  border-color: rgba(255, 255, 255, 0.22);
+  border-color: var(--text-dim);
 }
 
+/* Solid fill (not a translucent tint) so content scrolling under the
+   floating button never shows through. */
 .floating-jobs-btn.running {
-  border-color: rgba(219, 175, 95, 0.35);
-  background: rgba(219, 175, 95, 0.1);
+  border-color: var(--accent);
+  background: var(--surface-2);
   color: var(--accent-strong);
 }
 
@@ -1522,7 +1716,7 @@ button.status-bar-chip-btn:hover {
 .status-bar-spinner {
   width: 8px;
   height: 8px;
-  border: 1.5px solid rgba(219, 175, 95, 0.3);
+  border: 1.5px solid var(--accent-soft);
   border-top-color: var(--accent-strong);
   border-radius: 50%;
   animation: spin 700ms linear infinite;
@@ -1553,12 +1747,10 @@ button.status-bar-chip-btn:hover {
 
 .job-panel-inner {
   width: 100%;
-  background: rgba(10, 10, 11, 0.97);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 18px;
-  box-shadow: var(--shadow-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
   max-height: 420px;
   display: flex;
   flex-direction: column;
@@ -1570,7 +1762,7 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
@@ -1578,7 +1770,6 @@ button.status-bar-chip-btn:hover {
   font-size: 0.84rem;
   font-weight: 700;
   color: var(--text-strong);
-  letter-spacing: 0.01em;
 }
 
 .job-panel-close {
@@ -1588,7 +1779,7 @@ button.status-bar-chip-btn:hover {
   color: var(--muted-soft);
   cursor: pointer;
   padding: 4px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1597,7 +1788,7 @@ button.status-bar-chip-btn:hover {
 
 .job-panel-close:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover);
 }
 
 .job-panel-body {
@@ -1631,8 +1822,8 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   gap: 4px;
   padding: 4px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: transparent;
+  border: 1px solid var(--border);
   border-radius: 999px;
   align-self: flex-start;
   max-width: 100%;
@@ -1659,12 +1850,11 @@ button.status-bar-chip-btn:hover {
 }
 .job-panel-tab:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--hover);
 }
 .job-panel-tab.active {
   color: var(--text-strong);
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  background: var(--hover-strong);
 }
 .job-panel-tab-count {
   display: inline-flex;
@@ -1674,13 +1864,12 @@ button.status-bar-chip-btn:hover {
   height: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  background: var(--accent-blue-soft);
-  color: var(--accent-blue-strong);
+  background: var(--info-soft);
+  color: var(--info-strong);
   font-size: 0.68rem;
   font-weight: 700;
 }
 .job-panel-tab.active .job-panel-tab-count {
-  background: rgba(91, 155, 213, 0.32);
   color: var(--text-strong);
 }
 
@@ -1696,17 +1885,16 @@ button.status-bar-chip-btn:hover {
 
 .job-panel-row {
   padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
 .job-panel-row.active {
-  border-color: rgba(219, 175, 95, 0.2);
-  background: rgba(219, 175, 95, 0.04);
+  border-color: var(--accent-soft);
 }
 
 .job-panel-row.compact {
@@ -1737,11 +1925,9 @@ button.status-bar-chip-btn:hover {
    the editor opens the Deliver page. */
 .job-panel-headline-hint {
   flex-shrink: 0;
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted-soft);
+  color: var(--text-dim);
   margin-left: 8px;
   cursor: help;
 }
@@ -1751,13 +1937,10 @@ button.status-bar-chip-btn:hover {
    chips so it adds information without competing for attention. */
 .job-panel-row-chip {
   flex-shrink: 0;
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 0.72rem;
+  font-weight: 600;
   color: var(--accent-strong);
   background: var(--accent-soft);
-  border: 1px solid rgba(219, 175, 95, 0.32);
   padding: 1px 7px;
   border-radius: 999px;
   cursor: help;
@@ -1796,20 +1979,21 @@ button.status-bar-chip-btn:hover {
 
 .job-panel-progress-track {
   height: 3px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--border);
   border-radius: 999px;
   overflow: hidden;
 }
 
+/* Progress is always --info (blue); gold is reserved for primary actions. */
 .job-panel-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  background: var(--info);
   border-radius: 999px;
   transition: width 400ms ease;
 }
 
 .job-panel-progress-fill.result {
-  background: linear-gradient(90deg, var(--accent-blue), var(--accent-blue-strong));
+  background: var(--info);
 }
 
 /* Collapsible export header */
@@ -1889,10 +2073,10 @@ button.status-bar-chip-btn:hover {
 
 .job-panel-review-btn {
   appearance: none;
-  border: 1px solid var(--line-strong);
-  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-strong);
+  background: transparent;
   color: var(--text);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   padding: 3px 10px;
   font-size: 0.72rem;
   font-weight: 600;
@@ -1902,13 +2086,12 @@ button.status-bar-chip-btn:hover {
 }
 
 .job-panel-review-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.25);
+  background: var(--hover);
 }
 
 .job-panel-review-btn.done {
   color: var(--success);
-  border-color: rgba(151, 185, 137, 0.25);
+  border-color: var(--success-soft);
 }
 
 .job-panel-review-btn:disabled {
@@ -1950,7 +2133,7 @@ button.status-bar-chip-btn:hover {
   flex-shrink: 0;
   margin-right: 2px;
   cursor: pointer;
-  accent-color: var(--accent-blue, #6ea8fe);
+  accent-color: var(--info);
 }
 
 .job-panel-state-icon {
@@ -1981,10 +2164,10 @@ button.status-bar-chip-btn:hover {
 /* Cancel button on currently-running jobs */
 .job-panel-cancel-btn {
   appearance: none;
-  border: 1px solid rgba(217, 130, 130, 0.35);
-  background: rgba(217, 130, 130, 0.08);
+  border: 1px solid var(--danger);
+  background: transparent;
   color: var(--danger);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   padding: 3px 10px;
   font-size: 0.72rem;
   font-weight: 600;
@@ -1994,8 +2177,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .job-panel-cancel-btn:hover {
-  background: rgba(217, 130, 130, 0.18);
-  border-color: rgba(217, 130, 130, 0.6);
+  background: var(--danger-soft);
 }
 
 /* Compact × button used to delete a single row from Recent or Results */
@@ -2016,9 +2198,8 @@ button.status-bar-chip-btn:hover {
 }
 
 .job-panel-delete-btn:hover {
-  background: rgba(217, 130, 130, 0.12);
+  background: var(--danger-soft);
   color: var(--danger);
-  border-color: rgba(217, 130, 130, 0.35);
 }
 
 /* Footer with the bulk-prune control */
@@ -2031,10 +2212,10 @@ button.status-bar-chip-btn:hover {
 
 .job-panel-clear-old-btn {
   appearance: none;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--border-strong);
   background: transparent;
-  color: var(--muted-soft);
-  border-radius: 999px;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
   padding: 4px 12px;
   font-size: 0.72rem;
   font-weight: 600;
@@ -2043,9 +2224,8 @@ button.status-bar-chip-btn:hover {
 }
 
 .job-panel-clear-old-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover);
   color: var(--text);
-  border-color: rgba(255, 255, 255, 0.25);
 }
 
 /* ─── Result Overlay ──────────────────────────────────────── */
@@ -2054,10 +2234,7 @@ button.status-bar-chip-btn:hover {
   position: fixed;
   inset: 0;
   z-index: 80;
-  background:
-    radial-gradient(circle at 12% 0%, var(--page-glow-gold), transparent 26%),
-    radial-gradient(circle at 88% 8%, var(--page-glow-blue), transparent 30%),
-    linear-gradient(180deg, #18181a 0%, var(--page-bg) 40%, var(--page-bg-deep) 100%);
+  background: var(--page-bg);
   display: flex;
   flex-direction: column;
   animation: page-enter 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -2068,16 +2245,16 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   gap: 12px;
   padding: 18px 24px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .result-overlay-back {
   appearance: none;
   border: none;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--muted);
-  border-radius: 8px;
+  background: var(--hover);
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
   width: 28px;
   height: 28px;
   cursor: pointer;
@@ -2105,8 +2282,13 @@ button.status-bar-chip-btn:hover {
 }
 
 .result-overlay-back:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--hover-strong);
   color: var(--text);
+}
+
+.result-overlay-back:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 .result-overlay-title {
@@ -2148,8 +2330,8 @@ button.status-bar-chip-btn:hover {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 18px;
-  background: rgba(217, 130, 130, 0.12);
-  border-bottom: 1px solid rgba(217, 130, 130, 0.3);
+  background: var(--danger-soft);
+  border-bottom: 1px solid var(--border);
   color: var(--danger);
   font-size: 0.78rem;
   font-weight: 600;
@@ -2170,13 +2352,13 @@ button.status-bar-chip-btn:hover {
 
 .result-overlay-progress-track {
   height: 2px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--border);
   flex-shrink: 0;
 }
 
 .result-overlay-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent-blue), var(--accent-blue-strong));
+  background: var(--info);
   transition: width 400ms ease;
 }
 
@@ -2191,10 +2373,10 @@ button.status-bar-chip-btn:hover {
 
 .result-nav-btn {
   appearance: none;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--muted);
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
   width: 28px;
   height: 28px;
   cursor: pointer;
@@ -2205,8 +2387,8 @@ button.status-bar-chip-btn:hover {
 }
 
 .result-nav-btn:hover:not(:disabled) {
-  border-color: var(--line-strong);
-  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--border-strong);
+  background: var(--hover);
   color: var(--text);
 }
 
@@ -2260,7 +2442,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .result-item-mark {
-  background: rgba(219, 175, 95, 0.25);
+  background: var(--accent-soft);
   color: var(--accent-strong);
   border-radius: 4px;
   padding: 0 2px;
@@ -2278,10 +2460,10 @@ button.status-bar-chip-btn:hover {
 
 .result-item-tc-btn {
   appearance: none;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--accent-blue);
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--info);
+  border-radius: var(--radius-sm);
   padding: 3px 8px;
   font-size: 0.72rem;
   font-weight: 600;
@@ -2317,8 +2499,8 @@ button.status-bar-chip-btn:hover {
 
 .result-suggestion {
   appearance: none;
-  border: 1px solid var(--line-strong);
-  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-strong);
+  background: transparent;
   color: var(--text);
   border-radius: 999px;
   padding: 6px 14px;
@@ -2329,13 +2511,12 @@ button.status-bar-chip-btn:hover {
 }
 
 .result-suggestion:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.25);
+  background: var(--hover);
 }
 
 .result-suggestion.selected {
-  border-color: rgba(219, 175, 95, 0.5);
-  background: rgba(219, 175, 95, 0.12);
+  border-color: var(--accent);
+  background: var(--accent-soft);
   color: var(--accent-strong);
 }
 
@@ -2362,8 +2543,8 @@ button.status-bar-chip-btn:hover {
 
 .result-item-input:focus {
   outline: none;
-  border-color: rgba(219, 175, 95, 0.4);
-  box-shadow: 0 0 0 3px rgba(219, 175, 95, 0.12);
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 
 .result-item-input::placeholder {
@@ -2411,13 +2592,13 @@ button.status-bar-chip-btn:hover {
   justify-content: center;
   gap: 12px;
   flex-shrink: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--border);
 }
 
 /* ─── ATEM Ingest Overlay ─────────────────────────────────── */
 
 .atem-overlay .result-overlay-header {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--border);
 }
 
 .atem-stage-pills {
@@ -2430,9 +2611,9 @@ button.status-bar-chip-btn:hover {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 1px solid var(--line-strong);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted-soft);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
   font-size: 0.72rem;
   font-weight: 700;
   display: flex;
@@ -2442,8 +2623,8 @@ button.status-bar-chip-btn:hover {
 }
 
 .atem-stage-pill.active {
-  border-color: rgba(219, 175, 95, 0.5);
-  background: rgba(219, 175, 95, 0.12);
+  border-color: var(--accent);
+  background: var(--accent-soft);
   color: var(--accent-strong);
 }
 
@@ -2477,13 +2658,12 @@ button.status-bar-chip-btn:hover {
 
 .atem-host-input:focus {
   outline: none;
-  border-color: rgba(219, 175, 95, 0.4);
-  box-shadow: 0 0 0 3px rgba(219, 175, 95, 0.10);
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 
 .atem-connect-btn {
   white-space: nowrap;
-  min-height: 38px;
   padding: 0 14px;
   font-size: 0.84rem;
 }
@@ -2493,9 +2673,9 @@ button.status-bar-chip-btn:hover {
   font-size: 0.84rem;
   color: var(--danger);
   padding: 10px 14px;
-  border: 1px solid rgba(216, 137, 137, 0.2);
+  border-left: 3px solid var(--danger);
   border-radius: var(--radius-sm);
-  background: rgba(216, 137, 137, 0.06);
+  background: var(--danger-soft);
 }
 
 .atem-loading {
@@ -2517,7 +2697,7 @@ button.status-bar-chip-btn:hover {
   appearance: none;
   border: none;
   background: none;
-  color: var(--accent-blue);
+  color: var(--info);
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
@@ -2525,7 +2705,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .atem-select-all-btn:hover {
-  color: var(--accent-blue-strong);
+  color: var(--info-strong);
 }
 
 .atem-session-count {
@@ -2544,21 +2724,19 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
   cursor: pointer;
   transition: border-color 140ms ease, background 140ms ease;
 }
 
 .atem-session-row:hover {
-  border-color: var(--line-strong);
-  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-strong);
 }
 
 .atem-session-row.selected {
-  border-color: rgba(219, 175, 95, 0.35);
-  background: rgba(219, 175, 95, 0.05);
+  border-color: var(--accent);
 }
 
 .atem-session-checkbox {
@@ -2591,18 +2769,15 @@ button.status-bar-chip-btn:hover {
 }
 
 .atem-badge {
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 8px;
   border-radius: 999px;
   flex-shrink: 0;
 }
 
 .atem-badge.ingested {
-  background: rgba(151, 185, 137, 0.12);
-  border: 1px solid rgba(151, 185, 137, 0.25);
+  background: var(--success-soft);
   color: var(--success);
 }
 
@@ -2626,9 +2801,9 @@ button.status-bar-chip-btn:hover {
   display: flex;
   gap: 24px;
   padding: 16px 20px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface);
 }
 
 .atem-summary-line {
@@ -2655,7 +2830,6 @@ button.status-bar-chip-btn:hover {
   font-size: 0.82rem;
   font-weight: 700;
   color: var(--text-strong);
-  letter-spacing: 0.01em;
 }
 
 .atem-dest-row {
@@ -2694,9 +2868,9 @@ button.status-bar-chip-btn:hover {
 
 .atem-resolve-toggle {
   padding: 14px 16px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface);
 }
 
 .atem-resolve-toggle.disabled {
@@ -2717,15 +2891,12 @@ button.status-bar-chip-btn:hover {
 }
 
 .atem-coming-soon-badge {
-  font-size: 0.66rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 8px;
   border-radius: 999px;
-  background: var(--accent-blue-soft);
-  border: 1px solid rgba(91, 155, 213, 0.22);
-  color: var(--accent-blue-strong);
+  background: var(--info-soft);
+  color: var(--info-strong);
   flex-shrink: 0;
 }
 
@@ -2755,18 +2926,16 @@ button.status-bar-chip-btn:hover {
   flex-direction: column;
   gap: 6px;
   padding: 12px 14px;
-  border: 1px solid rgba(219, 175, 95, 0.2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(219, 175, 95, 0.04);
+  background: var(--surface);
 }
 
 .atem-current-file-label {
   margin: 0;
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 .atem-current-file-name {
@@ -2781,14 +2950,14 @@ button.status-bar-chip-btn:hover {
 
 .atem-progress-track-sm {
   height: 2px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--border);
   border-radius: 999px;
   overflow: hidden;
 }
 
 .atem-progress-fill-sm {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  background: var(--info);
   border-radius: 999px;
   transition: width 300ms ease;
 }
@@ -2832,7 +3001,7 @@ button.status-bar-chip-btn:hover {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   padding: 6px 8px;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--surface-inset);
 }
 
 .atem-file-row {
@@ -2840,14 +3009,14 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   gap: 8px;
   padding: 4px 6px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 0.76rem;
 }
 
 .atem-file-row.done        { color: var(--muted); }
 .atem-file-row.skipped     { color: var(--muted-soft); }
 .atem-file-row.error       { color: var(--danger); }
-.atem-file-row.downloading { color: var(--accent); background: rgba(219, 175, 95, 0.06); }
+.atem-file-row.downloading { color: var(--info-strong); background: var(--info-soft); }
 .atem-file-row.pending     { color: var(--muted-soft); opacity: 0.5; }
 
 .atem-file-state-icon {
@@ -2868,437 +3037,14 @@ button.status-bar-chip-btn:hover {
 .atem-file-cam {
   font-size: 0.68rem;
   font-weight: 700;
-  color: var(--accent-blue);
+  color: var(--info);
   flex-shrink: 0;
-}
-
-/* ─── B2 Media Browser ────────────────────────────────────── */
-
-.r2-overlay {
-  display: flex;
-  flex-direction: column;
-}
-
-.r2-overlay-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0 24px 24px;
-}
-
-/* ── Sync status strip ── */
-
-.r2-sync-strip {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 9px 12px;
-  margin-bottom: 12px;
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--line);
-}
-
-.r2-sync-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
-}
-
-.r2-sync-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.r2-sync-dot-idle    { background: var(--line-strong); }
-.r2-sync-dot-ok      { background: #5cb85c; }
-.r2-sync-dot-running { background: var(--accent); animation: r2-pulse 1.2s ease-in-out infinite; }
-.r2-sync-dot-error   { background: var(--danger); }
-
-@keyframes r2-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.4; }
-}
-
-.r2-sync-label {
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  flex-shrink: 0;
-}
-
-.r2-sync-meta {
-  font-size: 0.75rem;
-  color: var(--muted-soft);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.r2-sync-ok  { color: #5cb85c; }
-.r2-sync-err { color: var(--danger); }
-.r2-sync-uncfg { font-style: italic; }
-
-.r2-sync-trigger-btn {
-  appearance: none;
-  border: 1px solid var(--line-strong);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 4px 10px;
-  border-radius: 5px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
-}
-
-.r2-sync-trigger-btn:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: rgba(219, 175, 95, 0.4);
-  background: var(--accent-soft);
-}
-
-.r2-sync-trigger-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* ── Stats bar ── */
-
-.r2-stats-bar {
-  display: flex;
-  align-items: center;
-  padding: 8px 0 6px;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 10px;
-}
-
-.r2-stats-text {
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-
-.r2-stats-load-btn {
-  appearance: none;
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-size: 0.75rem;
-  color: var(--muted-soft);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-  transition: color 140ms ease;
-}
-
-.r2-stats-load-btn:hover {
-  color: var(--muted);
-}
-
-.r2-stats-load-btn:disabled {
-  cursor: default;
-}
-
-/* ── Breadcrumb ── */
-
-.r2-breadcrumb {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 4px 0 12px;
-}
-
-.r2-breadcrumb-sep {
-  font-size: 0.78rem;
-  color: var(--line-strong);
-  padding: 0 2px;
-}
-
-.r2-breadcrumb-link {
-  appearance: none;
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-size: 0.78rem;
-  color: var(--muted);
-  padding: 2px 4px;
-  border-radius: 4px;
-  transition: color 140ms ease, background 140ms ease;
-}
-
-.r2-breadcrumb-link:hover {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.r2-breadcrumb-current {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text);
-  padding: 2px 4px;
-}
-
-/* ── Browser rows ── */
-
-.r2-browser {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.r2-browser-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.02);
-  transition: border-color 140ms ease, background 140ms ease;
-}
-
-.r2-browser-row:hover {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.r2-browser-row.deleting {
-  opacity: 0.45;
-}
-
-.r2-row-icon {
-  color: var(--muted-soft);
-  flex-shrink: 0;
-  line-height: 0;
-}
-
-.r2-folder-row .r2-row-icon {
-  color: var(--accent);
-  opacity: 0.7;
-}
-
-.r2-row-main {
-  flex: 1;
-  background: none;
-  border: none;
-  color: var(--text);
-  font-size: 0.85rem;
-  font-weight: 500;
-  cursor: pointer;
-  text-align: left;
-  padding: 0;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.r2-row-main:hover {
-  color: var(--accent);
-}
-
-.r2-browser-divider {
-  height: 1px;
-  background: var(--line);
-  margin: 6px 0;
-}
-
-/* ── File info ── */
-
-.r2-file-info {
-  flex: 1;
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-}
-
-.r2-file-name {
-  font-size: 0.83rem;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.r2-file-meta {
-  font-size: 0.72rem;
-  color: var(--muted-soft);
-  flex-shrink: 0;
-}
-
-/* ── Common icon buttons ── */
-
-.r2-icon-btn {
-  appearance: none;
-  border: none;
-  background: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  color: var(--muted-soft);
-  transition: color 140ms ease, background 140ms ease;
-  flex-shrink: 0;
-}
-
-.r2-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-}
-
-.r2-delete-btn:hover {
-  color: var(--danger);
-  background: rgba(216, 137, 137, 0.1);
-}
-
-.r2-refresh-btn {
-  margin-left: auto;
-}
-
-/* ── States ── */
-
-.r2-loading-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 20px 0;
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-
-.r2-error-block {
-  padding: 20px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.r2-error-text {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--danger);
-}
-
-.r2-empty {
-  margin: 20px 0;
-  font-size: 0.85rem;
-  color: var(--muted-soft);
-}
-
-.r2-unconfigured {
-  padding: 20px 0;
-}
-
-.r2-unconfigured-title {
-  margin: 0 0 8px;
-  font-size: 0.95rem;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.r2-unconfigured-body {
-  margin: 0 0 12px;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.r2-unconfigured-vars {
-  margin: 0;
-  padding-left: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.r2-unconfigured-vars li {
-  font-size: 0.8rem;
-  color: var(--muted-soft);
-}
-
-.r2-unconfigured-vars code {
-  font-family: 'SF Mono', 'Consolas', 'Cascadia Code', monospace;
-  font-size: 0.78rem;
-  color: var(--accent);
-}
-
-/* ── Confirm dialog ── */
-
-.r2-confirm-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(10, 10, 11, 0.72);
-  backdrop-filter: blur(4px);
-  border-radius: inherit;
-  z-index: 10;
-}
-
-.r2-confirm-dialog {
-  background: var(--surface-2);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  padding: 24px 28px;
-  max-width: 340px;
-  width: 100%;
-  box-shadow: var(--shadow-lg);
-}
-
-.r2-confirm-title {
-  margin: 0 0 8px;
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--text-strong);
-}
-
-.r2-confirm-body {
-  margin: 0 0 20px;
-  font-size: 0.85rem;
-  color: var(--muted);
-  line-height: 1.5;
-}
-
-.r2-confirm-actions {
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-}
-
-.r2-btn-danger {
-  background: var(--danger) !important;
-  border-color: var(--danger) !important;
-  color: #fff !important;
-}
-
-.r2-btn-danger:hover {
-  background: #e89a9a !important;
 }
 
 /* ─── Responsive ──────────────────────────────────────────── */
 
 @media (max-width: 900px) {
-  .task-grid,
-  .stats-grid {
+  .task-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -3418,9 +3164,9 @@ button.status-bar-chip-btn:hover {
   min-width: 0;
   height: 34px;
   padding: 0 12px;
-  background: var(--surface-1);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   color: var(--text-strong);
   font-size: 0.86rem;
   outline: none;
@@ -3428,8 +3174,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .export-project-search-input:focus {
-  border-color: var(--line-strong);
-  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--accent);
 }
 
 .export-project-search-input::placeholder {
@@ -3463,8 +3208,7 @@ button.status-bar-chip-btn:hover {
   color: var(--muted-soft);
   padding: 8px 10px;
   border-radius: var(--radius-sm);
-  background: var(--accent-blue-soft);
-  border: 1px solid rgba(91, 155, 213, 0.18);
+  background: var(--info-soft);
 }
 
 .export-lpos-note strong {
@@ -3506,13 +3250,9 @@ button.status-bar-chip-btn:hover {
   position: sticky;
   top: 0;
   z-index: 5;
-  /* Match the page background so content scrolling under doesn't bleed
-     through. The page uses a layered radial-gradient backdrop; a solid
-     dark surface here is the cleanest compromise without re-creating the
-     gradient. backdrop-filter softens the transition.  */
-  background: linear-gradient(180deg, var(--page-bg, #18181a) 0%, var(--page-bg, #18181a) 88%, transparent 100%);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  /* Solid page background so content scrolling under doesn't bleed
+     through (the overlay itself is a flat --page-bg). */
+  background: var(--page-bg);
   padding-top: 16px;
   margin: -16px -8px 8px;
   padding-left: 8px;
@@ -3528,22 +3268,22 @@ button.status-bar-chip-btn:hover {
   align-items: flex-start;
   gap: 12px;
   padding: 12px 16px;
-  border-radius: 8px;
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   margin-bottom: 12px;
   font-size: 13px;
   line-height: 1.4;
+  color: var(--text);
 }
 
 .comment-pull-mismatch-banner.mismatch {
-  background: rgba(232, 196, 138, 0.10);
-  border: 1px solid rgba(232, 196, 138, 0.35);
-  color: rgba(255, 240, 200, 0.92);
+  background: var(--warning-soft);
+  border-left-color: var(--warning);
 }
 
 .comment-pull-mismatch-banner.offline {
-  background: rgba(143, 182, 232, 0.08);
-  border: 1px solid rgba(143, 182, 232, 0.28);
-  color: rgba(220, 232, 248, 0.88);
+  background: var(--info-soft);
+  border-left-color: var(--info);
 }
 
 .comment-pull-mismatch-icon {
@@ -3553,16 +3293,16 @@ button.status-bar-chip-btn:hover {
   margin-top: 1px;
 }
 
-.comment-pull-mismatch-banner.mismatch .comment-pull-mismatch-icon { color: #e8c48a; }
-.comment-pull-mismatch-banner.offline  .comment-pull-mismatch-icon { color: #8fb6e8; }
+.comment-pull-mismatch-banner.mismatch .comment-pull-mismatch-icon { color: var(--warning); }
+.comment-pull-mismatch-banner.offline  .comment-pull-mismatch-icon { color: var(--info); }
 
 .comment-pull-mismatch-title {
   font-weight: 700;
   margin-bottom: 3px;
 }
 
-.comment-pull-mismatch-banner.mismatch .comment-pull-mismatch-title { color: #fde8b8; }
-.comment-pull-mismatch-banner.offline  .comment-pull-mismatch-title { color: #d6e3f4; }
+.comment-pull-mismatch-banner.mismatch .comment-pull-mismatch-title { color: var(--warning); }
+.comment-pull-mismatch-banner.offline  .comment-pull-mismatch-title { color: var(--info-strong); }
 
 .comment-pull-mismatch-text {
   color: inherit;
@@ -3571,13 +3311,13 @@ button.status-bar-chip-btn:hover {
 
 .comment-pull-mismatch-text strong {
   font-weight: 600;
-  color: var(--text-strong, #fff);
+  color: var(--text-strong);
 }
 
 .comment-pull-summary {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 16px 18px;
   margin-bottom: 18px;
 }
@@ -3604,16 +3344,14 @@ button.status-bar-chip-btn:hover {
   font-variant-numeric: tabular-nums;
 }
 
-.comment-pull-totals-num.placed { color: #6bd99c; }
-.comment-pull-totals-num.kept { color: #8fb6e8; }
-.comment-pull-totals-num.removed { color: #c87d7d; }
-.comment-pull-totals-num.skipped { color: #d3a960; }
+.comment-pull-totals-num.placed { color: var(--success); }
+.comment-pull-totals-num.kept { color: var(--info); }
+.comment-pull-totals-num.removed { color: var(--danger); }
+.comment-pull-totals-num.skipped { color: var(--warning); }
 
 .comment-pull-totals-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 .comment-pull-summary-meta {
@@ -3621,15 +3359,13 @@ button.status-bar-chip-btn:hover {
   flex-direction: column;
   gap: 4px;
   font-size: 13px;
-  color: var(--text, rgba(255, 255, 255, 0.85));
+  color: var(--text);
 }
 
 .comment-pull-summary-meta .dim {
-  color: var(--text-muted, rgba(255, 255, 255, 0.5));
+  color: var(--text-dim);
   margin-right: 8px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 12px;
 }
 
 .comment-pull-section-header {
@@ -3638,8 +3374,9 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   font-size: 12px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  color: var(--text-dim);
   margin: 4px 0 8px;
 }
 
@@ -3652,12 +3389,12 @@ button.status-bar-chip-btn:hover {
 .comment-pull-section-actions .link-btn {
   background: none;
   border: none;
-  color: var(--accent-blue, #8fb6e8);
-  font-size: 11px;
+  color: var(--info);
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
-  padding: 2px 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
 }
 
 .comment-pull-section-actions .link-btn:hover {
@@ -3666,9 +3403,8 @@ button.status-bar-chip-btn:hover {
 
 /* Active sort mode: solid pill so the current ordering is unmistakable. */
 .comment-pull-section-actions .link-btn.active {
-  color: var(--text-primary, #fff);
-  background: rgba(143, 182, 232, 0.18);
-  border-radius: 4px;
+  color: var(--text-strong);
+  background: var(--info-soft);
 }
 
 .comment-pull-section-actions .link-btn.active:hover {
@@ -3687,15 +3423,15 @@ button.status-bar-chip-btn:hover {
 }
 
 .comment-pull-timeline {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   overflow: hidden;
   transition: background 0.12s;
 }
 
 .comment-pull-timeline.open {
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--surface-2);
 }
 
 .comment-pull-timeline-head {
@@ -3713,19 +3449,19 @@ button.status-bar-chip-btn:hover {
 }
 
 .comment-pull-timeline-head:hover {
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--hover);
 }
 
 .comment-pull-twisty {
   font-size: 10px;
   width: 12px;
   text-align: center;
-  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  color: var(--text-dim);
 }
 
 .comment-pull-timeline-name {
   font-weight: 600;
-  color: var(--text-strong, #fff);
+  color: var(--text-strong);
 }
 
 .comment-pull-timeline-project {
@@ -3742,44 +3478,45 @@ button.status-bar-chip-btn:hover {
 
 .comment-pull-timeline-counts .count {
   padding: 2px 7px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  background: var(--hover-strong);
 }
 
-.comment-pull-timeline-counts .count.placed { color: #6bd99c; background: rgba(107, 217, 156, 0.12); }
-.comment-pull-timeline-counts .count.kept { color: #8fb6e8; background: rgba(143, 182, 232, 0.12); }
-.comment-pull-timeline-counts .count.removed { color: #c87d7d; background: rgba(200, 125, 125, 0.12); }
-.comment-pull-timeline-counts .count.skipped { color: #d3a960; background: rgba(211, 169, 96, 0.12); }
-.comment-pull-timeline-counts .count.error { color: #d97070; background: rgba(217, 112, 112, 0.16); }
+.comment-pull-timeline-counts .count.placed { color: var(--success); background: var(--success-soft); }
+.comment-pull-timeline-counts .count.kept { color: var(--info); background: var(--info-soft); }
+.comment-pull-timeline-counts .count.removed { color: var(--danger); background: var(--danger-soft); }
+.comment-pull-timeline-counts .count.skipped { color: var(--warning); background: var(--warning-soft); }
+.comment-pull-timeline-counts .count.error { color: var(--danger); background: var(--danger-soft); }
 
 .comment-pull-timeline-body {
   padding: 12px 18px 18px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
 .comment-pull-error {
-  color: #d97070;
+  color: var(--danger);
   font-size: 12px;
   padding: 8px 10px;
-  background: rgba(217, 112, 112, 0.08);
-  border-radius: 4px;
+  background: var(--danger-soft);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm);
 }
 
 .comment-pull-comment {
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-left: 3px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   padding: 12px 14px;
 }
 
-.comment-pull-comment.outcome-placed { border-left-color: #6bd99c; }
-.comment-pull-comment.outcome-kept { border-left-color: #8fb6e8; }
-.comment-pull-comment.outcome-removed { border-left-color: #c87d7d; opacity: 0.75; }
-.comment-pull-comment.outcome-skipped { border-left-color: #d3a960; }
+.comment-pull-comment.outcome-placed { border-left-color: var(--success); }
+.comment-pull-comment.outcome-kept { border-left-color: var(--info); }
+.comment-pull-comment.outcome-removed { border-left-color: var(--danger); opacity: 0.75; }
+.comment-pull-comment.outcome-skipped { border-left-color: var(--warning); }
 
 .comment-pull-comment-header {
   display: flex;
@@ -3790,60 +3527,58 @@ button.status-bar-chip-btn:hover {
 }
 
 .comment-pull-outcome-pill {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--hover-strong);
 }
 
-.comment-pull-outcome-pill.outcome-placed { color: #6bd99c; background: rgba(107, 217, 156, 0.12); }
-.comment-pull-outcome-pill.outcome-kept { color: #8fb6e8; background: rgba(143, 182, 232, 0.12); }
-.comment-pull-outcome-pill.outcome-removed { color: #c87d7d; background: rgba(200, 125, 125, 0.12); }
-.comment-pull-outcome-pill.outcome-skipped { color: #d3a960; background: rgba(211, 169, 96, 0.12); }
+.comment-pull-outcome-pill.outcome-placed { color: var(--success); background: var(--success-soft); }
+.comment-pull-outcome-pill.outcome-kept { color: var(--info); background: var(--info-soft); }
+.comment-pull-outcome-pill.outcome-removed { color: var(--danger); background: var(--danger-soft); }
+.comment-pull-outcome-pill.outcome-skipped { color: var(--warning); background: var(--warning-soft); }
 
 /* Provenance badge: this note was left on a cut that has since been
    re-rendered, so it may already have been actioned. */
 .comment-pull-oldercut-pill {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 1px 6px;
-  border-radius: 8px;
-  color: #d3a960;
-  background: rgba(211, 169, 96, 0.12);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: var(--warning);
+  background: var(--warning-soft);
   white-space: nowrap;
 }
 
 .comment-pull-comment-author {
   font-weight: 600;
-  color: var(--text-strong, #fff);
+  color: var(--text-strong);
 }
 
 .comment-pull-comment-tc {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
-  color: var(--text-muted, rgba(255, 255, 255, 0.6));
+  color: var(--text-muted);
   font-size: 12px;
 }
 
 .comment-pull-comment-text {
   font-size: 14px;
   line-height: 1.5;
-  color: var(--text, rgba(255, 255, 255, 0.88));
+  color: var(--text);
   white-space: pre-wrap;
 }
 
 .comment-pull-comment-text.dim {
-  color: var(--text-muted, rgba(255, 255, 255, 0.5));
+  color: var(--text-dim);
   font-style: italic;
 }
 
 .comment-pull-comment-replies {
   margin-top: 6px;
   padding-left: 8px;
-  border-left: 2px solid rgba(255, 255, 255, 0.06);
+  border-left: 2px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -3857,12 +3592,12 @@ button.status-bar-chip-btn:hover {
 }
 
 .comment-pull-comment-reply-arrow {
-  color: var(--text-muted, rgba(255, 255, 255, 0.45));
+  color: var(--text-dim);
 }
 
 .comment-pull-comment-reply-author {
   font-weight: 600;
-  color: var(--text, rgba(255, 255, 255, 0.85));
+  color: var(--text);
 }
 
 .comment-pull-empty {
@@ -3875,18 +3610,18 @@ button.status-bar-chip-btn:hover {
   margin-top: 8px;
   padding: 6px 10px;
   font-size: 12px;
-  background: rgba(232, 196, 138, 0.08);     /* faint sand */
-  border-left: 3px solid #e8c48a;
-  border-radius: 3px;
+  background: var(--warning-soft);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-sm);
 }
 
 .comment-pull-flag-hint strong {
-  color: #e8c48a;
+  color: var(--warning);
   font-weight: 600;
 }
 
 .job-panel-row.comment-pull-row .job-panel-substep {
-  color: var(--text-muted, rgba(255, 255, 255, 0.6));
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -3900,20 +3635,19 @@ button.status-bar-chip-btn:hover {
 }
 
 .comment-action-btn {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 3px 9px;
-  border-radius: 11px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text, rgba(255, 255, 255, 0.85));
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
 .comment-action-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--hover);
 }
 
 .comment-action-btn:disabled {
@@ -3922,53 +3656,47 @@ button.status-bar-chip-btn:hover {
 }
 
 .comment-action-btn.jump {
-  color: #8fb6e8;
-  border-color: rgba(143, 182, 232, 0.4);
-  background: rgba(143, 182, 232, 0.08);
+  color: var(--info);
 }
 
 .comment-action-btn.jump:hover:not(:disabled) {
-  background: rgba(143, 182, 232, 0.16);
+  background: var(--info-soft);
 }
 
 .comment-action-btn.complete {
-  color: #6bd99c;
-  border-color: rgba(107, 217, 156, 0.4);
-  background: rgba(107, 217, 156, 0.08);
+  color: var(--success);
 }
 
 .comment-action-btn.complete:hover:not(:disabled) {
-  background: rgba(107, 217, 156, 0.16);
+  background: var(--success-soft);
 }
 
 .comment-action-btn.reopen {
-  color: #d3a960;
-  border-color: rgba(211, 169, 96, 0.4);
-  background: rgba(211, 169, 96, 0.08);
+  color: var(--warning);
 }
 
 .comment-action-btn.reopen:hover:not(:disabled) {
-  background: rgba(211, 169, 96, 0.16);
+  background: var(--warning-soft);
 }
 
 .comment-pull-comment.is-completed {
   opacity: 0.5;
-  border-left-color: #6bd99c;
+  border-left-color: var(--success);
 }
 
 .comment-pull-comment.is-completed .comment-pull-comment-text {
   text-decoration: line-through;
   text-decoration-thickness: 1px;
-  text-decoration-color: rgba(255, 255, 255, 0.35);
+  text-decoration-color: var(--text-dim);
 }
 
 .comment-pull-outcome-pill.outcome-completed {
-  color: #6bd99c;
-  background: rgba(107, 217, 156, 0.18);
+  color: var(--success);
+  background: var(--success-soft);
 }
 
 .comment-pull-comment.has-error {
-  border-left-color: #d97070;
+  border-left-color: var(--danger);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -4004,12 +3732,14 @@ button.status-bar-chip-btn:hover {
 .exports-divider-line {
   flex: 1 1 auto;
   height: 1px;
-  background: linear-gradient(to right, transparent, var(--line), transparent);
+  background: var(--border);
 }
 
+/* Section label of the inline Exports section. */
 .exports-divider-label {
-  font-size: 0.8rem;
-  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -4029,13 +3759,12 @@ button.status-bar-chip-btn:hover {
 }
 
 .exports-filter {
-  background: var(--surface-1);
-  border: 1px solid var(--line);
-  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   padding: 5px 12px;
   border-radius: 999px;
   font-size: 0.78rem;
-  letter-spacing: 0.04em;
   cursor: pointer;
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
@@ -4047,7 +3776,7 @@ button.status-bar-chip-btn:hover {
 
 .exports-filter.active {
   background: var(--accent-soft);
-  border-color: rgba(219, 175, 95, 0.42);
+  border-color: var(--accent);
   color: var(--accent-strong);
 }
 
@@ -4085,19 +3814,18 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
   cursor: pointer;
   user-select: none;
   transition: background 140ms ease, border-color 140ms ease;
 }
 .exports-group-head:hover {
-  background: rgba(255, 255, 255, 0.045);
-  border-color: rgba(255, 255, 255, 0.09);
+  border-color: var(--border-strong);
 }
 .exports-group-head:focus-visible {
-  outline: 2px solid var(--accent-blue);
+  outline: 2px solid var(--info);
   outline-offset: 2px;
 }
 .exports-group-chevron {
@@ -4117,13 +3845,12 @@ button.status-bar-chip-btn:hover {
   letter-spacing: -0.01em;
 }
 .exports-group-count {
-  background: var(--accent-blue-soft);
-  color: var(--accent-blue-strong);
-  padding: 2px 8px;
+  background: var(--info-soft);
+  color: var(--info-strong);
+  padding: 1px 8px;
   border-radius: 999px;
   font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-weight: 600;
   flex-shrink: 0;
 }
 .exports-group-spacer {
@@ -4148,7 +3875,7 @@ button.status-bar-chip-btn:hover {
   font-style: italic;
 }
 .exports-group.unknown .exports-group-count {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover-strong);
   color: var(--muted-soft);
 }
 
@@ -4156,10 +3883,10 @@ button.status-bar-chip-btn:hover {
    dismiss; auto-clears after a few seconds via component-side setTimeout. */
 .exports-group-feedback {
   appearance: none;
-  border: 1px solid var(--accent-blue-soft);
-  background: var(--accent-blue-soft);
-  color: var(--accent-blue-strong);
-  border-radius: 999px;
+  border: 1px solid transparent;
+  background: var(--info-soft);
+  color: var(--info-strong);
+  border-radius: var(--radius-sm);
   padding: 6px 12px;
   font-size: 0.82rem;
   font-weight: 600;
@@ -4169,28 +3896,27 @@ button.status-bar-chip-btn:hover {
   transition: background 140ms ease, border-color 140ms ease;
 }
 .exports-group-feedback:hover {
-  background: rgba(91, 155, 213, 0.22);
+  border-color: var(--info);
 }
 .exports-group-feedback.has-failures {
-  border-color: rgba(248, 113, 113, 0.35);
-  background: rgba(248, 113, 113, 0.14);
-  color: #fca5a5;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 .exports-group-feedback.has-failures:hover {
-  background: rgba(248, 113, 113, 0.20);
+  border-color: var(--danger);
 }
 
 .exports-row {
-  background: var(--surface-1);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   /* Phase 3.5.2 (2026-06-08): much tighter. The 3.5.1 thinning still left
      visually chunky rows because (a) the four-line label layout meant 3
      metadata rows of ~24px each below the header, and (b) inline action
-     buttons inherited .btn's 44px min-height through .btn.small (the
-     padding override didn't touch min-height). Phase 3.5.2 fixes both:
-     ExportRow now renders header + single meta line + (optional) error,
-     and .btn.small drops min-height to 0. Padding/gap tightened further
+     buttons inherited .btn's old 44px min-height through .btn.small.
+     Phase 3.5.2 fixed both: ExportRow renders header + single meta line +
+     (optional) error, and .btn.small is now a fixed compact 24px (see the
+     Buttons section). Padding/gap tightened further
      since rows are now ~2 lines instead of ~4. */
   padding: 5px 12px;
   display: flex;
@@ -4208,11 +3934,11 @@ button.status-bar-chip-btn:hover {
    that the row is clickable for selection (the existing inline buttons keep
    their own cursors because they stopPropagation). */
 .exports-row.selected {
-  background: var(--accent-soft, rgba(212, 162, 94, 0.15));
-  border-color: var(--accent-strong, #d4a25e);
+  background: var(--accent-soft);
+  border-color: var(--accent);
 }
 .exports-row.selected:hover {
-  border-color: var(--accent-strong, #d4a25e);
+  border-color: var(--accent);
 }
 
 /* Non-selectable rows (rendering / uploading / queued — active work).
@@ -4228,8 +3954,8 @@ button.status-bar-chip-btn:hover {
 .exports-row-busy { border-left: 3px solid var(--accent-blue); }
 .exports-row-ok   { border-left: 3px solid var(--success); }
 .exports-row-bad  { border-left: 3px solid var(--danger); }
-.exports-row-warn { border-left: 3px solid #d4a25e; }
-.exports-row-mute { border-left: 3px solid var(--muted-soft); }
+.exports-row-warn { border-left: 3px solid var(--warning); }
+.exports-row-mute { border-left: 3px solid var(--text-dim); }
 
 .exports-row-head {
   display: flex;
@@ -4254,12 +3980,12 @@ button.status-bar-chip-btn:hover {
   flex-shrink: 0;
 }
 
-.exports-row-badge-wait { background: var(--accent-soft);     color: var(--accent-strong); }
-.exports-row-badge-busy { background: var(--accent-blue-soft); color: var(--accent-blue-strong); }
-.exports-row-badge-ok   { background: rgba(151, 185, 137, 0.18); color: var(--success); }
-.exports-row-badge-bad  { background: rgba(216, 137, 137, 0.18); color: var(--danger); }
-.exports-row-badge-warn { background: rgba(212, 162, 94, 0.18); color: #e2b97a; }
-.exports-row-badge-mute { background: rgba(255,255,255,0.06);   color: var(--muted-soft); }
+.exports-row-badge-wait { background: var(--accent-soft);  color: var(--accent-strong); }
+.exports-row-badge-busy { background: var(--info-soft);    color: var(--info-strong); }
+.exports-row-badge-ok   { background: var(--success-soft); color: var(--success); }
+.exports-row-badge-bad  { background: var(--danger-soft);  color: var(--danger); }
+.exports-row-badge-warn { background: var(--warning-soft); color: var(--warning); }
+.exports-row-badge-mute { background: var(--hover-strong); color: var(--text-dim); }
 
 .exports-row-title {
   flex: 1 1 auto;
@@ -4337,52 +4063,6 @@ button.status-bar-chip-btn:hover {
   white-space: nowrap;
 }
 
-/* Inline buttons inside rows — small variants of the existing .btn.
-   Phase 3.5.2: the original .btn.small (3.5.1 era) only overrode padding
-   and font-size, NOT min-height. The base .btn ships min-height: 44px
-   (touch target) which made every inline action button 44px tall — the
-   single biggest visual driver of the "chunky rows" feedback. Drop
-   min-height entirely so the button sizes to its content + padding. */
-.btn.small {
-  min-height: 0;
-  padding: 3px 10px;
-  font-size: 0.74rem;
-  line-height: 1.3;
-}
-
-.btn.ghost {
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid var(--line);
-}
-
-.btn.ghost:hover {
-  color: var(--text);
-  border-color: var(--line-strong);
-}
-
-/* Destructive action (Phase 3.5.1 — multi-select hard delete). Mirrors
-   .btn.ghost's neutral footprint with a red accent, so it sits comfortably
-   alongside the existing Cancel/Push buttons in the confirm dialog without
-   shouting until hovered. Overrides .btn's gold gradient explicitly. */
-.btn.danger {
-  background: transparent;
-  color: #fca5a5;
-  border: 1px solid rgba(248, 113, 113, 0.45);
-  font-weight: 600;
-}
-.btn.danger:hover {
-  background: rgba(248, 113, 113, 0.15);
-  border-color: rgba(248, 113, 113, 0.7);
-  color: #fecaca;
-  transform: none;
-  box-shadow: none;
-}
-.btn.danger:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 /* ── Selection action bar (Phase 3.5.1) ─────────────────────────────
    Appears at the top of the Exports body when selectedIds.size > 0.
    Slim sticky bar; doesn't push content around because it's outside
@@ -4395,9 +4075,9 @@ button.status-bar-chip-btn:hover {
   gap: 10px;
   padding: 6px 12px;
   margin-bottom: 8px;
-  background: var(--accent-soft, rgba(212, 162, 94, 0.12));
-  border: 1px solid var(--accent, rgba(212, 162, 94, 0.4));
-  border-radius: 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
 }
 .exports-selection-count {
   font-size: 0.82rem;
@@ -4417,17 +4097,17 @@ button.status-bar-chip-btn:hover {
   max-width: 520px;
 }
 .confirm-delete-warning {
-  background: rgba(248, 113, 113, 0.10);
-  border: 1px solid rgba(248, 113, 113, 0.35);
-  border-radius: 6px;
+  background: var(--danger-soft);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
-  color: #fecaca;
+  color: var(--danger);
   font-size: 0.88rem;
   line-height: 1.45;
   margin: 0 0 10px 0;
 }
 .confirm-delete-warning strong {
-  color: #fef2f2;
+  color: var(--text-strong);
 }
 .confirm-delete-body {
   font-size: 0.88rem;
@@ -4450,9 +4130,9 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   gap: 8px;
   padding: 4px 8px;
-  background: var(--surface-1);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   font-size: 0.82rem;
 }
 .confirm-delete-name {
@@ -4479,7 +4159,7 @@ button.status-bar-chip-btn:hover {
 .export-picker-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4490,9 +4170,9 @@ button.status-bar-chip-btn:hover {
   width: min(560px, 90vw);
   max-height: 80vh;
   background: var(--surface-2);
-  border: 1px solid var(--line-strong);
-  border-radius: 14px;
-  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -4530,9 +4210,9 @@ button.status-bar-chip-btn:hover {
   min-width: 0;
   height: 32px;
   padding: 0 12px;
-  background: var(--surface-1);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   color: var(--text-strong);
   font-size: 0.88rem;
   outline: none;
@@ -4544,8 +4224,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .export-picker-search-input:focus {
-  border-color: var(--accent, #d4a25e);
-  background: var(--surface-2);
+  border-color: var(--accent);
 }
 
 /* Native search input's UA clear button — hide on Chromium/Electron so we
@@ -4605,8 +4284,8 @@ button.status-bar-chip-btn:hover {
   padding: 10px 14px;
   margin-bottom: 16px;
   background: var(--accent-soft);
-  border: 1px solid rgba(219, 175, 95, 0.34);
-  border-radius: 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   color: var(--accent-strong);
   font-size: 0.84rem;
   cursor: pointer;
@@ -4615,8 +4294,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .exports-pill:hover {
-  background: rgba(219, 175, 95, 0.22);
-  border-color: rgba(219, 175, 95, 0.5);
+  border-color: var(--accent);
 }
 
 .exports-pill-icon {
@@ -4642,7 +4320,6 @@ button.status-bar-chip-btn:hover {
 .exports-pill-cta {
   color: var(--accent);
   font-size: 0.78rem;
-  letter-spacing: 0.04em;
   white-space: nowrap;
 }
 
@@ -4661,7 +4338,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .exports-pill-dismiss:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--hover-strong);
   color: var(--text-strong);
 }
 
@@ -4689,9 +4366,7 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   justify-content: center;
   padding: 40px 20px;
-  background: rgba(6, 6, 8, 0.62);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: var(--scrim);
   animation: page-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
   -webkit-app-region: no-drag;
 }
@@ -4701,12 +4376,10 @@ button.status-bar-chip-btn:hover {
   max-height: 100%;
   display: flex;
   flex-direction: column;
-  background:
-    radial-gradient(circle at 12% 0%, var(--page-glow-gold), transparent 34%),
-    linear-gradient(180deg, #1a1a1c 0%, var(--page-bg) 60%);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md, 18px);
-  box-shadow: var(--shadow-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
   overflow: hidden;
 }
 
@@ -4738,9 +4411,9 @@ button.status-bar-chip-btn:hover {
 .feedback-close {
   appearance: none;
   border: none;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--muted);
-  border-radius: 8px;
+  background: var(--hover);
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
   width: 28px;
   height: 28px;
   cursor: pointer;
@@ -4752,7 +4425,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .feedback-close:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--hover-strong);
   color: var(--text);
 }
 
@@ -4778,7 +4451,7 @@ button.status-bar-chip-btn:hover {
   appearance: none;
   background: var(--surface-inset);
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm, 12px);
+  border-radius: var(--radius-sm);
   color: var(--text);
   font-family: inherit;
   font-size: 0.82rem;
@@ -4844,8 +4517,8 @@ button.status-bar-chip-btn:hover {
   font-size: 0.66rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted-soft);
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
 }
 
 .feedback-empty {
@@ -4874,12 +4547,10 @@ button.status-bar-chip-btn:hover {
   margin-top: 5px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .feedback-status-dot.is-done {
   background: var(--success);
-  box-shadow: 0 0 0 3px rgba(151, 185, 137, 0.16);
 }
 
 .feedback-row-body {
