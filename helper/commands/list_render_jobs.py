@@ -5,6 +5,14 @@ from typing import Any, Dict, List
 # terminal statuses (e.g., a hypothetical "Stopped" distinct from "Cancelled").
 TERMINAL_STATUSES = {"Complete", "Failed", "Cancelled"}
 
+# Last status seen per JobId, for this worker process. Finished renders stay in
+# Resolve's queue until someone clears them, so querying every job each tick
+# made this command slower as the queue grew (one GetRenderJobStatus per job).
+# A finished job's status can only change while Resolve is rendering ("Render
+# Again" re-runs it), so when nothing is rendering we reuse the cached terminal
+# status and only ask Resolve about new or still-active jobs.
+_status_cache: Dict[str, Dict[str, Any]] = {}
+
 
 def handle_list_render_jobs(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
     """Enumerate EVERY render job in the active Resolve project, with status.
@@ -20,9 +28,9 @@ def handle_list_render_jobs(payload: Dict[str, Any], log_func=None) -> Dict[str,
     Unlike render_status (which polls a caller-specified subset), this
     returns every job in the queue — the caller does not pass `job_ids`.
 
-    Cheap to call: one GetRenderJobList + one GetRenderJobStatus per job.
-    Designed to be safe to run on the same ~2.5s tick that render_status
-    already uses; we deliberately do NOT loop/wait here.
+    Cost: one GetRenderJobList, plus one GetRenderJobStatus per job that is
+    new, still active, or (while Resolve is rendering) any job — see
+    _status_cache. We deliberately do NOT loop/wait here.
 
     The `custom_name` field is significant: editpanel-queued exports prefix
     their CustomName with the editpanel export_id (Phase 3.5 Batch 4),
@@ -59,13 +67,25 @@ def handle_list_render_jobs(payload: Dict[str, Any], log_func=None) -> Dict[str,
     project = rh.project
 
     job_list = project.GetRenderJobList() or []
+    try:
+        rendering = bool(project.IsRenderingInProgress())
+    except Exception:
+        rendering = True  # unknown → query everything, as before
     out: List[Dict[str, Any]] = []
+    seen = set()
     for j in job_list:
         jid = j.get("JobId")
         if jid is None:
             continue
         jid = str(jid)
-        st = project.GetRenderJobStatus(jid) or {}
+        seen.add(jid)
+        cached = _status_cache.get(jid)
+        if (not rendering and cached is not None
+                and cached.get("JobStatus") in TERMINAL_STATUSES):
+            st = cached
+        else:
+            st = project.GetRenderJobStatus(jid) or {}
+            _status_cache[jid] = st
         job_status = st.get("JobStatus")
         out.append({
             "job_id":          jid,
@@ -78,6 +98,10 @@ def handle_list_render_jobs(payload: Dict[str, Any], log_func=None) -> Dict[str,
             "render_job_name": j.get("RenderJobName"),
             "timeline_name":   j.get("TimelineName"),
         })
+
+    # Forget jobs that left the queue (cleared, or another project is open).
+    for stale in [k for k in _status_cache if k not in seen]:
+        del _status_cache[stale]
 
     project_name = None
     try:

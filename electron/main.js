@@ -396,6 +396,16 @@ function handleWorkerLine(state, line) {
   }
   state.pending.delete(normalized.envelope.id);
 
+  // Surface slow worker commands in the Console. The workers are
+  // single-threaded, so one slow command delays everything queued behind it;
+  // this makes that visible instead of a silent "Checking…".
+  const elapsedMs = request.startedAt ? Date.now() - request.startedAt : 0;
+  if (elapsedMs >= SLOW_WORKER_CMD_MS) {
+    const line = `[${state.name}] ${request.cmd || 'command'} took ${(elapsedMs / 1000).toFixed(1)}s (${state.pending.size} still queued)`;
+    console.warn(line);
+    BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', line));
+  }
+
   const response = {
     // Echo the correlation id so the renderer's `leaderpassAPI.call` can match
     // this response to the right in-flight promise (see preload.js).
@@ -1243,6 +1253,15 @@ function finalizeExport(state, error = null) {
   if (runChain.length > 0) advanceChain();
 }
 
+// One render_status poll at a time (see renderPollInFlight).
+function guardedRenderPoll() {
+  if (renderPollInFlight) return;
+  renderPollInFlight = true;
+  pollRenderStatus()
+    .catch(() => {})
+    .finally(() => { renderPollInFlight = false; });
+}
+
 async function pollRenderStatus() {
   if (!activeExport) {
     stopExportPoll();
@@ -1671,9 +1690,9 @@ function beginExportPolling() {
       activeExport.projectId && lposClient && lposClient.isConfigured()
     );
   }
-  exportPollTimer = setInterval(() => { pollRenderStatus().catch(() => {}); }, EXPORT_POLL_INTERVAL_MS);
+  exportPollTimer = setInterval(guardedRenderPoll, EXPORT_POLL_INTERVAL_MS);
   // First poll shortly after StartRendering so the bar moves off zero quickly.
-  setTimeout(() => { pollRenderStatus().catch(() => {}); }, 800);
+  setTimeout(guardedRenderPoll, 800);
 }
 
 // ── Phase 3.5 — orphan export reconciliation ─────────────────────────────────
@@ -1693,6 +1712,14 @@ function beginExportPolling() {
 // duplicate orphan.
 
 const RECONCILE_INTERVAL_MS = 3000;
+// Worker commands at or above this duration are logged to the Console.
+const SLOW_WORKER_CMD_MS = 3000;
+// Overlap guards for the two polling loops. The Resolve worker answers one
+// command at a time; without these, a tick slower than its interval queued
+// another request behind it every interval, so the backlog grew without bound
+// and user actions (pre-export check, queueing) waited minutes behind it.
+let reconcileInFlight = false;
+let renderPollInFlight = false;
 const RECONCILE_DISMISS_THRESHOLD = 3;  // consecutive ticks of absence ≈ 9s
 let reconcileTimer = null;
 // Map<exportId, missCount> — counts consecutive ticks an orphan's JobId was
@@ -1727,11 +1754,18 @@ function startReconcileLoop() {
   stopReconcileLoop();
   if (!jobsDb) return;
   reconcileTimer = setInterval(() => {
-    reconcileTick().catch(err => {
-      // Silent on the tick path — tick errors are rate-limited noise. If the
-      // worker is down we'll see it in the worker logs already.
-      void err;
-    });
+    // Skip while the previous tick is still running, and while EditPanel is
+    // itself queueing an export (that dispatch needs the worker, and the
+    // orphan pass is suppressed during it anyway).
+    if (reconcileInFlight || exportQueueInFlight > 0) return;
+    reconcileInFlight = true;
+    reconcileTick()
+      .catch(err => {
+        // Silent on the tick path — tick errors are rate-limited noise. If the
+        // worker is down we'll see it in the worker logs already.
+        void err;
+      })
+      .finally(() => { reconcileInFlight = false; });
   }, RECONCILE_INTERVAL_MS);
 }
 

@@ -31,6 +31,10 @@
  *   onLog           — (msg: string) => void
  *   onOpenJobs      — () => void  (close overlay + open the Jobs panel)
  */
+// Give up on the pre-export check after this long. A backed-up or stuck
+// Resolve helper otherwise leaves the editor staring at "Checking…" forever.
+const PREFLIGHT_TIMEOUT_MS = 20000;
+
 function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposReady, onLog, onOpenJobs }) {
   const DEFAULT_PRESET = 'General LP Export';
   const DEFAULT_BIN = 'EXPORT';
@@ -78,6 +82,13 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
 
   // ── Run state ──────────────────────────────────────────
   const [busy, setBusy]     = React.useState(false);
+  // True when the pre-export check gave up (Resolve too slow to answer). The
+  // confirm stage then asks the editor whether to export anyway.
+  const [checkTimedOut, setCheckTimedOut] = React.useState(false);
+  // Bumped to abandon an in-flight pre-export check (Cancel, close, or a new
+  // run). A stale check must never go on to start an export by itself.
+  const preflightRunRef = React.useRef(0);
+  React.useEffect(() => () => { preflightRunRef.current += 1; }, []);
   const [result, setResult] = React.useState(null); // { jobs, targetDir, started, project, warning, error }
   const [conflicts, setConflicts]     = React.useState([]);   // timeline names that already exist in the project
   const [subtitleGaps, setSubtitleGaps] = React.useState([]); // matched timelines with no subtitle track (burn-in only)
@@ -174,18 +185,20 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     return () => { cancelled = true; };
   }, [open, connected]);
 
-  // Escape-to-close (matches AtemIngestOverlay / ResultOverlay)
+  // Escape-to-close. Always allowed: the main process owns the queue + render,
+  // so closing mid-export only hides this window (progress stays in Jobs), and
+  // closing mid-check abandons the check (see preflightRunRef).
   React.useEffect(() => {
     if (!open) return;
     function onKey(e) {
-      if (e.key === 'Escape' && !busy) {
+      if (e.key === 'Escape') {
         e.preventDefault();
         onClose?.();
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose, busy]);
+  }, [open, onClose]);
 
   // ── Helpers ─────────────────────────────────────────────
 
@@ -323,15 +336,26 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
 
   async function runPreflight(startRender) {
     if (busy) return;
+    const runId = ++preflightRunRef.current;
+    const stale = () => preflightRunRef.current !== runId;
     setBusy(true);
     setStage('preflight');
     setPendingStart(startRender);
+    setCheckTimedOut(false);
     const wantVersionCheck = uploadToLpos && selectedProjectId;
     try {
-      const [pfRes, assetsRes] = await Promise.all([
-        window.leaderpassAPI.call('export_preflight', { export_bin_name: exportBin }),
-        wantVersionCheck ? window.lposAPI.listProjectAssets(selectedProjectId) : Promise.resolve(null)
-      ]);
+      let timer = null;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject({ timedOut: true }), PREFLIGHT_TIMEOUT_MS);
+      });
+      const [pfRes, assetsRes] = await Promise.race([
+        Promise.all([
+          window.leaderpassAPI.call('export_preflight', { export_bin_name: exportBin }),
+          wantVersionCheck ? window.lposAPI.listProjectAssets(selectedProjectId) : Promise.resolve(null)
+        ]),
+        timeout,
+      ]).finally(() => clearTimeout(timer));
+      if (stale()) return;
       const names          = pfRes?.data?.names || [];
       const subtitleTracks = pfRes?.data?.subtitle_tracks || {};
 
@@ -352,12 +376,31 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         return;
       }
     } catch (err) {
+      if (stale()) return;
+      if (err?.timedOut) {
+        // Resolve didn't answer in time. Don't hang and don't export silently:
+        // let the editor choose.
+        onLog?.(`[export] Pre-export check timed out after ${PREFLIGHT_TIMEOUT_MS / 1000}s; Resolve may be busy.`);
+        setConflicts([]);
+        setSubtitleGaps([]);
+        setCheckTimedOut(true);
+        setBusy(false);
+        setStage('confirm');
+        return;
+      }
       // Fail open — a flaky pre-check shouldn't block the export.
       const msg = err?.error?.message || err?.error || err?.message || String(err);
       onLog?.(`[export] Pre-export check skipped: ${msg}`);
     }
+    if (stale()) return;
     setBusy(false);
     doStart(startRender);
+  }
+
+  function cancelPreflight() {
+    preflightRunRef.current += 1;
+    setBusy(false);
+    setStage('configure');
   }
 
   async function doStart(startRender) {
@@ -698,6 +741,11 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   function renderConfirm() {
     return (
       <div className="export-form">
+        {checkTimedOut && (
+          <div className="notice warning">
+            <span>The check is taking too long. Resolve may be busy. You can export anyway or go back.</span>
+          </div>
+        )}
         {/* Burn-in: timelines with no subtitle track would export uncaptioned. */}
         {subtitleGaps.length > 0 && (
           <section className="export-check">
@@ -806,8 +854,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         <button
           type="button"
           className="tool-close"
-          onClick={() => { if (!busy) onClose?.(); }}
-          disabled={busy}
+          onClick={() => onClose?.()}
           aria-label="Close"
           title="Close"
         >
@@ -830,6 +877,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       </div>
 
       <footer className="tool-footer tool-footer--form">
+        {stage === 'preflight' && (
+          <button className="btn ghost" onClick={cancelPreflight}>Cancel</button>
+        )}
         {(stage === 'configure' || stage === 'preflight' || stage === 'running') && (
           <button
             className="btn primary"
