@@ -38,8 +38,10 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
   const [progress, setProgress] = React.useState([]); // [{ name, uid, status }]
   const [result, setResult]   = React.useState(null); // { error } | { binMissing } | { opened, failed, total }
 
-  // Cancel guard so a close mid-run stops the loop touching state.
+  // Stop flag: set by the footer Stop button; the loop checks it before each
+  // sequence and after each settle, then ends the run as "stopped".
   const cancelRef = React.useRef(false);
+  const [stopping, setStopping] = React.useState(false);
 
   // Seed from preferences + reset when the overlay opens.
   React.useEffect(() => {
@@ -48,6 +50,7 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
     setBusy(false);
     setProgress([]);
     setResult(null);
+    setStopping(false);
     cancelRef.current = false;
 
     if (!window.electronAPI?.getPreferences) {
@@ -80,7 +83,9 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
       .catch((err) => {
         if (cancelled) return;
         setBins([]); setBinTree([]);
-        setBinsError(err?.error?.message || err?.error || err?.message || 'Could not load bins');
+        const msg = err?.error?.message || err?.error || err?.message || 'Could not load bins';
+        setBinsError(String(msg));
+        onLog?.(`[open-sequences] Couldn't load bins: ${msg}`);
       })
       .finally(() => { if (!cancelled) setBinsLoading(false); });
     return () => { cancelled = true; };
@@ -112,6 +117,8 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
     setStage('running');
     setResult(null);
     setProgress([]);
+    setStopping(false);
+    cancelRef.current = false;
     persistPrefs({ lastOpenSeqBin: binName });
     onLog?.(`[open-sequences] Listing sequences in "${binName}"…`);
 
@@ -126,6 +133,14 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
         return;
       }
       sequences = Array.isArray(res.data.sequences) ? res.data.sequences : [];
+      if (cancelRef.current) {
+        // Stopped while the bin was being listed: nothing was opened.
+        setResult({ opened: 0, failed: 0, total: sequences.length, stopped: true });
+        setStage('done');
+        onLog?.('[open-sequences] Stopped.');
+        setBusy(false);
+        return;
+      }
     } catch (err) {
       const msg = err?.error?.message || err?.error || err?.message || String(err);
       setResult({ error: msg });
@@ -159,6 +174,7 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
         });
         const ok = Boolean(res?.data?.result);
         if (ok) opened++; else failed++;
+        if (!ok) onLog?.(`[open-sequences] "${rows[i].name}" didn't open (open_sequence returned false).`);
         setProgress((prev) => prev.map((r, idx) => (idx === i ? { ...r, status: ok ? 'opened' : 'failed' } : r)));
       } catch (err) {
         failed++;
@@ -170,136 +186,147 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
       if (i < rows.length - 1 && !cancelRef.current) await sleep(SETTLE_MS);
     }
 
-    if (cancelRef.current) return; // overlay closed mid-run
-    onLog?.(`[open-sequences] Done — opened ${opened}/${rows.length}${failed ? `, ${failed} failed` : ''}.`);
-    setResult({ opened, failed, total: rows.length });
+    // A Stop that lands during the last sequence still counts as a full run.
+    const stopped = cancelRef.current && opened + failed < rows.length;
+    if (stopped) {
+      // Rows that never got their turn read as "Not opened".
+      setProgress((prev) => prev.map((r) => (r.status === 'pending' ? { ...r, status: 'skipped' } : r)));
+    }
+    onLog?.(`[open-sequences] ${stopped ? 'Stopped' : 'Done'}: opened ${opened}/${rows.length}${failed ? `, ${failed} failed` : ''}.`);
+    setResult({ opened, failed, total: rows.length, stopped });
     setStage('done');
     setBusy(false);
   }
 
   function requestClose() {
     if (busy) return;
-    cancelRef.current = true;
     onClose?.();
   }
 
+  function handleStop() {
+    if (!busy || cancelRef.current) return;
+    cancelRef.current = true;
+    setStopping(true);
+    onLog?.('[open-sequences] Stopping after the current sequence…');
+  }
+
   function renderConfigure() {
+    // Bin hint only for loading or a problem (one message per problem; the
+    // not-connected notice already covers the offline case).
+    let binHint = null;
+    if (binsLoading) binHint = 'Loading bins…';
+    else if (connected && binsError) binHint = 'Couldn’t load bins. Using your last bin.';
+    else if (connected && bins.length === 0) binHint = 'No bins found. Using your last bin.';
+
     return (
-      <div className="atem-configure">
-        <div className="atem-dest-section">
-          <p className="atem-field-label">Sequences bin</p>
-          <select
-            className="settings-input"
-            value={binName}
-            onChange={(e) => setBinName(e.target.value)}
-            disabled={binsLoading}
-          >
-            {(() => {
-              // Prefer the hierarchical tree (indented sub-bins); fall back to
-              // the flat path list. `value` is always the full bin path.
-              const tree = binTree.length
-                ? binTree
-                : bins.map((p) => ({ path: p, name: p, depth: 1 }));
-              const paths = tree.map((b) => b.path);
-              const options = [...tree];
-              if (binName && !paths.includes(binName)) {
-                options.unshift({ path: binName, name: binName, depth: 1 });
-              }
-              if (options.length === 0) options.push({ path: DEFAULT_BIN, name: DEFAULT_BIN, depth: 1 });
-              return options.map((b) => {
-                // Non-breaking spaces: <option> trims leading ASCII spaces.
-                const indent = b.depth > 1 ? '   '.repeat(b.depth - 1) : '';
-                const missing = !paths.includes(b.path) && paths.length > 0;
-                return (
-                  <option key={b.path} value={b.path}>
-                    {indent}{b.name}{missing ? ' (not in this project)' : ''}
-                  </option>
-                );
-              });
-            })()}
-          </select>
-          <p className="atem-dest-hint" style={{ marginTop: 6 }}>
-            {binsLoading
-              ? 'Loading bins from Resolve…'
-              : binsError
-                ? `Couldn't load bins — using your last setting. (${binsError})`
-                : bins.length === 0
-                  ? 'No bins detected — using your last setting.'
-                  : `${bins.length} bin${bins.length === 1 ? '' : 's'} (incl. sub-bins) from the current Resolve project.`}
-          </p>
-        </div>
-        <p className="export-lpos-note">
-          Every timeline in this bin is opened one at a time, with a short pause between each so Resolve can load them. The last one stays current.
-        </p>
+      <div className="atem-dest-section">
+        <p className="atem-field-label">Sequences bin</p>
+        <select
+          className="settings-input"
+          value={binName}
+          onChange={(e) => setBinName(e.target.value)}
+          disabled={binsLoading}
+        >
+          {(() => {
+            // Prefer the hierarchical tree (indented sub-bins); fall back to
+            // the flat path list. `value` is always the full bin path.
+            const tree = binTree.length
+              ? binTree
+              : bins.map((p) => ({ path: p, name: p, depth: 1 }));
+            const paths = tree.map((b) => b.path);
+            const options = [...tree];
+            if (binName && !paths.includes(binName)) {
+              options.unshift({ path: binName, name: binName, depth: 1 });
+            }
+            if (options.length === 0) options.push({ path: DEFAULT_BIN, name: DEFAULT_BIN, depth: 1 });
+            return options.map((b) => {
+              // Non-breaking spaces: <option> trims leading ASCII spaces.
+              const indent = b.depth > 1 ? '   '.repeat(b.depth - 1) : '';
+              const missing = !paths.includes(b.path) && paths.length > 0;
+              return (
+                <option key={b.path} value={b.path}>
+                  {indent}{b.name}{missing ? ' (not in this project)' : ''}
+                </option>
+              );
+            });
+          })()}
+        </select>
+        {binHint && (
+          <p className="hint" title={binsError || undefined}>{binHint}</p>
+        )}
       </div>
     );
   }
 
+  // Row state → shared .status-dot modifier + short label (same set as ATEM).
+  const ROW_STATE = {
+    pending: { dot: 'is-pending', label: 'Queued' },
+    opening: { dot: 'is-active',  label: 'Opening' },
+    opened:  { dot: 'is-done',    label: 'Opened' },
+    failed:  { dot: 'is-error',   label: 'Failed' },
+    skipped: { dot: 'is-skipped', label: 'Not opened' },
+  };
+
   function renderProgressList() {
     if (progress.length === 0) {
       return (
-        <div className="atem-loading" style={{ padding: '32px 0' }}>
-          <span className="status-bar-spinner" style={{ width: 18, height: 18 }} />
+        <div className="run-loading">
+          <span className="spinner" />
           <span>Finding sequences in “{binName}”…</span>
         </div>
       );
     }
-    const ICON = { pending: '·', opening: '…', opened: '✓', failed: '✕' };
     return (
-      <div className="atem-file-list">
-        {progress.map((r, i) => (
-          <div key={`${r.name}_${i}`} className={`atem-file-row${r.status === 'opened' ? ' done' : ''}`}>
-            <span className="atem-file-state-icon">
-              {r.status === 'opening'
-                ? <span className="status-bar-spinner" style={{ width: 12, height: 12 }} />
-                : ICON[r.status]}
-            </span>
-            <span className="atem-file-name">{r.name}</span>
-            {r.status === 'failed' && <span className="atem-file-cam">failed</span>}
-          </div>
-        ))}
+      <div className="run-list">
+        {progress.map((r, i) => {
+          const st = ROW_STATE[r.status] || ROW_STATE.pending;
+          return (
+            <div key={`${r.name}_${i}`} className={`run-row ${st.dot}`}>
+              <span className={`status-dot ${st.dot}`} />
+              <span className="run-row-name">{r.name}</span>
+              <span className="run-row-state">{st.label}</span>
+            </div>
+          );
+        })}
       </div>
     );
   }
 
   function renderDone() {
     if (result?.error) {
-      return <p className="atem-error">Couldn’t open sequences: {result.error}</p>;
+      return (
+        <p className="notice error" title={result.error}>
+          Couldn’t list the sequences in “{binName}”. Details are in the Console.
+        </p>
+      );
     }
     if (result?.binMissing) {
-      return (
-        <div className="atem-done-state">
-          <p className="atem-done-title">Bin not found</p>
-          <p className="atem-done-sub">No top-level bin named “{binName}” in the current Resolve project.</p>
-        </div>
-      );
+      return <p className="notice error">Bin “{binName}” not found.</p>;
     }
     if (result && result.total === 0) {
       return (
-        <div className="atem-done-state">
-          <p className="atem-done-title">Nothing to open</p>
-          <p className="atem-done-sub">The “{binName}” bin has no timelines in it.</p>
+        <div className="run-summary">
+          <p className="run-summary-title">Nothing to open</p>
+          <p className="run-summary-sub">The “{binName}” bin has no timelines.</p>
         </div>
       );
     }
+    const total = result?.total ?? 0;
     return (
-      <div className="atem-progress-view">
-        <div className="atem-done-state">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: result?.failed ? 'var(--accent)' : 'var(--success)' }}>
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-            <polyline points="22 4 12 14.01 9 11.01" />
-          </svg>
-          <p className="atem-done-title">
-            Opened {result?.opened}/{result?.total}
+      <>
+        <div className="run-summary">
+          <p className="run-summary-title">{result?.stopped ? 'Stopped' : 'Done'}</p>
+          <p className="run-summary-sub">
+            Opened {result?.opened ?? 0} of {total} sequence{total !== 1 ? 's' : ''}.
           </p>
-          <p className="atem-done-sub">
-            {result?.failed
-              ? `${result.failed} couldn’t be opened — the last successful one is current.`
-              : 'All sequences opened — the last one is current in Resolve.'}
-          </p>
+          {result?.failed > 0 && (
+            <p className="error-text">
+              {result.failed} couldn’t be opened. Details are in the Console.
+            </p>
+          )}
         </div>
         {renderProgressList()}
-      </div>
+      </>
     );
   }
 
@@ -308,39 +335,45 @@ function OpenSequencesOverlay({ open, onClose, connected, onLog }) {
   const canRun = connected && !busy;
 
   return (
-    <div className="result-overlay atem-overlay" role="dialog" aria-label="Open Sequences">
-      <header className="result-overlay-header">
-        <button className="result-overlay-back" onClick={requestClose} aria-label="Close">
+    <div className="tool-overlay" role="dialog" aria-label="Open sequences">
+      <header className="tool-header">
+        <h2 className="tool-title">Open sequences</h2>
+        <button
+          className="tool-close"
+          onClick={requestClose}
+          disabled={busy}
+          aria-label="Close"
+          title={busy ? 'Stop the run to close' : 'Close'}
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" />
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
-        <span className="result-overlay-title">Open Sequences</span>
-        <div className="atem-stage-pills">
-          {['configure', 'running', 'done'].map((s, i) => (
-            <span key={s} className={`atem-stage-pill${stage === s ? ' active' : ''}`}>{i + 1}</span>
-          ))}
-        </div>
       </header>
 
-      <div className="atem-overlay-body">
+      <div className="tool-body tool-body--form">
         {!connected && stage === 'configure' && (
-          <p className="atem-error">Resolve is not connected — open your project first.</p>
+          <p className="notice error">Resolve not connected.</p>
         )}
         {stage === 'configure' && renderConfigure()}
         {stage === 'running'   && renderProgressList()}
         {stage === 'done'      && renderDone()}
       </div>
 
-      <footer className="result-overlay-actions">
+      <footer className="tool-footer tool-footer--form">
         {stage === 'configure' && (
-          <button className="btn" disabled={!canRun} onClick={handleRun}>
-            Open Sequences
+          <button className="btn primary" disabled={!canRun} onClick={handleRun}>
+            Open all
+          </button>
+        )}
+        {stage === 'running' && (
+          <button className="btn danger" onClick={handleStop} disabled={stopping}>
+            {stopping ? 'Stopping…' : 'Stop'}
           </button>
         )}
         {stage === 'done' && (
-          <button className="btn" onClick={onClose}>Done</button>
+          <button className="btn primary" onClick={requestClose}>Done</button>
         )}
       </footer>
     </div>

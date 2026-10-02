@@ -2768,18 +2768,7 @@ button.status-bar-chip-btn:hover {
   color: var(--muted-soft);
 }
 
-.atem-badge {
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 1px 8px;
-  border-radius: 999px;
-  flex-shrink: 0;
-}
 
-.atem-badge.ingested {
-  background: var(--success-soft);
-  color: var(--success);
-}
 
 .atem-empty {
   margin: 0;
@@ -2908,66 +2897,13 @@ button.status-bar-chip-btn:hover {
   gap: 18px;
 }
 
-.atem-progress-overall {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
 
-.atem-progress-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.82rem;
-  color: var(--muted-soft);
-}
 
-.atem-current-file {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-}
 
-.atem-current-file-label {
-  margin: 0;
-  font-size: 0.76rem;
-  font-weight: 600;
-  color: var(--text-muted);
-}
 
-.atem-current-file-name {
-  margin: 0;
-  font-size: 0.82rem;
-  color: var(--text-strong);
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.atem-progress-track-sm {
-  height: 2px;
-  background: var(--border);
-  border-radius: 999px;
-  overflow: hidden;
-}
 
-.atem-progress-fill-sm {
-  height: 100%;
-  background: var(--info);
-  border-radius: 999px;
-  transition: width 300ms ease;
-}
 
-.atem-current-file-bytes {
-  margin: 0;
-  font-size: 0.72rem;
-  color: var(--muted-soft);
-  font-variant-numeric: tabular-nums;
-}
 
 .atem-done-state {
   display: flex;
@@ -3040,6 +2976,138 @@ button.status-bar-chip-btn:hover {
   color: var(--info);
   flex-shrink: 0;
 }
+
+/* ─── Tool run views (ATEM ingest, Open sequences) ───────────
+   Shared progress line, per-item row list (with .status-dot), loading row
+   and done summary for the run-style tool overlays. */
+
+.run-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 0;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.run-empty {
+  margin: 0;
+  padding: 20px 0;
+  text-align: center;
+  font-size: 0.84rem;
+  color: var(--text-dim);
+}
+
+.run-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.run-progress-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.run-progress-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.run-progress-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.run-progress-fill {
+  height: 100%;
+  background: var(--info);
+  transition: width 300ms ease;
+}
+
+.run-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.run-summary-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.run-summary-sub {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.run-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.run-row + .run-row {
+  border-top: 1px solid var(--border);
+}
+
+.run-row.is-pending,
+.run-row.is-skipped { color: var(--text-dim); }
+.run-row.is-error   { color: var(--danger); }
+
+.run-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-row-meta {
+  flex-shrink: 0;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+.run-row-state {
+  flex-shrink: 0;
+  min-width: 64px;
+  text-align: right;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.run-row.is-pending .run-row-state,
+.run-row.is-skipped .run-row-state { color: var(--text-dim); }
+.run-row.is-error .run-row-state   { color: var(--danger); }
 
 /* ─── Responsive ──────────────────────────────────────────── */
 

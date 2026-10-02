@@ -50,6 +50,8 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   const [currentProgress, setCurrentProgress] = React.useState(null);
   const [ingestDone, setIngestDone] = React.useState(false);
   const [ingestError, setIngestError] = React.useState(null);
+  const [ingestCanceled, setIngestCanceled] = React.useState(false);
+  const [canceling, setCanceling]   = React.useState(false);
   const [filesDone, setFilesDone]   = React.useState(0);
   const [filesTotal, setFilesTotal] = React.useState(0);
 
@@ -65,6 +67,8 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     setCurrentProgress(null);
     setIngestDone(false);
     setIngestError(null);
+    setIngestCanceled(false);
+    setCanceling(false);
     setFilesDone(0);
     setFilesTotal(0);
     setHost(DEFAULT_HOST);
@@ -102,27 +106,39 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   // Fire the Resolve import once the ingest finishes cleanly and the toggle is on.
   // Runs from an effect (not inside the progress handler) so it reads fresh
   // importBin/importToResolve state rather than a stale event-handler closure.
+  // A canceled ingest doesn't import: the editor asked it to stop.
   React.useEffect(() => {
-    if (!ingestDone || ingestError) return;
+    if (!ingestDone || ingestError || ingestCanceled) return;
     if (!importToResolve || !resolveConnected) return;
     if (importState !== 'idle') return;
     runResolveImport();
-  }, [ingestDone, ingestError, importToResolve, resolveConnected, importState]);
+  }, [ingestDone, ingestError, ingestCanceled, importToResolve, resolveConnected, importState]);
+
+  // While files are copying (or the follow-up Resolve import runs) the overlay
+  // can't close: App unmounts it on close, which would drop the progress view
+  // and skip the import. Cancel in the footer is the way out of an ingest.
+  const ingestRunning = stage === 'progress' && !ingestDone;
+  const closeBlocked  = ingestRunning || importState === 'running';
+
+  function requestClose() {
+    if (closeBlocked) return;
+    onClose?.();
+  }
 
   // Escape-to-close — second escape route in case the X button gets eaten
-  // by an OS drag region or some other Electron quirk. ResultOverlay has
-  // the same handler; matching the pattern for consistency.
+  // by an OS drag region or some other Electron quirk. Ignored while a run
+  // is in progress (same rule as the × button).
   React.useEffect(() => {
     if (!open) return;
     function onKey(e) {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !closeBlocked) {
         e.preventDefault();
         onClose?.();
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, closeBlocked]);
 
   // Auto-connect when browse stage is shown
   React.useEffect(() => {
@@ -153,7 +169,11 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   // ── Actions ─────────────────────────────────────────────
 
   async function handleConnect() {
-    if (!window.atemAPI) { setBrowseError('atemAPI not available'); return; }
+    if (!window.atemAPI) {
+      setBrowseError({ message: 'ATEM ingest isn’t available in this build.', detail: 'atemAPI not available' });
+      onLog?.('[ATEM] atemAPI not available');
+      return;
+    }
     setConnecting(true);
     setBrowseError(null);
     setSessions([]);
@@ -171,7 +191,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     } catch (err) {
       setConnecting(false);
       const msg = err?.message || String(err);
-      setBrowseError(`FTP error: ${msg}`);
+      setBrowseError({ message: `Couldn’t reach the ATEM at ${host}.`, detail: msg });
       onLog?.(`[ATEM] Error: ${msg}`);
       return;
     }
@@ -180,7 +200,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
 
     if (!result?.ok) {
       const errMsg = result?.error || 'Could not connect to ATEM FTP';
-      setBrowseError(errMsg);
+      setBrowseError({ message: `Couldn’t reach the ATEM at ${host}.`, detail: errMsg });
       onLog?.(`[ATEM] Connect failed: ${errMsg}`);
       return;
     }
@@ -229,13 +249,28 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     setFilesDone(0);
     setIngestDone(false);
     setIngestError(null);
+    setIngestCanceled(false);
+    setCanceling(false);
     setStage('progress');
+    onLog?.(`[ATEM] Ingesting ${total} file${total !== 1 ? 's' : ''} into ${destination}…`);
 
-    await window.atemAPI?.startIngest({
-      host,
-      sessions: selectedSessions,
-      destination
-    });
+    let res;
+    try {
+      res = await window.atemAPI?.startIngest({
+        host,
+        sessions: selectedSessions,
+        destination
+      });
+    } catch (err) {
+      res = { ok: false, error: err?.message || String(err) };
+    }
+    // The main process refused to start (no DB, bad args): no progress events
+    // will follow, so end the run here instead of spinning forever.
+    if (res && res.ok === false) {
+      onLog?.(`[ATEM] Ingest didn't start: ${res.error || 'unknown error'}`);
+      setIngestError(res.error || 'unknown error');
+      setIngestDone(true);
+    }
   }
 
   function handleProgressEvent(event) {
@@ -265,7 +300,10 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
           : item
       ));
     } else if (event.type === 'file-error') {
+      // filesDone counts files *processed* (drives the progress line); the
+      // done screen counts only done + skipped as ingested.
       setFilesDone(prev => prev + 1);
+      onLog?.(`[ATEM] ${event.file} failed: ${event.error || 'unknown error'}`);
       setProgressItems(prev => prev.map(item =>
         item.session === event.session && item.file === event.file
           ? { ...item, state: 'error', error: event.error }
@@ -273,15 +311,32 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
       ));
     } else if (event.type === 'ingest-complete') {
       setIngestDone(true);
-      if (!event.ok && event.error !== 'canceled') setIngestError(event.error);
+      setCanceling(false);
+      if (!event.ok && event.error === 'canceled') {
+        setIngestCanceled(true);
+        onLog?.('[ATEM] Ingest canceled.');
+      } else if (!event.ok) {
+        setIngestError(event.error);
+        onLog?.(`[ATEM] Ingest failed: ${event.error || 'unknown error'}`);
+      }
     } else if (event.type === 'ingest-error') {
       setIngestDone(true);
+      setCanceling(false);
       setIngestError(event.error);
+      onLog?.(`[ATEM] Ingest failed: ${event.error || 'unknown error'}`);
     }
   }
 
   async function handleCancel() {
-    await window.atemAPI?.cancelIngest();
+    if (canceling) return;
+    setCanceling(true);
+    onLog?.('[ATEM] Canceling ingest…');
+    try {
+      await window.atemAPI?.cancelIngest();
+    } catch (err) {
+      setCanceling(false);
+      onLog?.(`[ATEM] Cancel failed: ${err?.message || String(err)}`);
+    }
   }
 
   async function runResolveImport() {
@@ -293,7 +348,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     }
     setImportState('running');
     setImportError(null);
-    onLog?.(`[ATEM] Importing ${files.length} clip(s) into Resolve → ${importBin}…`);
+    onLog?.(`[ATEM] Importing ${files.length} clip(s) into Resolve: ${importBin}…`);
     try {
       const res = await window.leaderpassAPI.call('import_media', {
         parent_bin: importBin || IMPORT_DEFAULT_BIN,
@@ -330,19 +385,21 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
             value={host}
             onChange={e => setHost(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleConnect()}
-            placeholder="ATEM FTP IP"
+            placeholder="ATEM address"
           />
-          <button className="btn-secondary atem-connect-btn" onClick={handleConnect} disabled={connecting}>
+          <button className="btn ghost atem-connect-btn" onClick={handleConnect} disabled={connecting}>
             {connecting ? 'Connecting…' : 'Connect'}
           </button>
         </div>
 
-        {browseError && <p className="atem-error">{browseError}</p>}
+        {browseError && (
+          <p className="notice error" title={browseError.detail || undefined}>{browseError.message}</p>
+        )}
 
         {connecting && !browseError && (
-          <div className="atem-loading">
-            <span className="status-bar-spinner" style={{ width: 14, height: 14 }} />
-            <span>Connecting to ATEM…</span>
+          <div className="run-loading">
+            <span className="spinner" />
+            <span>Connecting to the ATEM…</span>
           </div>
         )}
 
@@ -350,9 +407,9 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
           <>
             <div className="atem-session-controls">
               <button className="atem-select-all-btn" onClick={toggleAll}>
-                {selected.size === sessions.length ? 'Deselect All' : 'Select All'}
+                {selected.size === sessions.length ? 'Deselect all' : 'Select all'}
               </button>
-              <span className="atem-session-count">{sessions.length} session{sessions.length !== 1 ? 's' : ''} found</span>
+              <span className="atem-session-count">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</span>
             </div>
 
             <div className="atem-session-list">
@@ -378,7 +435,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
                         {formatBytes(session.totalBytes)}
                       </span>
                     </div>
-                    {ingested && <span className="atem-badge ingested">Ingested</span>}
+                    {ingested && <span className="tag success">Ingested</span>}
                   </label>
                 );
               })}
@@ -387,7 +444,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
         )}
 
         {!connecting && sessions.length === 0 && !browseError && (
-          <p className="atem-empty">No recording sessions found on this drive.</p>
+          <p className="run-empty">No recording sessions on this drive.</p>
         )}
       </>
     );
@@ -398,8 +455,8 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
       <div className="atem-configure">
         <div className="atem-summary-card">
           <p className="atem-summary-line"><strong>{selectedSessions.length}</strong> session{selectedSessions.length !== 1 ? 's' : ''}</p>
-          <p className="atem-summary-line"><strong>{selectedFileCount}</strong> video file{selectedFileCount !== 1 ? 's' : ''}</p>
-          <p className="atem-summary-line"><strong>{formatBytes(selectedBytes)}</strong> estimated</p>
+          <p className="atem-summary-line"><strong>{selectedFileCount}</strong> file{selectedFileCount !== 1 ? 's' : ''}</p>
+          <p className="atem-summary-line"><strong>{formatBytes(selectedBytes)}</strong> total</p>
         </div>
 
         <div className="atem-dest-section">
@@ -408,13 +465,10 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
             <span className={`atem-dest-path${destination ? '' : ' placeholder'}`}>
               {destination || 'No folder selected'}
             </span>
-            <button className="btn-secondary" onClick={handlePickDestination}>
+            <button className="btn ghost small" onClick={handlePickDestination}>
               Choose…
             </button>
           </div>
-          {!destination && (
-            <p className="atem-dest-hint">Select the folder where footage will be organised by session and camera.</p>
-          )}
         </div>
 
         {/* Import into Resolve — enabled only when a project is open, since the
@@ -425,8 +479,8 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
               <p className="atem-field-label">Import into Resolve</p>
               <p className="atem-resolve-sub">
                 {resolveConnected
-                  ? `Will import into: ${resolveProject || 'current project'}`
-                  : 'Resolve not connected — open a project first'}
+                  ? `Project: ${resolveProject || 'Current project'}`
+                  : 'Resolve not connected.'}
               </p>
             </div>
             <input
@@ -470,10 +524,8 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
                   });
                 })()}
               </select>
-              <p className="atem-dest-hint" style={{ marginTop: 6 }}>
-                {binsLoading
-                  ? 'Loading bins from Resolve…'
-                  : `Footage imports into ${importBin} / <session> / CAM <n>, mirroring the folder layout.`}
+              <p className="hint">
+                {binsLoading ? 'Loading bins…' : 'One sub-bin per session and camera.'}
               </p>
             </div>
           )}
@@ -482,92 +534,112 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     );
   }
 
-  function renderProgress() {
-    const pct = filesTotal > 0 ? Math.round((filesDone / filesTotal) * 100) : 0;
-    const fileBytePct = currentProgress?.size > 0
-      ? Math.round((currentProgress.bytes / currentProgress.size) * 100)
-      : 0;
+  // Row state → shared .status-dot modifier + short label.
+  const FILE_STATE = {
+    pending:     { dot: 'is-pending', label: 'Queued' },
+    downloading: { dot: 'is-active',  label: 'Copying' },
+    done:        { dot: 'is-done',    label: 'Ingested' },
+    skipped:     { dot: 'is-skipped', label: 'Already copied' },
+    error:       { dot: 'is-error',   label: 'Failed' },
+  };
 
-    const errorCount = progressItems.filter(i => i.state === 'error').length;
+  function renderDoneSummary() {
+    const total     = progressItems.length || filesTotal;
+    const okCount   = progressItems.filter(i => i.state === 'done' || i.state === 'skipped').length;
+    const failCount = progressItems.filter(i => i.state === 'error').length;
+
+    let title = 'Ingest complete';
+    if (ingestError)         title = 'Ingest failed';
+    else if (ingestCanceled) title = 'Ingest canceled';
+    else if (failCount > 0)  title = 'Ingest finished with errors';
+
+    return (
+      <div className="run-summary">
+        <p className="run-summary-title">{title}</p>
+        <p className="run-summary-sub">{okCount} of {total} file{total !== 1 ? 's' : ''} ingested.</p>
+        {failCount > 0 && (
+          <p className="error-text">{failCount} file{failCount !== 1 ? 's' : ''} failed. Details are in the Console.</p>
+        )}
+        {ingestError && (
+          <p className="notice error" title={String(ingestError)}>
+            The ingest stopped before it finished. Details are in the Console.
+          </p>
+        )}
+        {importToResolve && !ingestError && !ingestCanceled && (
+          <>
+            {importState === 'idle' && !resolveConnected && (
+              <p className="hint">Resolve not connected. Footage wasn’t imported.</p>
+            )}
+            {importState === 'running' && (
+              <p className="run-loading">
+                <span className="spinner small" />
+                <span>Importing into Resolve…</span>
+              </p>
+            )}
+            {importState === 'done' && importResult && (
+              <p className="run-summary-sub">
+                Imported {importResult.imported} clip{importResult.imported !== 1 ? 's' : ''} into {importBin}.
+                {importResult.failed ? ` ${importResult.failed} failed.` : ''}
+              </p>
+            )}
+            {importState === 'error' && (
+              <p className="notice error" title={importError || undefined}>
+                Couldn’t import the footage into Resolve. Details are in the Console.
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    );
+  }
+
+  function renderProgress() {
+    // One bar: whole files processed plus the fraction of the file in flight.
+    const inFlight = !ingestDone && currentProgress?.size > 0
+      ? Math.min(1, currentProgress.bytes / currentProgress.size)
+      : 0;
+    const pct = filesTotal > 0
+      ? Math.min(100, Math.round(((filesDone + inFlight) / filesTotal) * 100))
+      : 0;
 
     return (
       <div className="atem-progress-view">
-        <div className="atem-progress-overall">
-          <div className="atem-progress-label">
-            <span>{filesDone} / {filesTotal} files</span>
-            <span>{pct}%</span>
-          </div>
-          <div className="result-overlay-progress-track" style={{ height: 4 }}>
-            <div className="result-overlay-progress-fill" style={{ width: `${pct}%` }} />
-          </div>
-        </div>
-
-        {!ingestDone && currentProgress && (
-          <div className="atem-current-file">
-            <p className="atem-current-file-label">Downloading</p>
-            <p className="atem-current-file-name">{currentProgress.file}</p>
-            {currentProgress.size > 0 && (
-              <div className="atem-progress-track-sm">
-                <div className="atem-progress-fill-sm" style={{ width: `${fileBytePct}%` }} />
-              </div>
-            )}
-            <p className="atem-current-file-bytes">
-              {formatBytes(currentProgress.bytes)} / {formatBytes(currentProgress.size)}
-            </p>
-          </div>
-        )}
-
-        {ingestDone && !ingestError && (
-          <div className="atem-done-state">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--success)' }}>
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-              <polyline points="22 4 12 14.01 9 11.01" />
-            </svg>
-            <p className="atem-done-title">Ingest complete</p>
-            <p className="atem-done-sub">
-              {filesDone} file{filesDone !== 1 ? 's' : ''} ingested
-              {errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? 's' : ''}` : ''}
-            </p>
-            {importToResolve && (
-              <p className="atem-resolve-sub" style={{ marginTop: 8, textAlign: 'center' }}>
-                {importState === 'running' && (
-                  <>
-                    <span className="status-bar-spinner" style={{ display: 'inline-block', width: 10, height: 10, marginRight: 6 }} />
-                    Importing into Resolve ({importBin})…
-                  </>
-                )}
-                {importState === 'done' && importResult && (
-                  `Imported ${importResult.imported} clip${importResult.imported !== 1 ? 's' : ''} into ${importBin}` +
-                  (importResult.failed ? ` · ${importResult.failed} failed` : '')
-                )}
-                {importState === 'error' && (
-                  <span style={{ color: 'var(--danger, #e5484d)' }}>Resolve import failed: {importError}</span>
-                )}
-              </p>
-            )}
-          </div>
-        )}
-
-        {ingestDone && ingestError && ingestError !== 'canceled' && (
-          <p className="atem-error">Ingest failed: {ingestError}</p>
-        )}
-
-        <div className="atem-file-list">
-          {progressItems.map((item, i) => (
-            <div key={i} className={`atem-file-row ${item.state}`}>
-              <span className="atem-file-state-icon">
-                {item.state === 'done'        && '✓'}
-                {item.state === 'skipped'     && '–'}
-                {item.state === 'error'       && '✗'}
-                {item.state === 'downloading' && <span className="status-bar-spinner" style={{ display: 'inline-block', width: 8, height: 8 }} />}
-                {item.state === 'pending'     && '·'}
-              </span>
-              <span className="atem-file-name">{item.file}</span>
-              {item.camInfo && (
-                <span className="atem-file-cam">CAM {item.camInfo.camNumber}</span>
+        {ingestDone ? renderDoneSummary() : (
+          <div className="run-progress">
+            <p className="run-progress-line">
+              <span>{filesDone} / {filesTotal} files</span>
+              {currentProgress && (
+                <>
+                  <span>·</span>
+                  <span className="run-progress-file">{currentProgress.file}</span>
+                  {currentProgress.size > 0 && (
+                    <span>{formatBytes(currentProgress.bytes)} / {formatBytes(currentProgress.size)}</span>
+                  )}
+                </>
               )}
+            </p>
+            <div className="run-progress-track">
+              <div className="run-progress-fill" style={{ width: `${pct}%` }} />
             </div>
-          ))}
+          </div>
+        )}
+
+        <div className="run-list">
+          {progressItems.map((item, i) => {
+            const st = FILE_STATE[item.state] || FILE_STATE.pending;
+            return (
+              <div key={i} className={`run-row ${st.dot}`}>
+                <span className={`status-dot ${st.dot}`} />
+                <span className="run-row-name">{item.file}</span>
+                {item.camInfo && (
+                  <span className="run-row-meta">CAM {item.camInfo.camNumber}</span>
+                )}
+                <span className="run-row-state" title={item.state === 'error' ? (item.error || undefined) : undefined}>
+                  {st.label}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -579,57 +651,64 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   const canStartIngest = destination.length > 0 && selected.size > 0;
 
   return (
-    <div className="result-overlay atem-overlay" role="dialog" aria-label="ATEM Ingest">
-      {/* Header */}
-      <header className="result-overlay-header">
-        <button className="result-overlay-back" onClick={onClose} aria-label="Close">
+    <div className="tool-overlay" role="dialog" aria-label="ATEM ingest">
+      <header className="tool-header">
+        <h2 className="tool-title">ATEM ingest</h2>
+        <button
+          className="tool-close"
+          onClick={requestClose}
+          disabled={closeBlocked}
+          aria-label="Close"
+          title={ingestRunning ? 'Cancel the ingest to close' : closeBlocked ? 'Importing into Resolve…' : 'Close'}
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" />
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
-        <span className="result-overlay-title">ATEM Footage Ingest</span>
-        <div className="atem-stage-pills">
-          {['browse', 'configure', 'progress'].map((s, i) => (
-            <span key={s} className={`atem-stage-pill${stage === s ? ' active' : ''}`}>{i + 1}</span>
-          ))}
-        </div>
       </header>
 
-      {/* Body */}
-      <div className="atem-overlay-body">
+      <div className="tool-body tool-body--form">
         {stage === 'browse'    && renderBrowse()}
         {stage === 'configure' && renderConfigure()}
         {stage === 'progress'  && renderProgress()}
       </div>
 
-      {/* Footer */}
-      <footer className="result-overlay-actions">
+      <footer className="tool-footer tool-footer--form">
         {stage === 'browse' && (
-          <button
-            className="btn"
-            disabled={!canProceedToConfigure}
-            onClick={() => setStage('configure')}
-          >
-            Next — {selected.size} session{selected.size !== 1 ? 's' : ''} selected
-          </button>
-        )}
-
-        {stage === 'configure' && (
           <>
-            <button className="btn-secondary" onClick={() => setStage('browse')}>Back</button>
-            <button className="btn" disabled={!canStartIngest} onClick={handleStartIngest}>
-              Start Ingest
+            {selected.size > 0 && (
+              <span className="tool-footer-status">
+                {selected.size} session{selected.size !== 1 ? 's' : ''} selected
+              </span>
+            )}
+            <button
+              className="btn primary"
+              disabled={!canProceedToConfigure}
+              onClick={() => setStage('configure')}
+            >
+              Next
             </button>
           </>
         )}
 
-        {stage === 'progress' && !ingestDone && (
-          <button className="btn-secondary" onClick={handleCancel}>Cancel</button>
+        {stage === 'configure' && (
+          <>
+            <button className="btn ghost" onClick={() => setStage('browse')}>Back</button>
+            <button className="btn primary" disabled={!canStartIngest} onClick={handleStartIngest}>
+              Start ingest
+            </button>
+          </>
+        )}
+
+        {ingestRunning && (
+          <button className="btn danger" onClick={handleCancel} disabled={canceling}>
+            {canceling ? 'Canceling…' : 'Cancel ingest'}
+          </button>
         )}
 
         {stage === 'progress' && ingestDone && (
-          <button className="btn" onClick={onClose}>Done</button>
+          <button className="btn primary" onClick={requestClose} disabled={closeBlocked}>Done</button>
         )}
       </footer>
     </div>
