@@ -1,7 +1,7 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell, Tray, nativeImage } = require('electron');
 const fs = require('fs');
 const os = require('os');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const path = require('path');
 const readline = require('readline');
 const {
@@ -76,6 +76,12 @@ const WIN_ACCESS_VIOLATION_EXIT = 3221225477;
 // Resolve, so this only catches the immediate-crash case.
 const FAST_CRASH_UPTIME_MS = 2000;
 const FAST_CRASH_THRESHOLD = 2;
+// If the initial connect hasn't produced CONNECTED within this window, check
+// for a duplicate Resolve.exe. A lingering half-closed Resolve process makes
+// scriptapp('Resolve') block forever (log stops at "Loaded fusionscript").
+// We only warn — EditPanel can't tell which process is the stale one, and
+// killing the wrong one would take down the user's live session/render.
+const RESOLVE_ATTACH_WATCHDOG_MS = 5000;
 const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
 // PYTHON_CMD — bundled Python 3.10 on packaged Windows builds by default.
 // The bundled copy guarantees a known-good interpreter on machines where
@@ -347,6 +353,7 @@ function handleWorkerLine(state, line) {
         resolveConnected = true;
         resolveProject = normalized.envelope.data?.project || '';
         resolveTimeline = normalized.envelope.data?.timeline || '';
+        state.connectedAt = Date.now();
         // Whatever advisory was up (scripting unreachable, crash loop) is
         // by definition resolved — we just got a healthy attach.
         clearResolveAdvisory(state);
@@ -502,6 +509,34 @@ function checkResolveWorkerExitForAdvisory(state, code, uptimeMs) {
   return false;
 }
 
+// Windows only: number of running Resolve.exe processes, or null if unknown.
+function countResolveProcesses() {
+  return new Promise(resolve => {
+    if (process.platform !== 'win32') return resolve(null);
+    execFile('tasklist', ['/FI', 'IMAGENAME eq Resolve.exe', '/FO', 'CSV', '/NH'],
+      { windowsHide: true, timeout: 5000 },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        resolve(String(stdout).split(/\r?\n/).filter(l => /^"Resolve\.exe"/i.test(l)).length);
+      });
+  });
+}
+
+function startResolveAttachWatchdog(state) {
+  const proc = state.proc;
+  setTimeout(async () => {
+    if (state.proc !== proc || state.connectedAt) return;
+    const count = await countResolveProcesses();
+    if (count === null || count < 2) return;
+    if (state.proc !== proc || state.connectedAt) return;
+    emitResolveAdvisory(state, {
+      code: 'RESOLVE_DUPLICATE_PROCESS',
+      title: 'Hey! You have an extra Resolve process running. End it and restart.',
+      body: ''
+    });
+  }, RESOLVE_ATTACH_WATCHDOG_MS);
+}
+
 function startWorker(state) {
   if (state.proc) {
     return;
@@ -518,6 +553,7 @@ function startWorker(state) {
     env
   });
   state.startedAt = Date.now();
+  state.connectedAt = null;
 
   state.reader = readline.createInterface({ input: state.proc.stdout });
   state.reader.on('line', line => {
@@ -574,6 +610,7 @@ function startWorker(state) {
       setTimeout(() => {
         try {
           sendWorkerRequest({ cmd: 'connect' }, WORKERS.resolve).catch(() => {});
+          startResolveAttachWatchdog(state);
         } catch (_) {}
       }, 500);
     }

@@ -850,7 +850,9 @@ function App() {
             <div className="resolve-advisory-icon" aria-hidden="true">⚠</div>
             <div className="resolve-advisory-body">
               <div className="resolve-advisory-title">{resolveAdvisory.title}</div>
-              <div className="resolve-advisory-text">{resolveAdvisory.body}</div>
+              {resolveAdvisory.body && (
+                <div className="resolve-advisory-text">{resolveAdvisory.body}</div>
+              )}
               {resolveAdvisory.hint && (
                 <div className="resolve-advisory-hint">{resolveAdvisory.hint}</div>
               )}
