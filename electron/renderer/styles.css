@@ -2299,57 +2299,6 @@ button.status-bar-chip-btn:hover {
   flex: 1;
 }
 
-.result-overlay-counter {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--muted-soft);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Pinned-scope chip in the overlay header: shows which Resolve project +
-   timeline this result run was captured against. Refusal-on-mismatch keys
-   off these names. */
-.result-overlay-scope {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--muted-soft);
-  padding: 2px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  white-space: nowrap;
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Apply-mismatch banner. Shown when update_text refuses because Resolve has
-   moved to a different project/timeline since the run was captured. */
-.result-overlay-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 18px;
-  background: var(--danger-soft);
-  border-bottom: 1px solid var(--border);
-  color: var(--danger);
-  font-size: 0.78rem;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.result-overlay-error-dismiss {
-  appearance: none;
-  background: transparent;
-  border: none;
-  color: var(--danger);
-  font-size: 1rem;
-  font-weight: 700;
-  cursor: pointer;
-  padding: 0 4px;
-  line-height: 1;
-}
-
 .result-overlay-progress-track {
   height: 2px;
   background: var(--border);
@@ -2362,13 +2311,15 @@ button.status-bar-chip-btn:hover {
   transition: width 400ms ease;
 }
 
+/* Spellcheck review (ResultOverlay → SpellcheckResultOverlay). Uses the
+   .tool-overlay shell; these rules only cover its body and footer parts. */
+
+/* Item navigation, pinned to the footer's left: [<] 4 of 12 [>]. */
 .result-overlay-nav {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 12px 24px;
-  flex-shrink: 0;
+  gap: 10px;
+  margin-right: auto;
 }
 
 .result-nav-btn {
@@ -2398,21 +2349,26 @@ button.status-bar-chip-btn:hover {
 }
 
 .result-nav-label {
-  font-size: 0.78rem;
-  color: var(--muted-soft);
+  font-size: 0.8rem;
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   min-width: 60px;
   text-align: center;
 }
 
-.result-overlay-body {
-  flex: 1;
-  overflow-y: auto;
+/* Centre the review card in the body. margin:auto (not justify-content)
+   so a tall card still scrolls from its top instead of being clipped. */
+.spellcheck-review-stage {
+  margin: auto;
+  width: 100%;
+  max-width: 560px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
+  gap: 16px;
+}
+
+.result-item-empty {
+  text-align: center;
 }
 
 .result-item-content {
@@ -2427,15 +2383,15 @@ button.status-bar-chip-btn:hover {
   font-size: 1.15rem;
   line-height: 1.6;
   color: var(--text);
-  background: var(--surface-1);
-  border: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 18px 20px;
 }
 
 .result-item-context.dim {
   font-size: 0.9rem;
-  color: var(--muted);
+  color: var(--text-muted);
   background: transparent;
   border: none;
   padding: 0;
@@ -2444,7 +2400,7 @@ button.status-bar-chip-btn:hover {
 .result-item-mark {
   background: var(--accent-soft);
   color: var(--accent-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0 2px;
   font-style: normal;
   font-weight: 700;
@@ -2455,7 +2411,7 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   gap: 10px;
   font-size: 0.76rem;
-  color: var(--muted-soft);
+  color: var(--text-dim);
 }
 
 .result-item-tc-btn {
@@ -2475,20 +2431,13 @@ button.status-bar-chip-btn:hover {
 }
 
 .result-item-tc-btn:hover {
-  background: var(--accent-blue-soft);
+  background: var(--info-soft);
 }
 
 .result-item-suggestions {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.result-item-loading,
-.result-item-no-suggestions {
-  margin: 0;
-  font-size: 0.82rem;
-  color: var(--muted-soft);
 }
 
 .result-suggestions-list {
@@ -2529,7 +2478,7 @@ button.status-bar-chip-btn:hover {
 .result-item-input {
   width: 100%;
   padding: 11px 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-inset);
   color: var(--text);
@@ -2538,7 +2487,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .result-item-input:hover {
-  border-color: var(--line-strong);
+  border-color: var(--border-strong);
 }
 
 .result-item-input:focus {
@@ -2548,7 +2497,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .result-item-input::placeholder {
-  color: var(--muted-soft);
+  color: var(--text-dim);
 }
 
 /* Resolved / skipped item view */
@@ -2561,7 +2510,7 @@ button.status-bar-chip-btn:hover {
 
 .resolved-item .result-item-context {
   font-size: 0.9rem;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 /* All done view */
@@ -2583,7 +2532,7 @@ button.status-bar-chip-btn:hover {
 .result-done-sub {
   margin: 0;
   font-size: 0.88rem;
-  color: var(--muted-soft);
+  color: var(--text-dim);
 }
 
 .result-overlay-actions {
@@ -3215,211 +3164,104 @@ button.status-bar-chip-btn:hover {
   color: var(--text-strong);
 }
 
-/* ─── CommentPullReport (Phase 5c.7, 2026-06-02) ─────────────────────────────
+/* ─── CommentPullReport ──────────────────────────────────────────────────────
    Single-page report rendered when ResultOverlay routes a comment_pull run.
-   Summary card at top + collapsible per-timeline accordion. Reuses
-   .result-overlay shell so the chrome (back button, title bar) is consistent
-   with the spellcheck path. */
+   Uses the .tool-overlay shell (header / body--report / footer). Colours are
+   theme tokens only; the one colour signal on a row is the "New" tag. */
 
-/* Override the default .result-overlay-body centering/justify so the report
-   can flow top-down with a wide content column. align-items: center on the
-   parent was squeezing summary and per-timeline sections to their intrinsic
-   widths — making the report feel chaotic and narrow.  */
-.result-overlay-body.comment-pull-body {
-  display: block;
-  padding: 0;
-  overflow-y: auto;
+/* One-line offline / wrong-project banner between header and body. The
+   .tool-body--report class supplies the centred side padding. */
+.comment-pull-banner {
+  padding-top: 12px;
+  flex-shrink: 0;
 }
 
-/* Centered content column. Wide enough to give the per-timeline accordion
-   real breathing room on a desktop window, capped so it doesn't stretch
-   uncomfortably wide on a fullscreen ultrawide.  */
-.comment-pull-content {
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 16px 28px 40px;
-  display: flex;
-  flex-direction: column;
+.comment-pull-banner strong {
+  font-weight: 700;
 }
 
-/* Sticky top stack: mismatch banner (when present) + summary card. Sticks
-   to the top of the scrollable .comment-pull-body so the editor always
-   sees aggregate counts + project context regardless of scroll depth.
-   z-index keeps it above the per-timeline rows that scroll under it.  */
-.comment-pull-sticky-top {
+/* No top padding on the scroll container so the pinned bar sticks flush to
+   its top edge (sticky ignores / respects scroll padding inconsistently). */
+.tool-body.comment-pull-body {
+  padding-top: 0;
+  gap: 12px;
+}
+
+.comment-pull-loading {
+  padding-top: 20px;
+}
+
+/* One muted metadata line. */
+.comment-pull-meta {
+  padding-top: 16px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* Compact pinned bar: totals left, sort + expand/collapse right. */
+.comment-pull-bar {
   position: sticky;
   top: 0;
   z-index: 5;
-  /* Solid page background so content scrolling under doesn't bleed
-     through (the overlay itself is a flat --page-bg). */
-  background: var(--page-bg);
-  padding-top: 16px;
-  margin: -16px -8px 8px;
-  padding-left: 8px;
-  padding-right: 8px;
-  padding-bottom: 8px;
-}
-
-/* Project-mismatch / Resolve-offline banner. Sits above the summary card
-   inside the sticky stack. amber for mismatch (the report is still
-   useful, just be aware), softer slate for offline (informational).  */
-.comment-pull-mismatch-banner {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
-  padding: 12px 16px;
-  border-left: 3px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  margin-bottom: 12px;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--text);
+  flex-wrap: wrap;
+  padding: 8px 0;
+  background: var(--page-bg);
+  border-bottom: 1px solid var(--border);
 }
 
-.comment-pull-mismatch-banner.mismatch {
-  background: var(--warning-soft);
-  border-left-color: var(--warning);
-}
-
-.comment-pull-mismatch-banner.offline {
-  background: var(--info-soft);
-  border-left-color: var(--info);
-}
-
-.comment-pull-mismatch-icon {
-  flex-shrink: 0;
-  font-size: 16px;
-  line-height: 1.4;
-  margin-top: 1px;
-}
-
-.comment-pull-mismatch-banner.mismatch .comment-pull-mismatch-icon { color: var(--warning); }
-.comment-pull-mismatch-banner.offline  .comment-pull-mismatch-icon { color: var(--info); }
-
-.comment-pull-mismatch-title {
-  font-weight: 700;
-  margin-bottom: 3px;
-}
-
-.comment-pull-mismatch-banner.mismatch .comment-pull-mismatch-title { color: var(--warning); }
-.comment-pull-mismatch-banner.offline  .comment-pull-mismatch-title { color: var(--info-strong); }
-
-.comment-pull-mismatch-text {
-  color: inherit;
-  opacity: 0.92;
-}
-
-.comment-pull-mismatch-text strong {
+.comment-pull-totals {
+  font-size: 0.9rem;
   font-weight: 600;
   color: var(--text-strong);
-}
-
-.comment-pull-summary {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 16px 18px;
-  margin-bottom: 18px;
-}
-
-.comment-pull-summary-totals {
-  display: flex;
-  gap: 36px;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
-  justify-content: center; /* 5c.8: centered, per design feedback */
-}
-
-.comment-pull-totals-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: center;     /* 5c.8: center the label under the number */
-}
-
-.comment-pull-totals-num {
-  font-size: 26px;
-  font-weight: 600;
-  line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 
-.comment-pull-totals-num.placed { color: var(--success); }
-.comment-pull-totals-num.kept { color: var(--info); }
-.comment-pull-totals-num.removed { color: var(--danger); }
-.comment-pull-totals-num.skipped { color: var(--warning); }
-
-.comment-pull-totals-label {
-  font-size: 12px;
-  color: var(--text-dim);
+.comment-pull-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.comment-pull-summary-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
+/* Two-option switch (Timecode / Newest). */
+.comment-pull-sort {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+}
+
+.comment-pull-sort button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+  height: 20px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.comment-pull-sort button:hover:not(.active) {
   color: var(--text);
 }
 
-.comment-pull-summary-meta .dim {
-  color: var(--text-dim);
-  margin-right: 8px;
-  font-size: 12px;
-}
-
-.comment-pull-section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-weight: 700;
-  color: var(--text-dim);
-  margin: 4px 0 8px;
-}
-
-.comment-pull-section-actions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.comment-pull-section-actions .link-btn {
-  background: none;
-  border: none;
-  color: var(--info);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-}
-
-.comment-pull-section-actions .link-btn:hover {
-  text-decoration: underline;
-}
-
-/* Active sort mode: solid pill so the current ordering is unmistakable. */
-.comment-pull-section-actions .link-btn.active {
+.comment-pull-sort button.active {
+  background: var(--hover-strong);
   color: var(--text-strong);
-  background: var(--info-soft);
-}
-
-.comment-pull-section-actions .link-btn.active:hover {
-  text-decoration: none;
-}
-
-.comment-pull-section-sep {
-  opacity: 0.4;
-  margin: 0 2px;
 }
 
 .comment-pull-timelines {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding-bottom: 8px;
 }
 
 .comment-pull-timeline {
@@ -3427,11 +3269,6 @@ button.status-bar-chip-btn:hover {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
-  transition: background 0.12s;
-}
-
-.comment-pull-timeline.open {
-  background: var(--surface-2);
 }
 
 .comment-pull-timeline-head {
@@ -3439,11 +3276,11 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 14px 18px;
+  padding: 12px 16px;
   background: none;
   border: none;
   color: inherit;
-  font-size: 14px;
+  font-size: 0.88rem;
   text-align: left;
   cursor: pointer;
 }
@@ -3453,102 +3290,67 @@ button.status-bar-chip-btn:hover {
 }
 
 .comment-pull-twisty {
-  font-size: 10px;
-  width: 12px;
-  text-align: center;
+  flex-shrink: 0;
   color: var(--text-dim);
+  transition: transform 140ms ease;
+}
+
+.comment-pull-timeline.open .comment-pull-twisty {
+  transform: rotate(90deg);
 }
 
 .comment-pull-timeline-name {
   font-weight: 600;
   color: var(--text-strong);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .comment-pull-timeline-project {
-  font-size: 12px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  white-space: nowrap;
 }
 
 .comment-pull-timeline-counts {
   margin-left: auto;
   display: flex;
-  gap: 6px;
-  font-size: 11px;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
-
-.comment-pull-timeline-counts .count {
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--hover-strong);
-}
-
-.comment-pull-timeline-counts .count.placed { color: var(--success); background: var(--success-soft); }
-.comment-pull-timeline-counts .count.kept { color: var(--info); background: var(--info-soft); }
-.comment-pull-timeline-counts .count.removed { color: var(--danger); background: var(--danger-soft); }
-.comment-pull-timeline-counts .count.skipped { color: var(--warning); background: var(--warning-soft); }
-.comment-pull-timeline-counts .count.error { color: var(--danger); background: var(--danger-soft); }
 
 .comment-pull-timeline-body {
-  padding: 12px 18px 18px;
+  padding: 12px 16px 16px;
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.comment-pull-error {
-  color: var(--danger);
-  font-size: 12px;
-  padding: 8px 10px;
-  background: var(--danger-soft);
-  border-left: 3px solid var(--danger);
-  border-radius: var(--radius-sm);
+  gap: 8px;
 }
 
 .comment-pull-comment {
   background: var(--surface-inset);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  padding: 12px 14px;
+  padding: 10px 12px;
 }
-
-.comment-pull-comment.outcome-placed { border-left-color: var(--success); }
-.comment-pull-comment.outcome-kept { border-left-color: var(--info); }
-.comment-pull-comment.outcome-removed { border-left-color: var(--danger); opacity: 0.75; }
-.comment-pull-comment.outcome-skipped { border-left-color: var(--warning); }
 
 .comment-pull-comment-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 13px;
-  margin-bottom: 6px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  font-size: 0.82rem;
+  min-height: 24px;
 }
 
-.comment-pull-outcome-pill {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--hover-strong);
-}
-
-.comment-pull-outcome-pill.outcome-placed { color: var(--success); background: var(--success-soft); }
-.comment-pull-outcome-pill.outcome-kept { color: var(--info); background: var(--info-soft); }
-.comment-pull-outcome-pill.outcome-removed { color: var(--danger); background: var(--danger-soft); }
-.comment-pull-outcome-pill.outcome-skipped { color: var(--warning); background: var(--warning-soft); }
-
-/* Provenance badge: this note was left on a cut that has since been
-   re-rendered, so it may already have been actioned. */
-.comment-pull-oldercut-pill {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 1px 7px;
-  border-radius: 999px;
-  color: var(--warning);
-  background: var(--warning-soft);
-  white-space: nowrap;
+.comment-pull-comment-header + * {
+  margin-top: 6px;
 }
 
 .comment-pull-comment-author {
@@ -3557,75 +3359,10 @@ button.status-bar-chip-btn:hover {
 }
 
 .comment-pull-comment-tc {
-  margin-left: auto;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.78rem;
 }
-
-.comment-pull-comment-text {
-  font-size: 14px;
-  line-height: 1.5;
-  color: var(--text);
-  white-space: pre-wrap;
-}
-
-.comment-pull-comment-text.dim {
-  color: var(--text-dim);
-  font-style: italic;
-}
-
-.comment-pull-comment-replies {
-  margin-top: 6px;
-  padding-left: 8px;
-  border-left: 2px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.comment-pull-comment-reply {
-  font-size: 13px;
-  display: flex;
-  gap: 6px;
-  line-height: 1.45;
-}
-
-.comment-pull-comment-reply-arrow {
-  color: var(--text-dim);
-}
-
-.comment-pull-comment-reply-author {
-  font-weight: 600;
-  color: var(--text);
-}
-
-.comment-pull-empty {
-  padding: 20px 16px;
-  text-align: center;
-  font-size: 13px;
-}
-
-.comment-pull-flag-hint {
-  margin-top: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
-  background: var(--warning-soft);
-  border-left: 3px solid var(--warning);
-  border-radius: var(--radius-sm);
-}
-
-.comment-pull-flag-hint strong {
-  color: var(--warning);
-  font-weight: 600;
-}
-
-.job-panel-row.comment-pull-row .job-panel-substep {
-  color: var(--text-muted);
-  font-style: italic;
-}
-
-/* ─── 5c.10 per-comment actions (Jump / Mark complete / Reopen) ─────────── */
 
 .comment-pull-comment-actions {
   margin-left: auto;
@@ -3634,69 +3371,66 @@ button.status-bar-chip-btn:hover {
   align-items: center;
 }
 
-.comment-action-btn {
-  font-size: 12px;
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
-  background: transparent;
+.comment-pull-comment-text {
+  font-size: 0.88rem;
+  line-height: 1.5;
   color: var(--text);
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: pre-wrap;
 }
 
-.comment-action-btn:hover:not(:disabled) {
-  background: var(--hover);
+.comment-pull-comment-note {
+  font-size: 0.82rem;
+  color: var(--text-dim);
 }
 
-.comment-action-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.comment-pull-comment-replies {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
-.comment-action-btn.jump {
-  color: var(--info);
+.comment-pull-comment-reply {
+  font-size: 0.82rem;
+  display: flex;
+  gap: 6px;
+  line-height: 1.45;
+  color: var(--text-muted);
 }
 
-.comment-action-btn.jump:hover:not(:disabled) {
-  background: var(--info-soft);
+.comment-pull-comment-reply-author {
+  font-weight: 600;
+  color: var(--text);
 }
 
-.comment-action-btn.complete {
-  color: var(--success);
+/* Done (marked in this session) and removed rows: dimmed + struck through. */
+.comment-pull-comment.is-struck {
+  opacity: 0.55;
 }
 
-.comment-action-btn.complete:hover:not(:disabled) {
-  background: var(--success-soft);
-}
-
-.comment-action-btn.reopen {
-  color: var(--warning);
-}
-
-.comment-action-btn.reopen:hover:not(:disabled) {
-  background: var(--warning-soft);
-}
-
-.comment-pull-comment.is-completed {
-  opacity: 0.5;
-  border-left-color: var(--success);
-}
-
-.comment-pull-comment.is-completed .comment-pull-comment-text {
+.comment-pull-comment.is-struck .comment-pull-comment-text,
+.comment-pull-comment.is-struck .comment-pull-comment-reply-text {
   text-decoration: line-through;
   text-decoration-thickness: 1px;
   text-decoration-color: var(--text-dim);
 }
 
-.comment-pull-outcome-pill.outcome-completed {
-  color: var(--success);
-  background: var(--success-soft);
+.comment-pull-row-error {
+  margin-top: 6px;
+  font-size: 0.8rem;
 }
 
-.comment-pull-comment.has-error {
-  border-left-color: var(--danger);
+.comment-pull-empty {
+  padding: 20px 0;
+  text-align: center;
+}
+
+/* Comment-pull row in the Jobs panel (JobPanel.jsx). */
+.job-panel-row.comment-pull-row .job-panel-substep {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
