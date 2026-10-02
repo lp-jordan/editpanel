@@ -603,15 +603,31 @@ class JobsDb {
     this.db.prepare(`DELETE FROM export_runs WHERE export_id = ?`).run(exportId);
   }
 
-  /** Mark any non-terminal export from a prior session as interrupted — the
-   *  in-memory tracker (and any startable pending queue) is lost on restart.
-   *  `complete_unassigned` is intentionally excluded: orphans waiting for the
-   *  user to pick a project should persist verbatim across restarts. */
+  /** Startup pass over exports left mid-flight by the previous session.
+   *
+   *  - EditPanel-queued exports that were rendering/uploading are marked
+   *    'interrupted' with a "resuming" note and their ids returned, so main can
+   *    re-attach to them once Resolve is connected (Resolve keeps rendering and
+   *    the row still holds the JobIds, LPOS project and per-file upload state).
+   *  - 'queued' batches are left alone: their render jobs are still sitting in
+   *    Resolve's queue and can be started as before.
+   *  - Reconciled orphans are left alone: the reconcile loop keeps updating them.
+   *  `complete_unassigned` is untouched as before.
+   *  Returns the ids to resume, newest first. */
   clearStaleExportRuns() {
+    const rows = this.db.prepare(
+      `SELECT export_id FROM export_runs
+        WHERE state IN ('rendering', 'uploading')
+          AND (source IS NULL OR source != 'reconciled')
+        ORDER BY started_at DESC`
+    ).all();
     this.db.prepare(
-      `UPDATE export_runs SET state = 'interrupted', finished_at = ?
-       WHERE state IN ('rendering', 'uploading', 'queued')`
+      `UPDATE export_runs SET state = 'interrupted', finished_at = ?,
+              error = 'EditPanel was closed. Resuming when Resolve reconnects…'
+        WHERE state IN ('rendering', 'uploading')
+          AND (source IS NULL OR source != 'reconciled')`
     ).run(Date.now());
+    return rows.map(r => r.export_id);
   }
 
   // ─── Phase 3.5 — orphan export reconciliation ────────────────

@@ -358,6 +358,9 @@ function handleWorkerLine(state, line) {
         // Whatever advisory was up (scripting unreachable, crash loop) is
         // by definition resolved — we just got a healthy attach.
         clearResolveAdvisory(state);
+        // CONNECTED also fires on project/timeline change, so an export
+        // waiting for its Resolve project resumes as soon as it's opened.
+        maybeResumeExports();
       } else if (code === 'DISCONNECTED') {
         resolveConnected = false;
         resolveProject = '';
@@ -1254,6 +1257,8 @@ function finalizeExport(state, error = null) {
   // batch doesn't stall the rest. An explicit user cancel clears runChain first
   // (see export:cancel), so cancelling the active batch stops the whole chain.
   if (runChain.length > 0) advanceChain();
+  // Otherwise pick up the next export left over from before a restart.
+  else setTimeout(maybeResumeExports, 0);
 }
 
 // One render_status poll at a time (see renderPollInFlight).
@@ -1680,6 +1685,86 @@ function advanceChain() {
   }
   // Chain drained — nothing left to start.
   broadcastExport('export-queued', { exportId: null, chainDrained: true });
+}
+
+// ── Resume exports across an EditPanel restart ─────────────────────────────
+// Resolve keeps rendering when EditPanel closes, and the export_runs row keeps
+// everything needed to carry on: the JobIds, the LPOS project, and each file's
+// output path + upload state. On startup those rows are parked as
+// 'interrupted' (see JobsDb.clearStaleExportRuns) and listed here; once Resolve
+// is connected with the export's project open, the row becomes activeExport
+// again and the normal poll → upload → finalize path takes over. Files already
+// uploaded are not re-uploaded; a file that was mid-upload starts over.
+let pendingResumeIds = [];
+
+function maybeResumeExports() {
+  if (!jobsDb || !resolveConnected || activeExport || pendingResumeIds.length === 0) return;
+  for (const id of [...pendingResumeIds]) {
+    let row = null;
+    try { row = jobsDb.getExportRun(id); } catch (_) { row = null; }
+    if (!row || row.state !== 'interrupted') {
+      pendingResumeIds = pendingResumeIds.filter(x => x !== id);
+      continue;
+    }
+    // Resolve's render queue is per project: only resume against the project
+    // the batch was queued in. Otherwise wait (re-checked on every CONNECTED).
+    const wantProject = (row.jobs || []).map(j => j?.resolveProjectName).find(Boolean) || null;
+    if (wantProject && resolveProject && wantProject !== resolveProject) {
+      try { jobsDb.updateExportRun(id, { error: `Open "${wantProject}" in Resolve to resume.` }); } catch (_) {}
+      broadcastExport('export-reconciled', { exportId: id });
+      continue;
+    }
+    pendingResumeIds = pendingResumeIds.filter(x => x !== id);
+    resumeExportRow(row);
+    return; // one active export at a time; the rest resume after it finishes
+  }
+}
+
+function resumeExportRow(row) {
+  stopExportPoll();
+  markJobsOwned(row.jobs);
+  const jobs = (row.jobs || []).map((j) => {
+    const base = freshTrackedJobs([j], { started: true })[0];
+    // Keep what was already known; reset only in-flight upload phases.
+    const keepUpload = ['uploaded', 'skipped', 'failed'].includes(j.uploadStatus);
+    return {
+      ...base,
+      status: j.status || base.status,
+      percent: Number(j.percent) || 0,
+      terminal: Boolean(j.terminal),
+      outputPath: j.outputPath || null,
+      uploadStatus: keepUpload ? j.uploadStatus : 'pending',
+      uploadPercent: j.uploadStatus === 'uploaded' ? 100 : 0,
+      assetId: j.assetId || null,
+      uploadError: j.uploadStatus === 'failed' ? (j.uploadError || null) : null,
+    };
+  });
+  activeExport = {
+    exportId: row.export_id,
+    jobs,
+    targetDir: row.target_dir || null,
+    projectId: row.project_id || null,
+    projectName: row.project_name || null,
+    started: true,
+    startedAt: row.started_at || Date.now(),
+    finishedAt: null,
+    state: 'rendering',
+    percent: Number(row.percent) || 0,
+    uploadPercent: 0,
+    jobsDone: Number(row.jobs_done) || 0,
+    uploadEnabled: false,
+    rendersStopped: false,
+    error: null
+  };
+  uploadQueue = [];
+  uploadWorkerActive = false;
+  try { jobsDb.updateExportRun(row.export_id, { finishedAt: null }); } catch (_) {}
+  persistActiveExport();
+  const line = `[export] Resumed ${jobs.length}-timeline export after restart${row.project_name ? ` (uploading to ${row.project_name})` : ''}.`;
+  console.log(line);
+  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', line));
+  broadcastExport('export-progress', exportSnapshot());
+  beginExportPolling();
 }
 
 // Start (or restart) the render-status poll loop for the active export.
@@ -2442,7 +2527,9 @@ app.whenReady().then(() => {
   try {
     jobsDb = new JobsDb(path.join(app.getPath('userData'), 'jobs-history.db'));
     jobsDb.clearStaleAtemLogs();   // mark any interrupted ingest runs from prior session
-    jobsDb.clearStaleExportRuns(); // mark any export still 'rendering' from prior session as interrupted
+    // Exports left rendering/uploading by the previous session: remembered so
+    // they resume once Resolve reconnects (see maybeResumeExports).
+    pendingResumeIds = jobsDb.clearStaleExportRuns() || [];
     // Phase 3.5: ticking reconciliation against Resolve's render queue. Runs
     // for the entire app lifetime; each tick is a no-op when Resolve isn't
     // connected. See the section block above for the design rationale.
