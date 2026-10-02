@@ -167,6 +167,50 @@ body,
   height: 100%;
 }
 
+/* Always reserve the page scrollbar's space. Without this the scrollbar popped
+   in and out whenever content was close to the window height (page-enter slide,
+   tile hover lift, toasts), changing the layout width and making the whole app
+   jitter. */
+html {
+  /* `scrollbar-gutter: stable` alone didn't hold on the root (measured: the
+     page still lost 8px when content outgrew the window), so keep the lane
+     permanently. With the transparent track below, the lane is invisible and
+     the thumb only appears when there's something to scroll. */
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
+/* Slim custom scrollbars everywhere: no track or box, just a thin rounded
+   thumb that brightens on hover. Deliberately NOT using the standard
+   scrollbar-width / scrollbar-color properties — in Chromium those override
+   (disable) these ::-webkit-scrollbar rules. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  /* Transparent border + padding-box clip = a 4px-wide pill inset in the 8px lane. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.28);
+}
+::-webkit-scrollbar-thumb:active {
+  background-color: rgba(255, 255, 255, 0.36);
+}
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 /* Page background: soft gold + blue glows over a charcoal gradient. Kept by
    choice after the 2026-10-02 flattening pass (user reverted this one). */
 body {
@@ -910,6 +954,7 @@ select,
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   padding: 20px 24px;
   display: flex;
   flex-direction: column;
@@ -1483,6 +1528,7 @@ button.status-bar-chip-btn:disabled {
   background: var(--surface-inset);
   max-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   transition: max-height 0.2s ease, border-color 0.2s ease, visibility 0s linear 0.2s;
 }
 
@@ -2598,6 +2644,7 @@ button.status-bar-chip-btn:disabled {
 .atem-overlay-body {
   flex: 1;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   padding: 20px 24px;
   display: flex;
   flex-direction: column;
@@ -2901,6 +2948,7 @@ button.status-bar-chip-btn:disabled {
   gap: 3px;
   max-height: 260px;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   padding: 6px 8px;
@@ -3028,6 +3076,7 @@ button.status-bar-chip-btn:disabled {
   flex-direction: column;
   max-height: 340px;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface);
@@ -3270,6 +3319,7 @@ button.status-bar-chip-btn:disabled {
   padding: 6px 0;
   max-height: 260px;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-inset);
@@ -3368,6 +3418,7 @@ button.status-bar-chip-btn:disabled {
   gap: 6px;
   max-height: 420px;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   /* Without overflow-y, children rendered past max-height bleed into
      whatever follows in the .export-project-area flex column. */
   padding-right: 4px;
@@ -4120,6 +4171,7 @@ button.status-bar-chip-btn:disabled {
   margin: 0;
   max-height: 200px;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -4236,6 +4288,7 @@ button.status-bar-chip-btn:disabled {
 .export-picker-body {
   flex: 1 1 auto;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   padding: 14px 22px;
   display: flex;
   flex-direction: column;
@@ -4488,6 +4541,7 @@ button.status-bar-chip-btn:disabled {
 .feedback-list {
   padding: 8px 18px 18px;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* no width jump when the scrollbar appears */
   flex: 1;
   min-height: 60px;
 }
