@@ -1627,6 +1627,7 @@ function persistQueuedBatch({ exportId, jobs, targetDir, projectId, projectName 
 // Used by the chain runner. Resolve still holds the batch's render jobs with
 // their original settings, so this is just StartRendering(its JobIds) + poll.
 async function activateQueuedRow(row) {
+  markJobsOwned(row.jobs);
   stopExportPoll();
   const jobs = freshTrackedJobs(row.jobs || [], { started: true });
   activeExport = {
@@ -1794,14 +1795,30 @@ function extractEditpanelExportId(customName) {
 // in here too: Resolve continues to list completed jobs in the queue until
 // the editor manually clears them, and we don't want to re-discover them as
 // new orphans every tick.
+// JobIds EditPanel queued itself this session, recorded the moment
+// lp_base_export returns them — independent of the export_runs table. The
+// reconciler never adopts one of these as an orphan, even if a DB read fails or
+// a row write was lost (2026-10-02: a 36-timeline batch got a duplicate orphan
+// row per render while it was still exporting).
+const ownedJobIds = new Set();
+function markJobsOwned(jobs) {
+  for (const j of jobs || []) {
+    const id = j?.job_id ?? j?.JobId;
+    if (id != null) ownedJobIds.add(String(id));
+  }
+}
+
+// Returns null (not an empty set) when the table can't be read, so the caller
+// skips the tick instead of treating every Resolve job as an orphan.
 function collectTrackedJobIds() {
   const ids = new Set();
-  if (!jobsDb) return ids;
+  if (!jobsDb) return null;
   let rows;
   try {
-    rows = jobsDb.listExportRuns({ limit: 1000 });
-  } catch (_e) {
-    return ids;
+    rows = jobsDb.listExportRuns({ limit: 5000 });
+  } catch (err) {
+    console.warn('[reconcile] could not read export history; skipping tick:', err?.message || err);
+    return null;
   }
   for (const r of rows) {
     if (r.state === 'dismissed_in_resolve') continue;
@@ -1812,6 +1829,35 @@ function collectTrackedJobIds() {
     }
   }
   return ids;
+}
+
+// Delete reconciled orphan rows whose JobId is also held by an EditPanel-queued
+// row (source != 'reconciled'). Safe: the EditPanel row stays authoritative for
+// that render, and its JobId stays tracked, so nothing is re-discovered.
+function removeDuplicateOrphans() {
+  if (!jobsDb) return;
+  let rows;
+  try { rows = jobsDb.listExportRuns({ limit: 5000 }); } catch (_) { return; }
+  const owned = new Set(ownedJobIds);
+  for (const r of rows) {
+    if (r.source === 'reconciled') continue;
+    for (const j of (Array.isArray(r.jobs) ? r.jobs : [])) {
+      const id = j?.job_id ?? j?.JobId;
+      if (id != null) owned.add(String(id));
+    }
+  }
+  let removed = 0;
+  for (const r of rows) {
+    if (r.source !== 'reconciled' || !String(r.export_id).startsWith('orphan_')) continue;
+    const jid = String(r.export_id).slice('orphan_'.length);
+    if (!owned.has(jid)) continue;
+    try { jobsDb.deleteExportRun(r.export_id); removed += 1; } catch (_) { /* non-fatal */ }
+  }
+  if (removed > 0) {
+    console.warn(`[reconcile] Removed ${removed} duplicate render row${removed !== 1 ? 's' : ''} already tracked by an EditPanel export.`);
+    BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', `[reconcile] Removed ${removed} duplicate render row${removed !== 1 ? 's' : ''}.`));
+    broadcastExport('export-reconciled', { cleared: true, removedDuplicates: removed });
+  }
 }
 
 // Update an orphan row's progress + state from the latest list_render_jobs
@@ -1936,6 +1982,13 @@ async function reconcileTick() {
   const liveJobIds = new Set(liveJobs.map(j => String(j.job_id || '')).filter(Boolean));
 
   const trackedJobIds = collectTrackedJobIds();
+  if (!trackedJobIds) return;
+  if (activeExport) markJobsOwned(activeExport.jobs);
+  for (const id of ownedJobIds) trackedJobIds.add(id);
+
+  // Self-heal: drop any reconciled orphan row that duplicates a render
+  // EditPanel itself queued (e.g. rows created by the duplicate bug above).
+  removeDuplicateOrphans();
 
   // Phase 5c.11 (2026-06-08): lazy-fetched per-tick map of
   // timelineName → { uid, startTimecode, fps } for the *currently open* Resolve
@@ -2030,6 +2083,12 @@ async function reconcileTick() {
     // direct-in-Resolve render is simply discovered on the next tick after the
     // queue operation completes. See exportQueueInFlight declaration.
     if (exportQueueInFlight > 0) continue;
+    // Last-moment re-check against a fresh read + the in-memory owned set, in
+    // case a batch row landed after this tick's snapshot was taken.
+    if (ownedJobIds.has(jid)) continue;
+    const freshTracked = collectTrackedJobIds();
+    if (!freshTracked || freshTracked.has(jid)) continue;
+    console.warn(`[reconcile] Adopting render not queued by EditPanel: '${j.timeline_name || j.render_job_name || jid}' (JobId ${jid}, status ${j.status || '?'}, ${freshTracked.size} tracked ids, ${ownedJobIds.size} owned this session)`);
 
     const isComplete = j.terminal && j.status === 'Complete';
     const isFailed   = j.terminal && (j.status === 'Failed' || j.status === 'Cancelled');
@@ -3419,6 +3478,7 @@ app.whenReady().then(() => {
         };
       }).filter(j => j.job_id != null);
       if (jobs.length === 0) return { ok: true, empty: true };
+      markJobsOwned(jobs);
 
       const exportId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const resolvedTargetDir = data.target_dir || targetDir;
