@@ -1,29 +1,42 @@
 /**
  * CommentPullReport — single-page report for a Pull Comments run.
  *
- * Renders a summary card at the top (timelines scanned, matched, totals,
- * involved LPOS projects) and a collapsible per-timeline section below. Each
- * timeline starts collapsed so the editor sees an at-a-glance overview and
- * can expand only the ones they care about.
+ * Layout (shared .tool-overlay family): header with title + ×, a one-line
+ * banner when Resolve is offline or on a different project, then a report-
+ * width body: one muted metadata line, a compact pinned bar (totals + sort
+ * switch + expand/collapse toggle), and a collapsible per-timeline list.
+ * Each timeline starts collapsed so the editor sees an at-a-glance overview
+ * and can expand only the ones they care about. Footer: Done.
  *
  * Reads result_items written by main.js's lpos:pull-comments handler:
  *   - Exactly one __summary__ item (kind: 'summary') carrying the aggregate stats
  *   - 0..N timeline items (kind: 'timeline') with placed/removed/kept/skipped arrays
  *
+ * Editor-facing vocabulary maps the sync outcomes: placed → "new",
+ * kept → "open", removed → "removed", skipped → "skipped" (marker couldn't
+ * be placed). Raw reasons / frames / sync codes go to the console and to
+ * tooltips, never inline.
+ *
  * Props:
  *   jobId            — string, the result_run job id
+ *   run              — optional result_run row (ResultOverlay already fetched it)
  *   onClose          — () => void
  *   resolveProject   — string, the project name currently open in Resolve (live)
  *   resolveConnected — bool, is Resolve attached right now?
  *
  * When the live Resolve project differs from `summary.resolveProject` (the
- * project the report was generated against), a mismatch banner is shown
- * sticky at the top of the body. Jump and Mark-complete actions still
- * dispatch as usual; the banner is advisory because the wrong-project
- * case can produce confusing results (Jump lands on a different timeline
- * by uid, marker drops happen in the wrong project, etc.) but isn't
- * categorically wrong — the editor may have intentionally opened a
- * different project to review.
+ * project the report was generated against), a one-line warning banner is
+ * shown above the body. Jump and Mark done still dispatch as usual; the
+ * banner is advisory because the wrong-project case can produce confusing
+ * results (Jump lands on a different timeline by uid, marker drops happen in
+ * the wrong project, etc.) but isn't categorically wrong — the editor may
+ * have intentionally opened a different project to review. When Resolve is
+ * not connected at all, Jump and Mark done are disabled (Jump can't work,
+ * and Mark done would leave the marker behind in Resolve); Reopen stays
+ * available since it only touches LPOS.
+ *
+ * Esc closes unless a Mark done / Reopen is in flight (× and Done are
+ * disabled for that moment too).
  */
 // ── Pure formatting helpers (module scope) ──────────────────────────────────
 // These are referentially stable, so the row components below can be defined at
@@ -92,65 +105,109 @@ function orderedComments(t, sortMode) {
   return rows;
 }
 
-function CommentRow({ comment, outcome, startTC, fps, timeline, completionState, busyComments, onJump, onSetCompleted }) {
-  // outcome: 'placed' | 'kept' | 'removed' | 'skipped'
+
+// Record timecode for a marker. Prefer the exact marker frame (0-relative to
+// the timeline start) and fall back to the comment's timestamp.
+function recordSeconds(rec, fps) {
+  if (typeof rec?.frame === 'number' && rec.frame >= 0 && Number.isFinite(fps) && fps > 0) {
+    return rec.frame / fps;
+  }
+  if (typeof rec?.timestamp_s === 'number') return rec.timestamp_s;
+  return null;
+}
+
+// Labelled counts, e.g. "4 new · 2 open · 1 removed". `always` keeps the
+// new/open parts even at zero (summary bar); timeline headers drop zeros.
+function countParts({ placed = 0, kept = 0, removed = 0, skipped = 0 }, always) {
+  const parts = [];
+  if (always || placed > 0) parts.push({ key: 'new', text: `${placed} new` });
+  if (always || kept > 0)   parts.push({ key: 'open', text: `${kept} open` });
+  if (removed > 0) parts.push({ key: 'removed', text: `${removed} removed`, title: 'No longer in LPOS, so their markers were removed.' });
+  if (skipped > 0) parts.push({ key: 'skipped', text: `${skipped} skipped`, title: 'Markers that couldn’t be placed in Resolve.' });
+  return parts;
+}
+
+function CountLine({ parts, className }) {
+  return (
+    <span className={className}>
+      {parts.map((p, i) => (
+        <React.Fragment key={p.key}>
+          {i > 0 && ' · '}
+          <span title={p.title}>{p.text}</span>
+        </React.Fragment>
+      ))}
+    </span>
+  );
+}
+
+function friendlyJumpError(raw) {
+  const s = String(raw || '');
+  if (/timeline_not_found/i.test(s)) return 'Couldn’t find this timeline in the open Resolve project.';
+  if (/not connected|ECONNREFUSED|worker/i.test(s)) return 'Resolve not connected.';
+  return 'Couldn’t jump to this marker.';
+}
+
+function CommentRow({ comment, outcome, startTC, fps, timeline, completionState, busyComments, rowErrors, canUseResolve, onJump, onSetCompleted }) {
+  // outcome: 'placed' | 'kept' | 'removed'
   const cid = comment.commentId;
   const localState = cid ? completionState[cid] : null;
   const isCompleted = localState === 'completed' || localState === 'completing';
   const isBusy = cid ? !!busyComments[cid] : false;
+  const rowError = cid ? rowErrors[cid] : null;
   const isActionable = (outcome === 'placed' || outcome === 'kept')
     && timeline
     && cid
     && typeof comment.frame === 'number';
+  const isStruck = isCompleted || outcome === 'removed';
 
-  const offsetLabel = comment.timestamp_s != null ? fmtHMS(comment.timestamp_s) : '?';
-  const absLabel    = comment.timestamp_s != null ? fmtTimecode(startTC, comment.timestamp_s, fps) : null;
+  // One timecode per row: the record TC. Offset-from-start goes in the tooltip.
+  const secs = recordSeconds(comment, fps);
+  const recordTC = secs != null ? fmtTimecode(startTC, secs, fps) : null;
+  const offsetTitle = secs != null ? `${fmtHMS(secs)} from the start of the timeline` : undefined;
 
   return (
-    <div className={`comment-pull-comment outcome-${outcome}${isCompleted ? ' is-completed' : ''}${localState === 'error' ? ' has-error' : ''}`}>
+    <div className={`comment-pull-comment${isStruck ? ' is-struck' : ''}`}>
       <div className="comment-pull-comment-header">
-        <span className={`comment-pull-outcome-pill outcome-${isCompleted ? 'completed' : outcome}`}>
-          {isCompleted ? 'completed' : outcome}
-        </span>
+        {isCompleted && <span className="tag">Done</span>}
+        {!isCompleted && outcome === 'placed' && <span className="tag accent">New</span>}
+        {outcome === 'removed' && (
+          <span className="tag" title="No longer in LPOS, so its marker was removed.">Removed</span>
+        )}
         {comment.authorName && <span className="comment-pull-comment-author">{comment.authorName}</span>}
-        <span className="comment-pull-comment-tc" title={absLabel || ''}>
-          {offsetLabel}{absLabel ? `  ·  ${absLabel}` : ''}
-        </span>
+        {recordTC && <span className="comment-pull-comment-tc" title={offsetTitle}>{recordTC}</span>}
         {comment.olderCut && (
           <span
-            className="comment-pull-oldercut-pill"
-            title="Left on an earlier cut of this timeline — it may already have been actioned in a later render."
+            className="tag"
+            title="Left on an earlier cut of this timeline. It may already have been actioned in a later export."
           >
-            {typeof comment.versionNumber === 'number' ? `older cut · v${comment.versionNumber}` : 'older cut'}
+            {typeof comment.versionNumber === 'number' ? `Earlier cut (v${comment.versionNumber})` : 'Earlier cut'}
           </span>
         )}
         {isActionable && (
           <div className="comment-pull-comment-actions">
             <button
-              className="comment-action-btn jump"
-              onClick={() => onJump(timeline.timelineUid, comment.frame)}
-              disabled={isBusy}
-              title="Jump to this marker in Resolve"
+              className="btn small ghost"
+              onClick={() => onJump(timeline.timelineUid, comment)}
+              disabled={isBusy || !canUseResolve}
             >
               Jump
             </button>
             {isCompleted ? (
               <button
-                className="comment-action-btn reopen"
+                className="btn small ghost"
                 onClick={() => onSetCompleted(timeline, comment, false)}
                 disabled={isBusy}
-                title="Reopen this comment in Frame.io"
               >
-                {isBusy ? '…' : 'Reopen'}
+                {isBusy ? <span className="spinner small" aria-label="Saving" /> : 'Reopen'}
               </button>
             ) : (
               <button
-                className="comment-action-btn complete"
+                className="btn small ghost"
                 onClick={() => onSetCompleted(timeline, comment, true)}
-                disabled={isBusy}
-                title="Mark complete in Frame.io and drop the marker"
+                disabled={isBusy || !canUseResolve}
+                title="Marks the comment done in LPOS and removes its marker"
               >
-                {isBusy ? '…' : 'Mark complete'}
+                {isBusy ? <span className="spinner small" aria-label="Saving" /> : 'Mark done'}
               </button>
             )}
           </div>
@@ -163,61 +220,72 @@ function CommentRow({ comment, outcome, startTC, fps, timeline, completionState,
         <div className="comment-pull-comment-replies">
           {comment.replies.map((r, i) => (
             <div key={i} className="comment-pull-comment-reply">
-              <span className="comment-pull-comment-reply-arrow">↳</span>
-              <span className="comment-pull-comment-reply-author">{r.authorName || '?'}:</span>
+              <span className="comment-pull-comment-reply-author">{r.authorName || 'Unknown'}:</span>
               <span className="comment-pull-comment-reply-text">{r.text || ''}</span>
             </div>
           ))}
         </div>
       )}
       {outcome === 'removed' && !comment.text && (
-        <div className="comment-pull-comment-text dim">
-          (no longer in LPOS — marker removed)
-        </div>
+        <div className="comment-pull-comment-note">No longer in LPOS.</div>
       )}
-      {localState === 'error' && (
-        <div className="comment-pull-comment-text dim">
-          (Couldn't update — try again, or pull comments to resync state.)
-        </div>
+      {rowError && (
+        <p className="error-text comment-pull-row-error" title={rowError.raw || undefined}>{rowError.msg}</p>
       )}
     </div>
   );
 }
 
-function SkippedRow({ skipped }) {
+function SkippedRow({ skipped, startTC, fps }) {
+  const secs = recordSeconds(skipped, fps);
+  const tc = secs != null && typeof skipped?.frame === 'number' && skipped.frame >= 0
+    ? fmtTimecode(startTC, secs, fps)
+    : null;
+  const raw = [skipped?.reason, typeof skipped?.frame === 'number' ? `frame ${skipped.frame}` : null]
+    .filter(Boolean).join(', ');
   return (
-    <div className="comment-pull-comment outcome-skipped">
-      <div className="comment-pull-comment-header">
-        <span className="comment-pull-outcome-pill outcome-skipped">skipped</span>
-        <span className="comment-pull-comment-tc">frame {skipped.frame}</span>
-      </div>
-      <div className="comment-pull-comment-text dim">{skipped.reason || 'AddMarker rejected'}</div>
+    <div className="comment-pull-comment">
+      <p className="error-text" title={raw || undefined}>
+        {tc ? `Couldn’t place marker at ${tc}.` : 'Couldn’t place a marker for this comment.'}
+      </p>
     </div>
   );
 }
 
-function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected }) {
+function ChevronIcon() {
+  return (
+    <svg className="comment-pull-twisty" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="9 6 15 12 9 18" />
+    </svg>
+  );
+}
+
+function CommentPullReport({ jobId, run, onClose, resolveProject, resolveConnected }) {
   const [items, setItems]   = React.useState([]);
   const [loading, setLoading] = React.useState(true);
-  const [runLabel, setRunLabel] = React.useState('');
+  const [runLabel, setRunLabel] = React.useState(run?.label || '');
   const [expanded, setExpanded] = React.useState({}); // timelineUid -> bool
   const [sortMode, setSortMode] = React.useState('timecode'); // 'timecode' | 'newest'
-  // 5c.10: per-comment local completion state (commentId -> 'completing' | 'completed' | 'error').
+  // 5c.10: per-comment local completion state (commentId -> 'completing' | 'completed' | 'reopening' | 'open').
   // The actual upstream truth is Frame.io's `completed` flag; this is local
   // mirror state for the UI's optimistic-then-confirmed transition.
   const [completionState, setCompletionState] = React.useState({});
   const [busyComments, setBusyComments] = React.useState({}); // commentId -> bool
+  // Per-row failure from Jump or Mark done/Reopen: commentId -> { msg, raw }.
+  const [rowErrors, setRowErrors] = React.useState({});
 
   React.useEffect(() => {
     if (!jobId || !window.resultsAPI) return;
     setLoading(true);
 
-    window.resultsAPI.listRuns(50)
-      .then(res => {
-        const run = (res?.data ?? []).find(r => r.job_id === jobId);
-        if (run) setRunLabel(run.label || 'Comment pull');
-      })
-      .catch(() => {});
+    if (!run) {
+      window.resultsAPI.listRuns(50)
+        .then(res => {
+          const found = (res?.data ?? []).find(r => r.job_id === jobId);
+          if (found) setRunLabel(found.label || '');
+        })
+        .catch(() => {});
+    }
 
     window.resultsAPI.getItems(jobId)
       .then(res => setItems(res?.data ?? []))
@@ -236,17 +304,51 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
     [items]
   );
 
+  // Raw diagnostics that used to be inline (sync codes, skip reasons, asset
+  // fetch errors) go to the console once per load.
+  React.useEffect(() => {
+    for (const t of timelineItems) {
+      const name = t.timelineName || t.timelineUid;
+      if (t.error) console.warn(`[CommentPullReport] ${name}: sync error:`, t.error);
+      for (const s of (t.skipped || [])) console.warn(`[CommentPullReport] ${name}: marker skipped at frame ${s.frame}:`, s.reason);
+      for (const a of (t.assetErrors || [])) console.warn(`[CommentPullReport] ${name}: asset ${a.assetId} comments failed:`, a.error);
+    }
+  }, [timelineItems]);
+
+  const anyBusy = Object.values(busyComments).some(Boolean);
+
+  // Esc closes the report unless a Mark done / Reopen is in flight.
+  React.useEffect(() => {
+    function handleKey(e) {
+      if (e.key !== 'Escape' || anyBusy) return;
+      onClose();
+    }
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [anyBusy, onClose]);
+
   function toggle(uid) {
     setExpanded(prev => ({ ...prev, [uid]: !prev[uid] }));
   }
 
-  function expandAll() {
+  const allExpanded = timelineItems.length > 0 && timelineItems.every(t => expanded[t.timelineUid]);
+  function toggleAll() {
+    if (allExpanded) {
+      setExpanded({});
+      return;
+    }
     const next = {};
     for (const t of timelineItems) next[t.timelineUid] = true;
     setExpanded(next);
   }
-  function collapseAll() {
-    setExpanded({});
+
+  function setRowError(cid, err) {
+    setRowErrors(prev => {
+      if (!err && !prev[cid]) return prev;
+      const next = { ...prev };
+      if (err) next[cid] = err; else delete next[cid];
+      return next;
+    });
   }
 
   // ── 5c.10 action handlers ────────────────────────────────────────────────
@@ -254,17 +356,24 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
   // under window.lposAPI, not window.commentsAPI. Earlier drafts checked the
   // wrong namespace, which made both buttons silently no-op (guard returned
   // before the IPC ever fired).
-  async function handleJump(timelineUid, frame) {
+  async function handleJump(timelineUid, comment) {
+    const cid = comment.commentId;
     if (!window.lposAPI?.focusComment) return;
+    setRowError(cid, null);
+    let raw = null;
     try {
-      const res = await window.lposAPI.focusComment({ timelineUid, frame });
-      if (!res?.ok) {
-        // Silent fail; the report doesn't have a toast surface yet. The
-        // background log surfaces errors elsewhere if needed.
-        console.warn('[CommentPullReport] focus failed:', res?.error);
-      }
+      const res = await window.lposAPI.focusComment({ timelineUid, frame: comment.frame });
+      // The IPC wraps the worker reply as { ok: true, data }, and the worker
+      // reports its own failures as data.result === false + reason
+      // (timeline_not_found, goto_failed, …), so check both layers.
+      if (!res?.ok) raw = res?.error || 'focus failed';
+      else if (res?.data?.result === false) raw = res.data.reason || 'focus failed';
     } catch (err) {
-      console.warn('[CommentPullReport] focus error:', err);
+      raw = err?.message || String(err);
+    }
+    if (raw) {
+      console.warn('[CommentPullReport] focus failed:', raw);
+      setRowError(cid, { msg: friendlyJumpError(raw), raw: String(raw) });
     }
   }
 
@@ -272,9 +381,12 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
     const cid = comment.commentId;
     if (!cid || !window.lposAPI?.setCommentCompleted) return;
     if (busyComments[cid]) return;
+    const prevState = completionState[cid];
     setBusyComments(prev => ({ ...prev, [cid]: true }));
+    setRowError(cid, null);
     // Optimistic UI: flip the state immediately. Confirm/revert on response.
     setCompletionState(prev => ({ ...prev, [cid]: completed ? 'completing' : 'reopening' }));
+    let raw = null;
     try {
       const res = await window.lposAPI.setCommentCompleted({
         projectId:   timeline.lposProjectId,
@@ -286,42 +398,33 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
       if (res?.ok) {
         setCompletionState(prev => ({ ...prev, [cid]: completed ? 'completed' : 'open' }));
       } else {
-        setCompletionState(prev => ({ ...prev, [cid]: 'error' }));
-        console.warn('[CommentPullReport] set-completed failed:', res?.error);
+        raw = res?.error || 'set-completed failed';
       }
     } catch (err) {
-      setCompletionState(prev => ({ ...prev, [cid]: 'error' }));
-      console.warn('[CommentPullReport] set-completed error:', err);
+      raw = err?.message || String(err);
     } finally {
       setBusyComments(prev => ({ ...prev, [cid]: false }));
     }
+    if (raw) {
+      // Revert to what the row showed before the click.
+      console.warn('[CommentPullReport] set-completed failed:', raw);
+      setCompletionState(prev => ({ ...prev, [cid]: prevState }));
+      setRowError(cid, { msg: 'Couldn’t update. Try again.', raw: String(raw) });
+    }
   }
 
-  if (loading) {
-    return (
-      <div className="result-overlay comment-pull-report" role="dialog" aria-label="Comment pull report">
-        <header className="result-overlay-header">
-          <button className="result-overlay-back" onClick={onClose} aria-label="Close">×</button>
-          <span className="result-overlay-title">Comment pull</span>
-        </header>
-        <div className="result-overlay-body comment-pull-body">
-          <div className="comment-pull-content">
-            <p className="result-item-loading">Loading…</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
+  const title = runLabel || 'Pull comments';
   const hasTimelineActivity = timelineItems.length > 0;
-  const placedSum  = summary?.totalPlaced  ?? 0;
-  const removedSum = summary?.totalRemoved ?? 0;
-  const keptSum    = summary?.totalKept    ?? 0;
-  const skippedSum = summary?.totalSkipped ?? 0;
+  const totals = {
+    placed:  summary?.totalPlaced  ?? 0,
+    kept:    summary?.totalKept    ?? 0,
+    removed: summary?.totalRemoved ?? 0,
+    skipped: summary?.totalSkipped ?? 0,
+  };
 
   // Wrong-project check. The report records which Resolve project was open
   // when the pull ran; the live `resolveProject` prop is whatever is open
-  // now. A mismatch makes Jump/Mark-complete dangerous (different timelines
+  // now. A mismatch makes Jump/Mark done dangerous (different timelines
   // share uids across projects only by accident, and "drop marker" lands in
   // whichever project is open). We surface this prominently rather than
   // disabling actions because: (a) the editor may have intentionally
@@ -335,223 +438,181 @@ function CommentPullReport({ jobId, onClose, resolveProject, resolveConnected })
     reportProject !== livePProject;
   const resolveOffline = !!reportProject && !resolveConnected;
 
+  // One muted metadata line: project · N of M timelines in LPOS · K flagged.
+  // Diagnostics (LPOS project names, assets checked, how to find flagged
+  // timelines) live in tooltips.
+  const meta = [];
+  if (summary?.resolveProject) meta.push({ key: 'project', text: summary.resolveProject });
+  if (summary) {
+    const matched = summary.matchedCount ?? 0;
+    const lposNames = Array.isArray(summary.involvedProjectNames) ? summary.involvedProjectNames : [];
+    const tip = [
+      lposNames.length > 0 ? `LPOS project${lposNames.length === 1 ? '' : 's'}: ${lposNames.join(', ')}` : null,
+      summary.totalAssetsScanned != null ? `${summary.totalAssetsScanned} LPOS asset${summary.totalAssetsScanned === 1 ? '' : 's'} checked` : null,
+    ].filter(Boolean).join('\n');
+    meta.push({
+      key: 'matched',
+      text: summary.scannedCount != null
+        ? `${matched} of ${summary.scannedCount} timelines in LPOS`
+        : `${matched} timeline${matched === 1 ? '' : 's'} in LPOS`,
+      title: tip || undefined,
+    });
+  }
+  if (Array.isArray(summary?.flagged) && summary.flagged.length > 0) {
+    meta.push({
+      key: 'flagged',
+      text: `${summary.flagged.length} flagged`,
+      title: `Flagged ${summary.flagColor || 'Sand'} in Resolve. Sort the bin by Flag to find them.`,
+    });
+  }
+
   return (
-    <div className="result-overlay comment-pull-report" role="dialog" aria-label={runLabel || 'Comment pull report'}>
-      <header className="result-overlay-header">
-        <button className="result-overlay-back" onClick={onClose} aria-label="Close">
+    <div className="tool-overlay comment-pull-report" role="dialog" aria-label={title}>
+      <header className="tool-header">
+        <h2 className="tool-title">{title}</h2>
+        <button className="tool-close" onClick={onClose} disabled={anyBusy} aria-label="Close">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <line x1="18" y1="6" x2="6" y2="18" />
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
-        <span className="result-overlay-title">{runLabel || 'Comment pull'}</span>
       </header>
 
-      <div className="result-overlay-body comment-pull-body">
-        {/* Centered, max-width content column so the report breathes on wide
-            screens instead of stretching to the full viewport. */}
-        <div className="comment-pull-content">
+      {!loading && (projectMismatch || resolveOffline) && (
+        <div className="tool-body--report comment-pull-banner">
+          {projectMismatch ? (
+            <div className="notice warning" role="alert">
+              <span>
+                <strong>{reportProject}</strong> isn’t open in Resolve (currently <strong>{livePProject}</strong>). Jump and Mark done need it open.
+              </span>
+            </div>
+          ) : (
+            <div className="notice info" role="alert">
+              <span>Resolve not connected. Jump and Mark done are unavailable.</span>
+            </div>
+          )}
+        </div>
+      )}
 
-        {/* Sticky top stack: project-mismatch banner (when applicable) +
-            summary card. Both stick together so the editor always sees the
-            aggregate counts and the project context regardless of scroll
-            depth — addresses "I lose the ability to scroll up to the top
-            to view the summary when everything is expanded." */}
-        <div className="comment-pull-sticky-top">
-        {(projectMismatch || resolveOffline) && (
-          <div
-            className={`comment-pull-mismatch-banner ${projectMismatch ? 'mismatch' : 'offline'}`}
-            role="alert"
-          >
-            <div className="comment-pull-mismatch-icon" aria-hidden="true">⚠</div>
-            <div className="comment-pull-mismatch-body">
-              {projectMismatch ? (
-                <>
-                  <div className="comment-pull-mismatch-title">
-                    You're not in the project this report was generated for
+      <div className="tool-body tool-body--report comment-pull-body">
+        {loading ? (
+          <p className="hint comment-pull-loading">Loading…</p>
+        ) : (
+          <>
+            {meta.length > 0 && <CountLine parts={meta} className="comment-pull-meta" />}
+
+            {/* Compact pinned bar: totals + sort + expand/collapse. */}
+            <div className="comment-pull-bar">
+              <CountLine parts={countParts(totals, true)} className="comment-pull-totals" />
+              {hasTimelineActivity && (
+                <div className="comment-pull-controls">
+                  <div className="comment-pull-sort" role="group" aria-label="Sort comments">
+                    <button
+                      className={sortMode === 'timecode' ? 'active' : ''}
+                      aria-pressed={sortMode === 'timecode'}
+                      onClick={() => setSortMode('timecode')}
+                    >
+                      Timecode
+                    </button>
+                    <button
+                      className={sortMode === 'newest' ? 'active' : ''}
+                      aria-pressed={sortMode === 'newest'}
+                      onClick={() => setSortMode('newest')}
+                    >
+                      Newest
+                    </button>
                   </div>
-                  <div className="comment-pull-mismatch-text">
-                    Report project: <strong>{reportProject}</strong>{' '}
-                    · currently open: <strong>{livePProject}</strong>
-                    . Open <strong>{reportProject}</strong> in Resolve before using
-                    Jump or Mark complete, or these actions will target the
-                    wrong project's timelines.
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="comment-pull-mismatch-title">
-                    Resolve isn't connected
-                  </div>
-                  <div className="comment-pull-mismatch-text">
-                    This report's markers were placed in{' '}
-                    <strong>{reportProject}</strong>. Reconnect to Resolve
-                    (and open that project) before using Jump or Mark complete.
-                  </div>
-                </>
+                  <button className="btn small ghost" onClick={toggleAll}>
+                    {allExpanded ? 'Collapse all' : 'Expand all'}
+                  </button>
+                </div>
               )}
             </div>
-          </div>
-        )}
 
-        {/* Summary card */}
-        <div className="comment-pull-summary">
-          <div className="comment-pull-summary-totals">
-            <div className="comment-pull-totals-item">
-              <div className="comment-pull-totals-num placed">+{placedSum}</div>
-              <div className="comment-pull-totals-label">placed</div>
-            </div>
-            <div className="comment-pull-totals-item">
-              <div className="comment-pull-totals-num kept">={keptSum}</div>
-              <div className="comment-pull-totals-label">kept</div>
-            </div>
-            <div className="comment-pull-totals-item">
-              <div className="comment-pull-totals-num removed">−{removedSum}</div>
-              <div className="comment-pull-totals-label">removed</div>
-            </div>
-            {skippedSum > 0 && (
-              <div className="comment-pull-totals-item">
-                <div className="comment-pull-totals-num skipped">!{skippedSum}</div>
-                <div className="comment-pull-totals-label">skipped</div>
-              </div>
-            )}
-          </div>
-
-          <div className="comment-pull-summary-meta">
-            {summary?.resolveProject && (
-              <div><span className="dim">Resolve project</span> {summary.resolveProject}</div>
-            )}
-            {summary?.scannedCount != null && (
-              <div>
-                <span className="dim">Timelines scanned</span> {summary.scannedCount}
-                <span className="dim"> · matched in LPOS </span>{summary.matchedCount ?? 0}
-                {summary.totalAssetsScanned != null && (
-                  <><span className="dim"> · assets checked </span>{summary.totalAssetsScanned}</>
-                )}
-              </div>
-            )}
-            {summary?.totalOlderCut > 0 && (
-              <div>
-                <span className="dim">From earlier cuts</span> {summary.totalOlderCut}
-                <span className="dim"> — notes left on a version that has since been re-rendered; check before actioning.</span>
-              </div>
-            )}
-            {Array.isArray(summary?.involvedProjectNames) && summary.involvedProjectNames.length > 0 && (
-              <div>
-                <span className="dim">LPOS project{summary.involvedProjectNames.length === 1 ? '' : 's'}</span>{' '}
-                {summary.involvedProjectNames.join(', ')}
-              </div>
-            )}
-            {Array.isArray(summary?.flagged) && summary.flagged.length > 0 && (
-              <div className="comment-pull-flag-hint">
-                <span className="dim">Flagged</span>{' '}
-                {summary.flagged.length} timeline{summary.flagged.length === 1 ? '' : 's'} <strong>{summary.flagColor || 'Sand'}</strong>{' '}
-                — sort the bin by Flag in Resolve to find them.
-              </div>
-            )}
-          </div>
-        </div>
-        </div>{/* /.comment-pull-sticky-top */}
-
-        {/* Per-timeline collapsible list */}
-        {hasTimelineActivity ? (
-          <>
-            <div className="comment-pull-section-header">
-              <span>Per timeline</span>
-              <div className="comment-pull-section-actions">
-                <span className="dim">Sort</span>
-                <button
-                  className={`link-btn${sortMode === 'timecode' ? ' active' : ''}`}
-                  onClick={() => setSortMode('timecode')}
-                  title="Order comments by their position on the timeline"
-                >
-                  Timecode
-                </button>
-                <button
-                  className={`link-btn${sortMode === 'newest' ? ' active' : ''}`}
-                  onClick={() => setSortMode('newest')}
-                  title="Order comments by when they were posted (newest first)"
-                >
-                  Newest
-                </button>
-                <span className="comment-pull-section-sep dim">|</span>
-                <button className="link-btn" onClick={expandAll}>Expand all</button>
-                <span className="dim">·</span>
-                <button className="link-btn" onClick={collapseAll}>Collapse all</button>
-              </div>
-            </div>
-            <div className="comment-pull-timelines">
-              {timelineItems.map(t => {
-                const isOpen = !!expanded[t.timelineUid];
-                const totalThis = (t.placed?.length || 0) + (t.kept?.length || 0) + (t.removed?.length || 0) + (t.skipped?.length || 0);
-                return (
-                  <div key={t.timelineUid} className={`comment-pull-timeline${isOpen ? ' open' : ''}`}>
-                    <button
-                      className="comment-pull-timeline-head"
-                      onClick={() => toggle(t.timelineUid)}
-                      aria-expanded={isOpen}
-                    >
-                      <span className="comment-pull-twisty" aria-hidden="true">{isOpen ? '▾' : '▸'}</span>
-                      <span className="comment-pull-timeline-name">{t.timelineName || t.timelineUid}</span>
-                      {t.lposProjectName && (
-                        <span className="comment-pull-timeline-project dim">· {t.lposProjectName}</span>
+            {/* Per-timeline collapsible list */}
+            {hasTimelineActivity ? (
+              <div className="comment-pull-timelines">
+                {timelineItems.map(t => {
+                  const isOpen = !!expanded[t.timelineUid];
+                  const totalThis = (t.placed?.length || 0) + (t.kept?.length || 0) + (t.removed?.length || 0) + (t.skipped?.length || 0);
+                  const headParts = countParts({
+                    placed:  t.placed?.length  || 0,
+                    kept:    t.kept?.length    || 0,
+                    removed: t.removed?.length || 0,
+                    skipped: t.skipped?.length || 0,
+                  }, false);
+                  return (
+                    <div key={t.timelineUid} className={`comment-pull-timeline${isOpen ? ' open' : ''}`}>
+                      <button
+                        className="comment-pull-timeline-head"
+                        onClick={() => toggle(t.timelineUid)}
+                        aria-expanded={isOpen}
+                      >
+                        <ChevronIcon />
+                        <span className="comment-pull-timeline-name">{t.timelineName || 'Untitled timeline'}</span>
+                        {t.lposProjectName && (
+                          <span className="comment-pull-timeline-project">{t.lposProjectName}</span>
+                        )}
+                        <span className="comment-pull-timeline-counts">
+                          {t.error && <span className="tag danger" title={String(t.error)}>Couldn’t sync</span>}
+                          {headParts.length > 0 && <CountLine parts={headParts} />}
+                        </span>
+                      </button>
+                      {isOpen && (
+                        <div className="comment-pull-timeline-body">
+                          {t.error && (
+                            <div className="notice error" title={String(t.error)}>
+                              <span>
+                                {t.error === 'timeline_not_found'
+                                  ? 'This timeline isn’t in the open Resolve project.'
+                                  : 'Couldn’t sync this timeline.'}
+                              </span>
+                            </div>
+                          )}
+                          {orderedComments(t, sortMode).map(({ c, outcome }) => (
+                            <CommentRow
+                              key={`${outcome[0]}-${c.commentId}`}
+                              comment={c}
+                              outcome={outcome}
+                              startTC={t.timelineStartTimecode}
+                              fps={t.fps}
+                              timeline={t}
+                              completionState={completionState}
+                              busyComments={busyComments}
+                              rowErrors={rowErrors}
+                              canUseResolve={!!resolveConnected}
+                              onJump={handleJump}
+                              onSetCompleted={handleSetCompleted}
+                            />
+                          ))}
+                          {(t.skipped || []).map((s, i) => (
+                            <SkippedRow key={`s-${i}`} skipped={s} startTC={t.timelineStartTimecode} fps={t.fps} />
+                          ))}
+                          {totalThis === 0 && !t.error && (
+                            <p className="hint">No comments.</p>
+                          )}
+                        </div>
                       )}
-                      <span className="comment-pull-timeline-counts">
-                        {t.placed?.length > 0  && <span className="count placed">+{t.placed.length}</span>}
-                        {t.kept?.length > 0    && <span className="count kept">={t.kept.length}</span>}
-                        {t.removed?.length > 0 && <span className="count removed">−{t.removed.length}</span>}
-                        {t.skipped?.length > 0 && <span className="count skipped">!{t.skipped.length}</span>}
-                        {t.error && <span className="count error">error</span>}
-                      </span>
-                    </button>
-                    {isOpen && (
-                      <div className="comment-pull-timeline-body">
-                        {t.error && (
-                          <div className="comment-pull-error">
-                            {t.error === 'timeline_not_found'
-                              ? 'Timeline not found in current Resolve project — may have been deleted, renamed, or you have a different project open.'
-                              : `Sync failed: ${t.error}`}
-                          </div>
-                        )}
-                        {orderedComments(t, sortMode).map(({ c, outcome }) => (
-                          <CommentRow
-                            key={`${outcome[0]}-${c.commentId}`}
-                            comment={c}
-                            outcome={outcome}
-                            startTC={t.timelineStartTimecode}
-                            fps={t.fps}
-                            timeline={t}
-                            completionState={completionState}
-                            busyComments={busyComments}
-                            onJump={handleJump}
-                            onSetCompleted={handleSetCompleted}
-                          />
-                        ))}
-                        {(t.skipped || []).map((s, i) => (
-                          <SkippedRow key={`s-${i}`} skipped={s} />
-                        ))}
-                        {totalThis === 0 && !t.error && (
-                          <div className="dim" style={{ padding: '8px 0' }}>No activity.</div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="hint comment-pull-empty">
+                {summary?.scannedCount === 0
+                  ? 'No timelines in the open Resolve project.'
+                  : (summary?.matchedCount ?? 0) === 0
+                    ? 'None of this project’s timelines are in LPOS yet. Export and upload one from the Deliver tab.'
+                    : 'No comments on these timelines.'}
+              </p>
+            )}
           </>
-        ) : (
-          <div className="comment-pull-empty dim">
-            {summary?.scannedCount === 0
-              ? 'No timelines in the current Resolve project.'
-              : (summary?.matchedCount ?? 0) === 0
-                ? 'None of this Resolve project\'s timelines have been uploaded to LPOS yet. Export one from the Deliver tab first.'
-                : 'All scanned timelines had no comment activity.'}
-          </div>
         )}
-
-        </div>{/* /.comment-pull-content */}
       </div>
+
+      <footer className="tool-footer tool-footer--report">
+        <button className="btn primary" onClick={onClose} disabled={anyBusy}>Done</button>
+      </footer>
     </div>
   );
 }

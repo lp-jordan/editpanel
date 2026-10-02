@@ -17,30 +17,45 @@
  * (or no project at all). The spellcheck branch doesn't currently use
  * these — it's a per-item walk with no project context to mismatch
  * against — but they're available if it ever needs them.
+ *
+ * Both branches use the shared .tool-overlay family (header with title + ×,
+ * scrolling body at report width, footer that always exists). Esc closes
+ * unless an action is in flight; while one is, × is disabled too.
  */
 function ResultOverlay({ jobId, onClose, resolveProject, resolveConnected }) {
   // 5c.7 (2026-06-02): Pull Comments runs use a single-page CommentPullReport
   // (summary card + collapsible per-timeline) rather than the spellcheck-style
   // item-by-item walk. Detect the run type up-front via the run row's
-  // item_type and bypass the spellcheck UI entirely.
+  // item_type and bypass the spellcheck UI entirely. The run row is handed
+  // down so neither branch has to re-fetch it for its title.
   const [routedType, setRoutedType] = React.useState(null); // null = unknown, 'spellcheck', 'comment_pull', …
+  const [run, setRun] = React.useState(null);
   React.useEffect(() => {
     if (!jobId || !window.resultsAPI) return;
     let cancelled = false;
+    setRoutedType(null);
     window.resultsAPI.listRuns(50)
       .then(res => {
         if (cancelled) return;
-        const run = (res?.data ?? []).find(r => r.job_id === jobId);
-        setRoutedType(run?.item_type || 'unknown');
+        const found = (res?.data ?? []).find(r => r.job_id === jobId) || null;
+        setRun(found);
+        setRoutedType(found?.item_type || 'unknown');
       })
-      .catch(() => setRoutedType('unknown'));
+      .catch(() => { if (!cancelled) setRoutedType('unknown'); });
     return () => { cancelled = true; };
   }, [jobId]);
+
+  // Until the run type is known, show the shared shell (same header/footer)
+  // instead of briefly mounting the spellcheck walk for a comment pull run.
+  if (routedType === null && window.resultsAPI) {
+    return <ResultLoadingShell onClose={onClose} />;
+  }
 
   if (routedType === 'comment_pull') {
     return (
       <CommentPullReport
         jobId={jobId}
+        run={run}
         onClose={onClose}
         resolveProject={resolveProject}
         resolveConnected={resolveConnected}
@@ -50,39 +65,91 @@ function ResultOverlay({ jobId, onClose, resolveProject, resolveConnected }) {
 
   // Spellcheck (and any other future per-item-walk run type) keeps the
   // existing behaviour.
-  return <SpellcheckResultOverlay jobId={jobId} onClose={onClose} />;
+  return <SpellcheckResultOverlay jobId={jobId} run={run} onClose={onClose} />;
 }
 
-function SpellcheckResultOverlay({ jobId, onClose }) {
+function ResultCloseIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function ResultLoadingShell({ onClose }) {
+  React.useEffect(() => {
+    function handleKey(e) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+  return (
+    <div className="tool-overlay" role="dialog" aria-label="Results">
+      <header className="tool-header">
+        <h2 className="tool-title">Loading…</h2>
+        <button className="tool-close" onClick={onClose} aria-label="Close"><ResultCloseIcon /></button>
+      </header>
+      <div className="tool-body tool-body--report">
+        <p className="hint">Loading…</p>
+      </div>
+      <footer className="tool-footer tool-footer--report">
+        <button className="btn" onClick={onClose}>Done</button>
+      </footer>
+    </div>
+  );
+}
+
+// Map a raw update_text failure (worker reason or thrown error) to one short
+// sentence. The raw text still goes to the console and the notice tooltip.
+function friendlySpellApplyError(raw) {
+  const s = String(raw || '');
+  if (/project mismatch/i.test(s))  return 'Resolve has a different project open. Switch back to apply.';
+  if (/timeline mismatch/i.test(s)) return 'Resolve has a different timeline open. Switch back to apply.';
+  if (/no active timeline/i.test(s)) return 'No timeline is open in Resolve.';
+  if (/no clip on track/i.test(s))  return 'Couldn’t find this clip. It may have moved since the scan. Run the scan again.';
+  if (/not connected|ECONNREFUSED|worker/i.test(s)) return 'Resolve not connected.';
+  return 'Couldn’t update the text in Resolve. Nothing was changed.';
+}
+
+function SpellcheckResultOverlay({ jobId, run, onClose }) {
   const [items, setItems] = React.useState([]);
+  const [loaded, setLoaded] = React.useState(false);
   const [currentIdx, setCurrentIdx] = React.useState(0);
   const [suggestions, setSuggestions] = React.useState([]);
   const [loadingSuggestions, setLoadingSuggestions] = React.useState(false);
   const [customValue, setCustomValue] = React.useState('');
   const [selectedSuggestion, setSelectedSuggestion] = React.useState(null);
   const [saving, setSaving] = React.useState(false);
-  const [runLabel, setRunLabel] = React.useState('');
-  const [scopeProject, setScopeProject] = React.useState('');
-  const [scopeTimeline, setScopeTimeline] = React.useState('');
-  const [applyError, setApplyError] = React.useState('');
+  const [runLabel, setRunLabel] = React.useState(run ? (run.label || run.item_type) : '');
+  const [scopeProject, setScopeProject] = React.useState(run?.project_name || '');
+  const [scopeTimeline, setScopeTimeline] = React.useState(run?.timeline_name || '');
+  // { msg, raw } — msg is the one-line user text, raw goes in the tooltip.
+  const [applyError, setApplyError] = React.useState(null);
   // Right-click "Add to dictionary" menu: { x, y, word } or null.
   const [wordMenu, setWordMenu] = React.useState(null);
   const customInputRef = React.useRef(null);
+
+  function showError(msg, raw) {
+    if (raw) console.warn('[ResultOverlay] spellcheck:', raw);
+    setApplyError({ msg, raw: raw || '' });
+  }
 
   // Load items on mount
   React.useEffect(() => {
     if (!jobId || !window.resultsAPI) return;
 
-    window.resultsAPI.listRuns(50)
-      .then(res => {
-        const run = (res?.data ?? []).find(r => r.job_id === jobId);
-        if (run) {
-          setRunLabel(run.label || run.item_type);
-          setScopeProject(run.project_name || '');
-          setScopeTimeline(run.timeline_name || '');
-        }
-      })
-      .catch(() => {});
+    if (!run) {
+      window.resultsAPI.listRuns(50)
+        .then(res => {
+          const found = (res?.data ?? []).find(r => r.job_id === jobId);
+          if (found) {
+            setRunLabel(found.label || found.item_type);
+            setScopeProject(found.project_name || '');
+            setScopeTimeline(found.timeline_name || '');
+          }
+        })
+        .catch(() => {});
+    }
 
     window.resultsAPI.getItems(jobId)
       .then(res => {
@@ -92,7 +159,8 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
         const firstPending = all.findIndex(i => i.state === 'pending');
         setCurrentIdx(firstPending >= 0 ? firstPending : 0);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoaded(true));
   }, [jobId]);
 
   const currentItem = items[currentIdx] ?? null;
@@ -124,9 +192,18 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
   // Keyboard shortcuts
   React.useEffect(() => {
     function handleKey(e) {
-      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key === 'Escape') {
+        // The word menu's own listener closes the menu; don't also close the
+        // overlay. Nothing closes while an apply/skip is in flight.
+        if (wordMenu || saving) return;
+        onClose();
+        return;
+      }
+      // Arrow keys and Tab belong to the correction input while it has
+      // focus (caret movement / focus order), so only navigate items when
+      // focus is elsewhere.
+      if (e.target === customInputRef.current) return;
       if (e.key === 'ArrowRight' || e.key === 'Tab') {
-        if (e.target === customInputRef.current) return; // let tab work in input
         e.preventDefault();
         goNext();
       }
@@ -134,7 +211,7 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
     }
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [currentIdx, items.length]);
+  }, [currentIdx, items.length, wordMenu, saving]);
 
   function goNext() {
     setCurrentIdx(prev => Math.min(prev + 1, items.length - 1));
@@ -162,7 +239,7 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
     if (!correction) return;
 
     setSaving(true);
-    setApplyError('');
+    setApplyError(null);
 
     // For spellcheck: push the text update to Resolve, but only if the live
     // Resolve context still matches what this run was captured against. The
@@ -192,10 +269,8 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
           // error and leave the item pending.
           const payload = res?.data ?? res ?? {};
           if (payload && payload.result === false) {
-            setApplyError(
-              payload.reason ||
-                'Resolve refused the text update — nothing was changed in the timeline.'
-            );
+            const raw = payload.reason || 'update_text returned result:false';
+            showError(friendlySpellApplyError(raw), raw);
             setSaving(false);
             return;
           }
@@ -203,8 +278,8 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
           // Refuse-on-mismatch surfaces here. Show the message and bail
           // without writing a resolution row — the item stays pending so
           // the user can switch projects and try again.
-          const msg = err?.error || err?.message || String(err);
-          setApplyError(msg);
+          const raw = err?.error || err?.message || String(err);
+          showError(friendlySpellApplyError(raw), raw);
           setSaving(false);
           return;
         }
@@ -253,11 +328,11 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
     setWordMenu(null);
     if (saving || !word || !window.spellcheckAPI?.addWord) return;
     setSaving(true);
-    setApplyError('');
+    setApplyError(null);
 
     const res = await window.spellcheckAPI.addWord(word).catch(err => ({ ok: false, error: err?.message || String(err) }));
     if (!res || res.ok === false) {
-      setApplyError(res?.error || 'Could not add the word to the dictionary.');
+      showError('Couldn’t add the word to the dictionary.', res?.error || 'addWord failed');
       setSaving(false);
       return;
     }
@@ -297,7 +372,7 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
   async function handleReopen() {
     if (!currentItem || saving) return;
     setSaving(true);
-    setApplyError('');
+    setApplyError(null);
 
     await window.resultsAPI?.reopenItem(jobId, currentItem.item_key).catch(() => {});
 
@@ -312,7 +387,9 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
 
   function handleJumpToTimecode() {
     if (!currentItem?.item_data?.timecode || !window.leaderpassAPI) return;
-    window.leaderpassAPI.call('goto', { timecode: currentItem.item_data.timecode }).catch(() => {});
+    window.leaderpassAPI.call('goto', { timecode: currentItem.item_data.timecode }).catch(err => {
+      console.warn('[ResultOverlay] goto failed:', err?.error || err?.message || err);
+    });
   }
 
   function escapeRegex(str) {
@@ -356,9 +433,9 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
             {d.track != null && <span>Track {d.track}</span>}
             {d.tool && <span>{d.tool}</span>}
             {d.timecode && (
-              <button className="result-item-tc-btn" onClick={handleJumpToTimecode}>
+              <button className="result-item-tc-btn" onClick={handleJumpToTimecode} title="Jump to this timecode in Resolve">
                 {d.timecode}
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <polygon points="5 3 19 12 5 21 5 3" />
                 </svg>
               </button>
@@ -367,7 +444,7 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
         )}
 
         <div className="result-item-suggestions">
-          {loadingSuggestions && <p className="result-item-loading">Loading suggestions…</p>}
+          {loadingSuggestions && <p className="hint">Loading suggestions…</p>}
           {!loadingSuggestions && suggestions.length > 0 && (
             <div className="result-suggestions-list">
               {suggestions.slice(0, 5).map(s => (
@@ -382,7 +459,7 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
             </div>
           )}
           {!loadingSuggestions && suggestions.length === 0 && (
-            <p className="result-item-no-suggestions">No suggestions — type a correction below.</p>
+            <p className="hint">No suggestions. Type a correction below.</p>
           )}
         </div>
 
@@ -407,136 +484,133 @@ function SpellcheckResultOverlay({ jobId, onClose }) {
     return (
       <div className="result-item-content resolved-item">
         <p className="result-item-resolved-label">
-          {item.state === 'skipped' ? 'Skipped' : `Replaced with: "${res?.replacement ?? ''}"`}
+          {item.state === 'skipped' ? 'Skipped' : `Replaced with “${res?.replacement ?? ''}”`}
         </p>
         <p className="result-item-context dim">{item.item_data?.clipText ?? ''}</p>
         {wasApplied && (
-          <p className="result-item-reopen-note">
-            Reopening lets you make a different choice here, but the Resolve
-            timeline text was already updated. Edit it directly in Resolve if
-            you need to revert.
-          </p>
+          <p className="hint">Already applied in Resolve. Reopening won’t undo it.</p>
         )}
       </div>
     );
   }
 
   function renderAllDone() {
+    const appliedCount = items.filter(i => i.state === 'resolved').length;
+    const skippedCount = items.filter(i => i.state === 'skipped').length;
     return (
       <div className="result-item-content all-done">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
           <polyline points="22 4 12 14.01 9 11.01" />
         </svg>
         <p className="result-done-title">All {total} items reviewed</p>
-        <p className="result-done-sub">
-          {items.filter(i => i.state === 'resolved').length} resolved
-          · {items.filter(i => i.state === 'skipped').length} skipped
-        </p>
-        <button className="btn" onClick={onClose}>Done</button>
+        <p className="result-done-sub">{appliedCount} fixed · {skippedCount} skipped</p>
       </div>
     );
   }
 
+  const isPending = !allDone && currentItem && currentItem.state === 'pending';
+  const isReviewed = !allDone && currentItem && currentItem.state !== 'pending';
+
   return (
-    <div className="result-overlay" role="dialog" aria-label={runLabel || 'Results'}>
-      {/* Header */}
-      <header className="result-overlay-header">
-        <button className="result-overlay-back" onClick={onClose} aria-label="Close">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-        <span className="result-overlay-title">{runLabel || 'Results'}</span>
+    <div className="tool-overlay spellcheck-review" role="dialog" aria-label={runLabel || 'Spelling review'}>
+      <header className="tool-header">
+        <h2 className="tool-title">{runLabel || 'Spelling review'}</h2>
         {(scopeProject || scopeTimeline) && (
-          <span className="result-overlay-scope" title="This run is scoped to a specific Resolve project + timeline">
-            {scopeProject || '?'}{scopeTimeline ? ` · ${scopeTimeline}` : ''}
+          <span className="tool-subtitle">
+            {scopeProject || 'Untitled project'}{scopeTimeline ? ` · ${scopeTimeline}` : ''}
           </span>
         )}
-        <span className="result-overlay-counter">{done} / {total}</span>
+        <button className="tool-close" onClick={onClose} disabled={saving} aria-label="Close">
+          <ResultCloseIcon />
+        </button>
       </header>
 
-      {/* Progress bar */}
+      {/* Progress bar (shared flat track with the ATEM overlay) */}
       <div className="result-overlay-progress-track">
         <div className="result-overlay-progress-fill" style={{ width: `${pct}%` }} />
       </div>
 
-      {applyError && (
-        <div className="result-overlay-error" role="alert">
-          {applyError}
-          <button
-            className="result-overlay-error-dismiss"
-            onClick={() => setApplyError('')}
-            aria-label="Dismiss"
-          >×</button>
+      <div className="tool-body tool-body--report spellcheck-review-body">
+        <div className="spellcheck-review-stage">
+          {applyError && (
+            <div className="notice error" role="alert" title={applyError.raw || undefined}>
+              <span>{applyError.msg}</span>
+              <button
+                className="btn small ghost notice-action"
+                onClick={() => setApplyError(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+          {allDone && renderAllDone()}
+          {isReviewed && renderResolvedItem(currentItem)}
+          {isPending && currentItem.item_type === 'spellcheck' && renderSpellcheckItem(currentItem)}
+          {!allDone && !currentItem && (
+            <p className="hint result-item-empty">{loaded ? 'Nothing to review.' : 'Loading…'}</p>
+          )}
         </div>
-      )}
-
-      {/* Item navigation */}
-      {total > 0 && (
-        <div className="result-overlay-nav">
-          <button
-            className="result-nav-btn"
-            onClick={goPrev}
-            disabled={currentIdx === 0}
-            aria-label="Previous"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-          </button>
-          <span className="result-nav-label">{currentIdx + 1} of {total}</span>
-          <button
-            className="result-nav-btn"
-            onClick={goNext}
-            disabled={currentIdx === items.length - 1}
-            aria-label="Next"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="9 18 15 12 9 6" />
-            </svg>
-          </button>
-        </div>
-      )}
-
-      {/* Item content */}
-      <div className="result-overlay-body">
-        {allDone && renderAllDone()}
-        {!allDone && currentItem && currentItem.state !== 'pending' && renderResolvedItem(currentItem)}
-        {!allDone && currentItem && currentItem.state === 'pending' && currentItem.item_type === 'spellcheck' && renderSpellcheckItem(currentItem)}
-        {!allDone && !currentItem && items.length === 0 && (
-          <p className="result-item-loading">Loading…</p>
-        )}
       </div>
 
-      {/* Action bar */}
-      {!allDone && currentItem && currentItem.state === 'pending' && (
-        <footer className="result-overlay-actions">
-          <button className="btn-secondary" onClick={handleSkip} disabled={saving}>
-            Skip
-          </button>
-          <button
-            className="btn"
-            onClick={handleApply}
-            disabled={saving || (!selectedSuggestion && !customValue.trim())}
-          >
-            {saving ? 'Applying…' : 'Apply'}
-          </button>
-        </footer>
-      )}
+      <footer className="tool-footer tool-footer--report">
+        {/* Item navigation: "4 of 12" plus prev/next (also ← / → keys). */}
+        {total > 0 && (
+          <div className="result-overlay-nav">
+            <button
+              className="result-nav-btn"
+              onClick={goPrev}
+              disabled={currentIdx === 0}
+              aria-label="Previous"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
+            <span className="result-nav-label">{currentIdx + 1} of {total}</span>
+            <button
+              className="result-nav-btn"
+              onClick={goNext}
+              disabled={currentIdx === items.length - 1}
+              aria-label="Next item"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          </div>
+        )}
 
-      {/* Already-resolved item action bar */}
-      {!allDone && currentItem && currentItem.state !== 'pending' && (
-        <footer className="result-overlay-actions">
-          <button className="btn-secondary" onClick={handleReopen} disabled={saving}>
-            Reopen
-          </button>
-          <button className="btn" onClick={goNextPending}>
-            Next Pending →
-          </button>
-        </footer>
-      )}
+        {isPending && (
+          <>
+            <button className="btn ghost" onClick={handleSkip} disabled={saving}>
+              Skip
+            </button>
+            <button
+              className="btn primary"
+              onClick={handleApply}
+              disabled={saving || (!selectedSuggestion && !customValue.trim())}
+            >
+              {saving ? 'Applying…' : 'Apply'}
+            </button>
+          </>
+        )}
+
+        {isReviewed && (
+          <>
+            <button className="btn ghost" onClick={handleReopen} disabled={saving}>
+              Reopen
+            </button>
+            <button className="btn primary" onClick={goNextPending} disabled={saving}>
+              Next
+            </button>
+          </>
+        )}
+
+        {(allDone || !currentItem) && (
+          <button className="btn primary" onClick={onClose} disabled={saving}>Done</button>
+        )}
+      </footer>
 
       {/* Right-click "Add to dictionary" menu (positioned at the cursor). */}
       {wordMenu && (
