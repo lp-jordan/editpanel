@@ -1,10 +1,14 @@
 /**
  * ExportsPanel — Phase 3.5 Exports history view.
  *
- * Lives inside the Delivery page, BELOW the existing task grid, behind a
- * subtle centered "· Exports ▾ ·" divider-button that expands the panel
- * inline. The page top stays unchanged; the divider gives the history a
- * calm home that's there when the editor goes looking.
+ * Lives inside the Delivery page, BELOW the existing task grid, under a plain
+ * "Exports" heading. Expanded by default; the heading still collapses it.
+ * This is the full export HISTORY (open/show in folder, upload, delete); the
+ * Jobs panel is only a log of active + recently finished work.
+ *
+ * Status per row = coloured left stripe + a short text label (exportStatusOf).
+ * Copy follows the export glossary: Exporting / Queued / Uploading / Done
+ * (local only) / Uploaded (in LPOS) / Unassigned / Failed / Canceled.
  *
  * Data:
  *   - window.exportsAPI.list({ kind, projectId? }) — filtered query against
@@ -14,8 +18,8 @@
  *     phase transitions). We refetch on each one.
  *
  * Actions:
- *   - Open folder — shell.showItemInFolder via exports:open-folder.
- *   - Push to LPOS… — inline project picker (reuses lposAPI.listProjects,
+ *   - Show in folder — shell.showItemInFolder via exports:open-folder.
+ *   - Upload to LPOS… ("push") — inline project picker (reuses lposAPI.listProjects,
  *     same shape ExportDeliverOverlay already grouped) → exports:push-to-lpos.
  *   - Multi-select hard delete (Phase 3.5.1, 2026-06-08) — standard
  *     shift/cmd-click selection on terminal rows; floating action bar shows
@@ -29,31 +33,51 @@
  * nothing to dismiss).
  */
 
+// The 'delivered' key is the main-process filter for "has an LPOS half"
+// (lpos_delivery set or state 'delivered'); the label follows the glossary.
 const FILTERS = [
   { key: 'all',        label: 'All' },
   { key: 'unassigned', label: 'Unassigned' },
-  { key: 'delivered',  label: 'Delivered' },
+  { key: 'delivered',  label: 'Uploaded' },
   { key: 'active',     label: 'Active' },
   { key: 'failed',     label: 'Failed' },
 ];
 
-// State → { icon, badgeClass, label } for the row's leading chip.
-function stateBadge(state) {
+// Row → { cls, label }. `cls` drives the coloured left stripe; `label` is the
+// short visible status text. 'completed' splits on whether the export reached
+// LPOS: Uploaded when it did, Done when it's local only.
+function exportStatusOf(row) {
+  const state = row?.state;
   switch (state) {
-    case 'completed':           return { icon: '✓', cls: 'ok',    label: 'Delivered' };
-    case 'delivered':           return { icon: '✓', cls: 'ok',    label: 'Delivered' };
-    case 'complete_unassigned': return { icon: '○', cls: 'wait',  label: 'Awaiting project' };
-    case 'rendering':           return { icon: '◌', cls: 'busy',  label: 'Rendering' };
-    case 'queued':              return { icon: '◦', cls: 'busy',  label: 'Queued' };
-    case 'uploading':           return { icon: '↑', cls: 'busy',  label: 'Uploading' };
-    case 'partial':             return { icon: '⚠', cls: 'warn',  label: 'Partial' };
-    case 'failed':              return { icon: '×', cls: 'bad',   label: 'Failed' };
-    case 'canceled':            return { icon: '–', cls: 'mute',  label: 'Canceled' };
-    case 'interrupted':         return { icon: '!', cls: 'warn',  label: 'Interrupted' };
-    case 'dismissed_in_resolve':return { icon: '⊖', cls: 'mute',  label: 'Removed from Resolve' };
-    default:                    return { icon: '·', cls: 'mute',  label: state || 'Unknown' };
+    case 'completed':           return row?.lpos_delivery
+                                  ? { cls: 'ok', label: 'Uploaded' }
+                                  : { cls: 'ok', label: 'Done' };
+    case 'delivered':           return { cls: 'ok',   label: 'Uploaded' };
+    case 'complete_unassigned': return { cls: 'wait', label: 'Unassigned' };
+    case 'rendering':           return { cls: 'busy', label: 'Exporting' };
+    case 'queued':              return { cls: 'busy', label: 'Queued' };
+    case 'uploading':           return { cls: 'busy', label: 'Uploading' };
+    case 'partial':             return { cls: 'warn', label: 'Partly uploaded' };
+    case 'failed':              return { cls: 'bad',  label: 'Failed' };
+    case 'canceled':            return { cls: 'mute', label: 'Canceled' };
+    case 'interrupted':         return { cls: 'warn', label: 'Interrupted' };
+    case 'dismissed_in_resolve':return { cls: 'mute', label: 'Removed from Resolve' };
+    default:                    return { cls: 'mute', label: 'Unknown' };
   }
 }
+
+// Display name for a row: output file name, else first timeline name.
+// Never the raw export_id.
+function exportDisplayName(row) {
+  const localPrimary = primaryOutputPath(row) || (row?.target_dir ? row.target_dir : null);
+  return fileTail(localPrimary) || timelineNamesOf(row)[0] || 'Untitled export';
+}
+
+const EXPORTS_CHEVRON_ICON = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="9 6 15 12 9 18" />
+  </svg>
+);
 
 // Whether a row is selectable for the multi-select / hard-delete flow.
 // Active states (rendering, uploading, queued) are deliberately excluded —
@@ -128,7 +152,11 @@ function dirOf(p) {
 // disappear from the result. Input is autofocused on open and cleared on
 // close so each session starts fresh. Cmd/Ctrl+F focuses the input if the
 // editor's mid-scroll and reaches for it instinctively.
-function ProjectPicker({ open, onClose, onPick }) {
+//
+// Upload busy/error state lives INSIDE the picker footer (it used to render
+// behind the modal, invisible), and Upload is disabled while busy so a double
+// click can't push twice. `uploadCount` > 1 only changes the button label.
+function ProjectPicker({ open, onClose, onPick, busy, uploadError, uploadCount }) {
   const [projects, setProjects] = React.useState([]);
   const [loading, setLoading]   = React.useState(false);
   const [error, setError]       = React.useState(null);
@@ -143,15 +171,22 @@ function ProjectPicker({ open, onClose, onPick }) {
     setQuery('');
     if (!window.lposAPI?.listProjects) {
       setError('LPOS API unavailable');
+      console.warn('[exports] lposAPI.listProjects unavailable');
       return;
     }
     setLoading(true);
     window.lposAPI.listProjects()
       .then(res => {
         if (res?.ok) setProjects(res.data?.projects || []);
-        else         setError(res?.error || 'Could not load projects');
+        else {
+          setError(res?.error || 'Could not load projects');
+          console.warn('[exports] Could not load LPOS projects:', res?.error);
+        }
       })
-      .catch(err => setError(err?.message || String(err)))
+      .catch(err => {
+        setError(err?.message || String(err));
+        console.warn('[exports] Could not load LPOS projects:', err);
+      })
       .finally(() => setLoading(false));
   }, [open]);
 
@@ -209,14 +244,10 @@ function ProjectPicker({ open, onClose, onPick }) {
   const showNoProjects = !loading && !error && projects.length === 0;
 
   return (
-    <div className="export-picker-overlay" role="dialog" aria-modal="true">
+    <div className="export-picker-overlay" role="dialog" aria-modal="true" aria-label="Upload to project">
       <div className="export-picker">
         <header className="export-picker-head">
-          <div>
-            <p className="eyebrow">Push to LPOS</p>
-            <h3>Pick a destination project</h3>
-          </div>
-          <button type="button" className="btn ghost" onClick={onClose}>Cancel</button>
+          <h3>Upload to project</h3>
         </header>
 
         <div className="export-picker-search">
@@ -228,13 +259,14 @@ function ProjectPicker({ open, onClose, onPick }) {
             value={query}
             onChange={e => setQuery(e.target.value)}
             // Esc clears the query if any, else closes the modal — matches
-            // how text-input dialogs typically handle Esc.
+            // how text-input dialogs typically handle Esc. Never closes
+            // while an upload request is in flight.
             onKeyDown={e => {
               if (e.key === 'Escape') {
                 if (query) {
                   e.preventDefault();
                   setQuery('');
-                } else {
+                } else if (!busy) {
                   onClose();
                 }
               }
@@ -250,13 +282,17 @@ function ProjectPicker({ open, onClose, onPick }) {
         </div>
 
         <div className="export-picker-body">
-          {loading && <p className="muted">Loading projects…</p>}
-          {error   && <p className="bad">{error}</p>}
+          {loading && <p className="hint">Loading projects…</p>}
+          {error && (
+            <div className="notice error" title={String(error)}>
+              <span>Couldn't load LPOS projects.</span>
+            </div>
+          )}
           {showNoProjects && (
-            <p className="muted">No projects available.</p>
+            <p className="hint">No projects in LPOS.</p>
           )}
           {showNoMatches && (
-            <p className="muted">No projects match “{query}”.</p>
+            <p className="hint">No projects match “{query}”.</p>
           )}
           {!loading && !error && grouped.map(([client, list]) => (
             <div key={client} className="export-project-group">
@@ -264,15 +300,16 @@ function ProjectPicker({ open, onClose, onPick }) {
               {list.map(p => (
                 <label
                   key={p.projectId}
-                  className={`atem-session-row${picked?.projectId === p.projectId ? ' selected' : ''}`}
+                  className={`export-project-row${picked?.projectId === p.projectId ? ' selected' : ''}`}
                 >
                   <input
                     type="radio"
                     name="exports-push-pick"
+                    className="export-project-radio"
                     checked={picked?.projectId === p.projectId}
                     onChange={() => setPicked(p)}
                   />
-                  <span>{p.name || p.projectName}</span>
+                  <span className="export-project-row-name">{p.name || p.projectName}</span>
                 </label>
               ))}
             </div>
@@ -280,13 +317,22 @@ function ProjectPicker({ open, onClose, onPick }) {
         </div>
 
         <footer className="export-picker-foot">
+          {uploadError && (
+            <span className="error-text export-picker-foot-status" title={String(uploadError)}>
+              Upload didn't start. Try again.
+            </span>
+          )}
+          {busy && !uploadError && (
+            <span className="hint export-picker-foot-status">Starting upload…</span>
+          )}
+          <button type="button" className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
           <button
             type="button"
             className="btn primary"
-            disabled={!picked}
-            onClick={() => { if (picked) onPick(picked); }}
+            disabled={!picked || busy}
+            onClick={() => { if (picked && !busy) onPick(picked); }}
           >
-            Push to LPOS
+            {busy ? 'Uploading…' : (uploadCount > 1 ? `Upload ${uploadCount}` : 'Upload')}
           </button>
         </footer>
       </div>
@@ -295,74 +341,62 @@ function ProjectPicker({ open, onClose, onPick }) {
 }
 
 // ── Confirm-delete modal (Phase 3.5.1) ─────────────────────────
-// Triggered from the selection action bar. Renders a count summary, calls
-// out the LPOS-link-loss specifically when unassigned rows are in the batch
-// (the unique-and-unrecoverable cost of deletion), and a per-row preview
-// (first ~6 rows by file name) so the editor can sanity-check before
-// committing. Reuses the .export-picker-overlay positioning to stay visually
-// consistent with the existing project picker.
+// Triggered from the selection action bar. Heading, one line, one extra line
+// when unassigned rows are included (deleting them loses the chance to upload
+// them later), then the names (first ~6). Cancel + Delete in the footer.
 function ConfirmDeleteDialog({ rows, busy, error, onCancel, onConfirm }) {
   if (!rows || rows.length === 0) return null;
   const unassignedCount = rows.filter(r => r.state === 'complete_unassigned').length;
   const PREVIEW = 6;
   const preview = rows.slice(0, PREVIEW);
   const more    = Math.max(0, rows.length - PREVIEW);
+  const noun    = `${rows.length} export${rows.length !== 1 ? 's' : ''}`;
 
   return (
     <div className="export-picker-overlay" role="dialog" aria-modal="true" aria-label="Confirm delete">
       <div className="export-picker confirm-delete-dialog">
         <header className="export-picker-head">
-          <div>
-            <p className="eyebrow">Delete</p>
-            <h3>Permanently delete {rows.length} export{rows.length !== 1 ? 's' : ''}?</h3>
-          </div>
-          <button type="button" className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+          <h3>Delete {noun} from history?</h3>
         </header>
 
         <div className="export-picker-body">
-          {unassignedCount > 0 && (
-            <p className="confirm-delete-warning">
-              <strong>{unassignedCount}</strong> of these {unassignedCount === 1 ? 'is' : 'are'}{' '}
-              <strong>unassigned</strong>. Deleting them removes any future possibility of
-              linking these renders to an LPOS project for comment retrieval.
-            </p>
-          )}
           <p className="confirm-delete-body">
-            All selected exports will be removed from local Exports history. Any files
-            already uploaded to LPOS will remain on the LPOS side — only the local
-            history rows are deleted. This cannot be undone.
+            Files in LPOS aren't affected. Can't be undone.
+            {unassignedCount > 0 && (
+              <>
+                <br />
+                {unassignedCount === 1
+                  ? '1 is unassigned and can no longer be uploaded to LPOS.'
+                  : `${unassignedCount} are unassigned and can no longer be uploaded to LPOS.`}
+              </>
+            )}
           </p>
           <ul className="confirm-delete-list">
-            {preview.map(r => {
-              const tail = fileTail(primaryOutputPath(r))
-                || (timelineNamesOf(r)[0])
-                || r.export_id;
-              const badge = stateBadge(r.state);
-              return (
-                <li key={r.export_id}>
-                  <span className={`exports-row-badge exports-row-badge-${badge.cls}`} title={badge.label}>
-                    {badge.icon}
-                  </span>
-                  <span className="confirm-delete-name">{tail}</span>
-                  <span className="confirm-delete-state">{badge.label}</span>
-                </li>
-              );
-            })}
+            {preview.map(r => (
+              <li key={r.export_id}>
+                <span className="confirm-delete-name">{exportDisplayName(r)}</span>
+              </li>
+            ))}
             {more > 0 && (
-              <li className="confirm-delete-more">…and {more} more</li>
+              <li className="confirm-delete-more">and {more} more</li>
             )}
           </ul>
-          {error && <p className="bad">{error}</p>}
+          {error && (
+            <div className="notice error" title={String(error)}>
+              <span>Couldn't delete. Try again.</span>
+            </div>
+          )}
         </div>
 
         <footer className="export-picker-foot">
+          <button type="button" className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
           <button
             type="button"
             className="btn danger"
             disabled={busy}
             onClick={onConfirm}
           >
-            {busy ? 'Deleting…' : `Delete ${rows.length} export${rows.length !== 1 ? 's' : ''}`}
+            {busy ? 'Deleting…' : 'Delete'}
           </button>
         </footer>
       </div>
@@ -383,7 +417,7 @@ function SelectionActionBar({ count, onClear, onDelete }) {
       </span>
       <span className="exports-selection-spacer" />
       <button type="button" className="btn ghost small" onClick={onClear}>
-        Clear
+        Deselect
       </button>
       <button type="button" className="btn danger small" onClick={onDelete}>
         Delete
@@ -393,21 +427,17 @@ function SelectionActionBar({ count, onClear, onDelete }) {
 }
 
 // ── Row ────────────────────────────────────────────────────────
-// Phase 3.5.2 (2026-06-08) — collapsed two-line layout (header + meta),
-// down from the four-line label-prefix layout that was visually chunky in
-// real-world use. The pre-3.5.2 layout repeated the filename in both the
-// title and a separate LOCAL line, and gave LPOS its own line for a value
-// that's frequently '—' on unassigned rows. Now:
-//   HEADER: [badge] title                                        time
-//   META:   resolveProject / timeline  · queued    → LposProject [↗ Open] [Push to LPOS…]
-//   ERROR:  (only when row.error present)
-// The meta row flexes — the from-info shrinks first, the LPOS chip + action
-// buttons stay fixed on the right. Inline buttons are visually tightened by
-// a sibling .btn.small min-height override in styles.css.
+// Two-line layout (header + meta):
+//   HEADER: title                                     [Status]   time
+//   META:   resolveProject / timeline  Queued in Resolve   LposProject [Show in folder] [Upload to LPOS…]
+//   ERROR:  (only when row.error present; raw text in the tooltip)
+// Status = the coloured left stripe (exports-row-<cls>) + the visible label.
+// The meta row flexes — the from-info shrinks first, the LPOS name + action
+// buttons stay fixed on the right.
 function ExportRow({
   row, selected, selectable, onRowClick, onPushClick, onOpenFolderClick
 }) {
-  const badge   = stateBadge(row.state);
+  const status  = exportStatusOf(row);
   const tl      = timelineNamesOf(row);
   const rpName  = resolveProjectNameOf(row);
   const localPrimary = primaryOutputPath(row)
@@ -416,26 +446,22 @@ function ExportRow({
 
   // Contextual sub-text — Resolve project / timeline. No "FROM" label: the
   // muted color + position under the title carry the same meaning.
-  const fromInfo = (rpName || tl.length > 0)
-    ? `${rpName || '—'}${tl.length > 0 ? ` / ${tl.join(', ')}` : ''}`
-    : null;
+  const fromInfo = [rpName, tl.length > 0 ? tl.join(', ') : null].filter(Boolean).join(' / ') || null;
 
   const orphanWaitingAssign = row.state === 'complete_unassigned';
 
-  // LPOS chip text — show the destination project name when known. Drops
-  // for unassigned rows (the Push button takes over that visual slot) so
-  // we don't say "→ not assigned" which is just noise.
+  // LPOS project name — shown muted when known. Dropped for unassigned rows
+  // (the Upload button takes over that visual slot).
   const lposName = ldelivery?.project_name
     || (orphanWaitingAssign ? null : row.project_name)
     || null;
 
-  // Multi-file "(+N)" affordance — historically shown next to LOCAL filename.
-  // Now folded into the title or the LPOS chip (whichever is present).
+  // Multi-file "+N" affordance next to the title.
   const multiFileCount = (Array.isArray(row.output_paths) && row.output_paths.length > 1)
     ? row.output_paths.length
     : 0;
 
-  const titleText = fileTail(localPrimary) || tl[0] || row.export_id;
+  const titleText = exportDisplayName(row);
 
   const hasMeta = fromInfo
     || lposName
@@ -450,7 +476,7 @@ function ExportRow({
 
   const classes = [
     'exports-row',
-    `exports-row-${badge.cls}`,
+    `exports-row-${status.cls}`,
     selectable ? '' : 'unselectable',
     selected   ? 'selected'     : ''
   ].filter(Boolean).join(' ');
@@ -468,15 +494,13 @@ function ExportRow({
       aria-selected={selected || undefined}
     >
       <header className="exports-row-head">
-        <span className={`exports-row-badge exports-row-badge-${badge.cls}`} title={badge.label}>
-          {badge.icon}
-        </span>
         <span className="exports-row-title" title={titleText}>
           {titleText}
           {multiFileCount > 0 && (
             <span className="exports-row-multifile"> +{multiFileCount - 1}</span>
           )}
         </span>
+        <span className="exports-row-status">{status.label}</span>
         <span className="exports-row-time">{relativeTime(row.started_at)}</span>
       </header>
 
@@ -486,11 +510,11 @@ function ExportRow({
             <span className="exports-row-from" title={fromInfo}>{fromInfo}</span>
           )}
           {row.source === 'reconciled' && (
-            <span className="exports-row-hint">· queued in Resolve</span>
+            <span className="exports-row-hint">Queued in Resolve</span>
           )}
           {lposName && (
-            <span className="exports-row-lpos-chip" title={`Uploaded to ${lposName}`}>
-              → {lposName}
+            <span className="exports-row-lpos-name" title={`Uploaded to ${lposName}`}>
+              {lposName}
             </span>
           )}
           {localPrimary && (
@@ -498,9 +522,9 @@ function ExportRow({
               type="button"
               className="btn ghost small exports-row-action"
               onClick={stopBubble(() => onOpenFolderClick(localPrimary))}
-              title="Reveal local file in folder"
+              title={localPrimary}
             >
-              ↗ Open
+              Show in folder
             </button>
           )}
           {orphanWaitingAssign && (
@@ -509,7 +533,7 @@ function ExportRow({
               className="btn primary small exports-row-action"
               onClick={stopBubble(() => onPushClick(row))}
             >
-              Push to LPOS…
+              Upload to LPOS…
             </button>
           )}
         </div>
@@ -517,21 +541,32 @@ function ExportRow({
 
       {row.error && (
         <div className="exports-row-error-line" title={row.error}>
-          {row.error}
+          {exportErrorLine(row)}
         </div>
       )}
     </article>
   );
 }
 
+// Plain one-line error for a row; the raw row.error stays in the tooltip.
+function exportErrorLine(row) {
+  switch (row?.state) {
+    case 'partial':             return "Some files didn't upload.";
+    case 'complete_unassigned': return "Upload failed. Try again.";
+    case 'interrupted':         return 'Stopped when EditPanel closed.';
+    case 'failed':              return 'Export failed.';
+    default:                    return 'Something went wrong.';
+  }
+}
+
 // ── Unassigned-exports pill ────────────────────────────────────
 // Single non-blocking chip that lives at the top of the JobPanel. Wakes when
-// the reconciler discovers a fresh orphan; editor can ✕ it. Dismissal stores
-// the current count as a baseline (preferences.exports_pill_dismissed_count);
+// the reconciler discovers a fresh orphan; editor can hide it with ×. Hiding
+// stores the current count as a baseline (preferences.exports_pill_dismissed_count);
 // the pill reappears the moment a new orphan pushes the live count above it.
-// So ✕ is "I saw these, hide until something new" — never "silence forever."
+// So × is "I saw these, hide until something new" — never "silence forever."
 //
-// Clicking the pill (anywhere except ✕) invokes onClick, which the parent
+// Clicking the pill (anywhere except ×) invokes onClick, which the parent
 // uses to close JobPanel, navigate to /deliver, and bump a focus token that
 // expands ExportsPanel + sets its filter to 'unassigned' (one motion, no
 // scrolling).
@@ -576,19 +611,19 @@ function UnassignedExportsPill({ onClick }) {
       type="button"
       className="exports-pill"
       onClick={onClick}
-      title="Open the Exports list to review"
+      title="Review on the Deliver page"
     >
-      <span className="exports-pill-icon" aria-hidden="true">●</span>
       <span className="exports-pill-text">
-        {state.count} export{state.count !== 1 ? 's' : ''} awaiting assignment
+        {state.count} unassigned export{state.count !== 1 ? 's' : ''}
+        <span className="exports-pill-sep" aria-hidden="true"> · </span>
+        <span className="exports-pill-cta">Review</span>
       </span>
-      <span className="exports-pill-cta">Review →</span>
       <span
         className="exports-pill-dismiss"
         onClick={handleDismiss}
         role="button"
-        aria-label="Dismiss"
-        title="Hide until a new orphan is detected"
+        aria-label="Hide"
+        title="Hide"
       >
         ×
       </span>
@@ -631,8 +666,8 @@ function groupByResolveProject(rows) {
 }
 
 // One Resolve-project group: collapsible header + body of ExportRow cards.
-// Header carries the project name, the count chip, and (when count > 1) a
-// "Push all (N) to LPOS…" button that opens the picker for the whole group.
+// Header carries the project name, the count chip, and (when count > 1) an
+// "Upload all…" button that opens the picker for the whole group.
 // Single-item groups omit the group push button — the row's own button does
 // the same thing and the duplicate would just add visual noise.
 function ResolveProjectGroup({
@@ -653,7 +688,7 @@ function ResolveProjectGroup({
         onClick={onToggle}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
       >
-        <span className="exports-group-chevron" aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <span className={`exports-group-chevron${open ? ' open' : ''}`} aria-hidden="true">{EXPORTS_CHEVRON_ICON}</span>
         <span className="exports-group-name">
           {projectName || 'Unknown project'}
         </span>
@@ -665,7 +700,7 @@ function ResolveProjectGroup({
             className="btn primary small exports-group-push"
             onClick={(e) => { e.stopPropagation(); onGroupPushClick(group); }}
           >
-            Push all ({count}) to LPOS…
+            Upload all…
           </button>
         )}
       </header>
@@ -690,7 +725,8 @@ function ResolveProjectGroup({
 
 // ── Panel ──────────────────────────────────────────────────────
 function ExportsPanel({ focusToken } = {}) {
-  const [open, setOpen]       = React.useState(false);
+  // Expanded by default (the history should be visible); the heading toggles.
+  const [open, setOpen]       = React.useState(true);
   const [filter, setFilter]   = React.useState('all');
   const [rows, setRows]       = React.useState([]);
   const [loading, setLoading] = React.useState(false);
@@ -716,6 +752,9 @@ function ExportsPanel({ focusToken } = {}) {
   const [confirmRows,     setConfirmRows]     = React.useState(null);
   const [deleteBusy,      setDeleteBusy]      = React.useState(false);
   const [deleteError,     setDeleteError]     = React.useState(null);
+  // Non-blocking notice after a partial delete ("Couldn't delete 1 of 3…").
+  // Kept separate from `error` so it never hides the list. { text, detail }.
+  const [deleteNotice,    setDeleteNotice]    = React.useState(null);
 
   // Unassigned-only grouping. Memoized so we don't re-bucket on every render.
   const groupedRows = React.useMemo(
@@ -775,7 +814,9 @@ function ExportsPanel({ focusToken } = {}) {
     function onKey(e) {
       if (e.key !== 'Escape') return;
       if (confirmRows) {
-        // Esc closes the modal first; second Esc clears selection.
+        // Esc closes the modal first (not while a delete is running);
+        // second Esc clears selection.
+        if (deleteBusy) return;
         setConfirmRows(null);
         setDeleteError(null);
         return;
@@ -785,7 +826,7 @@ function ExportsPanel({ focusToken } = {}) {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, selectedIds, confirmRows]);
+  }, [open, selectedIds, confirmRows, deleteBusy]);
 
   const refresh = React.useCallback(async () => {
     if (!window.exportsAPI?.list) return;
@@ -794,9 +835,13 @@ function ExportsPanel({ focusToken } = {}) {
     try {
       const res = await window.exportsAPI.list({ kind: filter });
       if (res?.ok) setRows(Array.isArray(res.data) ? res.data : []);
-      else         setError(res?.error || 'Could not load exports');
+      else {
+        setError(res?.error || 'Could not load exports');
+        console.warn('[exports] Could not load exports:', res?.error);
+      }
     } catch (err) {
       setError(err?.message || String(err));
+      console.warn('[exports] Could not load exports:', err);
     } finally {
       setLoading(false);
     }
@@ -843,6 +888,7 @@ function ExportsPanel({ focusToken } = {}) {
 
   async function handlePush(project) {
     if (!pickerForRow || !window.exportsAPI?.pushToLpos) return;
+    if (pushBusy) return; // double-click guard (button is disabled too)
     setPushBusy(true);
     setPushError(null);
     try {
@@ -856,9 +902,11 @@ function ExportsPanel({ focusToken } = {}) {
         refresh();
       } else {
         setPushError(res?.error || 'Push failed');
+        console.warn('[exports] Upload to LPOS failed to start:', res?.error);
       }
     } catch (err) {
       setPushError(err?.message || String(err));
+      console.warn('[exports] Upload to LPOS failed to start:', err);
     } finally {
       setPushBusy(false);
     }
@@ -874,6 +922,7 @@ function ExportsPanel({ focusToken } = {}) {
   async function handleGroupPush(project) {
     if (!pickerForGroup || !window.exportsAPI?.pushToLpos) return;
     const groupRows = pickerForGroup.rows || [];
+    if (pushBusy) return; // double-click guard (button is disabled too)
     setPushBusy(true);
     setPushError(null);
     try {
@@ -886,6 +935,11 @@ function ExportsPanel({ focusToken } = {}) {
       ));
       const ok     = results.filter(r => r.status === 'fulfilled' && r.value?.ok).length;
       const failed = results.length - ok;
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled' && r.value?.ok) return;
+        console.warn('[exports] Upload to LPOS failed to start for', groupRows[i]?.export_id,
+          r.status === 'rejected' ? r.reason : r.value?.error);
+      });
       setGroupPushFeedback({
         projectName: project.name || project.projectName,
         ok,
@@ -996,10 +1050,12 @@ function ExportsPanel({ focusToken } = {}) {
     if (!confirmRows || confirmRows.length === 0) return;
     if (!window.exportsAPI?.hardDeleteBatch) {
       setDeleteError('hardDeleteBatch unavailable in preload');
+      console.warn('[exports] exportsAPI.hardDeleteBatch unavailable in preload');
       return;
     }
     setDeleteBusy(true);
     setDeleteError(null);
+    setDeleteNotice(null);
     try {
       const ids = confirmRows.map(r => r.export_id);
       const res = await window.exportsAPI.hardDeleteBatch(ids);
@@ -1011,16 +1067,24 @@ function ExportsPanel({ focusToken } = {}) {
         // panel's existing onReconciled listener will refresh. Call refresh
         // here anyway to avoid waiting on the round-trip event.
         await refresh();
-        // Surface a soft warning if any rows were skipped (e.g., became
-        // active between selection and confirm — rare but possible).
+        // Surface a soft, NON-blocking notice if any rows were skipped (e.g.,
+        // became active between selection and confirm — rare but possible).
+        // Plain wording on screen; raw reasons to the console + tooltip.
         if (skipped.length > 0) {
-          setError(`Skipped ${skipped.length} of ${ids.length}: ${skipped.map(s => s.reason).join('; ')}`);
+          const detail = skipped.map(s => `${s.exportId}: ${s.reason}`).join('\n');
+          console.warn('[exports] Delete skipped some exports:\n' + detail);
+          setDeleteNotice({
+            text: `Couldn't delete ${skipped.length} of ${ids.length} exports. They may still be in progress.`,
+            detail
+          });
         }
       } else {
         setDeleteError(res?.error || 'Delete failed');
+        console.warn('[exports] Delete failed:', res?.error);
       }
     } catch (err) {
       setDeleteError(err?.message || String(err));
+      console.warn('[exports] Delete failed:', err);
     } finally {
       setDeleteBusy(false);
     }
@@ -1028,20 +1092,18 @@ function ExportsPanel({ focusToken } = {}) {
 
   return (
     <section className="exports-panel">
-      <div
-        className={`exports-divider${open ? ' open' : ''}`}
-        role="button"
-        tabIndex={0}
-        onClick={() => setOpen(o => !o)}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setOpen(o => !o); }}
-        aria-expanded={open}
-      >
-        <span className="exports-divider-line" />
-        <span className="exports-divider-label">
-          · Exports {open ? '▴' : '▾'} ·
-        </span>
-        <span className="exports-divider-line" />
-      </div>
+      <h2 className="exports-heading">
+        <button
+          type="button"
+          className={`exports-heading-toggle${open ? ' open' : ''}`}
+          onClick={() => setOpen(o => !o)}
+          aria-expanded={open}
+          title={open ? 'Collapse' : 'Expand'}
+        >
+          <span className="exports-heading-chevron" aria-hidden="true">{EXPORTS_CHEVRON_ICON}</span>
+          Exports
+        </button>
+      </h2>
 
       {open && (
         <div className="exports-body">
@@ -1068,12 +1130,31 @@ function ExportsPanel({ focusToken } = {}) {
             onDelete={openConfirm}
           />
 
-          {loading && <p className="muted">Loading…</p>}
-          {error && <p className="bad">{error}</p>}
-          {!loading && !error && rows.length === 0 && (
-            <p className="muted exports-empty">No exports match this filter.</p>
+          {deleteNotice && (
+            <div className="notice warning" title={deleteNotice.detail}>
+              <span>{deleteNotice.text}</span>
+              <button
+                type="button"
+                className="btn ghost small notice-action"
+                onClick={() => setDeleteNotice(null)}
+              >
+                Dismiss
+              </button>
+            </div>
           )}
 
+          {loading && <p className="hint">Loading…</p>}
+          {error && (
+            <div className="notice error" title={String(error)}>
+              <span>Couldn't load exports.</span>
+              <button type="button" className="btn ghost small notice-action" onClick={refresh}>
+                Try again
+              </button>
+            </div>
+          )}
+          {!loading && !error && rows.length === 0 && (
+            <p className="hint exports-empty">No exports match this filter.</p>
+          )}
           {!loading && !error && rows.length > 0 && (
             filter === 'unassigned' && groupedRows ? (
               <div className="exports-groups">
@@ -1118,22 +1199,20 @@ function ExportsPanel({ focusToken } = {}) {
               title="Dismiss"
             >
               {groupPushFeedback.failed === 0
-                ? `Pushed ${groupPushFeedback.ok} to ${groupPushFeedback.projectName}`
-                : `Pushed ${groupPushFeedback.ok}/${groupPushFeedback.total} to ${groupPushFeedback.projectName} — ${groupPushFeedback.failed} failed`}
+                ? `Uploading ${groupPushFeedback.ok} to ${groupPushFeedback.projectName}.`
+                : `Uploading ${groupPushFeedback.ok} of ${groupPushFeedback.total} to ${groupPushFeedback.projectName}. ${groupPushFeedback.failed} didn't start.`}
             </button>
           )}
 
+          {/* Upload busy/error state renders inside the picker footer. */}
           <ProjectPicker
             open={pickerOpen}
-            onClose={handlePickerClose}
+            onClose={() => { if (!pushBusy) handlePickerClose(); }}
             onPick={handlePickerPick}
+            busy={pushBusy}
+            uploadError={pushError}
+            uploadCount={pickerForGroup ? (pickerForGroup.rows || []).length : 1}
           />
-          {pickerOpen && pushBusy && (
-            <p className="muted">Pushing{pickerForGroup ? ` ${pickerForGroup.rows.length} exports` : ''}…</p>
-          )}
-          {pickerOpen && pushError && (
-            <p className="bad">Push failed: {pushError}</p>
-          )}
 
           <ConfirmDeleteDialog
             rows={confirmRows}

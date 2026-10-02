@@ -1917,12 +1917,7 @@ button.status-bar-chip-btn:hover {
   white-space: nowrap;
 }
 
-/* Muted "unassigned" hint sitting next to the headline inside the chunky
-   in-flight row (RenderingExportRow). The compact terminal-row equivalent is
-   the louder .job-panel-row-chip; here we want it quieter — the actionable
-   status (rendering / uploading / etc.) is already carried by the badge on
-   the right, so the assignment state is just background information until
-   the editor opens the Deliver page. */
+/* Muted inline hint in the in-flight row (RenderingExportRow): "Up next". */
 .job-panel-headline-hint {
   flex-shrink: 0;
   font-size: 0.72rem;
@@ -1932,19 +1927,6 @@ button.status-bar-chip-btn:hover {
   cursor: help;
 }
 
-/* Small muted pill that flags a row as "caught from Resolve, not yet routed
-   to an LPOS project." Visually quieter than the state icon and the age
-   chips so it adds information without competing for attention. */
-.job-panel-row-chip {
-  flex-shrink: 0;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--accent-strong);
-  background: var(--accent-soft);
-  padding: 1px 7px;
-  border-radius: 999px;
-  cursor: help;
-}
 
 .job-panel-row-top {
   display: flex;
@@ -1967,8 +1949,26 @@ button.status-bar-chip-btn:hover {
 
 .job-panel-step-badge {
   font-size: 0.72rem;
-  color: var(--accent);
-  font-weight: 700;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Compact-row status: .status-dot + (for non-Done states) a short label. */
+.job-panel-row.compact .status-dot {
+  flex-shrink: 0;
+}
+
+.job-panel-status-label {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.job-panel-status-label.is-error {
+  color: var(--danger);
 }
 
 .job-panel-substep {
@@ -2071,35 +2071,15 @@ button.status-bar-chip-btn:hover {
   color: var(--success);
 }
 
-.job-panel-review-btn {
-  appearance: none;
-  border: 1px solid var(--border-strong);
-  background: transparent;
-  color: var(--text);
-  border-radius: var(--radius-sm);
-  padding: 3px 10px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 140ms ease, border-color 140ms ease;
+.job-panel-export-job.error .job-panel-export-job-mark {
+  color: var(--danger);
 }
 
-.job-panel-review-btn:hover {
-  background: var(--hover);
-}
 
-.job-panel-review-btn.done {
-  color: var(--success);
-  border-color: var(--success-soft);
-}
 
-.job-panel-review-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
 
-/* Multi-batch chain action bar (select queued batches → run sequentially) */
+
+/* "Start (N)" bar shown when several queued batches can be started together */
 .job-panel-chain-bar {
   display: flex;
   align-items: center;
@@ -2108,19 +2088,7 @@ button.status-bar-chip-btn:hover {
   margin: 0 0 6px;
 }
 
-.job-panel-chain-select {
-  appearance: none;
-  border: none;
-  background: none;
-  color: var(--muted-soft);
-  font-size: 0.72rem;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 3px 6px;
-  margin-right: auto;
-}
 
-.job-panel-chain-select:hover { color: var(--text); }
 
 .job-panel-chain-note {
   margin: 0 0 6px;
@@ -2136,15 +2104,7 @@ button.status-bar-chip-btn:hover {
   accent-color: var(--info);
 }
 
-.job-panel-state-icon {
-  font-size: 0.8rem;
-  font-weight: 700;
-  flex-shrink: 0;
-}
 
-.job-panel-state-icon.succeeded { color: var(--success); }
-.job-panel-state-icon.failed    { color: var(--danger); }
-.job-panel-state-icon.canceled  { color: var(--muted-soft); }
 
 .job-panel-empty {
   margin: 0;
@@ -2161,24 +2121,7 @@ button.status-bar-chip-btn:hover {
   flex-shrink: 0;
 }
 
-/* Cancel button on currently-running jobs */
-.job-panel-cancel-btn {
-  appearance: none;
-  border: 1px solid var(--danger);
-  background: transparent;
-  color: var(--danger);
-  border-radius: var(--radius-sm);
-  padding: 3px 10px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 140ms ease, border-color 140ms ease;
-}
 
-.job-panel-cancel-btn:hover {
-  background: var(--danger-soft);
-}
 
 /* Compact × button used to delete a single row from Recent or Results */
 .job-panel-delete-btn {
@@ -3080,25 +3023,211 @@ button.status-bar-chip-btn:hover {
 }
 
 /* ── Export Deliver overlay ───────────────────────────────── */
+/* Chrome comes from .tool-overlay / .tool-header / .tool-body--form /
+   .tool-footer--form; everything below is the form content. */
+
+.export-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.export-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.export-field-label {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.export-dest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+}
+
+.export-dest-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+}
+
+.export-dest-path.placeholder {
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 0.86rem;
+}
+
+.export-toggle {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.export-toggle.disabled .export-toggle-inner {
+  opacity: 0.5;
+}
+
+.export-toggle-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.export-toggle-sub {
+  margin: 4px 0 0;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+}
+
+.export-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.export-loading--stage {
+  padding: 32px 0;
+}
+
+.export-project-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 140ms ease;
+}
+
+.export-project-row:hover {
+  border-color: var(--border-strong);
+}
+
+.export-project-row.selected {
+  border-color: var(--accent);
+}
+
+.export-project-radio {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.export-project-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.export-project-row-meta {
+  flex-shrink: 0;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+/* Pre-export warning: heading, one sentence, names. */
+.export-check {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.export-check-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.export-check-text {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* Plain list of timeline names (pre-export warning + done screen). */
+.export-name-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+}
+
+.export-name-list li {
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  padding: 20px 0 4px;
+}
+
+.export-done-title {
+  margin: 0 0 4px;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.export-done-sub {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.export-done-sub strong {
+  color: var(--text-strong);
+}
 
 .export-field-row {
   display: flex;
   gap: 16px;
 }
 
-.export-clear-btn {
-  background: none;
-  border: none;
-  color: var(--muted-soft);
-  font-size: 0.74rem;
-  cursor: pointer;
-  padding: 2px 6px;
-  flex-shrink: 0;
-}
 
-.export-clear-btn:hover {
-  color: var(--text-strong);
-}
 
 /* On/off switch for the Upload-to-LPOS toggle */
 .export-switch {
@@ -3146,10 +3275,13 @@ button.status-bar-chip-btn:hover {
 }
 
 .export-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   max-height: 420px;
   overflow-y: auto;
-  /* Without overflow-y, children rendered past max-height bleed into the
-     hint <p> that follows in the .export-project-area flex column. */
+  /* Without overflow-y, children rendered past max-height bleed into
+     whatever follows in the .export-project-area flex column. */
   padding-right: 4px;
 }
 
@@ -3711,37 +3843,53 @@ button.status-bar-chip-btn:hover {
   max-width: 920px;
 }
 
-.exports-divider {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 12px 6px;
-  cursor: pointer;
-  user-select: none;
-  color: var(--muted-soft);
-  transition: color 160ms ease;
-}
 
-.exports-divider:hover,
-.exports-divider:focus-visible,
-.exports-divider.open {
-  color: var(--accent-strong);
-  outline: none;
-}
 
-.exports-divider-line {
-  flex: 1 1 auto;
-  height: 1px;
-  background: var(--border);
-}
 
-/* Section label of the inline Exports section. */
-.exports-divider-label {
-  font-size: 0.72rem;
+
+/* Plain "Exports" heading; the button inside toggles the collapse. */
+.exports-heading {
+  margin: 0;
+  font-size: 0.95rem;
   font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  white-space: nowrap;
+  color: var(--text-strong);
+}
+
+.exports-heading-toggle {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.exports-heading-toggle:hover {
+  background: var(--hover);
+}
+
+.exports-heading-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.exports-heading-chevron {
+  display: inline-flex;
+  color: var(--text-dim);
+}
+
+.exports-heading-chevron svg {
+  transition: transform 0.15s ease;
+}
+
+.exports-heading-toggle.open .exports-heading-chevron svg {
+  transform: rotate(90deg);
 }
 
 .exports-body {
@@ -3833,10 +3981,14 @@ button.status-bar-chip-btn:hover {
   align-items: center;
   justify-content: center;
   width: 14px;
-  color: var(--muted-soft);
-  font-size: 0.75rem;
-  line-height: 1;
+  color: var(--text-dim);
   flex-shrink: 0;
+}
+.exports-group-chevron svg {
+  transition: transform 0.15s ease;
+}
+.exports-group-chevron.open svg {
+  transform: rotate(90deg);
 }
 .exports-group-name {
   font-weight: 600;
@@ -3951,7 +4103,7 @@ button.status-bar-chip-btn:hover {
 }
 
 .exports-row-wait { border-left: 3px solid var(--accent); }
-.exports-row-busy { border-left: 3px solid var(--accent-blue); }
+.exports-row-busy { border-left: 3px solid var(--info); }
 .exports-row-ok   { border-left: 3px solid var(--success); }
 .exports-row-bad  { border-left: 3px solid var(--danger); }
 .exports-row-warn { border-left: 3px solid var(--warning); }
@@ -3965,27 +4117,19 @@ button.status-bar-chip-btn:hover {
   min-height: 18px;
 }
 
-.exports-row-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* Phase 3.5.2: shrunk further to 16px (was 20px → was 24px originally).
-     The state info this conveys is also encoded in the row's border-left
-     color stripe, so the badge can be small. */
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  font-size: 0.7rem;
-  font-weight: 600;
-  flex-shrink: 0;
-}
 
-.exports-row-badge-wait { background: var(--accent-soft);  color: var(--accent-strong); }
-.exports-row-badge-busy { background: var(--info-soft);    color: var(--info-strong); }
-.exports-row-badge-ok   { background: var(--success-soft); color: var(--success); }
-.exports-row-badge-bad  { background: var(--danger-soft);  color: var(--danger); }
-.exports-row-badge-warn { background: var(--warning-soft); color: var(--warning); }
-.exports-row-badge-mute { background: var(--hover-strong); color: var(--text-dim); }
+
+/* Short visible status label (the stripe carries the colour). */
+.exports-row-status {
+  flex-shrink: 0;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.exports-row-bad .exports-row-status  { color: var(--danger); }
+.exports-row-warn .exports-row-status { color: var(--warning); }
+.exports-row-wait .exports-row-status { color: var(--accent-strong); }
 
 .exports-row-title {
   flex: 1 1 auto;
@@ -4012,16 +4156,14 @@ button.status-bar-chip-btn:hover {
 }
 
 /* Phase 3.5.2 — single meta line replaces the 3-line FROM/LOCAL/LPOS stack.
-   FROM info takes available space and ellipsizes if needed; LPOS chip + action
-   buttons stay fixed on the right. Aligns under the title (badge 16 + head
-   gap 8 = 24 padding-left). overflow: hidden + nowrap on children keeps the
+   FROM info takes available space and ellipsizes if needed; LPOS name + action
+   buttons stay fixed on the right. Aligns under the title. overflow: hidden + nowrap on children keeps the
    row single-line predictable; the title attribute on each fragment surfaces
    any clipped text on hover. */
 .exports-row-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-left: 24px;
   min-height: 22px;
   overflow: hidden;
   font-size: 0.76rem;
@@ -4036,11 +4178,11 @@ button.status-bar-chip-btn:hover {
   color: var(--muted);
 }
 
-.exports-row-lpos-chip {
+
+.exports-row-lpos-name {
   flex: 0 0 auto;
-  color: var(--text);
+  color: var(--text-muted);
   white-space: nowrap;
-  font-weight: 500;
 }
 
 .exports-row-action {
@@ -4050,16 +4192,14 @@ button.status-bar-chip-btn:hover {
 .exports-row-error-line {
   font-size: 0.76rem;
   color: var(--danger);
-  padding-left: 24px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .exports-row-hint {
-  color: var(--muted-soft);
+  color: var(--text-dim);
   font-size: 0.75rem;
-  font-style: italic;
   white-space: nowrap;
 }
 
@@ -4090,30 +4230,16 @@ button.status-bar-chip-btn:hover {
 
 /* ── Confirm-delete dialog (Phase 3.5.1) ─────────────────────────────
    Rides on the existing .export-picker / .export-picker-overlay shells
-   (the project picker reuses them too). Only the body content gets
-   bespoke styling — warning paragraph, body paragraph, and the preview
-   list of about-to-delete rows. */
+   (the project picker reuses them too). Body = one short paragraph plus
+   the list of names. */
 .confirm-delete-dialog {
   max-width: 520px;
 }
-.confirm-delete-warning {
-  background: var(--danger-soft);
-  border-left: 3px solid var(--danger);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  color: var(--danger);
-  font-size: 0.88rem;
-  line-height: 1.45;
-  margin: 0 0 10px 0;
-}
-.confirm-delete-warning strong {
-  color: var(--text-strong);
-}
 .confirm-delete-body {
-  font-size: 0.88rem;
-  color: var(--text);
-  line-height: 1.45;
-  margin: 0 0 12px 0;
+  font-size: 0.86rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
 }
 .confirm-delete-list {
   list-style: none;
@@ -4142,20 +4268,14 @@ button.status-bar-chip-btn:hover {
   white-space: nowrap;
   color: var(--text);
 }
-.confirm-delete-state {
-  color: var(--muted-soft);
-  font-size: 0.75rem;
-  white-space: nowrap;
-}
 .confirm-delete-more {
   background: transparent !important;
   border: none !important;
-  color: var(--muted-soft);
-  font-style: italic;
+  color: var(--text-dim);
   padding-left: 12px !important;
 }
 
-/* ── Inline project picker (Push to LPOS) ─────────────────────────── */
+/* ── Inline project picker ("Upload to project") ──────────────────── */
 .export-picker-overlay {
   position: fixed;
   inset: 0;
@@ -4180,16 +4300,15 @@ button.status-bar-chip-btn:hover {
 
 .export-picker-head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  padding: 18px 22px 12px;
-  border-bottom: 1px solid var(--line);
+  align-items: center;
+  padding: 16px 22px 12px;
+  border-bottom: 1px solid var(--border);
 }
 
 .export-picker-head h3 {
-  margin: 4px 0 0;
+  margin: 0;
   color: var(--text-strong);
-  font-size: 1.1rem;
+  font-size: 1rem;
 }
 
 /* Phase 3.5.3 — search bar between header and the scrolling project list.
@@ -4252,9 +4371,20 @@ button.status-bar-chip-btn:hover {
 
 .export-picker-foot {
   padding: 14px 22px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--border);
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 10px;
+}
+
+/* Left-pinned busy / error line in the picker footer. */
+.export-picker-foot-status {
+  margin-right: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .export-project-group {
@@ -4271,9 +4401,7 @@ button.status-bar-chip-btn:hover {
   color: var(--muted-soft);
 }
 
-/* Inherits .atem-session-row from the existing ATEM ingest UI so we get the
-   same selectable-row treatment without redefining it. No additional rules
-   needed unless the picker grows project-specific styling later. */
+/* Project rows use .export-project-row (defined with the Export overlay). */
 
 /* ── Phase 3.5 — Orphan-exports nudge pill (lives inside JobPanel) ── */
 .exports-pill {
@@ -4297,19 +4425,6 @@ button.status-bar-chip-btn:hover {
   border-color: var(--accent);
 }
 
-.exports-pill-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--page-bg);
-  font-size: 0.6rem;
-  font-weight: 700;
-  flex-shrink: 0;
-}
 
 .exports-pill-text {
   flex: 1 1 auto;
@@ -4317,9 +4432,13 @@ button.status-bar-chip-btn:hover {
   font-weight: 500;
 }
 
+.exports-pill-sep {
+  color: var(--accent);
+}
+
 .exports-pill-cta {
   color: var(--accent);
-  font-size: 0.78rem;
+  font-weight: 600;
   white-space: nowrap;
 }
 

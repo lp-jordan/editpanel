@@ -3,9 +3,13 @@
  *
  * Shows:
  *  • Any currently running job engine jobs with step progress + Cancel
- *  • Recent result runs (spellcheck, audit, etc.) with Review + Delete
- *  • Recent (terminal) engine jobs with Delete
- *  • A footer action to clear everything older than 30 days
+ *  • Recent result runs (spellcheck, audit, etc.) with Review + Clear
+ *  • Recent (terminal) engine jobs with Clear
+ *  • A footer "Clear finished" action (scoped to the active tab)
+ *
+ * This is a LOG of active + recently finished work. The full export history
+ * (with Delete) is ExportsPanel on the Deliver page. Every × here only clears
+ * the row from Jobs, so it is labelled Clear, never Delete.
  *
  * Props:
  *  open          — boolean, whether the panel is visible
@@ -40,6 +44,41 @@ const CHEVRON_ICON = (
   </svg>
 );
 
+// Friendly names for engine jobs (recipe ids from orchestrator/recipes.json)
+// and their steps. Raw ids never show on screen; they stay in the row tooltip.
+const JOB_PRESET_NAMES = {
+  lp_base_export_round1: 'Queue exports',
+  prepare_project:       'Project setup'
+};
+const JOB_STEP_NAMES = {
+  connect:        'Connecting to Resolve',
+  create_bins:    'Creating bins',
+  lp_base_export: 'Queuing exports'
+};
+function friendlyJobName(job) {
+  return JOB_PRESET_NAMES[job?.preset_id] || 'Job';
+}
+function friendlyStepName(step) {
+  if (!step) return null;
+  return JOB_STEP_NAMES[step.step_id] || JOB_STEP_NAMES[step.cmd] || null;
+}
+
+// Engine-job / export state → { dot, label } for the compact rows: a
+// .status-dot modifier plus a short text label.
+function jobStatusOf(state) {
+  switch (state) {
+    case 'succeeded':
+    case 'completed':   return { dot: 'is-done',    label: 'Done' };
+    case 'delivered':   return { dot: 'is-done',    label: 'Uploaded' };
+    case 'partial':     return { dot: 'is-error',   label: 'Partly done' };
+    case 'failed':      return { dot: 'is-error',   label: 'Failed' };
+    case 'interrupted': return { dot: 'is-error',   label: 'Interrupted' };
+    case 'canceled':    return { dot: 'is-skipped', label: 'Canceled' };
+    case 'complete_unassigned': return { dot: 'is-done', label: 'Unassigned' };
+    default:            return { dot: 'is-pending', label: '' };
+  }
+}
+
 /**
  * Chunky export row — the "in-flight" presentation shared by editpanel-queued
  * exports (driven by the in-memory activeExport singleton) and Resolve-queued
@@ -50,15 +89,18 @@ const CHEVRON_ICON = (
  * of forking the markup.
  *
  * Props are deliberately normalised (no activeExport / row mix at this layer):
- *  - jobs: [{id, name, mark}] where `mark` is already formatted (e.g. "47%",
- *    "✓", "↑12%"). For orphans we synthesise the mark from the row-level
- *    percent since the reconciler doesn't keep per-job percents fresh; for
- *    editpanel-queued exports it comes from exportJobMark(activeExport.jobs[i]).
- *  - unassigned: render a muted "unassigned" hint after the headline. Used
- *    only for orphans that haven't been routed to an LPOS project yet.
+ *  - jobs: [{id, name, mark, done}] where `mark` is already formatted text
+ *    (e.g. "47%", "Done", "Uploading 12%"). For orphans we synthesise the mark
+ *    from the row-level percent since the reconciler doesn't keep per-job
+ *    percents fresh; for editpanel-queued exports it comes from
+ *    exportJobMark(activeExport.jobs[i]).
+ *  - unassigned: only adds "Unassigned" to the headline tooltip. The
+ *    UnassignedExportsPill is the one visible unassigned treatment.
  *  - onStart / onClearQueued: only the editpanel-queued path uses them (queued
  *    state is unreachable for orphans, which are by definition Started in
- *    Resolve before we discover them).
+ *    Resolve before we discover them). onStart is passed only when this is the
+ *    single queued batch; with several, the checkboxes + "Start (N)" bar start
+ *    them instead.
  */
 function RenderingExportRow({
   headline,
@@ -86,10 +128,13 @@ function RenderingExportRow({
   const pct       = uploading ? (uploadPercent ?? 0) : queued ? 0 : (percent ?? 0);
   const count     = jobCount ?? (jobs ? jobs.length : 0);
   const badge     = queued
-    ? `Queued · ${count} timeline${count !== 1 ? 's' : ''}`
+    ? `${count} timeline${count !== 1 ? 's' : ''} queued`
     : uploading
     ? `Uploading ${pct}%`
-    : `${jobsDone ?? 0}/${count} · ${pct}%`;
+    : count > 1
+    ? `Exporting ${jobsDone ?? 0} of ${count}, ${pct}%`
+    : `Exporting ${pct}%`;
+  const nameTitle = [headline, unassigned ? 'Unassigned' : null].filter(Boolean).join('\n');
   return (
     <div className="job-panel-row active">
       <div className="job-panel-row-top">
@@ -100,8 +145,8 @@ function RenderingExportRow({
               className="job-panel-export-select"
               checked={Boolean(selected)}
               onChange={onToggleSelect}
-              title="Select for chained export"
-              aria-label="Select this batch to run in a chain"
+              title="Select to start"
+              aria-label="Select this batch to start"
             />
           )}
           <button
@@ -113,49 +158,43 @@ function RenderingExportRow({
           >
             {CHEVRON_ICON}
           </button>
-          <span className="job-panel-name">{headline}</span>
-          {unassigned && (
-            <span
-              className="job-panel-headline-hint"
-              title="Caught from Resolve's render queue — pick a destination project on the Deliver page"
-            >
-              unassigned
-            </span>
-          )}
+          <span className="job-panel-name" title={nameTitle}>{headline}</span>
         </div>
         <div className="job-panel-row-actions">
           <span className="job-panel-step-badge">{badge}</span>
           {queued ? (
-            onStart ? (
+            upNext ? (
+              <span className="job-panel-headline-hint" title="Starts after the current export">
+                Up next
+              </span>
+            ) : (
               <React.Fragment>
-                <button
-                  className="job-panel-review-btn done"
-                  onClick={onStart}
-                  title="Start rendering this batch now"
-                >
-                  Start
-                </button>
+                {onStart && (
+                  <button
+                    className="btn small"
+                    onClick={onStart}
+                    title="Start exporting this batch"
+                  >
+                    Start
+                  </button>
+                )}
                 {onClearQueued && (
                   <button
                     className="job-panel-delete-btn"
                     onClick={onClearQueued}
-                    title="Clear queued export"
-                    aria-label="Clear queued export"
+                    title="Clear from Jobs"
+                    aria-label="Clear from Jobs"
                   >
                     {X_ICON}
                   </button>
                 )}
               </React.Fragment>
-            ) : upNext ? (
-              <span className="job-panel-headline-hint" title="Will start automatically after the current export finishes">
-                Up next
-              </span>
-            ) : null
+            )
           ) : (
             <button
-              className="job-panel-cancel-btn"
+              className="btn danger small"
               onClick={onStop}
-              title={uploading ? 'Stop upload' : 'Stop render'}
+              title={uploading ? 'Stop upload' : 'Stop export'}
             >
               Stop
             </button>
@@ -173,23 +212,19 @@ function RenderingExportRow({
           {jobs.map(j => (
             <div
               key={j.id}
-              className={`job-panel-export-job${j.mark === '✓' ? ' done' : ''}`}
+              className={`job-panel-export-job${j.done ? ' done' : ''}${j.error ? ' error' : ''}`}
             >
               <span className="job-panel-export-job-name">{j.name}</span>
-              <span className="job-panel-export-job-mark">{queued ? '·' : j.mark}</span>
+              <span className="job-panel-export-job-mark">{queued ? '' : j.mark}</span>
             </div>
           ))}
         </div>
       )}
-      {!collapsed && (
-        <p className="job-panel-substep">
-          {queued
-            ? (upNext
-                ? 'Up next — starts automatically after the current export'
-                : 'Queued — select it (or press Start) to render')
-            : uploading
+      {!collapsed && !queued && (uploading || targetDir) && (
+        <p className="job-panel-substep" title={uploading ? undefined : targetDir}>
+          {uploading
             ? `Uploading to ${projectName || 'LPOS'}…`
-            : (targetDir || '')}
+            : targetDir}
         </p>
       )}
     </div>
@@ -312,11 +347,17 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     : activeTab === 'comments'   ? commentPullRuns
     : runs;
 
-  function formatState(state) {
-    if (state === 'succeeded') return '✓';
-    if (state === 'failed')    return '✗';
-    if (state === 'canceled')  return '–';
-    return state;
+  // Status dot + optional short label for compact rows. "Done" is implied by
+  // the green dot, so only non-success states print a label.
+  function renderStatus(state) {
+    const s = jobStatusOf(state);
+    const showLabel = s.label && s.dot !== 'is-done';
+    return (
+      <React.Fragment>
+        <span className={`status-dot ${s.dot}`} title={s.label || undefined} aria-label={s.label || undefined} />
+        {showLabel && <span className={`job-panel-status-label ${s.dot}`}>{s.label}</span>}
+      </React.Fragment>
+    );
   }
 
   function formatAge(ts) {
@@ -324,7 +365,8 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     const diff = Math.round((Date.now() - ts) / 1000);
     if (diff < 60)   return `${diff}s ago`;
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
   }
 
   function formatDuration(ms) {
@@ -341,57 +383,40 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
     return { done, total, pct: Math.round((done / total) * 100) };
   }
 
-  function formatExportState(state) {
-    if (state === 'completed')   return '✓';
-    if (state === 'partial')     return '⚠';
-    if (state === 'failed')      return '✗';
-    if (state === 'canceled')    return '–';
-    if (state === 'interrupted') return '!';
-    return state;
-  }
-
-  // Map export states onto the existing state-icon CSS classes for colour reuse.
-  function exportRowState(state) {
-    if (state === 'completed')                         return 'succeeded';
-    if (state === 'failed' || state === 'interrupted') return 'failed';
-    if (state === 'partial')                           return 'failed';
-    if (state === 'canceled')                          return 'canceled';
-    return state;
-  }
-
   // Build the headline label for an export_runs row in the compact recent list.
-  // Editpanel-queued (or assigned orphans) → "→ {LPOS project}" to match the
-  // active-row arrow convention. Orphans without an LPOS assignment fall back
-  // to the richest Resolve-side identity we captured at reconcile time
-  // (resolveProjectName · TimelineName / CustomName / OutputFilename) so the
-  // editor doesn't see a wall of generic "Render" rows. Last resort: 'Render'.
+  // Editpanel-queued (or assigned orphans) → the LPOS project name. Orphans
+  // without an LPOS assignment fall back to the richest Resolve-side identity
+  // we captured at reconcile time (resolveProjectName / TimelineName /
+  // CustomName / OutputFilename) so the editor doesn't see a wall of generic
+  // rows. Last resort: 'Export'.
   function exportRowLabel(e) {
-    if (e.project_name) return `→ ${e.project_name}`;
+    if (e.project_name) return e.project_name;
     const j = (e.jobs && e.jobs[0]) || {};
     const proj = j.resolveProjectName || null;
     const tl   = j.TimelineName || j.CustomName || j.OutputFilename || j.RenderJobName || null;
-    if (proj && tl) return `${proj} · ${tl}`;
+    if (proj && tl) return `${proj} / ${tl}`;
     if (proj)       return proj;
     if (tl)         return tl;
-    return 'Render';
+    return 'Export';
   }
 
   // Combined per-timeline mark: upload state takes over once a render finishes
   // (renders and uploads overlap), otherwise show the render state/percent.
+  // Returns { mark, done, error } with `mark` as short visible text.
   function exportJobMark(job) {
-    if (job.uploadStatus === 'uploaded')  return '✓';
-    if (job.uploadStatus === 'uploading') return `↑${job.uploadPercent ?? 0}%`;
+    if (job.uploadStatus === 'uploaded')  return { mark: 'Uploaded', done: true };
+    if (job.uploadStatus === 'uploading') return { mark: `Uploading ${job.uploadPercent ?? 0}%` };
     // Retrying = LPOS went away mid-upload and the uploader is waiting to
-    // resume the same session. Its own mark (not a frozen ↑NN%) so a stalled
-    // bar doesn't read as a hang the editor should cancel out of.
-    if (job.uploadStatus === 'retrying')  return `↻${job.uploadPercent ?? 0}%`;
-    if (job.uploadStatus === 'verifying') return '…';
-    if (job.uploadStatus === 'failed')    return '✗';
-    if (job.status === 'Complete')  return '✓';
-    if (job.status === 'Failed')    return '✗';
-    if (job.status === 'Cancelled') return '–';
-    if (job.status === 'Ready' || job.status === 'Queued') return '·';
-    return `${job.percent ?? 0}%`;
+    // resume the same session. Its own mark (not a frozen percent) so a
+    // stalled bar doesn't read as a hang the editor should cancel out of.
+    if (job.uploadStatus === 'retrying')  return { mark: `Retrying ${job.uploadPercent ?? 0}%` };
+    if (job.uploadStatus === 'verifying') return { mark: 'Checking…' };
+    if (job.uploadStatus === 'failed')    return { mark: 'Upload failed', error: true };
+    if (job.status === 'Complete')  return { mark: 'Done', done: true };
+    if (job.status === 'Failed')    return { mark: 'Failed', error: true };
+    if (job.status === 'Cancelled') return { mark: 'Canceled' };
+    if (job.status === 'Ready' || job.status === 'Queued') return { mark: 'Queued' };
+    return { mark: `${job.percent ?? 0}%` };
   }
 
   async function handleCancelExport() {
@@ -437,6 +462,10 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
       return next;
     });
   }
+
+  // One queued batch → per-row Start, no checkbox. Several → checkboxes plus
+  // one "Start (N)" button.
+  const multiQueued = queuedBatches.length > 1;
 
   // Start the selected batches as a chain, in pipeline (display) order.
   async function handleStartChain() {
@@ -568,48 +597,44 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
             <section className="job-panel-section">
               <p className="job-panel-section-label">Exports</p>
 
-              {/* Chain action bar — select queued batches and run them back-to-
-                  back. Hidden while an export is in flight (one chain at a time). */}
-              {queuedBatches.length > 0 && !exportBusy && (
+              {/* Several queued batches: tick them and start them back-to-back
+                  with one button. Hidden while an export is in flight (one run
+                  at a time). A single queued batch gets a per-row Start instead. */}
+              {multiQueued && !exportBusy && (
                 <div className="job-panel-chain-bar">
                   <button
-                    className="job-panel-chain-select"
-                    onClick={() => setSelectedQueued(prev =>
-                      prev.size === queuedBatches.length
-                        ? new Set()
-                        : new Set(queuedBatches.map(e => e.export_id)))}
-                    title={selectedQueued.size === queuedBatches.length ? 'Deselect all' : 'Select all queued batches'}
-                  >
-                    {selectedQueued.size === queuedBatches.length ? 'Clear' : 'Select all'}
-                  </button>
-                  <button
-                    className="job-panel-review-btn done"
+                    className="btn small"
                     disabled={selectedQueued.size === 0}
                     onClick={handleStartChain}
-                    title="Render the selected batches one after another"
+                    title="Export the selected batches one after another"
                   >
-                    Start {selectedQueued.size > 0 ? `${selectedQueued.size} ` : ''}selected
+                    Start ({selectedQueued.size})
                   </button>
                 </div>
               )}
               {exportBusy && pendingChain.size > 0 && (
                 <p className="job-panel-chain-note">
-                  Rendering a chain — {pendingChain.size} batch{pendingChain.size !== 1 ? 'es' : ''} queued to follow.
+                  {pendingChain.size} more up next.
                 </p>
               )}
 
               {activeExport && (
                 <RenderingExportRow
-                  headline={activeExport.projectName ? `→ ${activeExport.projectName}` : 'Render'}
+                  headline={activeExport.projectName || 'Export'}
                   unassigned={false}
                   state={activeExport.state}
                   percent={activeExport.percent ?? 0}
                   uploadPercent={activeExport.uploadPercent ?? 0}
-                  jobs={activeExport.jobs.map(j => ({
-                    id: j.job_id,
-                    name: j.name,
-                    mark: exportJobMark(j)
-                  }))}
+                  jobs={activeExport.jobs.map(j => {
+                    const m = exportJobMark(j);
+                    return {
+                      id: j.job_id,
+                      name: j.name || 'Untitled timeline',
+                      mark: m.mark,
+                      done: m.done,
+                      error: m.error
+                    };
+                  })}
                   jobsDone={activeExport.jobsDone}
                   jobCount={activeExport.jobs.length}
                   targetDir={activeExport.targetDir}
@@ -627,29 +652,30 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                 .map(e => {
                   // Orphan = caught from Resolve's render queue, not queued via
                   // editpanel. Until the editor assigns an LPOS project the row
-                  // stays in this in-between state; the chip / muted hint
-                  // makes that explicit so it doesn't read as "just another
-                  // finished render."
+                  // stays in this in-between state. The UnassignedExportsPill
+                  // is the visible treatment; rows only carry it in a tooltip.
                   const isUnassignedOrphan = e.source === 'reconciled' && !e.project_name;
 
-                  // Editpanel-queued batch awaiting a start. Gets a checkbox +
-                  // per-row Start when idle, or an "Up next" badge when it's a
-                  // pending member of the running chain. (Orphans are never in
-                  // 'queued' — they're discovered already rendering — so this
-                  // branch is editpanel-queued batches only.)
+                  // Editpanel-queued batch awaiting a start. With several
+                  // queued batches it gets a checkbox (started via the
+                  // "Start (N)" bar); a lone batch gets a per-row Start. A
+                  // pending member of the running chain shows "Up next".
+                  // (Orphans are never in 'queued' — they're discovered
+                  // already rendering — so this branch is editpanel-queued
+                  // batches only.)
                   if (e.state === 'queued' && e.source !== 'reconciled') {
                     const inChain = pendingChain.has(e.export_id);
                     return (
                       <RenderingExportRow
                         key={e.export_id}
-                        headline={e.project_name ? `→ ${e.project_name}` : exportRowLabel(e)}
+                        headline={exportRowLabel(e)}
                         unassigned={false}
                         state="queued"
                         percent={0}
                         jobs={(e.jobs || []).map(j => ({
                           id: String(j.job_id || j.JobId || ''),
-                          name: j.name || j.TimelineName || j.CustomName || String(j.job_id || ''),
-                          mark: '·'
+                          name: j.name || j.TimelineName || j.CustomName || 'Untitled timeline',
+                          mark: ''
                         }))}
                         jobsDone={0}
                         jobCount={e.job_count ?? (e.jobs || []).length}
@@ -657,9 +683,9 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                         projectName={e.project_name}
                         collapsed={!expandedQueued.has(e.export_id)}
                         onToggleCollapse={() => toggleQueuedCollapsed(e.export_id)}
-                        onStart={exportBusy ? null : () => handleStartOneQueued(e.export_id)}
+                        onStart={exportBusy || multiQueued ? null : () => handleStartOneQueued(e.export_id)}
                         onClearQueued={exportBusy ? null : () => handleDeleteExportRun(e.export_id)}
-                        selectable={!exportBusy}
+                        selectable={!exportBusy && multiQueued}
                         selected={selectedQueued.has(e.export_id)}
                         onToggleSelect={() => toggleQueuedSelected(e.export_id)}
                         upNext={inChain}
@@ -683,16 +709,14 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                     const rowPct = e.percent ?? 0;
                     const normalizedJobs = (e.jobs || []).map(j => ({
                       id: String(j.JobId || j.job_id || ''),
-                      name: j.TimelineName || j.CustomName || j.OutputFilename || j.RenderJobName || j.name || String(j.JobId || j.job_id || ''),
+                      name: j.TimelineName || j.CustomName || j.OutputFilename || j.RenderJobName || j.name || 'Untitled timeline',
                       mark: e.state === 'uploading'
-                        ? `↑${rowPct}%`
+                        ? `Uploading ${rowPct}%`
                         : e.state === 'rendering'
                         ? `${rowPct}%`
-                        : '·'
+                        : ''
                     }));
-                    const headline = e.project_name
-                      ? `→ ${e.project_name}`
-                      : exportRowLabel(e);
+                    const headline = exportRowLabel(e);
                     return (
                       <RenderingExportRow
                         key={e.export_id}
@@ -715,36 +739,36 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                     );
                   }
 
+                  // Compact finished row: status dot (+ label when not Done),
+                  // name, age. Timeline count only when partial; duration and
+                  // destination live in the tooltip.
+                  const doneCount  = e.jobs_done ?? 0;
+                  const totalCount = e.job_count ?? 0;
+                  const isPartialCount = totalCount > 0 && doneCount < totalCount;
+                  const statusState = e.state === 'completed' && e.lpos_delivery ? 'delivered' : e.state;
                   const titleParts = [];
                   if (e.project_name) titleParts.push(`LPOS: ${e.project_name}`);
                   if (e.target_dir)   titleParts.push(`Output: ${e.target_dir}`);
-                  if (isUnassignedOrphan) titleParts.push('Not yet assigned to an LPOS project');
+                  if (isUnassignedOrphan) titleParts.push('Unassigned');
+                  if (e.finished_at && e.started_at) titleParts.push(`Took ${formatDuration(e.finished_at - e.started_at)}`);
                   const rowTitle = titleParts.join('\n') || undefined;
                   return (
                     <div
                       key={e.export_id}
-                      className={`job-panel-row compact ${exportRowState(e.state)}`}
+                      className="job-panel-row compact"
                       title={rowTitle}
                     >
-                      <span className={`job-panel-state-icon ${exportRowState(e.state)}`}>
-                        {formatExportState(e.state)}
-                      </span>
+                      {renderStatus(statusState)}
                       <span className="job-panel-name">{exportRowLabel(e)}</span>
-                      {isUnassignedOrphan && (
-                        <span className="job-panel-row-chip" title="Caught from Resolve's render queue — pick a destination project on the Deliver page">
-                          Unassigned
-                        </span>
-                      )}
-                      <span className="job-panel-age">{e.jobs_done}/{e.job_count}</span>
-                      {e.finished_at && e.started_at && (
-                        <span className="job-panel-age">{formatDuration(e.finished_at - e.started_at)}</span>
+                      {isPartialCount && (
+                        <span className="job-panel-age">{doneCount}/{totalCount}</span>
                       )}
                       <span className="job-panel-age">{formatAge(e.finished_at || e.started_at)}</span>
                       <button
                         className="job-panel-delete-btn"
                         onClick={() => handleDeleteExportRun(e.export_id)}
-                        title="Delete this export"
-                        aria-label="Delete this export"
+                        title="Clear from Jobs"
+                        aria-label="Clear from Jobs"
                       >
                         {xIcon}
                       </button>
@@ -760,16 +784,20 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
               <p className="job-panel-section-label">Running</p>
               {runningJobs.map(job => {
                 const prog = stepProgress(job);
+                const stepName = friendlyStepName(job.active_step);
+                // Raw ids stay available on hover for debugging.
+                const rawTitle = [job.preset_id, job.job_id, job.active_step?.cmd || job.active_step?.worker]
+                  .filter(Boolean).join('\n');
                 return (
                   <div key={job.job_id} className="job-panel-row active">
                     <div className="job-panel-row-top">
-                      <span className="job-panel-name">{job.preset_id || job.job_id.slice(0, 8)}</span>
+                      <span className="job-panel-name" title={rawTitle}>{friendlyJobName(job)}</span>
                       <div className="job-panel-row-actions">
                         {prog && (
-                          <span className="job-panel-step-badge">{prog.done}/{prog.total}</span>
+                          <span className="job-panel-step-badge">Step {prog.done} of {prog.total}</span>
                         )}
                         <button
-                          className="job-panel-cancel-btn"
+                          className="btn danger small"
                           onClick={() => handleCancelJob(job.job_id)}
                           title="Cancel job"
                         >
@@ -785,10 +813,8 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                         />
                       </div>
                     )}
-                    {job.active_step && (
-                      <p className="job-panel-substep">
-                        {job.active_step.cmd || job.active_step.worker}
-                      </p>
+                    {stepName && (
+                      <p className="job-panel-substep">{stepName}…</p>
                     )}
                   </div>
                 );
@@ -823,24 +849,21 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                         </div>
                         <div className="job-panel-row-actions">
                           <button
-                            className="job-panel-review-btn done"
+                            className="btn ghost small"
                             onClick={() => onViewResults(run.job_id)}
                           >
-                            View Report
+                            View report
                           </button>
                           <button
                             className="job-panel-delete-btn"
                             onClick={() => handleDeleteRun(run.job_id)}
-                            title="Delete this run"
-                            aria-label="Delete this run"
+                            title="Clear from Jobs"
+                            aria-label="Clear from Jobs"
                           >
                             {xIcon}
                           </button>
                         </div>
                       </div>
-                      <p className="job-panel-substep">
-                        View the report for a full breakdown.
-                      </p>
                     </div>
                   );
                 }
@@ -848,21 +871,21 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                 // Spellcheck-with-zero-issues: register that the run happened
                 // (so the editor has proof) but skip the Review button and the
                 // resolved/skipped/pending substep — there's nothing to review.
-                // Shows a calm "✓ No issues" mark in line with the success
+                // Shows a green status dot + "No issues" in line with the success
                 // color used elsewhere in this panel.
                 const noItems = run.total === 0;
                 if (noItems) {
                   return (
-                    <div key={run.job_id} className="job-panel-row compact succeeded">
-                      <span className="job-panel-state-icon succeeded">✓</span>
+                    <div key={run.job_id} className="job-panel-row compact">
+                      {renderStatus('succeeded')}
                       <span className="job-panel-name">{run.label}</span>
                       <span className="job-panel-age">No issues</span>
                       <span className="job-panel-age">{formatAge(run.created_at)}</span>
                       <button
                         className="job-panel-delete-btn"
                         onClick={() => handleDeleteRun(run.job_id)}
-                        title="Delete this run"
-                        aria-label="Delete this run"
+                        title="Clear from Jobs"
+                        aria-label="Clear from Jobs"
                       >
                         {xIcon}
                       </button>
@@ -883,16 +906,16 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                       </div>
                       <div className="job-panel-row-actions">
                         <button
-                          className={`job-panel-review-btn${isDone ? ' done' : ''}`}
+                          className="btn ghost small"
                           onClick={() => onViewResults(run.job_id)}
                         >
-                          {isDone ? 'Done' : run.pending > 0 ? `Resume (${run.pending})` : 'Review'}
+                          {!isDone && run.pending > 0 ? `Resume (${run.pending})` : 'Review'}
                         </button>
                         <button
                           className="job-panel-delete-btn"
                           onClick={() => handleDeleteRun(run.job_id)}
-                          title="Delete this run"
-                          aria-label="Delete this run"
+                          title="Clear from Jobs"
+                          aria-label="Clear from Jobs"
                         >
                           {xIcon}
                         </button>
@@ -905,7 +928,7 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                       />
                     </div>
                     <p className="job-panel-substep">
-                      {run.resolved} resolved · {run.skipped} skipped · {run.pending} pending
+                      {run.resolved} resolved, {run.skipped} skipped, {run.pending} pending
                     </p>
                   </div>
                 );
@@ -918,22 +941,23 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
             <section className="job-panel-section">
               <p className="job-panel-section-label">Recent</p>
               {recentJobs.map(job => (
-                <div key={job.job_id} className={`job-panel-row compact ${job.state}`}>
-                  <span className={`job-panel-state-icon ${job.state}`}>
-                    {formatState(job.state)}
-                  </span>
-                  <span className="job-panel-name">{job.preset_id || job.job_id.slice(0, 8)}</span>
-                  {job.finished_at && job.started_at && (
-                    <span className="job-panel-age">
-                      {formatDuration(job.finished_at - job.started_at)}
-                    </span>
-                  )}
+                <div
+                  key={job.job_id}
+                  className="job-panel-row compact"
+                  title={[
+                    job.preset_id,
+                    job.job_id,
+                    job.finished_at && job.started_at ? `Took ${formatDuration(job.finished_at - job.started_at)}` : null
+                  ].filter(Boolean).join('\n')}
+                >
+                  {renderStatus(job.state)}
+                  <span className="job-panel-name">{friendlyJobName(job)}</span>
                   <span className="job-panel-age">{formatAge(job.finished_at || job.created_at)}</span>
                   <button
                     className="job-panel-delete-btn"
                     onClick={() => handleDeleteJob(job.job_id)}
-                    title="Delete this job"
-                    aria-label="Delete this job"
+                    title="Clear from Jobs"
+                    aria-label="Clear from Jobs"
                   >
                     {xIcon}
                   </button>
@@ -961,10 +985,10 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
               onClick={handleClearAll}
               disabled={clearing}
               title={activeTab === 'all'
-                ? 'Clear every finished item across all categories'
-                : `Clear every finished ${activeTab === 'exports' ? 'export' : activeTab === 'spellcheck' ? 'spellcheck run' : 'comment pull'}`}
+                ? 'Clear finished items from Jobs'
+                : `Clear finished ${activeTab === 'exports' ? 'exports' : activeTab === 'spellcheck' ? 'spellcheck runs' : 'comment pulls'} from Jobs`}
             >
-              {clearing ? 'Clearing…' : (activeTab === 'all' ? 'Clear all' : `Clear all ${activeTab}`)}
+              {clearing ? 'Clearing…' : 'Clear finished'}
             </button>
           </footer>
         )}
