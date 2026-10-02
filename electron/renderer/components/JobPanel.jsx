@@ -576,8 +576,12 @@ function JobPanel({ open, onClose, dashboard, activeExport, exportVersion, onVie
                   className={`job-panel-tab${activeTab === t.key ? ' active' : ''}`}
                   onClick={() => setActiveTab(t.key)}
                 >
-                  {t.label}
-                  {count > 0 && <span className="job-panel-tab-count">{count}</span>}
+                  <span className="job-panel-tab-label">{t.label}</span>
+                  {count > 0 && (
+                    <span className="job-panel-tab-count" title={String(count)}>
+                      {count > 99 ? '99+' : count}
+                    </span>
+                  )}
                 </button>
               );
             })}

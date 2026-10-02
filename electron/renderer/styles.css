@@ -1770,7 +1770,9 @@ button.status-bar-chip-btn:disabled {
   bottom: 80px; /* sits just above the floating Jobs button */
   right: 16px;
   left: auto;
-  width: 380px;
+  /* 420px so the four tabs fit with a count on every tab (measured: ~360px
+     of tabs vs ~375px of body after padding + Windows scrollbar gutter). */
+  width: 420px;
   z-index: 55;
   /* Fade + gentle rise from the button — not a full-height slide */
   opacity: 0;
@@ -1867,25 +1869,26 @@ button.status-bar-chip-btn:disabled {
   border-radius: 999px;
   align-self: flex-start;
   max-width: 100%;
-  /* No overflow-x: auto here — there are exactly 4 fixed tabs and they
-     should always fit (the body's scrollbar-gutter keeps width stable).
-     If they ever do overflow it should be a visible bug to fix, not
-     silently chevron-hidden behind a scrollbar. */
+  min-width: 0;
+  /* The row can never overflow the panel: tabs shrink (min-width: 0) and, as a
+     last resort, a label truncates with an ellipsis. Counts cap at "99+". */
 }
 .job-panel-tab {
   appearance: none;
   border: none;
   background: transparent;
   color: var(--muted-soft);
-  padding: 5px 12px;
+  padding: 5px 8px;
   border-radius: 999px;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   font-weight: 600;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
   transition: background 140ms ease, color 140ms ease;
 }
 .job-panel-tab:hover {
@@ -1896,13 +1899,19 @@ button.status-bar-chip-btn:disabled {
   color: var(--text-strong);
   background: var(--hover-strong);
 }
+.job-panel-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
 .job-panel-tab-count {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
   border-radius: 999px;
   background: var(--info-soft);
   color: var(--info-strong);
