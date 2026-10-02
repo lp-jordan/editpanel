@@ -127,52 +127,6 @@ function HoverNav({ route, onNavigate }) {
   );
 }
 
-function Breadcrumbs({ route, onNavigate }) {
-  if (route === '/') return null;
-
-  const crumbs = route
-    .split('/')
-    .filter(Boolean)
-    .map((segment, index, segments) => {
-      const href = '/' + segments.slice(0, index + 1).join('/');
-      return {
-        href,
-        label: ROUTE_LABELS[href] || segment,
-        isLast: index === segments.length - 1
-      };
-    });
-
-  return (
-    <nav className="breadcrumb-bar" aria-label="Breadcrumb">
-      <button
-        type="button"
-        className="breadcrumb-back"
-        onClick={() => window.history.length > 1 ? window.history.back() : onNavigate('/')}
-        aria-label="Go back"
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-      </button>
-      <button type="button" className="breadcrumb-home" aria-label="Home" onClick={() => onNavigate('/')}>
-        <HomeIcon size={13} />
-      </button>
-      {crumbs.map((crumb) => (
-        <span key={crumb.href} className="breadcrumb-item">
-          <span className="breadcrumb-sep">/</span>
-          {crumb.isLast ? (
-            <span className="breadcrumb-current">{crumb.label}</span>
-          ) : (
-            <button type="button" className="breadcrumb-link" onClick={() => onNavigate(crumb.href)}>
-              {crumb.label}
-            </button>
-          )}
-        </span>
-      ))}
-    </nav>
-  );
-}
-
 function App() {
   const [route, setRoute] = React.useState(() => getRouteFromHash());
   const [project, setProject] = React.useState('');
@@ -220,15 +174,54 @@ function App() {
   const [epUserEmail, setEpUserEmail] = React.useState('');
   const [epMachineName, setEpMachineName] = React.useState('');
   const [signinBusy, setSigninBusy] = React.useState(false);
-  const [signinMessage, setSigninMessage] = React.useState('');
+  // { text, tone: 'ok' | 'error' } | null
+  const [signinMessage, setSigninMessage] = React.useState(null);
 
   // Spellcheck custom-dictionary (allowlist) state
   const [allowlist, setAllowlist] = React.useState([]);
   const [allowlistDraft, setAllowlistDraft] = React.useState('');
   const [allowlistError, setAllowlistError] = React.useState('');
 
+  // Settings → Advanced is collapsed by default (Python interpreter, Slate spans).
+  const [advancedOpen, setAdvancedOpen] = React.useState(false);
+
+  // Toast: one short transient message near the bottom-left, so a click on a
+  // task shows its result where the user is looking (the full detail still
+  // goes to the Console via appendLog). One at a time; a new toast replaces
+  // the current one. tone: 'info' | 'success' | 'warning' | 'error'.
+  const [toast, setToast] = React.useState(null);
+  const toastTimerRef = React.useRef(null);
+
+  // Reconnect in flight: set by handleConnect, cleared by the next CONNECTED
+  // status (→ success toast) or a timeout (→ "Resolve not connected." toast).
+  const [reconnecting, setReconnecting] = React.useState(false);
+  const reconnectTimerRef = React.useRef(null);
+
   const appendLog = React.useCallback((msg) => {
     setLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-250));
+  }, []);
+
+  const showToast = React.useCallback((text, opts = {}) => {
+    const { tone = 'info', detail = null, duration = 4500 } = opts;
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ id: Date.now(), text, tone, detail });
+    toastTimerRef.current = setTimeout(() => setToast(null), duration);
+  }, []);
+
+  const dismissToast = React.useCallback(() => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(null);
+  }, []);
+
+  React.useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+  }, []);
+
+  const finishReconnect = React.useCallback(() => {
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = null;
+    setReconnecting(false);
   }, []);
 
   const formatDuration = React.useCallback((milliseconds) => {
@@ -285,11 +278,18 @@ function App() {
           setAllowlist(res.words || []);
           setAllowlistDraft('');
         } else {
-          setAllowlistError(res?.error || 'Could not add the word.');
+          // Keep the friendly validation message; anything else is raw → Console.
+          if (res?.error) appendLog(`Dictionary add failed: ${res.error}`);
+          setAllowlistError(/at least one letter/i.test(res?.error || '')
+            ? 'Enter a word with at least one letter.'
+            : 'Couldn’t add the word.');
         }
       })
-      .catch((err) => setAllowlistError(err?.message || String(err)));
-  }, [allowlistDraft]);
+      .catch((err) => {
+        appendLog(`Dictionary add error: ${err?.message || String(err)}`);
+        setAllowlistError('Couldn’t add the word.');
+      });
+  }, [allowlistDraft, appendLog]);
 
   const handleRemoveAllowWord = React.useCallback((word) => {
     if (!window.spellcheckAPI?.removeWord) return;
@@ -305,17 +305,18 @@ function App() {
     const unsubscribe = window.lposAPI.onLinkResult((payload) => {
       setSigninBusy(false);
       if (payload?.ok) {
-        setSigninMessage(`Signed in as ${payload.user || 'LPOS user'}`);
+        setSigninMessage({ text: `Signed in as ${payload.user || 'LPOS user'}.`, tone: 'ok' });
         appendLog(`LPOS sign-in succeeded for ${payload.user || 'user'}`);
         loadPreferences();
         // Force an immediate health re-check
         setLposStatus('unconfigured');
       } else {
+        // Plain message on screen; the raw reason (e.g. "denied") goes to the Console.
         const err = payload?.error || 'unknown';
-        setSigninMessage(`Sign-in ${err === 'denied' ? 'cancelled' : 'failed'} (${err})`);
+        setSigninMessage({ text: err === 'denied' ? 'Sign-in canceled.' : 'Sign-in failed.', tone: 'error' });
         appendLog(`LPOS sign-in failed: ${err}`);
       }
-      setTimeout(() => setSigninMessage(''), 4000);
+      setTimeout(() => setSigninMessage(null), 4000);
     });
     return unsubscribe;
   }, [appendLog, loadPreferences]);
@@ -323,19 +324,21 @@ function App() {
   const handleSigninStart = React.useCallback(async () => {
     if (!window.lposAPI?.signinStart) return;
     setSigninBusy(true);
-    setSigninMessage('Opening browser…');
+    setSigninMessage(null);
     try {
       const result = await window.lposAPI.signinStart();
       if (!result?.ok) {
         setSigninBusy(false);
-        setSigninMessage(`Could not open browser: ${result?.error || 'unknown'}`);
+        setSigninMessage({ text: 'Sign-in failed. Couldn’t open the browser.', tone: 'error' });
+        appendLog(`LPOS sign-in: could not open browser: ${result?.error || 'unknown'}`);
       }
       // Otherwise stay busy until onLinkResult fires
     } catch (err) {
       setSigninBusy(false);
-      setSigninMessage(`Could not open browser: ${err?.message || err}`);
+      setSigninMessage({ text: 'Sign-in failed. Couldn’t open the browser.', tone: 'error' });
+      appendLog(`LPOS sign-in: could not open browser: ${err?.message || err}`);
     }
-  }, []);
+  }, [appendLog]);
 
   const handleSignout = React.useCallback(async () => {
     if (!window.lposAPI?.signout) return;
@@ -343,12 +346,13 @@ function App() {
       await window.lposAPI.signout();
       setEpUserEmail('');
       setEpMachineName('');
-      setSigninMessage('Signed out');
+      setSigninMessage({ text: 'Signed out.', tone: 'ok' });
       setLposStatus('signed-out');
-      setTimeout(() => setSigninMessage(''), 3000);
+      setTimeout(() => setSigninMessage(null), 3000);
       appendLog('LPOS signed out');
     } catch (err) {
-      setSigninMessage(`Sign-out failed: ${err?.message || err}`);
+      setSigninMessage({ text: 'Sign-out failed.', tone: 'error' });
+      appendLog(`LPOS sign-out failed: ${err?.message || err}`);
     }
   }, [appendLog]);
 
@@ -441,6 +445,11 @@ function App() {
       appendLog(`Status: ${status.code}${status.error ? ` - ${status.error}` : ''}`);
       if (status.code === 'CONNECTED' && status.ok) {
         setConnected(true);
+        // Close the loop on a user-clicked Reconnect.
+        if (reconnectTimerRef.current) {
+          finishReconnect();
+          showToast('Resolve connected.', { tone: 'success' });
+        }
         if (status.data?.project) setProject(status.data.project);
         if (status.data?.timeline) setTimeline(status.data.timeline);
       } else if (SESSION_NEGATIVE_STATUS_CODES.has(status.code) || status?.error) {
@@ -510,7 +519,7 @@ function App() {
       unsubscribeWorkerEvents && unsubscribeWorkerEvents();
       unsubscribeAdvisory && unsubscribeAdvisory();
     };
-  }, [appendLog, formatDuration]);
+  }, [appendLog, formatDuration, finishReconnect, showToast]);
 
   React.useEffect(() => {
     if (!window.electronAPI?.dashboardSnapshot) return;
@@ -539,27 +548,60 @@ function App() {
     // worker's spawn event auto-fires connect against the fresh process.
     if (!window.electronAPI?.reconnectResolve) {
       appendLog('Reconnect API not available');
+      showToast('Couldn’t reconnect to Resolve.', { tone: 'error' });
       return;
     }
+    if (reconnectTimerRef.current) return; // already reconnecting
     appendLog('Reconnecting to Resolve…');
+    setReconnecting(true);
+    showToast('Reconnecting to Resolve…', { duration: 30_000 });
+    // If no CONNECTED arrives in 30s, stop waiting and say so.
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      setReconnecting(false);
+      appendLog('Reconnect: no connection after 30s');
+      showToast('Resolve not connected.', { tone: 'warning', detail: 'Make sure Resolve is open, then try again.' });
+    }, 30_000);
     window.electronAPI.reconnectResolve()
       .then((res) => {
-        if (res?.ok) appendLog('Resolve worker respawned; reattaching…');
-        else         appendLog(`Reconnect failed: ${res?.error || 'unknown error'}`);
+        if (res?.ok) {
+          appendLog('Resolve worker respawned; reattaching…');
+        } else {
+          appendLog(`Reconnect failed: ${res?.error || 'unknown error'}`);
+          finishReconnect();
+          showToast('Couldn’t reconnect to Resolve.', { tone: 'error' });
+        }
       })
-      .catch((err) => appendLog(`Reconnect error: ${err?.error || err}`));
-  }, [appendLog]);
+      .catch((err) => {
+        appendLog(`Reconnect error: ${err?.error || err}`);
+        finishReconnect();
+        showToast('Couldn’t reconnect to Resolve.', { tone: 'error' });
+      });
+  }, [appendLog, finishReconnect, showToast]);
 
   const handleNewProjectBins = React.useCallback(() => {
     if (!window.leaderpassAPI) {
       appendLog('Leaderpass API not available; cannot create project bins');
+      showToast('Couldn’t create bins.', { tone: 'error' });
       return;
     }
 
+    appendLog('Project setup: creating bins…');
     window.leaderpassAPI.call('create_project_bins')
-      .then(() => appendLog('Project bin creation command sent'))
-      .catch((err) => appendLog(`Project bin creation error: ${err?.error || err}`));
-  }, [appendLog]);
+      .then(() => {
+        appendLog('Project setup: bins created');
+        showToast('Bins created.', { tone: 'success' });
+      })
+      .catch((err) => {
+        // Worker errors are {category, message, details}; never log "[object Object]".
+        const raw = err?.error?.message || err?.error || err?.message || 'unknown error';
+        appendLog(`Project bin creation error: ${raw}`);
+        showToast('Couldn’t create bins.', {
+          tone: 'error',
+          detail: /no active project/i.test(String(raw)) ? 'Open a project in Resolve first.' : null
+        });
+      });
+  }, [appendLog, showToast]);
 
   // Slate auto-sequencing — Step 1 (read-only): derive the recording spans of
   // the open multicam timeline from its clip edges and stream them to the
@@ -568,10 +610,12 @@ function App() {
   const handleSlateSpanReport = React.useCallback(() => {
     if (!window.leaderpassAPI) {
       appendLog('Leaderpass API not available; cannot run slate span report');
+      showToast('Couldn’t read slate spans.', { tone: 'error' });
       return;
     }
     setConsoleOpen(true);
     appendLog('Slate span report — reading the current timeline…');
+    showToast('Reading slate spans…', { duration: 15_000 });
     window.leaderpassAPI.call('slate_span_report')
       .then((res) => {
         const d = res?.data || {};
@@ -583,14 +627,21 @@ function App() {
           `Slate span report: ${spans.length} span(s) from ${src}. ` +
           `See the streamed lines above for per-span source TCs.`
         );
+        showToast(`Found ${spans.length} span${spans.length === 1 ? '' : 's'}.`, {
+          tone: 'success',
+          detail: 'Details are in the Console.'
+        });
       })
       // The worker returns `error` as a normalized object {category, message,
       // details}; reach for .message before falling back, so we never log
       // "[object Object]".
-      .catch((err) => appendLog(
-        `Slate span report error: ${err?.error?.message || err?.error || err?.message || 'unknown error'}`
-      ));
-  }, [appendLog]);
+      .catch((err) => {
+        appendLog(
+          `Slate span report error: ${err?.error?.message || err?.error || err?.message || 'unknown error'}`
+        );
+        showToast('Couldn’t read slate spans.', { tone: 'error', detail: 'Details are in the Console.' });
+      });
+  }, [appendLog, showToast]);
 
   const handleLPBaseExport = React.useCallback(() => {
     if (!window.leaderpassAPI) {
@@ -610,13 +661,16 @@ function App() {
   const handlePullComments = React.useCallback(async () => {
     if (!window.lposAPI?.pullComments) {
       appendLog('LPOS API not available — sign in to LPOS in Settings');
+      showToast('Sign in to LPOS in Settings first.', { tone: 'warning' });
       return;
     }
     if (!project) {
       appendLog('No active Resolve project — connect to Resolve first');
+      showToast('Resolve not connected.', { tone: 'warning' });
       return;
     }
     appendLog(`Pull comments → matching timelines in "${project}" against LPOS uploads…`);
+    showToast('Pulling comments…', { duration: 30_000 });
 
     let res;
     try {
@@ -624,16 +678,19 @@ function App() {
       res = await window.lposAPI.pullComments(null, {});
     } catch (err) {
       appendLog(`Pull comments error: ${err?.message || err}`);
+      showToast('Couldn’t pull comments.', { tone: 'error', detail: 'Details are in the Console.' });
       return;
     }
     if (!res?.ok) {
       appendLog(`Pull comments failed: ${res?.error || 'unknown'}`);
+      showToast('Couldn’t pull comments.', { tone: 'error', detail: 'Details are in the Console.' });
       return;
     }
 
     const d = res.data || {};
     if (d.message) {
       appendLog(d.message);
+      showToast(d.message);
     } else {
       const tlCount = (d.timelines || []).length;
       const projects = Array.isArray(d.involvedProjectNames) ? d.involvedProjectNames : [];
@@ -657,9 +714,23 @@ function App() {
       for (const t of tlSkipped) {
         appendLog(`  • ${t.timelineName || t.timelineUid}: ${t.skipped.length} marker(s) not placed (see Jobs panel for details)`);
       }
+
+      // Short summary where the user clicked. Placed count always; removed and
+      // flagged only when non-zero; problems point at the Jobs panel.
+      const placed = d.totalPlaced || 0;
+      const parts = [`${placed} marker${placed === 1 ? '' : 's'} placed`];
+      if (d.totalRemoved > 0) parts.push(`${d.totalRemoved} removed`);
+      if (d.flaggedCount > 0) parts.push(`${d.flaggedCount} timeline${d.flaggedCount === 1 ? '' : 's'} flagged`);
+      const problems = tlErrors.length + tlSkipped.length;
+      const detail = problems > 0
+        ? `${problems} timeline${problems === 1 ? '' : 's'} had problems. See Jobs.`
+        : d.flaggedCount > 0
+          ? 'Sort the bin by Flag in Resolve to find them.'
+          : null;
+      showToast(parts.join(' · '), { tone: problems > 0 ? 'warning' : 'success', detail, duration: 6000 });
     }
     if (d.jobId) setJobPanelOpen(true);
-  }, [appendLog, project, setJobPanelOpen]);
+  }, [appendLog, project, setJobPanelOpen, showToast]);
 
   const handleSpellcheck = React.useCallback(() => {
     if (!window.leaderpassAPI) {
@@ -731,23 +802,26 @@ function App() {
     }).catch(() => null);
   }, [settingsDraft]);
 
+  // Task rows per page. label = row title; actionLabel = a short verb on the
+  // button (never the title repeated). Slate Spans moved to Settings →
+  // Advanced (2026-10-02) until per-span sequences ship.
   const workspaceConfig = React.useMemo(() => ({
     '/prep': {
       tasks: [
         {
           key: 'atem-ingest',
-          label: 'ATEM Footage',
-          description: 'Ingest footage from ATEM ISO Extreme SDI over FTP, organised by session and camera.',
-          actionLabel: 'Browse ATEM',
+          label: 'ATEM footage',
+          description: 'Copy ISO recordings from the ATEM.',
+          actionLabel: 'Browse',
           onClick: () => setAtemIngestOpen(true),
           requiresResolve: false,
           comingSoon: false
         },
         {
           key: 'project-setup',
-          label: 'Project Setup',
-          description: 'Create baseline bins and project structure in Resolve.',
-          actionLabel: 'Run Project Setup',
+          label: 'Project setup',
+          description: 'Create the standard bins in Resolve.',
+          actionLabel: 'Create bins',
           onClick: handleNewProjectBins,
           requiresResolve: true
         },
@@ -759,8 +833,8 @@ function App() {
         {
           key: 'spellcheck',
           label: 'Spellcheck',
-          description: 'Scan timeline text and review misspellings before handoff.',
-          actionLabel: 'Run Spellcheck',
+          description: 'Check timeline text for misspellings.',
+          actionLabel: 'Run',
           onClick: handleSpellcheck,
           requiresResolve: true
         },
@@ -771,9 +845,9 @@ function App() {
           // placing Red markers for unresolved comments and removing
           // markers whose comments are now resolved upstream.
           key: 'pull-comments',
-          label: 'Pull Comments',
-          description: 'Fetch LPOS comments and place into project.',
-          actionLabel: 'Pull Comments',
+          label: 'Pull comments',
+          description: 'Add review comments as markers.',
+          actionLabel: 'Pull',
           onClick: handlePullComments,
           requiresResolve: true
         },
@@ -781,22 +855,10 @@ function App() {
           // 2026-06-24: open every timeline in a chosen bin, one at a time,
           // with a settle between each (OpenSequencesOverlay).
           key: 'open-sequences',
-          label: 'Open Sequences',
-          description: 'Open every sequence in a chosen bin, one after another.',
-          actionLabel: 'Open Sequences',
+          label: 'Open sequences',
+          description: 'Open every sequence in a bin.',
+          actionLabel: 'Open',
           onClick: () => setOpenSeqOpen(true),
-          requiresResolve: true
-        },
-        {
-          // 2026-07-08: slate auto-sequencing Step 1 (read-only diagnostic).
-          // Derives recording spans from the open multicam's clip edges and
-          // streams them to the console. Precursor to cutting per-span
-          // sequences named from the slate codes.
-          key: 'slate-spans',
-          label: 'Slate Spans',
-          description: 'Derive recording spans from the open multicam’s clip edges (read-only; watch the console).',
-          actionLabel: 'Report Spans',
-          onClick: handleSlateSpanReport,
           requiresResolve: true
         }
       ]
@@ -806,24 +868,29 @@ function App() {
         {
           key: 'deliver-export',
           label: 'Export',
-          description: 'Queue videos for export.',
-          actionLabel: 'Set Up Export',
+          description: 'Export timelines from Resolve.',
+          actionLabel: 'Export',
           onClick: handleLPBaseExport,
           requiresResolve: true
         },
         {
-          key: 'platform-status',
-          label: 'Platform Status',
-          description: 'Review workers, active jobs, and recent processing activity.',
-          actionLabel: 'Refresh Status',
-          onClick: () => window.electronAPI?.dashboardSnapshot?.().then((result) => {
-            setDashboard(result?.data || { jobs: [], logs_by_job_step: {} });
-          }),
+          // Was "Platform Status / Refresh Status", which refreshed data shown
+          // nowhere. Now refreshes the snapshot and opens the Jobs panel.
+          key: 'jobs',
+          label: 'Jobs',
+          description: 'See running and recent jobs.',
+          actionLabel: 'Open',
+          onClick: () => {
+            window.electronAPI?.dashboardSnapshot?.().then((result) => {
+              setDashboard(result?.data || { jobs: [], logs_by_job_step: {} });
+            }).catch(() => null);
+            setJobPanelOpen(true);
+          },
           requiresResolve: false
         }
       ]
     }
-  }), [handleLPBaseExport, handleNewProjectBins, handleSpellcheck, handlePullComments, handleSlateSpanReport]);
+  }), [handleLPBaseExport, handleNewProjectBins, handleSpellcheck, handlePullComments]);
 
   const currentWorkspace = workspaceConfig[route];
 
@@ -838,44 +905,61 @@ function App() {
     const showAdvisory = Boolean(resolveAdvisory) &&
       !connected &&
       resolveAdvisory.code !== dismissedAdvisoryCode;
+    // Readable job name only; never the raw preset/recipe id.
+    const runningJobLabel = runningJob
+      ? `${runningJob.label || runningJob.name || 'Job'}${runningJob.steps_total > 0 ? ` ${runningJob.steps_done}/${runningJob.steps_total}` : ''}`
+      : '';
+    // Advisory: title plus at most one line on screen. The full body + hint
+    // are already in the Console (main.js logs them) and in the tooltip.
+    const advisoryTooltip = showAdvisory
+      ? [resolveAdvisory.body, resolveAdvisory.hint].filter(Boolean).join('\n\n')
+      : '';
 
     return (
       <React.Fragment>
         {/* Sticky Resolve advisory banner — sits just above the status bar.
             Surfaces actionable failure modes (external scripting disabled,
-            crash loop) that would otherwise only appear as WORKER_UNAVAILABLE
-            scrolling past in the console. */}
+            crash loop, duplicate Resolve process) that would otherwise only
+            appear as WORKER_UNAVAILABLE scrolling past in the console. Some
+            advisories have a title only (empty body). */}
         {showAdvisory && (
           <div className="resolve-advisory" role="alert">
-            <div className="resolve-advisory-icon" aria-hidden="true">⚠</div>
-            <div className="resolve-advisory-body">
+            <div className="resolve-advisory-body" title={advisoryTooltip || undefined}>
               <div className="resolve-advisory-title">{resolveAdvisory.title}</div>
               {resolveAdvisory.body && (
                 <div className="resolve-advisory-text">{resolveAdvisory.body}</div>
-              )}
-              {resolveAdvisory.hint && (
-                <div className="resolve-advisory-hint">{resolveAdvisory.hint}</div>
               )}
             </div>
             <div className="resolve-advisory-actions">
               <button
                 type="button"
-                className="resolve-advisory-btn primary"
+                className="btn small"
                 onClick={handleConnect}
+                disabled={reconnecting}
               >
-                Reconnect
+                {reconnecting ? 'Reconnecting…' : 'Reconnect'}
               </button>
               <button
                 type="button"
-                className="resolve-advisory-btn"
+                className="btn small ghost"
                 onClick={() => setDismissedAdvisoryCode(resolveAdvisory.code)}
-                title="Hide until the next advisory"
               >
                 Dismiss
               </button>
             </div>
           </div>
         )}
+
+        {/* Toast — one transient result message, bottom-left above the status
+            bar (bumped above the advisory banner when that's showing). */}
+        <div className={`app-toast-region${showAdvisory ? ' above-advisory' : ''}`} aria-live="polite">
+          {toast && (
+            <div key={toast.id} className={`app-toast is-${toast.tone}`} onClick={dismissToast}>
+              <span className="app-toast-text">{toast.text}</span>
+              {toast.detail && <span className="app-toast-detail">{toast.detail}</span>}
+            </div>
+          )}
+        </div>
 
         {/* Floating Jobs pill — bottom-right, above status bar */}
         <div className="floating-jobs-area">
@@ -886,26 +970,26 @@ function App() {
             {showBusy && <span className="status-bar-spinner" />}
             <span className="floating-jobs-label">
               {exportUploading
-                ? `Upload ${activeExport.uploadPercent ?? 0}%`
+                ? `Uploading ${activeExport.uploadPercent ?? 0}%`
                 : exportRendering
-                ? `Export ${activeExport.percent}%`
+                ? `Exporting ${activeExport.percent ?? 0}%`
                 : runningJob
-                ? `${runningJob.preset_id || 'Job'}${runningJob.steps_total > 0 ? ` ${runningJob.steps_done}/${runningJob.steps_total}` : ''}`
+                ? runningJobLabel
                 : exportQueued
-                ? 'Export ready ▶'
+                ? 'Export queued'
                 : 'Jobs'}
             </span>
           </button>
         </div>
 
         <footer className="status-bar">
-          {/* Left: Resolve */}
+          {/* Left: Resolve. "Connected" only when there's no project to show. */}
           <div className="status-bar-group">
             <span className={`status-dot ${connected ? 'ok' : 'bad'}`} />
             <span className="status-bar-label">Resolve</span>
             {connected ? (
               <>
-                <span className="status-bar-chip ok">Connected</span>
+                {!project && <span className="status-bar-chip ok">Connected</span>}
                 {project && <span className="status-bar-chip">{project}</span>}
                 {timeline && <span className="status-bar-chip dim">{timeline}</span>}
               </>
@@ -914,22 +998,30 @@ function App() {
                 type="button"
                 className="status-bar-chip bad status-bar-chip-btn"
                 onClick={handleConnect}
-                title="Click to retry Resolve connection"
+                disabled={reconnecting}
               >
-                Offline
+                {reconnecting ? 'Reconnecting…' : 'Offline · Reconnect'}
               </button>
             )}
           </div>
 
           <div className="status-bar-divider" />
 
-          {/* LPOS */}
+          {/* LPOS. Signed out → a "Sign in" chip that opens Settings. */}
           <div className="status-bar-group">
             <span className={`status-dot ${lposStatus === 'ok' ? 'ok' : lposStatus === 'error' ? 'bad' : 'neutral'}`} />
             <span className="status-bar-label">LPOS</span>
             {lposStatus === 'ok' && <span className="status-bar-chip ok">Connected</span>}
             {lposStatus === 'error' && <span className="status-bar-chip bad">Unreachable</span>}
-            {lposStatus === 'no-secret' && <span className="status-bar-chip bad">No secret</span>}
+            {lposStatus === 'signed-out' && (
+              <button
+                type="button"
+                className="status-bar-chip accent status-bar-chip-btn"
+                onClick={() => navigateTo('/settings')}
+              >
+                Sign in
+              </button>
+            )}
             {lposStatus === 'unconfigured' && <span className="status-bar-chip">{lposUrl ? 'Connecting…' : 'Not configured'}</span>}
           </div>
 
@@ -939,7 +1031,6 @@ function App() {
               type="button"
               className="status-bar-console-btn status-bar-feedback-btn"
               onClick={() => setFeedbackOpen(true)}
-              title="Feedback & feature requests"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -948,10 +1039,11 @@ function App() {
             </button>
             <button
               type="button"
-              className="status-bar-console-btn"
+              className={`status-bar-console-btn${consoleOpen ? ' is-active' : ''}`}
+              aria-pressed={consoleOpen}
               onClick={() => setConsoleOpen(v => !v)}
             >
-              {consoleOpen ? 'Hide' : 'Console'}
+              Console
             </button>
           </div>
         </footer>
@@ -967,6 +1059,8 @@ function App() {
         <HoverNav route={route} onNavigate={navigateTo} />
 
         <main className="app-content">
+          {/* Compact task rows: title + one-line description on the left, a
+              short verb button on the right. Only the button is interactive. */}
           <div className="task-grid">
             {currentWorkspace.tasks.map((task) => {
               const disabled = (task.requiresResolve && !connected) || task.comingSoon;
@@ -975,8 +1069,10 @@ function App() {
                   key={task.key}
                   className={`task-card${task.comingSoon ? ' soon' : ''}`}
                 >
-                  <h3 className="task-card-title">{task.label}</h3>
-                  <p className="task-card-desc">{task.description}</p>
+                  <div className="task-card-body">
+                    <h3 className="task-card-title">{task.label}</h3>
+                    <p className="task-card-desc">{task.description}</p>
+                  </div>
                   <button
                     type="button"
                     className="btn"
@@ -1002,47 +1098,34 @@ function App() {
   }
 
   function renderSettingsPage() {
+    // "Save before signing in." only when the address was edited but not saved.
+    const lposUrlUnsaved = settingsDraft.lposUrl !== lposUrl;
     return (
       <div className="app-inner">
         <HoverNav route={route} onNavigate={navigateTo} />
-        <Breadcrumbs route={route} onNavigate={navigateTo} />
 
         <main className="app-content">
           <div className="page-stack settings-stack">
-            <section className="panel page-hero">
-              <p className="eyebrow">Configuration</p>
-              <h1 className="page-title">Settings</h1>
-              <p className="page-copy">Instance identity and connection configuration for this EditPanel machine.</p>
-            </section>
-
             <section className="panel settings-section">
-              <div className="list-header">
-                <p className="eyebrow">Instance</p>
-                <h2 className="section-title">Identity</h2>
-                <p className="section-copy">How this machine appears on the LPOS workstation page.</p>
-              </div>
+              <h2 className="section-title">This machine</h2>
               <div className="settings-field">
-                <label className="settings-label" htmlFor="display-name">Display Name</label>
+                <label className="settings-label" htmlFor="display-name">Display name</label>
+                {/* Blank = the machine hostname is shown on the LPOS workstation page. */}
                 <input
                   id="display-name"
                   type="text"
                   className="settings-input"
-                  placeholder="My Edit Station"
+                  placeholder="Uses this computer’s name if blank"
                   value={settingsDraft.displayName}
                   onChange={(e) => setSettingsDraft((prev) => ({ ...prev, displayName: e.target.value }))}
                 />
-                <p className="settings-hint">Overrides the machine hostname shown on the LPOS workstation page. Leave blank to use the hostname.</p>
               </div>
             </section>
 
             <section className="panel settings-section">
-              <div className="list-header">
-                <p className="eyebrow">Connection</p>
-                <h2 className="section-title">LPOS</h2>
-                <p className="section-copy">Connection settings for your LeaderPass instance.</p>
-              </div>
+              <h2 className="section-title">LPOS</h2>
               <div className="settings-field">
-                <label className="settings-label" htmlFor="lpos-url">Base URL</label>
+                <label className="settings-label" htmlFor="lpos-url">Address</label>
                 <input
                   id="lpos-url"
                   type="text"
@@ -1051,82 +1134,52 @@ function App() {
                   value={settingsDraft.lposUrl}
                   onChange={(e) => setSettingsDraft((prev) => ({ ...prev, lposUrl: e.target.value }))}
                 />
-                <p className="settings-hint">Save the URL before signing in. The token below is bound to whichever instance you sign in against.</p>
               </div>
 
+              {/* Sign-in is bound to whichever address was saved when signing in;
+                  revoke devices from LPOS Settings → Connected EditPanel devices. */}
               <div className="settings-field">
-                <label className="settings-label">Sign-in</label>
                 {epUserEmail ? (
                   <>
-                    <p className="settings-hint" style={{ marginTop: 0 }}>
+                    <p className="settings-signed-in">
                       Signed in as <strong>{epUserEmail}</strong>
                       {epMachineName ? <> on <strong>{epMachineName}</strong></> : null}.
-                      {' '}This machine has a long-lived token; revoke from LPOS Settings → Connected EditPanel devices.
                     </p>
                     <button
                       type="button"
-                      className="btn-secondary"
+                      className="btn ghost settings-inline-btn"
                       onClick={handleSignout}
-                      style={{ marginTop: 8, alignSelf: 'flex-start' }}
                     >
-                      Sign out of LPOS
+                      Sign out
                     </button>
                   </>
                 ) : (
                   <>
-                    <p className="settings-hint" style={{ marginTop: 0 }}>
-                      Not signed in. Click below to open LPOS in your browser and approve this machine.
-                    </p>
                     <button
                       type="button"
-                      className="btn"
+                      className="btn ghost settings-inline-btn"
                       onClick={handleSigninStart}
                       disabled={signinBusy}
-                      style={{ marginTop: 8, alignSelf: 'flex-start' }}
                     >
-                      {signinBusy ? 'Waiting for browser…' : 'Sign in to LPOS'}
+                      {signinBusy ? 'Waiting for browser…' : 'Sign in'}
                     </button>
+                    {lposUrlUnsaved && !signinBusy && (
+                      <p className="hint">Save before signing in.</p>
+                    )}
                   </>
                 )}
                 {signinMessage && (
-                  <p className="settings-hint" style={{ marginTop: 8, color: 'var(--accent)' }}>
-                    {signinMessage}
+                  <p className={signinMessage.tone === 'error' ? 'error-text' : 'hint'}>
+                    {signinMessage.text}
                   </p>
                 )}
               </div>
             </section>
 
             <section className="panel settings-section">
-              <div className="list-header">
-                <p className="eyebrow">Python</p>
-                <h2 className="section-title">Interpreter</h2>
-                <p className="section-copy">Controls which Python runs the Resolve helper. Only change this if the Resolve connection crashes immediately on startup.</p>
-              </div>
+              <h2 className="section-title">ATEM</h2>
               <div className="settings-field">
-                <label className="settings-label" style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={settingsDraft.useSystemPython}
-                    onChange={(e) => setSettingsDraft((prev) => ({ ...prev, useSystemPython: e.target.checked }))}
-                  />
-                  Use system Python instead of the bundled interpreter
-                </label>
-                <p className="settings-hint">
-                  Default (unchecked): EditPanel uses its bundled Python 3.10 — recommended for most machines.
-                  Check this box if your Resolve version ships a fusionscript.dll built for a different Python version
-                  (symptoms: immediate "Windows access violation" crash on connect). Requires a restart to take effect.
-                </p>
-              </div>
-            </section>
-
-            <section className="panel settings-section">
-              <div className="list-header">
-                <p className="eyebrow">Ingest</p>
-                <h2 className="section-title">ATEM</h2>
-                <p className="section-copy">Connection settings for the ATEM ISO Extreme SDI FTP server.</p>
-              </div>
-              <div className="settings-field">
-                <label className="settings-label" htmlFor="atem-host">FTP IP Address</label>
+                <label className="settings-label" htmlFor="atem-host">ATEM address</label>
                 <input
                   id="atem-host"
                   type="text"
@@ -1135,16 +1188,12 @@ function App() {
                   value={settingsDraft.atemHost}
                   onChange={(e) => setSettingsDraft((prev) => ({ ...prev, atemHost: e.target.value }))}
                 />
-                <p className="settings-hint">The local IP address of the ATEM ISO Extreme SDI. Only needs changing if your network layout differs.</p>
               </div>
             </section>
 
             <section className="panel settings-section">
-              <div className="list-header">
-                <p className="eyebrow">Spellcheck</p>
-                <h2 className="section-title">Custom Dictionary</h2>
-                <p className="section-copy">Words listed here are treated as correctly spelled and never flagged during a spellcheck. Add names, brands, and jargon the built-in dictionary doesn't know.</p>
-              </div>
+              {/* Words here are never flagged during a spellcheck. */}
+              <h2 className="section-title">Spellcheck dictionary</h2>
               <div className="settings-field">
                 <label className="settings-label" htmlFor="allowlist-word">Add a word</label>
                 <div className="allowlist-add-row">
@@ -1157,16 +1206,16 @@ function App() {
                     onChange={(e) => setAllowlistDraft(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddAllowWord(); } }}
                   />
-                  <button type="button" className="btn" onClick={handleAddAllowWord} disabled={!allowlistDraft.trim()}>
+                  <button type="button" className="btn ghost" onClick={handleAddAllowWord} disabled={!allowlistDraft.trim()}>
                     Add
                   </button>
                 </div>
                 {allowlistError && (
-                  <p className="settings-hint" style={{ color: 'var(--danger)' }}>{allowlistError}</p>
+                  <p className="error-text">{allowlistError}</p>
                 )}
               </div>
               <div className="settings-field">
-                <label className="settings-label">Dictionary ({allowlist.length})</label>
+                <label className="settings-label">Words ({allowlist.length})</label>
                 {allowlist.length ? (
                   <div className="allowlist-chips">
                     {allowlist.map((word) => (
@@ -1185,18 +1234,69 @@ function App() {
                     ))}
                   </div>
                 ) : (
-                  <p className="settings-hint" style={{ marginTop: 0 }}>No custom words yet. Words you add here — or via right-click during a spellcheck — will appear in this list.</p>
+                  <p className="hint">No words yet. You can also right-click words during spellcheck.</p>
                 )}
               </div>
             </section>
 
+            {/* Advanced (collapsed): rarely-needed machine settings and the
+                read-only Slate spans developer check (moved from the Edit page
+                2026-10-02 until per-span sequences ship). */}
+            <section className="panel settings-section settings-advanced">
+              <button
+                type="button"
+                className="settings-disclosure"
+                aria-expanded={advancedOpen}
+                onClick={() => setAdvancedOpen((v) => !v)}
+              >
+                <span className="section-title">Advanced</span>
+                <svg className="settings-disclosure-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+
+              {advancedOpen && (
+                <>
+                  {/* Python interpreter. Default (unchecked) = bundled Python 3.10.
+                      Check only when the installed Resolve's fusionscript.dll was
+                      built for a different Python (symptom: immediate Windows
+                      access violation on connect). */}
+                  <div className="settings-field">
+                    <label className="settings-label settings-check">
+                      <input
+                        type="checkbox"
+                        checked={settingsDraft.useSystemPython}
+                        onChange={(e) => setSettingsDraft((prev) => ({ ...prev, useSystemPython: e.target.checked }))}
+                      />
+                      Use system Python instead of the bundled one
+                    </label>
+                    <p className="hint">Only if Resolve crashes on connect. Restart required.</p>
+                  </div>
+
+                  <div className="settings-field">
+                    <label className="settings-label">Slate spans</label>
+                    <button
+                      type="button"
+                      className="btn ghost settings-inline-btn"
+                      onClick={handleSlateSpanReport}
+                      disabled={!connected}
+                      title="List the recording spans of the open multicam timeline in the Console."
+                    >
+                      Report spans
+                    </button>
+                    {!connected && <p className="hint">Resolve not connected.</p>}
+                  </div>
+                </>
+              )}
+            </section>
+
             <div className="settings-actions">
               <button type="button" className="btn" onClick={handleSaveSettings}>
-                {settingsSaved ? 'Saved' : 'Save Settings'}
+                {settingsSaved ? 'Saved' : 'Save settings'}
               </button>
               <button
                 type="button"
-                className="btn-secondary"
+                className="btn ghost"
                 onClick={() => window.electronAPI?.quit?.()}
               >
                 Quit EditPanel
@@ -1222,7 +1322,6 @@ function App() {
         <div className="home-hero">
           <div className="home-brand">
             <h1 className="home-title">EditPanel</h1>
-            <p className="home-subtitle">Your Resolve Companion</p>
           </div>
 
           <div className="home-tiles">

@@ -45,15 +45,17 @@ function FeedbackOverlay({ open, onClose }) {
         if (res && /not configured|not signed in/i.test(res.error || '')) {
           setNotReady(true);
         } else {
-          setError('Could not load feature requests.');
+          if (res && res.error) console.warn('[feedback] list failed:', res.error);
+          setError('Couldn’t load feedback.');
         }
         return;
       }
       setNotReady(false);
       setError(null);
       setWishes((res.data && res.data.wishes) || []);
-    } catch {
-      setError('Could not load feature requests.');
+    } catch (err) {
+      console.warn('[feedback] list error:', err);
+      setError('Couldn’t load feedback.');
     } finally {
       setLoading(false);
     }
@@ -86,14 +88,17 @@ function FeedbackOverlay({ open, onClose }) {
     try {
       const res = await window.lposAPI.createWish({ title: t, description: description.trim() || undefined });
       if (!res || !res.ok) {
-        setError((res && res.error) || 'Could not submit. Please try again.');
+        // Plain message on screen; the raw reason goes to the devtools console.
+        if (res && res.error) console.warn('[feedback] submit failed:', res.error);
+        setError('Couldn’t send. Try again.');
         return;
       }
       setTitle('');
       setDescription('');
       await load({ spinner: false });
-    } catch {
-      setError('Could not submit. Please try again.');
+    } catch (err) {
+      console.warn('[feedback] submit error:', err);
+      setError('Couldn’t send. Try again.');
     } finally {
       setSubmitting(false);
     }
@@ -109,7 +114,7 @@ function FeedbackOverlay({ open, onClose }) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Feedback and feature requests"
+      aria-label="Feedback"
     >
       <div className="feedback-panel" onClick={(e) => e.stopPropagation()}>
         <div className="feedback-header">
@@ -117,7 +122,7 @@ function FeedbackOverlay({ open, onClose }) {
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
-            <span>Feedback &amp; Feature Requests</span>
+            <span>Feedback</span>
           </div>
           <button type="button" className="feedback-close" onClick={onClose} aria-label="Close">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -127,15 +132,11 @@ function FeedbackOverlay({ open, onClose }) {
           </button>
         </div>
 
-        <p className="feedback-intro">
-          Something you&apos;d like changed or added? File it here — it goes straight to the LPOS team and updates for everyone.
-        </p>
-
         <form className="feedback-form" onSubmit={handleSubmit}>
           <input
             className="feedback-input"
             type="text"
-            placeholder="What would you like to see? (short title)"
+            placeholder="Title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             maxLength={200}
@@ -144,7 +145,7 @@ function FeedbackOverlay({ open, onClose }) {
           />
           <textarea
             className="feedback-textarea"
-            placeholder="More detail — what are you trying to do, what's getting in the way? (optional)"
+            placeholder="Details (optional)"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={3}
@@ -152,13 +153,13 @@ function FeedbackOverlay({ open, onClose }) {
             disabled={notReady}
           />
           <button type="submit" className="btn feedback-submit" disabled={submitting || notReady || !title.trim()}>
-            {submitting ? 'Submitting…' : 'Send request'}
+            {submitting ? 'Sending…' : 'Send'}
           </button>
         </form>
 
         {notReady && (
           <p className="feedback-notice">
-            Sign in to LPOS from Settings to submit and see feature requests.
+            Sign in to LPOS in Settings to send and see feedback.
           </p>
         )}
         {error && <p className="feedback-error">{error}</p>}
@@ -167,7 +168,7 @@ function FeedbackOverlay({ open, onClose }) {
           {loading && wishes === null && <p className="feedback-empty">Loading…</p>}
 
           {!loading && wishes !== null && openItems.length === 0 && doneItems.length === 0 && (
-            <p className="feedback-empty">No requests yet — be the first.</p>
+            <p className="feedback-empty">No feedback yet.</p>
           )}
 
           {openItems.length > 0 && (
@@ -195,13 +196,11 @@ function FeedbackRow({ wish }) {
     : wish.submittedByName;
   return (
     <div className={`feedback-row${wish.completed ? ' feedback-row--done' : ''}`}>
-      <span className={`feedback-status-dot${wish.completed ? ' is-done' : ''}`} aria-hidden="true" />
       <div className="feedback-row-body">
         <p className="feedback-row-title">{wish.title}</p>
         {wish.description && <p className="feedback-row-desc">{wish.description}</p>}
         <p className="feedback-row-meta">
           {from} · {formatFeedbackDate(wish.createdAt)}
-          {wish.completed && ' · done'}
         </p>
       </div>
     </div>
