@@ -188,23 +188,34 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
         # the destination override above.
         bitrate_result = None
         if video_bitrate_kbps:
-            applied = project.SetRenderSettings({"VideoQuality": video_bitrate_kbps})
+            # Resolve documents an int (kbps) for VideoQuality; some builds only
+            # accept the same number as a string. Try int first, then str.
+            applied_as = None
+            for value in (video_bitrate_kbps, str(video_bitrate_kbps)):
+                if project.SetRenderSettings({"VideoQuality": value}):
+                    applied_as = type(value).__name__
+                    break
             try:
                 fmt_codec = project.GetCurrentRenderFormatAndCodec() or {}
             except Exception:
                 fmt_codec = {}
+            codec_label = f"{fmt_codec.get('format') or '?'}/{fmt_codec.get('codec') or '?'}"
             bitrate_result = {
                 "requested_kbps": video_bitrate_kbps,
-                "applied": bool(applied),
+                "applied": applied_as is not None,
+                "applied_as": applied_as,
                 "format": fmt_codec.get("format"),
                 "codec": fmt_codec.get("codec"),
             }
-            if applied:
-                rh.log(f"Bitrate set for '{timeline_name}' -> {video_bitrate_kbps} kbps")
+            if applied_as:
+                rh.log(
+                    f"Bitrate set for '{timeline_name}' -> {video_bitrate_kbps} kbps "
+                    f"(as {applied_as}, codec {codec_label})"
+                )
             else:
                 rh.log(
                     f"Warning: bitrate {video_bitrate_kbps} kbps was rejected for timeline "
-                    f"'{timeline_name}' (codec may not support it); using the preset's quality."
+                    f"'{timeline_name}' (codec {codec_label}); using the preset's quality."
                 )
 
         job_id = project.AddRenderJob()
