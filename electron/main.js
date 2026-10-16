@@ -3568,6 +3568,18 @@ app.whenReady().then(() => {
       if (jobs.length === 0) return { ok: true, empty: true };
       markJobsOwned(jobs);
 
+      // Bitrate override diagnostics: lp_base_export reports per job whether
+      // Resolve accepted VideoQuality, the active codec, and the queued job
+      // record. Logged here so it lands in the main log next to [resolve] lines.
+      if (bitrateKbps) {
+        for (const j of rawJobs) {
+          if (Array.isArray(j)) continue;
+          const b = j?.bitrate;
+          console.log(`[export] bitrate '${j?.name}': requested=${bitrateKbps} applied=${b ? b.applied : 'n/a (old helper?)'} codec=${b?.format || '?'}/${b?.codec || '?'}`);
+          if (j?.render_job) console.log(`[export] render job '${j?.name}': ${JSON.stringify(j.render_job)}`);
+        }
+      }
+
       const exportId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const resolvedTargetDir = data.target_dir || targetDir;
 

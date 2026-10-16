@@ -44,6 +44,20 @@ def _capture_timeline_metadata(timeline: Any, project_name: Optional[str]) -> Di
         "project_name": project_name,
     }
 
+def _render_job_record(project: Any, job_id: Any) -> Optional[Dict[str, Any]]:
+    """The queued job as Resolve reports it (diagnostics for the bitrate override)."""
+    try:
+        for job in project.GetRenderJobList() or []:
+            if job.get("JobId") == job_id:
+                return {
+                    k: (v if isinstance(v, (str, int, float, bool)) or v is None else str(v))
+                    for k, v in job.items()
+                }
+    except Exception:
+        pass
+    return None
+
+
 def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Queue render jobs for timelines matching items in EXPORT bin."""
     from .. import resolve_helper as rh
@@ -172,8 +186,19 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         # Separate call so a codec that rejects VideoQuality can't also void
         # the destination override above.
+        bitrate_result = None
         if video_bitrate_kbps:
             applied = project.SetRenderSettings({"VideoQuality": video_bitrate_kbps})
+            try:
+                fmt_codec = project.GetCurrentRenderFormatAndCodec() or {}
+            except Exception:
+                fmt_codec = {}
+            bitrate_result = {
+                "requested_kbps": video_bitrate_kbps,
+                "applied": bool(applied),
+                "format": fmt_codec.get("format"),
+                "codec": fmt_codec.get("codec"),
+            }
             if applied:
                 rh.log(f"Bitrate set for '{timeline_name}' -> {video_bitrate_kbps} kbps")
             else:
@@ -202,6 +227,8 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "start_timecode": metadata["start_timecode"],
                 "fps": metadata["fps"],
                 "project_name": metadata["project_name"],
+                "bitrate": bitrate_result,
+                "render_job": _render_job_record(project, job_id) if bitrate_result else None,
             })
         else:
             rh.log(f"Error: Failed to add timeline '{timeline_name}' to the render queue.")
