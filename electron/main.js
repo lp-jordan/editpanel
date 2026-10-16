@@ -3530,7 +3530,7 @@ app.whenReady().then(() => {
   // main-process tracker so it runs in the background and reports progress to
   // the Jobs panel — independent of whether the picker overlay stays open.
   ipcMain.handle('export:start', async (_e, opts = {}) => {
-    const { targetDir, presetName, exportBin, startRender = true, projectId, projectName } = opts;
+    const { targetDir, presetName, exportBin, bitrateKbps, startRender = true, projectId, projectName } = opts;
     // Hold off orphan reconciliation for the whole dispatch — from the first
     // AddRenderJob inside lp_base_export through startExportTracking writing the
     // batch's export_runs row. Otherwise a reconcile tick mid-dispatch would
@@ -3541,6 +3541,7 @@ app.whenReady().then(() => {
       if (presetName) payload.preset_name = presetName;
       if (exportBin)  payload.export_bin_name = exportBin;
       if (targetDir)  payload.target_dir = targetDir;
+      if (Number.isFinite(bitrateKbps) && bitrateKbps > 0) payload.video_bitrate_kbps = Math.round(bitrateKbps);
 
       const res = await sendWorkerRequest(payload, WORKERS.resolve);
       const data = res?.data || {};

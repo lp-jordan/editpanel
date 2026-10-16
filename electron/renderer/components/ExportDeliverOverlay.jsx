@@ -35,6 +35,19 @@
 // Resolve helper otherwise leaves the editor staring at "Checking…" forever.
 const PREFLIGHT_TIMEOUT_MS = 20000;
 
+// Bitrate override slider (kbps). Only H.264/H.265 presets honour it; Resolve
+// ignores VideoQuality for ProRes/DNx. Off = keep the preset's own setting.
+const BITRATE_MIN_KBPS = 8000;
+const BITRATE_MAX_KBPS = 50000;
+const BITRATE_STEP_KBPS = 1000;
+const BITRATE_DEFAULT_KBPS = 20000;
+
+function clampBitrate(v) {
+  const n = Math.round(Number(v) / BITRATE_STEP_KBPS) * BITRATE_STEP_KBPS;
+  if (!Number.isFinite(n)) return BITRATE_DEFAULT_KBPS;
+  return Math.min(BITRATE_MAX_KBPS, Math.max(BITRATE_MIN_KBPS, n));
+}
+
 function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposReady, onLog, onOpenJobs }) {
   const DEFAULT_PRESET = 'General LP Export';
   const DEFAULT_BIN = 'EXPORT';
@@ -56,6 +69,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const [autoStart, setAutoStart]   = React.useState(false);
   // Burn subtitles into the video by queuing the "<preset> - Subtitle" pair.
   const [burnIn, setBurnIn]         = React.useState(false);
+  // Optional bitrate override pushed into Resolve as VideoQuality (kbps).
+  const [bitrateOn, setBitrateOn]   = React.useState(false);
+  const [bitrateKbps, setBitrateKbps] = React.useState(BITRATE_DEFAULT_KBPS);
 
   // ── Preset / bin dropdown sources ──────────────────────
   // Fetched from Resolve when the overlay opens (and we're connected). Empty
@@ -123,6 +139,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         setPresetName(prefs.lastExportPreset || DEFAULT_PRESET);
         setExportBin(prefs.lastExportBin || DEFAULT_BIN);
         setSelectedProjectId(prefs.lastExportProjectId || '');
+        setBitrateOn(!!prefs.lastExportBitrateOn);
+        setBitrateKbps(clampBitrate(prefs.lastExportBitrateKbps ?? BITRATE_DEFAULT_KBPS));
       })
       .catch(() => {
         setTargetDir('');
@@ -409,7 +427,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     setStage('running');
     // When burning in, queue the paired "<preset> - Subtitle" preset instead.
     const effectivePreset = burnIn ? burnInPresetName : presetName;
-    onLog?.(`[export] ${startRender ? 'Queue & render' : 'Queue'}${burnIn ? ' (burn-in subtitles)' : ''}${targetDir ? ` → ${targetDir}` : ' (preset location)'}…`);
+    onLog?.(`[export] ${startRender ? 'Queue & render' : 'Queue'}${burnIn ? ' (burn-in subtitles)' : ''}${bitrateOn ? ` @ ${bitrateKbps} kbps` : ''}${targetDir ? ` → ${targetDir}` : ' (preset location)'}…`);
 
     // Save selections for next time. Persist the BASE preset the editor picked,
     // not the burn-in variant — burn-in is a per-export toggle, not a default.
@@ -417,6 +435,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       lastExportDir: targetDir,
       lastExportPreset: presetName,
       lastExportBin: exportBin,
+      lastExportBitrateOn: bitrateOn,
+      lastExportBitrateKbps: bitrateKbps,
       ...(uploadToLpos && selectedProjectId ? { lastExportProjectId: selectedProjectId } : {})
     });
 
@@ -428,6 +448,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         targetDir: targetDir || undefined,
         presetName: effectivePreset,
         exportBin,
+        bitrateKbps: bitrateOn ? bitrateKbps : undefined,
         startRender,
         projectId:   uploadToLpos && selectedProjectId ? selectedProjectId : undefined,
         projectName: uploadToLpos && selectedProject  ? selectedProject.name : undefined
@@ -569,6 +590,40 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
             )}
             <button type="button" className="btn ghost small" onClick={handlePickFolder}>Choose…</button>
           </div>
+        </div>
+
+        {/* Bitrate override (VideoQuality, kbps). Off keeps the preset's setting. */}
+        <div className="export-toggle">
+          <div className="export-toggle-inner">
+            <div>
+              <p className="export-field-label">Bitrate</p>
+              <p className="export-toggle-sub">
+                {bitrateOn ? `${bitrateKbps.toLocaleString()} kbps` : 'Preset default'}
+              </p>
+            </div>
+            <button
+              type="button"
+              className={`export-switch${bitrateOn ? ' on' : ''}`}
+              role="switch"
+              aria-checked={bitrateOn}
+              aria-label="Set bitrate"
+              onClick={() => setBitrateOn(v => !v)}
+            >
+              <span className="export-switch-knob" />
+            </button>
+          </div>
+          {bitrateOn && (
+            <input
+              type="range"
+              className="export-range"
+              min={BITRATE_MIN_KBPS}
+              max={BITRATE_MAX_KBPS}
+              step={BITRATE_STEP_KBPS}
+              value={bitrateKbps}
+              onChange={(e) => setBitrateKbps(clampBitrate(e.target.value))}
+              aria-label="Bitrate (kbps)"
+            />
+          )}
         </div>
 
         {/* Auto-start toggle */}

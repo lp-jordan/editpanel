@@ -70,6 +70,18 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     target_dir = (payload.get("target_dir") or "").strip()
     unique_filename = payload.get("unique_filename", True)
 
+    # Optional bitrate override in kbps, pushed into Resolve as VideoQuality
+    # (an int sets the encoder bitrate; 0 would mean automatic). Only
+    # bitrate-controlled codecs (H.264/H.265) honour it; ProRes/DNx presets
+    # ignore it. Absent = keep the preset's saved quality.
+    video_bitrate_kbps = payload.get("video_bitrate_kbps")
+    try:
+        video_bitrate_kbps = int(video_bitrate_kbps) if video_bitrate_kbps else None
+    except (TypeError, ValueError):
+        video_bitrate_kbps = None
+    if video_bitrate_kbps is not None and video_bitrate_kbps <= 0:
+        video_bitrate_kbps = None
+
     if target_dir:
         # Resolve silently falls back / fails if TargetDir doesn't exist. The
         # folder picker only yields existing paths, but create it defensively
@@ -156,6 +168,18 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
                 rh.log(
                     f"Warning: SetRenderSettings was rejected for timeline "
                     f"'{timeline_name}'; using the preset's saved destination."
+                )
+
+        # Separate call so a codec that rejects VideoQuality can't also void
+        # the destination override above.
+        if video_bitrate_kbps:
+            applied = project.SetRenderSettings({"VideoQuality": video_bitrate_kbps})
+            if applied:
+                rh.log(f"Bitrate set for '{timeline_name}' -> {video_bitrate_kbps} kbps")
+            else:
+                rh.log(
+                    f"Warning: bitrate {video_bitrate_kbps} kbps was rejected for timeline "
+                    f"'{timeline_name}' (codec may not support it); using the preset's quality."
                 )
 
         job_id = project.AddRenderJob()

@@ -103,7 +103,8 @@ const COMMAND_SCHEMAS = Object.freeze({
       preset_name: 'string',
       export_bin_name: 'string',
       target_dir: 'string',
-      unique_filename: 'boolean'
+      unique_filename: 'boolean',
+      video_bitrate_kbps: 'number'
     }
   },
   shutdown: { required: [] },

@@ -3240,6 +3240,14 @@ button.status-bar-chip-btn:disabled {
   color: var(--text-dim);
 }
 
+.export-range {
+  display: block;
+  width: 100%;
+  margin: 12px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .export-loading {
   display: flex;
   align-items: center;
