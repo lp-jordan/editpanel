@@ -58,6 +58,79 @@ def _render_job_record(project: Any, job_id: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _try_video_quality(project: Any, kbps: int) -> Optional[str]:
+    """Set VideoQuality to kbps. Resolve documents an int; some builds only take
+    the same number as a string. Returns the form that stuck, or None."""
+    for value in (kbps, str(kbps)):
+        if project.SetRenderSettings({"VideoQuality": value}):
+            return type(value).__name__
+    return None
+
+
+def _pick_h264_codec(codecs: Any) -> Optional[str]:
+    """From GetRenderCodecs (description -> internal name), pick Resolve's own
+    H.264 encoder, falling back to any H.264 variant."""
+    if not isinstance(codecs, dict):
+        return None
+    for desc, name in codecs.items():
+        if str(desc).strip().lower() == "h.264" or str(name).strip().upper() == "H264":
+            return name
+    for desc, name in codecs.items():
+        if "264" in str(desc) or "264" in str(name):
+            return name
+    return None
+
+
+def _apply_bitrate(project: Any, kbps: int, timeline_name: str, log: Any) -> Dict[str, Any]:
+    """Override the loaded preset's bitrate. If Resolve rejects it straight after
+    LoadRenderPreset (it then also reports no current codec), re-select the
+    format + H.264 codec explicitly and retry."""
+    applied_as = _try_video_quality(project, kbps)
+    try:
+        fmt_codec = project.GetCurrentRenderFormatAndCodec() or {}
+    except Exception:
+        fmt_codec = {}
+    fmt = fmt_codec.get("format") or "mp4"
+    codec = fmt_codec.get("codec") or None
+    reselected = None
+
+    if not applied_as:
+        try:
+            codecs = project.GetRenderCodecs(fmt) or {}
+        except Exception as exc:
+            codecs = {}
+            log(f"[bitrate] GetRenderCodecs failed: {exc}")
+        log(f"[bitrate] GetCurrentRenderFormatAndCodec -> {fmt_codec!r}")
+        log(f"[bitrate] GetRenderCodecs({fmt}) -> {codecs!r}")
+        target = codec or _pick_h264_codec(codecs)
+        if target and project.SetCurrentRenderFormatAndCodec(fmt, target):
+            reselected = target
+            applied_as = _try_video_quality(project, kbps)
+            codec = target
+        else:
+            log(f"[bitrate] Could not re-select {fmt}/{target or '?'} for '{timeline_name}'.")
+
+    codec_label = f"{fmt}/{codec or '?'}"
+    if applied_as:
+        log(
+            f"Bitrate set for '{timeline_name}' -> {kbps} kbps (as {applied_as}, codec {codec_label}"
+            f"{', after re-selecting codec' if reselected else ''})"
+        )
+    else:
+        log(
+            f"Warning: bitrate {kbps} kbps was rejected for timeline '{timeline_name}' "
+            f"(codec {codec_label}); using the preset's quality."
+        )
+    return {
+        "requested_kbps": kbps,
+        "applied": applied_as is not None,
+        "applied_as": applied_as,
+        "reselected_codec": reselected,
+        "format": fmt,
+        "codec": codec,
+    }
+
+
 def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Queue render jobs for timelines matching items in EXPORT bin."""
     from .. import resolve_helper as rh
@@ -166,6 +239,13 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
             continue
 
+        # Bitrate first: its fallback may re-select the codec, which must not
+        # clobber the destination override below. Separate SetRenderSettings
+        # call so a rejected VideoQuality can't void TargetDir/CustomName.
+        bitrate_result = None
+        if video_bitrate_kbps:
+            bitrate_result = _apply_bitrate(project, video_bitrate_kbps, timeline_name, rh.log)
+
         # Override the destination AFTER the preset loads (the preset restores
         # its own saved TargetDir) but BEFORE AddRenderJob, which snapshots the
         # current render settings into the queued job. Doing it per-timeline
@@ -183,49 +263,6 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
                     f"Warning: SetRenderSettings was rejected for timeline "
                     f"'{timeline_name}'; using the preset's saved destination."
                 )
-
-        # Separate call so a codec that rejects VideoQuality can't also void
-        # the destination override above.
-        bitrate_result = None
-        if video_bitrate_kbps:
-            # Resolve documents an int (kbps) for VideoQuality; some builds only
-            # accept the same number as a string. Try int first, then str.
-            applied_as = None
-            for value in (video_bitrate_kbps, str(video_bitrate_kbps)):
-                if project.SetRenderSettings({"VideoQuality": value}):
-                    applied_as = type(value).__name__
-                    break
-            try:
-                fmt_codec = project.GetCurrentRenderFormatAndCodec() or {}
-            except Exception:
-                fmt_codec = {}
-            codec_label = f"{fmt_codec.get('format') or '?'}/{fmt_codec.get('codec') or '?'}"
-            bitrate_result = {
-                "requested_kbps": video_bitrate_kbps,
-                "applied": applied_as is not None,
-                "applied_as": applied_as,
-                "format": fmt_codec.get("format"),
-                "codec": fmt_codec.get("codec"),
-            }
-            if applied_as:
-                rh.log(
-                    f"Bitrate set for '{timeline_name}' -> {video_bitrate_kbps} kbps "
-                    f"(as {applied_as}, codec {codec_label})"
-                )
-            else:
-                rh.log(
-                    f"Warning: bitrate {video_bitrate_kbps} kbps was rejected for timeline "
-                    f"'{timeline_name}' (codec {codec_label}); using the preset's quality."
-                )
-                # Diagnostics: the raw format/codec answer plus the codecs Resolve
-                # offers for this format (description -> internal name), so we can
-                # tell a hardware encoder from a native one.
-                try:
-                    codecs = project.GetRenderCodecs(fmt_codec.get("format") or "mp4") or {}
-                except Exception as exc:
-                    codecs = f"error: {exc}"
-                rh.log(f"[bitrate] GetCurrentRenderFormatAndCodec -> {fmt_codec!r}")
-                rh.log(f"[bitrate] GetRenderCodecs -> {codecs!r}")
 
         job_id = project.AddRenderJob()
         if job_id:
