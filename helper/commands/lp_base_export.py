@@ -217,6 +217,15 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
                     f"Warning: bitrate {video_bitrate_kbps} kbps was rejected for timeline "
                     f"'{timeline_name}' (codec {codec_label}); using the preset's quality."
                 )
+                # Diagnostics: the raw format/codec answer plus the codecs Resolve
+                # offers for this format (description -> internal name), so we can
+                # tell a hardware encoder from a native one.
+                try:
+                    codecs = project.GetRenderCodecs(fmt_codec.get("format") or "mp4") or {}
+                except Exception as exc:
+                    codecs = f"error: {exc}"
+                rh.log(f"[bitrate] GetCurrentRenderFormatAndCodec -> {fmt_codec!r}")
+                rh.log(f"[bitrate] GetRenderCodecs -> {codecs!r}")
 
         job_id = project.AddRenderJob()
         if job_id:
