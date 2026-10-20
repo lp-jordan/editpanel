@@ -1476,7 +1476,7 @@ async function uploadOneFile(job) {
   }
 
   try {
-    const res = await lposClient.uploadFileToProject(activeExport.projectId, job.outputPath, {
+    const res = await lposClient.pushFileToProject(activeExport.projectId, job.outputPath, {
       fileName: path.basename(job.outputPath),
       isCancelled: () => !activeExport,
       renderMeta,
@@ -3980,7 +3980,7 @@ app.whenReady().then(() => {
       let lastError = null;
       for (const filePath of outputs) {
         try {
-          const res = await lposClient.uploadFileToProject(projectId, filePath, {
+          const res = await lposClient.pushFileToProject(projectId, filePath, {
             fileName: path.basename(filePath),
             renderMeta,
             onRetry: ({ phase, attempt, waitMs, error }) => {

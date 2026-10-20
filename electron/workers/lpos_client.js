@@ -268,6 +268,55 @@ class LposClient {
   }
 
   /**
+   * Send a finished render to LPOS. Renders on a network drive (the NAS, e.g.
+   * N:\) are registered in place: LPOS's studio agent copies the file into the
+   * project itself (registerNasFile). Anything else, or an LPOS that doesn't
+   * have that endpoint yet (404), goes through the chunked upload as before.
+   * Resolves like uploadFileToProject: { asset, ... }.
+   */
+  async pushFileToProject(projectId, filePath, opts = {}) {
+    const onNetworkDrive = /^[A-Za-z]:[\\/]/.test(filePath) && !/^[Cc]:/.test(filePath);
+    if (onNetworkDrive) {
+      try {
+        return await this.registerNasFile(projectId, filePath, opts);
+      } catch (err) {
+        if (err.status !== 404) throw err;
+      }
+    }
+    return this.uploadFileToProject(projectId, filePath, opts);
+  }
+
+  /** Ask LPOS to register a render that's already on the NAS, then wait for it (polls the job). */
+  async registerNasFile(projectId, filePath, opts = {}) {
+    const pid = encodeURIComponent(projectId);
+    const fileName = opts.fileName || path.win32.basename(filePath);
+    const started = await this._uploadRequest('POST', `/api/ep/projects/${pid}/media/register-nas`, {
+      json: { path: filePath, fileName, renderMeta: opts.renderMeta || null, replaceAssetId: opts.replaceAssetId || null },
+    });
+    const jobId = started.jobId;
+    const deadline = Date.now() + 6 * 60 * 60 * 1000;
+    while (Date.now() < deadline) {
+      if (opts.isCancelled && opts.isCancelled()) throw new Error('Cancelled');
+      await new Promise((r) => setTimeout(r, 3000));
+      let job;
+      try {
+        job = await this._uploadRequest('GET', `/api/ep/jobs/${encodeURIComponent(jobId)}`);
+      } catch (err) {
+        if (opts.onRetry) opts.onRetry({ phase: 'register', attempt: 0, waitMs: 3000, error: err.message });
+        continue;
+      }
+      if (opts.onProgress) opts.onProgress({ pct: Math.max(1, Math.min(99, job.progress || 0)) });
+      if (job.status === 'done') return { asset: job.asset || null, code: job.code || null, registeredFromNas: true };
+      if (job.status === 'failed' || job.status === 'cancelled') {
+        const err = new Error(job.error || 'LPOS could not register the file from the NAS');
+        err.data = job;
+        throw err;
+      }
+    }
+    throw new Error('Timed out waiting for LPOS to register the file from the NAS');
+  }
+
+  /**
    * Upload a local file into an LPOS project as a media asset, chunked +
    * resumable. Returns the finalize payload ({ asset }) on success; throws on
    * failure (err.data.code carries duplicate_version / version_confirmation_required).
