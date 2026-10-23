@@ -15,8 +15,10 @@ Both are rewritten. The XML holds no preset name (Resolve names an import after
 the file), and its DbId is replaced so the copy can never collide with the
 original. One copy per export batch; the saved preset is never touched.
 """
+import glob
 import os
 import re
+import shutil
 import struct
 import tempfile
 import uuid
@@ -109,14 +111,22 @@ def make_bitrate_preset(resolve: Any, project: Any, base_preset: str, kbps: int,
         except Exception:
             pass
 
-    tmp = tempfile.gettempdir()
-    src_path = os.path.join(tmp, "editpanel_preset_source.xml")
-    copy_path = os.path.join(tmp, f"{TEMP_PRESET_NAME}.xml")
+    # ExportRenderPreset treats its path as a FOLDER and writes
+    # "<preset name>.xml" inside it (seen on Resolve 21.0.0.48), so export into
+    # a fresh temp folder and pick up whatever XML lands there.
+    work = tempfile.mkdtemp(prefix="editpanel_preset_")
+    export_dir = os.path.join(work, "export")
+    copy_path = os.path.join(work, f"{TEMP_PRESET_NAME}.xml")
     try:
-        if not resolve.ExportRenderPreset(base_preset, src_path):
+        os.makedirs(export_dir, exist_ok=True)
+        if not resolve.ExportRenderPreset(base_preset, export_dir):
             log(f"Warning: couldn't export preset '{base_preset}'; using the preset's bitrate.")
             return None
-        with open(src_path, "r", encoding="utf-8") as fh:
+        exported = sorted(glob.glob(os.path.join(export_dir, "**", "*.xml"), recursive=True))
+        if not exported:
+            log(f"Warning: exporting preset '{base_preset}' produced no XML; using the preset's bitrate.")
+            return None
+        with open(exported[0], "r", encoding="utf-8") as fh:
             xml = fh.read()
         new_xml, changed = rewrite_preset_xml(xml, kbps)
         if not changed:
@@ -143,11 +153,7 @@ def make_bitrate_preset(resolve: Any, project: Any, base_preset: str, kbps: int,
         log(f"Warning: bitrate preset copy failed ({exc}); using the preset's bitrate.")
         return None
     finally:
-        for p in (src_path, copy_path):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def drop_bitrate_preset(project: Any, name: Optional[str], log: Any) -> None:

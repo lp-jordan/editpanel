@@ -72,7 +72,8 @@ The LPOS version-conflict check compares the custom name when one is used.
 kb/s slider. Resolve 21.0 rejects `SetRenderSettings({"VideoQuality": …})` in
 every form for every H.264/H.265 encoder (`spikes/spike_video_quality.py`,
 2026-10-23), so `helper/commands/preset_bitrate.py` writes the bitrate into a
-temporary preset copy instead: `ExportRenderPreset(base)` → set
+temporary preset copy instead: `ExportRenderPreset(base, <temp folder>)` (the path is a
+folder; Resolve writes `<preset name>.xml` inside it) → set
 `ExtraInfoMap` `h264_datarate` and the `bitrate` entry inside
 `encoder_command_param_map` (hex blob of length-prefixed UTF-16BE key/value
 strings) → new `DbId` → `ImportRenderPreset` as "EditPanel Bitrate" → every
