@@ -38,3 +38,22 @@ multicam angles, which decides the creation path before any wiring.
 
 Cleans up after itself: the one test marker is tagged `spike:slate-multicam` and
 deleted; the one test timeline is named `__SPIKE_span_...` (delete manually).
+
+## `spike_video_quality.py`
+
+Finds out how this Resolve build takes a bitrate. `SetRenderSettings({"VideoQuality": …})`
+was rejected in every form on the Windows build (v1.2.53–60). This probe:
+
+- dumps the render/preset/quality-related methods the API exposes (`dir()`)
+- shows the format/codec right after `LoadRenderPreset`, and every mp4/mov codec
+- tries VideoQuality as int kbps, str kbps, int bps, `"High"` and `0`: as loaded,
+  after explicitly selecting each H.264/H.265 codec, and with the Deliver page open
+- checks a control key (`ExportVideo`) so we know SetRenderSettings works at all
+- exports "General LP Export" to `Desktop\General_LP_Export_preset.xml` (input for
+  the preset-copy fallback) and reports whether Import/Export/DeleteRenderPreset exist
+
+Run with the project open (Deliver page visible, watch the Quality field):
+Workspace ▸ Console ▸ `Py3`, then
+`exec(open(r"...\editpanel\spikes\spike_video_quality.py").read())`.
+Report prints and saves to `Desktop\resolve_bitrate_probe.txt`. Never queues or
+renders; reloads the preset at the end, and never edits the saved preset.
