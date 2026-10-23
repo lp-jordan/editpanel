@@ -40,6 +40,7 @@ the render. The operator no longer has to set the Deliver-page location by hand.
    sub-bins (indented), fed by `list_media_bins` (`bins` = flat paths,
    `bin_tree` = `{ path, name, depth }`).
 3. Per matched timeline: `SetCurrentTimeline` → `LoadRenderPreset` →
+   `SetRenderSettings({ VideoQuality })` (own call, when a bitrate is set) →
    `SetRenderSettings({ ExportVideo, ExportAudio })` (own call) →
    `SetRenderSettings({ TargetDir, CustomName, UniqueFilename: true })`
    → `AddRenderJob()`. `CustomName` is the timeline name, or the editor's
@@ -67,8 +68,13 @@ custom only unlocks at exactly one timeline, pre-filled with its name, rejects
 Video/audio are persisted (`lastExportVideo` / `lastExportAudio`) and always
 sent, so the page — not the preset — decides. The custom name isn't persisted.
 The LPOS version-conflict check compares the custom name when one is used.
-The bitrate slider (v1.2.53–58) was removed: Resolve rejected every
-`VideoQuality` form we sent, and the team chose to drop quality control from the page.
+**Bitrate** (Video section, v1.2.60): switch (off = preset default) + 8–50k
+kb/s slider. The helper sets `VideoQuality` in its own call, trying int kbps,
+then kbps as a string, then bits per second, and logs which form Resolve
+accepted (`[export] bitrate … accepted_as=`). Resolve rejected kbps on the
+Windows build in v1.2.53–58 and the docs don't state the unit; check the
+output file's real bitrate against `accepted_as` to settle it. Not sent when
+video is off. No resolution or quality-level presets on the page by design.
 
 ### Background tracking + progress (added 2026-05-28)
 Queue & Render runs as a **background job owned by the main process**, so it keeps

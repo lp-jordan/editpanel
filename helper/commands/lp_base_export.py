@@ -44,6 +44,40 @@ def _capture_timeline_metadata(timeline: Any, project_name: Optional[str]) -> Di
         "project_name": project_name,
     }
 
+def _apply_bitrate(project: Any, kbps: int, timeline_name: str, log: Any) -> Dict[str, Any]:
+    """Override the loaded preset's bitrate via VideoQuality.
+
+    Resolve rejected the documented int-kbps form on our Windows build
+    (v1.2.53–58), and the docs never state the unit. Try kbps (int, then str),
+    then bits per second, and report which form stuck so one test export
+    settles the unit. Check the output file's real bitrate against the log."""
+    attempts = [("kbps", kbps), ("kbps-str", str(kbps)), ("bps", kbps * 1000)]
+    applied_as = None
+    for label, value in attempts:
+        if project.SetRenderSettings({"VideoQuality": value}):
+            applied_as = label
+            break
+    try:
+        fmt_codec = project.GetCurrentRenderFormatAndCodec() or {}
+    except Exception:
+        fmt_codec = {}
+    codec_label = f"{fmt_codec.get('format') or '?'}/{fmt_codec.get('codec') or '?'}"
+    if applied_as:
+        log(f"Bitrate set for '{timeline_name}' -> {kbps} kbps (accepted as {applied_as}, codec {codec_label})")
+    else:
+        log(
+            f"Warning: bitrate {kbps} kbps was rejected in every form for '{timeline_name}' "
+            f"(codec {codec_label}); using the preset's quality."
+        )
+    return {
+        "requested_kbps": kbps,
+        "applied": applied_as is not None,
+        "applied_as": applied_as,
+        "format": fmt_codec.get("format"),
+        "codec": fmt_codec.get("codec"),
+    }
+
+
 def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Queue render jobs for timelines matching items in EXPORT bin."""
     from .. import resolve_helper as rh
@@ -75,6 +109,14 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     export_audio = payload.get("export_audio")
     if export_video is False and export_audio is False:
         raise RuntimeError("Video and audio are both off; nothing to export.")
+    # Optional bitrate override in kbps, pushed into Resolve as VideoQuality.
+    # Only bitrate-controlled codecs (H.264/H.265) honour it. Absent = keep
+    # the preset's saved quality.
+    try:
+        video_bitrate_kbps = int(payload.get("video_bitrate_kbps") or 0) or None
+    except (TypeError, ValueError):
+        video_bitrate_kbps = None
+
     # Optional custom output name. Only honoured when the bin resolves to a
     # single timeline (checked after matching below); otherwise every job
     # would render to the same name.
@@ -154,6 +196,11 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
             continue
 
+        # Bitrate in its own call so a rejection can't void the settings below.
+        bitrate_result = None
+        if video_bitrate_kbps and export_video is not False:
+            bitrate_result = _apply_bitrate(project, video_bitrate_kbps, timeline_name, rh.log)
+
         # Video/audio toggles in their own call so a rejection can't void the
         # destination override below.
         av: Dict[str, Any] = {}
@@ -211,6 +258,7 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "fps": metadata["fps"],
                 "project_name": metadata["project_name"],
                 "output_name": out_name,
+                "bitrate": bitrate_result,
             })
         else:
             rh.log(f"Error: Failed to add timeline '{timeline_name}' to the render queue.")

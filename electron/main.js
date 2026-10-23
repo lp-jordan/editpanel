@@ -3530,7 +3530,7 @@ app.whenReady().then(() => {
   // main-process tracker so it runs in the background and reports progress to
   // the Jobs panel — independent of whether the picker overlay stays open.
   ipcMain.handle('export:start', async (_e, opts = {}) => {
-    const { targetDir, presetName, exportBin, exportVideo, exportAudio, customName, startRender = true, projectId, projectName } = opts;
+    const { targetDir, presetName, exportBin, exportVideo, exportAudio, customName, bitrateKbps, startRender = true, projectId, projectName } = opts;
     // Hold off orphan reconciliation for the whole dispatch — from the first
     // AddRenderJob inside lp_base_export through startExportTracking writing the
     // batch's export_runs row. Otherwise a reconcile tick mid-dispatch would
@@ -3544,6 +3544,7 @@ app.whenReady().then(() => {
       if (typeof exportVideo === 'boolean') payload.export_video = exportVideo;
       if (typeof exportAudio === 'boolean') payload.export_audio = exportAudio;
       if (customName && String(customName).trim()) payload.custom_name = String(customName).trim();
+      if (Number.isFinite(bitrateKbps) && bitrateKbps > 0) payload.video_bitrate_kbps = Math.round(bitrateKbps);
 
       const res = await sendWorkerRequest(payload, WORKERS.resolve);
       const data = res?.data || {};
@@ -3569,6 +3570,15 @@ app.whenReady().then(() => {
       }).filter(j => j.job_id != null);
       if (jobs.length === 0) return { ok: true, empty: true };
       markJobsOwned(jobs);
+
+      // Bitrate diagnostics: which VideoQuality form Resolve accepted (kbps,
+      // kbps as text, or bits per second), so the main log settles the unit.
+      if (bitrateKbps) {
+        for (const j of rawJobs) {
+          const b = Array.isArray(j) ? null : j?.bitrate;
+          console.log(`[export] bitrate '${j?.name}': requested=${bitrateKbps}kbps accepted_as=${b ? (b.applied_as || 'none') : 'n/a'} codec=${b?.format || '?'}/${b?.codec || '?'}`);
+        }
+      }
 
       const exportId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const resolvedTargetDir = data.target_dir || targetDir;
