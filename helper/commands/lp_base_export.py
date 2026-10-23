@@ -44,93 +44,6 @@ def _capture_timeline_metadata(timeline: Any, project_name: Optional[str]) -> Di
         "project_name": project_name,
     }
 
-def _render_job_record(project: Any, job_id: Any) -> Optional[Dict[str, Any]]:
-    """The queued job as Resolve reports it (diagnostics for the bitrate override)."""
-    try:
-        for job in project.GetRenderJobList() or []:
-            if job.get("JobId") == job_id:
-                return {
-                    k: (v if isinstance(v, (str, int, float, bool)) or v is None else str(v))
-                    for k, v in job.items()
-                }
-    except Exception:
-        pass
-    return None
-
-
-def _try_video_quality(project: Any, kbps: int) -> Optional[str]:
-    """Set VideoQuality to kbps. Resolve documents an int; some builds only take
-    the same number as a string. Returns the form that stuck, or None."""
-    for value in (kbps, str(kbps)):
-        if project.SetRenderSettings({"VideoQuality": value}):
-            return type(value).__name__
-    return None
-
-
-def _pick_h264_codec(codecs: Any) -> Optional[str]:
-    """From GetRenderCodecs (description -> internal name), pick Resolve's own
-    H.264 encoder, falling back to any H.264 variant."""
-    if not isinstance(codecs, dict):
-        return None
-    for desc, name in codecs.items():
-        if str(desc).strip().lower() == "h.264" or str(name).strip().upper() == "H264":
-            return name
-    for desc, name in codecs.items():
-        if "264" in str(desc) or "264" in str(name):
-            return name
-    return None
-
-
-def _apply_bitrate(project: Any, kbps: int, timeline_name: str, log: Any) -> Dict[str, Any]:
-    """Override the loaded preset's bitrate. If Resolve rejects it straight after
-    LoadRenderPreset (it then also reports no current codec), re-select the
-    format + H.264 codec explicitly and retry."""
-    applied_as = _try_video_quality(project, kbps)
-    try:
-        fmt_codec = project.GetCurrentRenderFormatAndCodec() or {}
-    except Exception:
-        fmt_codec = {}
-    fmt = fmt_codec.get("format") or "mp4"
-    codec = fmt_codec.get("codec") or None
-    reselected = None
-
-    if not applied_as:
-        try:
-            codecs = project.GetRenderCodecs(fmt) or {}
-        except Exception as exc:
-            codecs = {}
-            log(f"[bitrate] GetRenderCodecs failed: {exc}")
-        log(f"[bitrate] GetCurrentRenderFormatAndCodec -> {fmt_codec!r}")
-        log(f"[bitrate] GetRenderCodecs({fmt}) -> {codecs!r}")
-        target = codec or _pick_h264_codec(codecs)
-        if target and project.SetCurrentRenderFormatAndCodec(fmt, target):
-            reselected = target
-            applied_as = _try_video_quality(project, kbps)
-            codec = target
-        else:
-            log(f"[bitrate] Could not re-select {fmt}/{target or '?'} for '{timeline_name}'.")
-
-    codec_label = f"{fmt}/{codec or '?'}"
-    if applied_as:
-        log(
-            f"Bitrate set for '{timeline_name}' -> {kbps} kbps (as {applied_as}, codec {codec_label}"
-            f"{', after re-selecting codec' if reselected else ''})"
-        )
-    else:
-        log(
-            f"Warning: bitrate {kbps} kbps was rejected for timeline '{timeline_name}' "
-            f"(codec {codec_label}); using the preset's quality."
-        )
-    return {
-        "requested_kbps": kbps,
-        "applied": applied_as is not None,
-        "applied_as": applied_as,
-        "reselected_codec": reselected,
-        "format": fmt,
-        "codec": codec,
-    }
-
-
 def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Queue render jobs for timelines matching items in EXPORT bin."""
     from .. import resolve_helper as rh
@@ -157,17 +70,15 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     target_dir = (payload.get("target_dir") or "").strip()
     unique_filename = payload.get("unique_filename", True)
 
-    # Optional bitrate override in kbps, pushed into Resolve as VideoQuality
-    # (an int sets the encoder bitrate; 0 would mean automatic). Only
-    # bitrate-controlled codecs (H.264/H.265) honour it; ProRes/DNx presets
-    # ignore it. Absent = keep the preset's saved quality.
-    video_bitrate_kbps = payload.get("video_bitrate_kbps")
-    try:
-        video_bitrate_kbps = int(video_bitrate_kbps) if video_bitrate_kbps else None
-    except (TypeError, ValueError):
-        video_bitrate_kbps = None
-    if video_bitrate_kbps is not None and video_bitrate_kbps <= 0:
-        video_bitrate_kbps = None
+    # Optional Deliver-page toggles. None = keep what the preset saved.
+    export_video = payload.get("export_video")
+    export_audio = payload.get("export_audio")
+    if export_video is False and export_audio is False:
+        raise RuntimeError("Video and audio are both off; nothing to export.")
+    # Optional custom output name. Only honoured when the bin resolves to a
+    # single timeline (checked after matching below); otherwise every job
+    # would render to the same name.
+    custom_name = (payload.get("custom_name") or "").strip() or None
 
     if target_dir:
         # Resolve silently falls back / fails if TargetDir doesn't exist. The
@@ -222,6 +133,10 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
         rh.log(f"No matching timelines found based on names in '{export_bin_name}' bin.")
         return {"result": False}
 
+    use_custom_name = bool(custom_name) and len(matched_timelines) == 1
+    if custom_name and not use_custom_name:
+        rh.log(f"Custom name ignored: the bin has {len(matched_timelines)} timelines, so each uses its own name.")
+
     # Load preset and queue jobs
     project_name = project.GetName() if project else None
     render_jobs: List[Dict[str, Any]] = []
@@ -239,29 +154,40 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
             continue
 
-        # Bitrate first: its fallback may re-select the codec, which must not
-        # clobber the destination override below. Separate SetRenderSettings
-        # call so a rejected VideoQuality can't void TargetDir/CustomName.
-        bitrate_result = None
-        if video_bitrate_kbps:
-            bitrate_result = _apply_bitrate(project, video_bitrate_kbps, timeline_name, rh.log)
+        # Video/audio toggles in their own call so a rejection can't void the
+        # destination override below.
+        av: Dict[str, Any] = {}
+        if export_video is not None:
+            av["ExportVideo"] = bool(export_video)
+        if export_audio is not None:
+            av["ExportAudio"] = bool(export_audio)
+        if av:
+            if project.SetRenderSettings(av):
+                rh.log(f"Output for '{timeline_name}': video {'on' if av.get('ExportVideo', True) else 'off'}, audio {'on' if av.get('ExportAudio', True) else 'off'}")
+            else:
+                rh.log(f"Warning: Resolve rejected the video/audio toggles for '{timeline_name}'; using the preset's.")
 
-        # Override the destination AFTER the preset loads (the preset restores
-        # its own saved TargetDir) but BEFORE AddRenderJob, which snapshots the
-        # current render settings into the queued job. Doing it per-timeline
-        # means each job carries its own TargetDir + CustomName.
+        # Override the destination/name AFTER the preset loads (the preset
+        # restores its own saved TargetDir) but BEFORE AddRenderJob, which
+        # snapshots the current render settings into the queued job. Doing it
+        # per-timeline means each job carries its own TargetDir + CustomName.
+        out_name = custom_name if use_custom_name else timeline_name
+        dest: Dict[str, Any] = {}
         if target_dir:
-            applied = project.SetRenderSettings({
+            dest.update({
                 "TargetDir": target_dir,
-                "CustomName": timeline_name,
+                "CustomName": out_name,
                 "UniqueFilename": bool(unique_filename),
             })
-            if applied:
-                rh.log(f"Render destination set for '{timeline_name}' -> {target_dir}")
+        elif use_custom_name:
+            dest["CustomName"] = out_name
+        if dest:
+            if project.SetRenderSettings(dest):
+                rh.log(f"Render output set for '{timeline_name}' -> {target_dir or 'preset location'} / {out_name}")
             else:
                 rh.log(
                     f"Warning: SetRenderSettings was rejected for timeline "
-                    f"'{timeline_name}'; using the preset's saved destination."
+                    f"'{timeline_name}'; using the preset's saved destination and name."
                 )
 
         job_id = project.AddRenderJob()
@@ -284,8 +210,7 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "start_timecode": metadata["start_timecode"],
                 "fps": metadata["fps"],
                 "project_name": metadata["project_name"],
-                "bitrate": bitrate_result,
-                "render_job": _render_job_record(project, job_id) if bitrate_result else None,
+                "output_name": out_name,
             })
         else:
             rh.log(f"Error: Failed to add timeline '{timeline_name}' to the render queue.")

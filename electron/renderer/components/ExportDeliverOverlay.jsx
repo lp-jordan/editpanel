@@ -35,18 +35,10 @@
 // Resolve helper otherwise leaves the editor staring at "Checking…" forever.
 const PREFLIGHT_TIMEOUT_MS = 20000;
 
-// Bitrate override slider (kbps). Only H.264/H.265 presets honour it; Resolve
-// ignores VideoQuality for ProRes/DNx. Off = keep the preset's own setting.
-const BITRATE_MIN_KBPS = 8000;
-const BITRATE_MAX_KBPS = 50000;
-const BITRATE_STEP_KBPS = 1000;
-const BITRATE_DEFAULT_KBPS = 20000;
-
-function clampBitrate(v) {
-  const n = Math.round(Number(v) / BITRATE_STEP_KBPS) * BITRATE_STEP_KBPS;
-  if (!Number.isFinite(n)) return BITRATE_DEFAULT_KBPS;
-  return Math.min(BITRATE_MAX_KBPS, Math.max(BITRATE_MIN_KBPS, n));
-}
+// Characters Windows (and Resolve) won't accept in an output filename.
+const BAD_FILENAME_CHARS = /[\\/:*?"<>|]/;
+// Wait this long after the bin changes before counting its timelines.
+const BIN_COUNT_DEBOUNCE_MS = 300;
 
 function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposReady, onLog, onOpenJobs }) {
   const DEFAULT_PRESET = 'General LP Export';
@@ -69,9 +61,18 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   const [autoStart, setAutoStart]   = React.useState(false);
   // Burn subtitles into the video by queuing the "<preset> - Subtitle" pair.
   const [burnIn, setBurnIn]         = React.useState(false);
-  // Optional bitrate override pushed into Resolve as VideoQuality (kbps).
-  const [bitrateOn, setBitrateOn]   = React.useState(false);
-  const [bitrateKbps, setBitrateKbps] = React.useState(BITRATE_DEFAULT_KBPS);
+  // Deliver-page output toggles (ExportVideo / ExportAudio). Always sent, so
+  // the page, not the preset, decides.
+  const [exportVideo, setExportVideo] = React.useState(true);
+  const [exportAudio, setExportAudio] = React.useState(true);
+  // Filename: 'timeline' (each job named after its timeline) or 'custom'
+  // (only when the bin resolves to exactly one timeline).
+  const [nameMode, setNameMode]     = React.useState('timeline');
+  const [customName, setCustomName] = React.useState('');
+
+  // Timelines the chosen bin would queue (export_preflight). null = unknown.
+  const [binNames, setBinNames]       = React.useState(null);
+  const [binCounting, setBinCounting] = React.useState(false);
 
   // ── Preset / bin dropdown sources ──────────────────────
   // Fetched from Resolve when the overlay opens (and we're connected). Empty
@@ -124,6 +125,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     setConflicts([]);
     setSubtitleGaps([]);
     setPendingStart(true);
+    setNameMode('timeline');
+    setCustomName('');
 
     if (!window.electronAPI?.getPreferences) {
       setTargetDir('');
@@ -139,8 +142,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         setPresetName(prefs.lastExportPreset || DEFAULT_PRESET);
         setExportBin(prefs.lastExportBin || DEFAULT_BIN);
         setSelectedProjectId(prefs.lastExportProjectId || '');
-        setBitrateOn(!!prefs.lastExportBitrateOn);
-        setBitrateKbps(clampBitrate(prefs.lastExportBitrateKbps ?? BITRATE_DEFAULT_KBPS));
+        setExportVideo(prefs.lastExportVideo !== false);
+        setExportAudio(prefs.lastExportAudio !== false);
       })
       .catch(() => {
         setTargetDir('');
@@ -202,6 +205,39 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
 
     return () => { cancelled = true; };
   }, [open, connected]);
+
+  // Count the timelines the chosen bin would queue, so the custom filename can
+  // unlock when there's exactly one. Debounced; a stale answer is dropped.
+  React.useEffect(() => {
+    if (!open || !connected || !exportBin) {
+      setBinNames(null); setBinCounting(false);
+      return;
+    }
+    let cancelled = false;
+    setBinCounting(true);
+    const timer = setTimeout(() => {
+      window.leaderpassAPI.call('export_preflight', { export_bin_name: exportBin })
+        .then((res) => {
+          if (cancelled) return;
+          setBinNames(Array.isArray(res?.data?.names) ? res.data.names : []);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setBinNames(null);
+          const msg = err?.error?.message || err?.error || err?.message || 'unknown error';
+          onLog?.(`[export] Couldn't count timelines in "${exportBin}": ${msg}`);
+        })
+        .finally(() => { if (!cancelled) setBinCounting(false); });
+    }, BIN_COUNT_DEBOUNCE_MS);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [open, connected, exportBin]);
+
+  // Seed the custom name with the single timeline's name whenever the bin
+  // changes to one that holds exactly one timeline.
+  const singleTimeline = binNames && binNames.length === 1 ? binNames[0] : null;
+  React.useEffect(() => {
+    if (singleTimeline) setCustomName(singleTimeline);
+  }, [singleTimeline]);
 
   // Escape-to-close. Always allowed: the main process owns the queue + render,
   // so closing mid-export only hides this window (progress stays in Jobs), and
@@ -265,6 +301,15 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   // and let the toggle through — lp_base_export logs loudly if the name is bad.
   const burnInPresetName = `${presetName}${BURN_IN_SUFFIX}`;
   const burnInAvailable  = presets.length === 0 || presets.includes(burnInPresetName);
+
+  const customAllowed  = Boolean(singleTimeline);
+  const useCustomName  = nameMode === 'custom' && customAllowed;
+  const trimmedCustom  = customName.trim();
+  const customNameError = !useCustomName ? null
+    : !trimmedCustom ? 'Enter a filename.'
+    : BAD_FILENAME_CHARS.test(trimmedCustom) ? 'A filename can\'t contain \\ / : * ? " < > |'
+    : null;
+  const nothingToExport = !exportVideo && !exportAudio;
 
   // If the selected preset has no burn-in pair, force the toggle back off so we
   // can never queue a burn-in export against a preset that can't deliver it.
@@ -345,7 +390,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
   function beginExport(startRender) {
     // Run the pre-export check whenever there's something to verify: the LPOS
     // version-conflict check (upload) and/or the subtitle-track check (burn-in).
-    if ((uploadToLpos && selectedProjectId) || burnIn) {
+    if ((uploadToLpos && selectedProjectId) || (burnIn && exportVideo)) {
       runPreflight(startRender);
     } else {
       doStart(startRender);
@@ -374,7 +419,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         timeout,
       ]).finally(() => clearTimeout(timer));
       if (stale()) return;
-      const names          = pfRes?.data?.names || [];
+      const timelineNames  = pfRes?.data?.names || [];
+      const names          = useCustomName && timelineNames.length === 1 ? [trimmedCustom] : timelineNames;
       const subtitleTracks = pfRes?.data?.subtitle_tracks || {};
 
       const found = wantVersionCheck
@@ -382,8 +428,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         : [];
       // Burn-in onto a timeline with no subtitle track silently produces an
       // uncaptioned video, so flag those timelines before queuing.
-      const gaps = burnIn
-        ? names.filter((n) => !(Number(subtitleTracks[n]) > 0))
+      const gaps = burnIn && exportVideo
+        ? timelineNames.filter((n) => !(Number(subtitleTracks[n]) > 0))
         : [];
 
       if (found.length > 0 || gaps.length > 0) {
@@ -426,8 +472,10 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     setBusy(true);
     setStage('running');
     // When burning in, queue the paired "<preset> - Subtitle" preset instead.
-    const effectivePreset = burnIn ? burnInPresetName : presetName;
-    onLog?.(`[export] ${startRender ? 'Queue & render' : 'Queue'}${burnIn ? ' (burn-in subtitles)' : ''}${bitrateOn ? ` @ ${bitrateKbps} kbps` : ''}${targetDir ? ` → ${targetDir}` : ' (preset location)'}…`);
+    const burning = burnIn && exportVideo;
+    const effectivePreset = burning ? burnInPresetName : presetName;
+    const outputs = exportVideo && exportAudio ? '' : exportVideo ? ' (video only)' : ' (audio only)';
+    onLog?.(`[export] ${startRender ? 'Queue & render' : 'Queue'}${burning ? ' (burn-in subtitles)' : ''}${outputs}${useCustomName ? ` as "${trimmedCustom}"` : ''}${targetDir ? ` → ${targetDir}` : ' (preset location)'}…`);
 
     // Save selections for next time. Persist the BASE preset the editor picked,
     // not the burn-in variant — burn-in is a per-export toggle, not a default.
@@ -435,8 +483,8 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       lastExportDir: targetDir,
       lastExportPreset: presetName,
       lastExportBin: exportBin,
-      lastExportBitrateOn: bitrateOn,
-      lastExportBitrateKbps: bitrateKbps,
+      lastExportVideo: exportVideo,
+      lastExportAudio: exportAudio,
       ...(uploadToLpos && selectedProjectId ? { lastExportProjectId: selectedProjectId } : {})
     });
 
@@ -448,7 +496,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         targetDir: targetDir || undefined,
         presetName: effectivePreset,
         exportBin,
-        bitrateKbps: bitrateOn ? bitrateKbps : undefined,
+        exportVideo,
+        exportAudio,
+        customName: useCustomName ? trimmedCustom : undefined,
         startRender,
         projectId:   uploadToLpos && selectedProjectId ? selectedProjectId : undefined,
         projectName: uploadToLpos && selectedProject  ? selectedProject.name : undefined
@@ -505,157 +555,173 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
     return null;
   }
 
+  // Under the bin dropdown: how many timelines it would queue.
+  function binCountHint() {
+    if (!connected) return null;
+    if (binCounting) return <p className="hint">Counting timelines…</p>;
+    if (!binNames) return null;
+    const n = binNames.length;
+    return <p className="hint">{n === 0 ? 'No matching timelines' : `${n} timeline${n !== 1 ? 's' : ''}`}</p>;
+  }
+
+  // Laid out like Resolve's Deliver page: Source, File, Video, Audio, then
+  // what happens after the export.
   function renderConfigure() {
     return (
       <div className="export-form">
-        {/* Preset + bin — dropdowns sourced from Resolve when available. The
-            persisted value always appears as an option even if the fetched
-            list doesn't contain it (offline, fetch error, or a Resolve
-            project that doesn't have that preset/bin yet) so the editor can
-            still queue and lp_base_export will surface the actual mismatch. */}
-        <div className="export-field-row">
-          <div className="export-field" style={{ flex: 1 }}>
-            <p className="export-field-label">Preset</p>
-            <select
-              className="settings-input"
-              value={presetName}
-              onChange={(e) => setPresetName(e.target.value)}
-              disabled={presetsLoading}
-            >
-              {(() => {
-                const options = [...presets];
-                if (presetName && !options.includes(presetName)) options.unshift(presetName);
-                if (options.length === 0) options.push(DEFAULT_PRESET);
-                return options.map((name) => (
-                  <option key={name} value={name}>
-                    {name}{!presets.includes(name) && presets.length > 0 ? ' (not in this project)' : ''}
-                  </option>
-                ));
-              })()}
-            </select>
-            {sourceHint(presetsLoading, presetsError, 'presets')}
-          </div>
-          <div className="export-field" style={{ flex: 1 }}>
-            <p className="export-field-label">Export bin</p>
-            <select
-              className="settings-input"
-              value={exportBin}
-              onChange={(e) => setExportBin(e.target.value)}
-              disabled={binsLoading}
-            >
-              {(() => {
-                // Prefer the hierarchical tree (indented sub-bins); fall back
-                // to the flat path list. `value` is always the full bin path.
-                const tree = binTree.length
-                  ? binTree
-                  : bins.map((p) => ({ path: p, name: p, depth: 1 }));
-                const paths = tree.map((b) => b.path);
-                const options = [...tree];
-                if (exportBin && !paths.includes(exportBin)) {
-                  options.unshift({ path: exportBin, name: exportBin, depth: 1 });
-                }
-                if (options.length === 0) options.push({ path: DEFAULT_BIN, name: DEFAULT_BIN, depth: 1 });
-                return options.map((b) => {
-                  const indent = b.depth > 1 ? '   '.repeat(b.depth - 1) : '';
-                  const missing = !paths.includes(b.path) && paths.length > 0;
-                  return (
-                    <option key={b.path} value={b.path}>
-                      {indent}{b.name}{missing ? ' (not in this project)' : ''}
+        <section className="export-section">
+          <p className="export-section-title">Source</p>
+          {/* Preset + bin — dropdowns sourced from Resolve when available. The
+              persisted value always appears as an option even if the fetched
+              list doesn't contain it (offline, fetch error, or a Resolve
+              project that doesn't have that preset/bin yet) so the editor can
+              still queue and lp_base_export will surface the actual mismatch. */}
+          <div className="export-field-row">
+            <div className="export-field" style={{ flex: 1 }}>
+              <p className="export-field-label">Preset</p>
+              <select
+                className="settings-input"
+                value={presetName}
+                onChange={(e) => setPresetName(e.target.value)}
+                disabled={presetsLoading}
+              >
+                {(() => {
+                  const options = [...presets];
+                  if (presetName && !options.includes(presetName)) options.unshift(presetName);
+                  if (options.length === 0) options.push(DEFAULT_PRESET);
+                  return options.map((name) => (
+                    <option key={name} value={name}>
+                      {name}{!presets.includes(name) && presets.length > 0 ? ' (not in this project)' : ''}
                     </option>
-                  );
-                });
-              })()}
-            </select>
-            {sourceHint(binsLoading, binsError, 'bins')}
+                  ));
+                })()}
+              </select>
+              {sourceHint(presetsLoading, presetsError, 'presets')}
+            </div>
+            <div className="export-field" style={{ flex: 1 }}>
+              <p className="export-field-label">Export bin</p>
+              <select
+                className="settings-input"
+                value={exportBin}
+                onChange={(e) => setExportBin(e.target.value)}
+                disabled={binsLoading}
+              >
+                {(() => {
+                  // Prefer the hierarchical tree (indented sub-bins); fall back
+                  // to the flat path list. `value` is always the full bin path.
+                  const tree = binTree.length
+                    ? binTree
+                    : bins.map((p) => ({ path: p, name: p, depth: 1 }));
+                  const paths = tree.map((b) => b.path);
+                  const options = [...tree];
+                  if (exportBin && !paths.includes(exportBin)) {
+                    options.unshift({ path: exportBin, name: exportBin, depth: 1 });
+                  }
+                  if (options.length === 0) options.push({ path: DEFAULT_BIN, name: DEFAULT_BIN, depth: 1 });
+                  return options.map((b) => {
+                    const indent = b.depth > 1 ? '   '.repeat(b.depth - 1) : '';
+                    const missing = !paths.includes(b.path) && paths.length > 0;
+                    return (
+                      <option key={b.path} value={b.path}>
+                        {indent}{b.name}{missing ? ' (not in this project)' : ''}
+                      </option>
+                    );
+                  });
+                })()}
+              </select>
+              {sourceHint(binsLoading, binsError, 'bins') || binCountHint()}
+            </div>
           </div>
-        </div>
+        </section>
 
-        {/* Destination folder (written into Resolve's TargetDir per timeline;
-            empty keeps the preset's own location). */}
-        <div className="export-field">
-          <p className="export-field-label">Destination folder</p>
-          <div className="export-dest-row">
-            <span className={`export-dest-path${targetDir ? '' : ' placeholder'}`} title={targetDir || undefined}>
-              {targetDir || "Preset's saved location"}
-            </span>
-            {targetDir && (
+        <section className="export-section">
+          <p className="export-section-title">File</p>
+          <div className="export-row">
+            <span className="export-row-label">Filename</span>
+            <div className="export-seg" role="radiogroup" aria-label="Filename">
               <button
                 type="button"
-                className="btn ghost small"
-                onClick={() => { setTargetDir(''); persistPrefs({ lastExportDir: '' }); }}
-                title="Use the preset's saved location"
+                role="radio"
+                aria-checked={!useCustomName}
+                className={!useCustomName ? 'on' : ''}
+                onClick={() => setNameMode('timeline')}
               >
-                Clear
+                Timeline name
               </button>
-            )}
-            <button type="button" className="btn ghost small" onClick={handlePickFolder}>Choose…</button>
-          </div>
-        </div>
-
-        {/* Bitrate override (VideoQuality, kbps). Off keeps the preset's setting. */}
-        <div className="export-toggle">
-          <div className="export-toggle-inner">
-            <div>
-              <p className="export-field-label">Bitrate</p>
-              <p className="export-toggle-sub">
-                {bitrateOn ? `${bitrateKbps.toLocaleString()} kbps` : 'Preset default'}
-              </p>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={useCustomName}
+                className={useCustomName ? 'on' : ''}
+                disabled={!customAllowed}
+                title={customAllowed ? undefined : 'Only when the bin has one timeline'}
+                onClick={() => setNameMode('custom')}
+              >
+                Custom name
+              </button>
             </div>
-            <button
-              type="button"
-              className={`export-switch${bitrateOn ? ' on' : ''}`}
-              role="switch"
-              aria-checked={bitrateOn}
-              aria-label="Set bitrate"
-              onClick={() => setBitrateOn(v => !v)}
-            >
-              <span className="export-switch-knob" />
-            </button>
           </div>
-          {bitrateOn && (
-            <input
-              type="range"
-              className="export-range"
-              min={BITRATE_MIN_KBPS}
-              max={BITRATE_MAX_KBPS}
-              step={BITRATE_STEP_KBPS}
-              value={bitrateKbps}
-              onChange={(e) => setBitrateKbps(clampBitrate(e.target.value))}
-              aria-label="Bitrate (kbps)"
-            />
+          {useCustomName && (
+            <div className="export-row export-row--indent">
+              <input
+                type="text"
+                className="settings-input"
+                value={customName}
+                onChange={(e) => setCustomName(e.target.value)}
+                spellCheck={false}
+                autoComplete="off"
+                aria-label="Custom filename"
+                aria-invalid={Boolean(customNameError)}
+              />
+            </div>
           )}
-        </div>
-
-        {/* Auto-start toggle */}
-        <div className="export-toggle">
-          <div className="export-toggle-inner">
-            <div>
-              <p className="export-field-label">Start exporting right away</p>
-              <p className="export-toggle-sub">When off, start it from Jobs.</p>
+          {customNameError && <p className="hint export-row--indent export-error">{customNameError}</p>}
+          {/* Location is written into Resolve's TargetDir per timeline; empty
+              keeps the preset's own location. */}
+          <div className="export-row">
+            <span className="export-row-label">Location</span>
+            <div className="export-dest-row">
+              <span className={`export-dest-path${targetDir ? '' : ' placeholder'}`} title={targetDir || undefined}>
+                {targetDir || "Preset's saved location"}
+              </span>
+              {targetDir && (
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  onClick={() => { setTargetDir(''); persistPrefs({ lastExportDir: '' }); }}
+                  title="Use the preset's saved location"
+                >
+                  Clear
+                </button>
+              )}
+              <button type="button" className="btn ghost small" onClick={handlePickFolder}>Choose…</button>
             </div>
+          </div>
+        </section>
+
+        <section className={`export-section${exportVideo ? '' : ' off'}`}>
+          <div className="export-section-head">
+            <p className="export-section-title">Video</p>
             <button
               type="button"
-              className={`export-switch${autoStart ? ' on' : ''}`}
+              className={`export-switch${exportVideo ? ' on' : ''}`}
               role="switch"
-              aria-checked={autoStart}
-              aria-label="Start exporting right away"
-              onClick={() => setAutoStart(v => !v)}
+              aria-checked={exportVideo}
+              aria-label="Export video"
+              onClick={() => setExportVideo(v => !v)}
             >
               <span className="export-switch-knob" />
             </button>
           </div>
-        </div>
-
-        {/* Burn-in subtitles toggle (swaps to the "<preset> - Subtitles" pair) */}
-        <div className={`export-toggle${burnInAvailable ? '' : ' disabled'}`}>
-          <div className="export-toggle-inner">
-            <div>
-              <p className="export-field-label">Burn in subtitles</p>
-              {!burnInAvailable && (
-                <p className="export-toggle-sub">No "{burnInPresetName}" preset in this project.</p>
-              )}
-            </div>
-            <button
+          {exportVideo && (
+            <div className={`export-row${burnInAvailable ? '' : ' disabled'}`}>
+              <div>
+                <span className="export-row-label">Burn in subtitles</span>
+                {!burnInAvailable && (
+                  <p className="export-toggle-sub">No "{burnInPresetName}" preset in this project.</p>
+                )}
+              </div>
+              <button
               type="button"
               className={`export-switch${burnIn ? ' on' : ''}`}
               role="switch"
@@ -666,106 +732,143 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
             >
               <span className="export-switch-knob" />
             </button>
-          </div>
-        </div>
-
-        {/* Upload-to-LPOS toggle */}
-        <div className={`export-toggle${lposReady ? '' : ' disabled'}`}>
-          <div className="export-toggle-inner">
-            <div>
-              <p className="export-field-label">Upload to LPOS when done</p>
-              {!lposReady && (
-                <p className="export-toggle-sub">Sign in to LPOS in Settings to turn this on.</p>
-              )}
             </div>
+          )}
+        </section>
+
+        <section className={`export-section${exportAudio ? '' : ' off'}`}>
+          <div className="export-section-head">
+            <p className="export-section-title">Audio</p>
             <button
               type="button"
-              className={`export-switch${uploadToLpos ? ' on' : ''}`}
+              className={`export-switch${exportAudio ? ' on' : ''}`}
               role="switch"
-              aria-checked={uploadToLpos}
-              aria-label="Upload to LPOS when done"
-              disabled={!lposReady}
-              onClick={handleToggleUpload}
+              aria-checked={exportAudio}
+              aria-label="Export audio"
+              onClick={() => setExportAudio(v => !v)}
             >
               <span className="export-switch-knob" />
             </button>
           </div>
+        </section>
+        {nothingToExport && <p className="hint export-error">Turn on video or audio.</p>}
 
-          {uploadToLpos && (
-            <div className="export-project-area">
-              {projectsLoading && (
-                <div className="export-loading">
-                  <span className="spinner" />
-                  <span>Loading projects…</span>
-                </div>
-              )}
-              {projectsError && (
-                <div className="notice error" title={String(projectsError)}>
-                  <span>Couldn't load LPOS projects.</span>
-                  <button type="button" className="btn ghost small notice-action" onClick={loadProjects}>
-                    Try again
-                  </button>
-                </div>
-              )}
-              {!projectsLoading && !projectsError && !hasAnyProjects && (
-                <p className="hint">No projects in LPOS.</p>
-              )}
-              {!projectsLoading && !projectsError && hasAnyProjects && (
-                <div className="export-project-search">
-                  <input
-                    type="search"
-                    className="export-project-search-input"
-                    placeholder="Search projects or clients…"
-                    value={projectQuery}
-                    onChange={(e) => setProjectQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape' && projectQuery) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setProjectQuery('');
-                      }
-                    }}
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                  {projectQuery && (
-                    <span className="export-project-search-meta">
-                      {filteredProjectCount} match{filteredProjectCount !== 1 ? 'es' : ''}
-                    </span>
-                  )}
-                </div>
-              )}
-              {!projectsLoading && !projectsError && hasAnyProjects && filteredProjectCount === 0 && (
-                <p className="hint">No projects match “{projectQuery.trim()}”.</p>
-              )}
-              {!projectsLoading && !projectsError && groupedProjects.length > 0 && (
-                <div className="export-project-list">
-                  {groupedProjects.map(([client, list]) => (
-                    <div key={client} className="export-project-group">
-                      <p className="export-client-name">{client}</p>
-                      {list.map((p) => (
-                        <label
-                          key={p.projectId}
-                          className={`export-project-row${selectedProjectId === p.projectId ? ' selected' : ''}`}
-                        >
-                          <input
-                            type="radio"
-                            name="lpos-project"
-                            className="export-project-radio"
-                            checked={selectedProjectId === p.projectId}
-                            onChange={() => setSelectedProjectId(p.projectId)}
-                          />
-                          <span className="export-project-row-name">{p.name}</span>
-                          {p.phase && <span className="export-project-row-meta">{p.phase}</span>}
-                        </label>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              )}
+        <section className="export-section">
+          <p className="export-section-title">After export</p>
+          <div className="export-row">
+            <div>
+              <span className="export-row-label">Start right away</span>
+              <p className="export-toggle-sub">When off, start it from Jobs.</p>
             </div>
-          )}
-        </div>
+            <button
+              type="button"
+              className={`export-switch${autoStart ? ' on' : ''}`}
+              role="switch"
+              aria-checked={autoStart}
+              aria-label="Start right away"
+              onClick={() => setAutoStart(v => !v)}
+            >
+              <span className="export-switch-knob" />
+            </button>
+          </div>
+          {/* Upload-to-LPOS toggle */}
+          <div className={`export-toggle${lposReady ? '' : ' disabled'}`}>
+            <div className="export-toggle-inner">
+              <div>
+                <span className="export-row-label">Upload to LPOS when done</span>
+                {!lposReady && (
+                  <p className="export-toggle-sub">Sign in to LPOS in Settings to turn this on.</p>
+                )}
+              </div>
+              <button
+                type="button"
+                className={`export-switch${uploadToLpos ? ' on' : ''}`}
+                role="switch"
+                aria-checked={uploadToLpos}
+                aria-label="Upload to LPOS when done"
+                disabled={!lposReady}
+                onClick={handleToggleUpload}
+              >
+                <span className="export-switch-knob" />
+              </button>
+            </div>
+
+            {uploadToLpos && (
+              <div className="export-project-area">
+                {projectsLoading && (
+                  <div className="export-loading">
+                    <span className="spinner" />
+                    <span>Loading projects…</span>
+                  </div>
+                )}
+                {projectsError && (
+                  <div className="notice error" title={String(projectsError)}>
+                    <span>Couldn't load LPOS projects.</span>
+                    <button type="button" className="btn ghost small notice-action" onClick={loadProjects}>
+                      Try again
+                    </button>
+                  </div>
+                )}
+                {!projectsLoading && !projectsError && !hasAnyProjects && (
+                  <p className="hint">No projects in LPOS.</p>
+                )}
+                {!projectsLoading && !projectsError && hasAnyProjects && (
+                  <div className="export-project-search">
+                    <input
+                      type="search"
+                      className="export-project-search-input"
+                      placeholder="Search projects or clients…"
+                      value={projectQuery}
+                      onChange={(e) => setProjectQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape' && projectQuery) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setProjectQuery('');
+                        }
+                      }}
+                      spellCheck={false}
+                      autoComplete="off"
+                    />
+                    {projectQuery && (
+                      <span className="export-project-search-meta">
+                        {filteredProjectCount} match{filteredProjectCount !== 1 ? 'es' : ''}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {!projectsLoading && !projectsError && hasAnyProjects && filteredProjectCount === 0 && (
+                  <p className="hint">No projects match “{projectQuery.trim()}”.</p>
+                )}
+                {!projectsLoading && !projectsError && groupedProjects.length > 0 && (
+                  <div className="export-project-list">
+                    {groupedProjects.map(([client, list]) => (
+                      <div key={client} className="export-project-group">
+                        <p className="export-client-name">{client}</p>
+                        {list.map((p) => (
+                          <label
+                            key={p.projectId}
+                            className={`export-project-row${selectedProjectId === p.projectId ? ' selected' : ''}`}
+                          >
+                            <input
+                              type="radio"
+                              name="lpos-project"
+                              className="export-project-radio"
+                              checked={selectedProjectId === p.projectId}
+                              onChange={() => setSelectedProjectId(p.projectId)}
+                            />
+                            <span className="export-project-row-name">{p.name}</span>
+                            {p.phase && <span className="export-project-row-meta">{p.phase}</span>}
+                          </label>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
       </div>
     );
   }
@@ -866,7 +969,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
               ? `${noun} exporting. Track progress in Jobs.`
               : `${noun} queued. Start ${n === 1 ? 'it' : 'them'} from Jobs.`}
           </p>
-          {burnIn && (
+          {burnIn && exportVideo && (
             <p className="export-done-sub">Subtitles are burned in.</p>
           )}
           {result?.project && (
@@ -899,7 +1002,7 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
 
   if (!open) return null;
 
-  const canRun = connected && !busy;
+  const canRun = connected && !busy && !nothingToExport && !customNameError;
 
   return (
     <div className="tool-overlay export-overlay" role="dialog" aria-label="Export">

@@ -3240,12 +3240,110 @@ button.status-bar-chip-btn:disabled {
   color: var(--text-dim);
 }
 
-.export-range {
-  display: block;
-  width: 100%;
-  margin: 12px 0 0;
-  accent-color: var(--accent);
+/* Resolve Deliver-style sections: Source / File / Video / Audio / After export */
+.export-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.export-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.export-section-title {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.export-section.off .export-section-title {
+  color: var(--text-dim);
+}
+
+/* Toggles nested in a section drop their own card chrome */
+.export-section .export-toggle {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.export-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.export-row.disabled > div {
+  opacity: 0.5;
+}
+
+.export-row > .export-dest-row,
+.export-row > .settings-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.export-row-label {
+  min-width: 88px;
+  font-size: 0.84rem;
+  color: var(--text);
+}
+
+.export-row > .export-seg {
+  margin-right: auto;
+}
+
+.export-row--indent {
+  padding-left: 100px;
+}
+
+.export-seg {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.export-seg button {
+  padding: 5px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.8rem;
   cursor: pointer;
+}
+
+.export-seg button + button {
+  border-left: 1px solid var(--border-strong);
+}
+
+.export-seg button.on {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.export-seg button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.export-error {
+  color: var(--danger);
 }
 
 .export-loading {

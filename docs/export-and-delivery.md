@@ -40,8 +40,11 @@ the render. The operator no longer has to set the Deliver-page location by hand.
    sub-bins (indented), fed by `list_media_bins` (`bins` = flat paths,
    `bin_tree` = `{ path, name, depth }`).
 3. Per matched timeline: `SetCurrentTimeline` → `LoadRenderPreset` →
-   `SetRenderSettings({ TargetDir, CustomName: <timeline>, UniqueFilename: true })`
-   → `AddRenderJob()`. The order matters: the preset restores its own saved
+   `SetRenderSettings({ ExportVideo, ExportAudio })` (own call) →
+   `SetRenderSettings({ TargetDir, CustomName, UniqueFilename: true })`
+   → `AddRenderJob()`. `CustomName` is the timeline name, or the editor's
+   custom name when the bin resolves to exactly one timeline (the helper
+   re-checks the count and ignores the custom name otherwise). The order matters: the preset restores its own saved
    TargetDir, then we override it; `AddRenderJob` snapshots the *current*
    settings, so each job carries its own destination.
 4. The **"Start rendering automatically"** toggle (default off) decides what
@@ -53,6 +56,19 @@ the render. The operator no longer has to set the Deliver-page location by hand.
 `target_dir` is optional and back-compatible — omit it and Resolve uses the
 preset's saved location. The helper `os.makedirs(target_dir, exist_ok=True)`
 defensively (Resolve falls back / fails on a missing TargetDir).
+
+### Deliver-style page layout (v1.2.59, 2026-10-23)
+The configure stage is laid out like Resolve's Deliver page, exposing only the
+settings the team uses: **Source** (preset, bin + live timeline count via
+`export_preflight`, debounced 300ms), **File** (Timeline name / Custom name —
+custom only unlocks at exactly one timeline, pre-filled with its name, rejects
+`\ / : * ? " < > |`; location), **Video** on/off (+ burn-in), **Audio** on/off
+(both off blocks Export), **After export** (start right away, upload to LPOS).
+Video/audio are persisted (`lastExportVideo` / `lastExportAudio`) and always
+sent, so the page — not the preset — decides. The custom name isn't persisted.
+The LPOS version-conflict check compares the custom name when one is used.
+The bitrate slider (v1.2.53–58) was removed: Resolve rejected every
+`VideoQuality` form we sent, and the team chose to drop quality control from the page.
 
 ### Background tracking + progress (added 2026-05-28)
 Queue & Render runs as a **background job owned by the main process**, so it keeps

@@ -3530,7 +3530,7 @@ app.whenReady().then(() => {
   // main-process tracker so it runs in the background and reports progress to
   // the Jobs panel — independent of whether the picker overlay stays open.
   ipcMain.handle('export:start', async (_e, opts = {}) => {
-    const { targetDir, presetName, exportBin, bitrateKbps, startRender = true, projectId, projectName } = opts;
+    const { targetDir, presetName, exportBin, exportVideo, exportAudio, customName, startRender = true, projectId, projectName } = opts;
     // Hold off orphan reconciliation for the whole dispatch — from the first
     // AddRenderJob inside lp_base_export through startExportTracking writing the
     // batch's export_runs row. Otherwise a reconcile tick mid-dispatch would
@@ -3541,7 +3541,9 @@ app.whenReady().then(() => {
       if (presetName) payload.preset_name = presetName;
       if (exportBin)  payload.export_bin_name = exportBin;
       if (targetDir)  payload.target_dir = targetDir;
-      if (Number.isFinite(bitrateKbps) && bitrateKbps > 0) payload.video_bitrate_kbps = Math.round(bitrateKbps);
+      if (typeof exportVideo === 'boolean') payload.export_video = exportVideo;
+      if (typeof exportAudio === 'boolean') payload.export_audio = exportAudio;
+      if (customName && String(customName).trim()) payload.custom_name = String(customName).trim();
 
       const res = await sendWorkerRequest(payload, WORKERS.resolve);
       const data = res?.data || {};
@@ -3567,18 +3569,6 @@ app.whenReady().then(() => {
       }).filter(j => j.job_id != null);
       if (jobs.length === 0) return { ok: true, empty: true };
       markJobsOwned(jobs);
-
-      // Bitrate override diagnostics: lp_base_export reports per job whether
-      // Resolve accepted VideoQuality, the active codec, and the queued job
-      // record. Logged here so it lands in the main log next to [resolve] lines.
-      if (bitrateKbps) {
-        for (const j of rawJobs) {
-          if (Array.isArray(j)) continue;
-          const b = j?.bitrate;
-          console.log(`[export] bitrate '${j?.name}': requested=${bitrateKbps} applied=${b ? b.applied : 'n/a (old helper?)'} codec=${b?.format || '?'}/${b?.codec || '?'}`);
-          if (j?.render_job) console.log(`[export] render job '${j?.name}': ${JSON.stringify(j.render_job)}`);
-        }
-      }
 
       const exportId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const resolvedTargetDir = data.target_dir || targetDir;
