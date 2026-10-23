@@ -44,45 +44,12 @@ def _capture_timeline_metadata(timeline: Any, project_name: Optional[str]) -> Di
         "project_name": project_name,
     }
 
-def _apply_bitrate(project: Any, kbps: int, timeline_name: str, log: Any) -> Dict[str, Any]:
-    """Override the loaded preset's bitrate via VideoQuality.
-
-    Resolve rejected the documented int-kbps form on our Windows build
-    (v1.2.53–58), and the docs never state the unit. Try kbps (int, then str),
-    then bits per second, and report which form stuck so one test export
-    settles the unit. Check the output file's real bitrate against the log."""
-    attempts = [("kbps", kbps), ("kbps-str", str(kbps)), ("bps", kbps * 1000)]
-    applied_as = None
-    for label, value in attempts:
-        if project.SetRenderSettings({"VideoQuality": value}):
-            applied_as = label
-            break
-    try:
-        fmt_codec = project.GetCurrentRenderFormatAndCodec() or {}
-    except Exception:
-        fmt_codec = {}
-    codec_label = f"{fmt_codec.get('format') or '?'}/{fmt_codec.get('codec') or '?'}"
-    if applied_as:
-        log(f"Bitrate set for '{timeline_name}' -> {kbps} kbps (accepted as {applied_as}, codec {codec_label})")
-    else:
-        log(
-            f"Warning: bitrate {kbps} kbps was rejected in every form for '{timeline_name}' "
-            f"(codec {codec_label}); using the preset's quality."
-        )
-    return {
-        "requested_kbps": kbps,
-        "applied": applied_as is not None,
-        "applied_as": applied_as,
-        "format": fmt_codec.get("format"),
-        "codec": fmt_codec.get("codec"),
-    }
-
-
 def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Queue render jobs for timelines matching items in EXPORT bin."""
     from .. import resolve_helper as rh
     from .bin_tree import resolve_folder_by_path
     from ..timeline_index import find_timelines, is_timeline_clip
+    from .preset_bitrate import make_bitrate_preset, drop_bitrate_preset
 
     t0 = time.time()
     if not rh.project:
@@ -109,9 +76,9 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     export_audio = payload.get("export_audio")
     if export_video is False and export_audio is False:
         raise RuntimeError("Video and audio are both off; nothing to export.")
-    # Optional bitrate override in kbps, pushed into Resolve as VideoQuality.
-    # Only bitrate-controlled codecs (H.264/H.265) honour it. Absent = keep
-    # the preset's saved quality.
+    # Optional bitrate override in kbps. Resolve 21 rejects VideoQuality, so it
+    # is written into a temporary copy of the preset (see preset_bitrate.py).
+    # Only H.264/H.265 presets carry a bitrate. Absent = the preset's own.
     try:
         video_bitrate_kbps = int(payload.get("video_bitrate_kbps") or 0) or None
     except (TypeError, ValueError):
@@ -183,85 +150,99 @@ def handle_lp_base_export(payload: Dict[str, Any]) -> Dict[str, Any]:
     project_name = project.GetName() if project else None
     render_jobs: List[Dict[str, Any]] = []
 
-    for timeline in matched_timelines:
-        t_tl = time.time()
-        timeline_name = timeline.GetName()
-        project.SetCurrentTimeline(timeline)
-        time.sleep(1.0)  # brief settle
+    # One temporary bitrate copy of the preset for the whole batch; every
+    # timeline queues with it, and it's deleted once all jobs are queued.
+    bitrate_preset = None
+    if video_bitrate_kbps and export_video is not False:
+        bitrate_preset = make_bitrate_preset(rh.resolve, project, export_preset_name, video_bitrate_kbps, rh.log)
+    queue_preset = bitrate_preset or export_preset_name
 
-        preset_loaded = project.LoadRenderPreset(export_preset_name)
-        if not preset_loaded:
-            rh.log(
-                f"Error: Failed to load export preset '{export_preset_name}' for timeline '{timeline_name}'."
-            )
-            continue
+    try:
+        for timeline in matched_timelines:
+            t_tl = time.time()
+            timeline_name = timeline.GetName()
+            project.SetCurrentTimeline(timeline)
+            time.sleep(1.0)  # brief settle
 
-        # Bitrate in its own call so a rejection can't void the settings below.
-        bitrate_result = None
-        if video_bitrate_kbps and export_video is not False:
-            bitrate_result = _apply_bitrate(project, video_bitrate_kbps, timeline_name, rh.log)
-
-        # Video/audio toggles in their own call so a rejection can't void the
-        # destination override below.
-        av: Dict[str, Any] = {}
-        if export_video is not None:
-            av["ExportVideo"] = bool(export_video)
-        if export_audio is not None:
-            av["ExportAudio"] = bool(export_audio)
-        if av:
-            if project.SetRenderSettings(av):
-                rh.log(f"Output for '{timeline_name}': video {'on' if av.get('ExportVideo', True) else 'off'}, audio {'on' if av.get('ExportAudio', True) else 'off'}")
+            preset_loaded = project.LoadRenderPreset(queue_preset)
+            if not preset_loaded and queue_preset != export_preset_name:
+                rh.log(f"Warning: couldn't load '{queue_preset}' for '{timeline_name}'; using '{export_preset_name}' at its own bitrate.")
+                preset_loaded = project.LoadRenderPreset(export_preset_name)
+                bitrate_result = {"requested_kbps": video_bitrate_kbps, "applied": False, "via": "preset_copy"}
             else:
-                rh.log(f"Warning: Resolve rejected the video/audio toggles for '{timeline_name}'; using the preset's.")
+                bitrate_result = (
+                    {"requested_kbps": video_bitrate_kbps, "applied": queue_preset != export_preset_name, "via": "preset_copy"}
+                    if video_bitrate_kbps and export_video is not False else None
+                )
+            if not preset_loaded:
+                rh.log(
+                    f"Error: Failed to load export preset '{export_preset_name}' for timeline '{timeline_name}'."
+                )
+                continue
 
-        # Override the destination/name AFTER the preset loads (the preset
-        # restores its own saved TargetDir) but BEFORE AddRenderJob, which
-        # snapshots the current render settings into the queued job. Doing it
-        # per-timeline means each job carries its own TargetDir + CustomName.
-        out_name = custom_name if use_custom_name else timeline_name
-        dest: Dict[str, Any] = {}
-        if target_dir:
-            dest.update({
-                "TargetDir": target_dir,
-                "CustomName": out_name,
-                "UniqueFilename": bool(unique_filename),
-            })
-        elif use_custom_name:
-            dest["CustomName"] = out_name
-        if dest:
-            if project.SetRenderSettings(dest):
-                rh.log(f"Render output set for '{timeline_name}' -> {target_dir or 'preset location'} / {out_name}")
+            # Video/audio toggles in their own call so a rejection can't void the
+            # destination override below.
+            av: Dict[str, Any] = {}
+            if export_video is not None:
+                av["ExportVideo"] = bool(export_video)
+            if export_audio is not None:
+                av["ExportAudio"] = bool(export_audio)
+            if av:
+                if project.SetRenderSettings(av):
+                    rh.log(f"Output for '{timeline_name}': video {'on' if av.get('ExportVideo', True) else 'off'}, audio {'on' if av.get('ExportAudio', True) else 'off'}")
+                else:
+                    rh.log(f"Warning: Resolve rejected the video/audio toggles for '{timeline_name}'; using the preset's.")
+
+            # Override the destination/name AFTER the preset loads (the preset
+            # restores its own saved TargetDir) but BEFORE AddRenderJob, which
+            # snapshots the current render settings into the queued job. Doing it
+            # per-timeline means each job carries its own TargetDir + CustomName.
+            out_name = custom_name if use_custom_name else timeline_name
+            dest: Dict[str, Any] = {}
+            if target_dir:
+                dest.update({
+                    "TargetDir": target_dir,
+                    "CustomName": out_name,
+                    "UniqueFilename": bool(unique_filename),
+                })
+            elif use_custom_name:
+                dest["CustomName"] = out_name
+            if dest:
+                if project.SetRenderSettings(dest):
+                    rh.log(f"Render output set for '{timeline_name}' -> {target_dir or 'preset location'} / {out_name}")
+                else:
+                    rh.log(
+                        f"Warning: SetRenderSettings was rejected for timeline "
+                        f"'{timeline_name}'; using the preset's saved destination and name."
+                    )
+
+            job_id = project.AddRenderJob()
+            if job_id:
+                # Phase 5c.1 (2026-06-02): capture timeline tether metadata at job
+                # creation so the upload-time renderMeta payload can be assembled
+                # without re-querying Resolve. timeline_uid is the stable key
+                # (rename-safe); name/start_tc/fps drive marker placement math.
+                metadata = _capture_timeline_metadata(timeline, project_name)
+                if metadata.get("timeline_uid") is None:
+                    rh.log(
+                        f"Warning: Timeline.GetUniqueId() unavailable for '{timeline_name}'; "
+                        f"comment-marker tether will not be persisted for this job."
+                    )
+                rh.log(f"Added timeline '{timeline_name}' to render queue. Job ID: {job_id}. ({time.time() - t_tl:.1f}s)")
+                render_jobs.append({
+                    "name": timeline_name,
+                    "id": job_id,
+                    "timeline_uid": metadata["timeline_uid"],
+                    "start_timecode": metadata["start_timecode"],
+                    "fps": metadata["fps"],
+                    "project_name": metadata["project_name"],
+                    "output_name": out_name,
+                    "bitrate": bitrate_result,
+                })
             else:
-                rh.log(
-                    f"Warning: SetRenderSettings was rejected for timeline "
-                    f"'{timeline_name}'; using the preset's saved destination and name."
-                )
-
-        job_id = project.AddRenderJob()
-        if job_id:
-            # Phase 5c.1 (2026-06-02): capture timeline tether metadata at job
-            # creation so the upload-time renderMeta payload can be assembled
-            # without re-querying Resolve. timeline_uid is the stable key
-            # (rename-safe); name/start_tc/fps drive marker placement math.
-            metadata = _capture_timeline_metadata(timeline, project_name)
-            if metadata.get("timeline_uid") is None:
-                rh.log(
-                    f"Warning: Timeline.GetUniqueId() unavailable for '{timeline_name}'; "
-                    f"comment-marker tether will not be persisted for this job."
-                )
-            rh.log(f"Added timeline '{timeline_name}' to render queue. Job ID: {job_id}. ({time.time() - t_tl:.1f}s)")
-            render_jobs.append({
-                "name": timeline_name,
-                "id": job_id,
-                "timeline_uid": metadata["timeline_uid"],
-                "start_timecode": metadata["start_timecode"],
-                "fps": metadata["fps"],
-                "project_name": metadata["project_name"],
-                "output_name": out_name,
-                "bitrate": bitrate_result,
-            })
-        else:
-            rh.log(f"Error: Failed to add timeline '{timeline_name}' to the render queue.")
+                rh.log(f"Error: Failed to add timeline '{timeline_name}' to the render queue.")
+    finally:
+        drop_bitrate_preset(project, bitrate_preset, rh.log)
 
     if render_jobs:
         for entry in render_jobs:

@@ -68,13 +68,19 @@ custom only unlocks at exactly one timeline, pre-filled with its name, rejects
 Video/audio are persisted (`lastExportVideo` / `lastExportAudio`) and always
 sent, so the page — not the preset — decides. The custom name isn't persisted.
 The LPOS version-conflict check compares the custom name when one is used.
-**Bitrate** (Video section, v1.2.60): switch (off = preset default) + 8–50k
-kb/s slider. The helper sets `VideoQuality` in its own call, trying int kbps,
-then kbps as a string, then bits per second, and logs which form Resolve
-accepted (`[export] bitrate … accepted_as=`). Resolve rejected kbps on the
-Windows build in v1.2.53–58 and the docs don't state the unit; check the
-output file's real bitrate against `accepted_as` to settle it. Not sent when
-video is off. No resolution or quality-level presets on the page by design.
+**Bitrate** (Video section, v1.2.61): switch (off = preset default) + 8–50k
+kb/s slider. Resolve 21.0 rejects `SetRenderSettings({"VideoQuality": …})` in
+every form for every H.264/H.265 encoder (`spikes/spike_video_quality.py`,
+2026-10-23), so `helper/commands/preset_bitrate.py` writes the bitrate into a
+temporary preset copy instead: `ExportRenderPreset(base)` → set
+`ExtraInfoMap` `h264_datarate` and the `bitrate` entry inside
+`encoder_command_param_map` (hex blob of length-prefixed UTF-16BE key/value
+strings) → new `DbId` → `ImportRenderPreset` as "EditPanel Bitrate" → every
+timeline in the batch queues with it → `DeleteRenderPreset` once all jobs are
+queued. The saved preset is never touched. Any failure (no bitrate field, e.g.
+ProRes; import refused; name not found) logs a warning and queues with the base
+preset. A leftover copy is deleted before the next import. Not sent when video
+is off. No resolution or quality-level presets on the page by design.
 
 ### Background tracking + progress (added 2026-05-28)
 Queue & Render runs as a **background job owned by the main process**, so it keeps

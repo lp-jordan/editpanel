@@ -3571,12 +3571,12 @@ app.whenReady().then(() => {
       if (jobs.length === 0) return { ok: true, empty: true };
       markJobsOwned(jobs);
 
-      // Bitrate diagnostics: which VideoQuality form Resolve accepted (kbps,
-      // kbps as text, or bits per second), so the main log settles the unit.
+      // Bitrate is applied through a temporary preset copy (Resolve 21 rejects
+      // VideoQuality); log per job whether that copy was used.
       if (bitrateKbps) {
         for (const j of rawJobs) {
           const b = Array.isArray(j) ? null : j?.bitrate;
-          console.log(`[export] bitrate '${j?.name}': requested=${bitrateKbps}kbps accepted_as=${b ? (b.applied_as || 'none') : 'n/a'} codec=${b?.format || '?'}/${b?.codec || '?'}`);
+          console.log(`[export] bitrate '${j?.name}': requested=${bitrateKbps}kbps applied=${b ? b.applied : 'n/a'}`);
         }
       }
 
