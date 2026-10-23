@@ -82,6 +82,9 @@ queued. The saved preset is never touched. Any failure (no bitrate field, e.g.
 ProRes; import refused; name not found) logs a warning and queues with the base
 preset. A leftover copy is deleted before the next import. Not sent when video
 is off. No resolution or quality-level presets on the page by design.
+**Verified on Resolve Studio 21.0.0.48 (2026-10-23):** a 12,000 kb/s export of a
+50,000 kb/s H.264 NVIDIA preset rendered at ~11.3 Mb/s total, and the render
+completed normally after the copy was deleted.
 
 ### Background tracking + progress (added 2026-05-28)
 Queue & Render runs as a **background job owned by the main process**, so it keeps
