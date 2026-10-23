@@ -1270,6 +1270,17 @@ function guardedRenderPoll() {
     .finally(() => { renderPollInFlight = false; });
 }
 
+// Start exactly these Resolve render jobs. Resolve's StartRendering returns a
+// bool that used to be ignored; a refused start then surfaced ~15s later as a
+// vague "Render did not start". Throws with Resolve's verdict instead.
+async function startRenderJobs(jobIds) {
+  const res = await sendWorkerRequest({ cmd: 'start_render', job_ids: jobIds }, WORKERS.resolve);
+  const ok = res?.data?.result !== false;
+  console.log(`[export] StartRendering(${jobIds.length} job${jobIds.length !== 1 ? 's' : ''}) -> ${ok}`);
+  if (!ok) throw new Error('Resolve refused to start the render. Check the job in Resolve\'s Render Queue.');
+  return res;
+}
+
 async function pollRenderStatus() {
   if (!activeExport) {
     stopExportPoll();
@@ -1340,7 +1351,9 @@ async function pollRenderStatus() {
       } else if (exportSawRendering) {
         onRenderFinished('failed');
       } else {
-        finalizeExport('interrupted', 'Render did not start');
+        const statuses = [...new Set(activeExport.jobs.map(j => j.status || 'unknown'))].join(', ');
+        console.log(`[export] render did not start; Resolve job status: ${statuses}`);
+        finalizeExport('interrupted', `Render did not start (Resolve status: ${statuses})`);
       }
     }
   }
@@ -1658,10 +1671,7 @@ async function activateQueuedRow(row) {
   broadcastExport('export-progress', exportSnapshot());
 
   try {
-    await sendWorkerRequest(
-      { cmd: 'start_render', job_ids: jobs.map(j => j.job_id) },
-      WORKERS.resolve
-    );
+    await startRenderJobs(jobs.map(j => j.job_id));
   } catch (err) {
     // Skip & continue: a batch that won't start is marked failed and the chain
     // moves on to the next one rather than stalling the whole run.
@@ -3597,10 +3607,14 @@ app.whenReady().then(() => {
       // Scope StartRendering to ONLY the IDs lp_base_export just added so any
       // pre-existing entries in the operator's Resolve render queue (completed,
       // aborted, manually queued) aren't re-rendered alongside.
-      await sendWorkerRequest(
-        { cmd: 'start_render', job_ids: jobs.map(j => j.job_id) },
-        WORKERS.resolve
-      );
+      try {
+        await startRenderJobs(jobs.map(j => j.job_id));
+      } catch (startErr) {
+        // Queued but Resolve wouldn't start it: keep the batch as queued so it
+        // can be started from Jobs once the cause is fixed in Resolve.
+        persistQueuedBatch({ exportId, jobs, targetDir: resolvedTargetDir, projectId, projectName });
+        return { ok: true, exportId, jobs, started: false, startError: startErr?.message || String(startErr) };
+      }
       startExportTracking({
         exportId,
         jobs,
@@ -3674,10 +3688,7 @@ app.whenReady().then(() => {
     try {
       // Same scoping as the auto-start path: only the IDs EditPanel queued,
       // never the whole Resolve render queue.
-      await sendWorkerRequest(
-        { cmd: 'start_render', job_ids: activeExport.jobs.map(j => j.job_id) },
-        WORKERS.resolve
-      );
+      await startRenderJobs(activeExport.jobs.map(j => j.job_id));
     } catch (err) {
       const msg = err?.error?.message || err?.error || err?.message || String(err);
       return { ok: false, error: msg };

@@ -543,10 +543,12 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
       const jobs = Array.isArray(res.jobs) ? res.jobs : [];
       onLog?.(`[export] Queued ${jobs.length} render job${jobs.length !== 1 ? 's' : ''}${res.started ? ' and started rendering.' : '.'}`);
 
+      if (res.startError) onLog?.(`[export] ${res.startError}`);
       setResult({
         jobs,
         targetDir: targetDir || null,
         started: Boolean(res.started),
+        startError: res.startError || null,
         project: uploadToLpos ? selectedProject : null
       });
       setStage('done');
@@ -1022,6 +1024,9 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
               ? `${noun} exporting. Track progress in Jobs.`
               : `${noun} queued. Start ${n === 1 ? 'it' : 'them'} from Jobs.`}
           </p>
+          {result?.startError && (
+            <p className="export-done-sub export-error">Resolve wouldn't start the render. Check its Render Queue, then start it from Jobs.</p>
+          )}
           {burnIn && exportVideo && (
             <p className="export-done-sub">Subtitles are burned in.</p>
           )}
