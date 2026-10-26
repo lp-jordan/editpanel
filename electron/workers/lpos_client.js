@@ -269,13 +269,14 @@ class LposClient {
 
   /**
    * Send a finished render to LPOS. Renders on a network drive (the NAS, e.g.
-   * N:\) are registered in place: LPOS's studio agent copies the file into the
-   * project itself (registerNasFile). Anything else, or an LPOS that doesn't
+   * N:\ on Windows, /Volumes/… on a Mac) are registered in place: LPOS's
+   * studio agent copies the file into the project itself (registerNasFile). Anything else, or an LPOS that doesn't
    * have that endpoint yet (404), goes through the chunked upload as before.
    * Resolves like uploadFileToProject: { asset, ... }.
    */
   async pushFileToProject(projectId, filePath, opts = {}) {
-    const onNetworkDrive = /^[A-Za-z]:[\\/]/.test(filePath) && !/^[Cc]:/.test(filePath);
+    const onNetworkDrive = (/^[A-Za-z]:[\\/]/.test(filePath) && !/^[Cc]:/.test(filePath))
+      || /^\/Volumes\//.test(filePath); // macOS mounts the NAS under /Volumes
     if (onNetworkDrive) {
       try {
         return await this.registerNasFile(projectId, filePath, opts);
