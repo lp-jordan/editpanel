@@ -82,7 +82,7 @@ const FAST_CRASH_THRESHOLD = 2;
 // We only warn — EditPanel can't tell which process is the stale one, and
 // killing the wrong one would take down the user's live session/render.
 const RESOLVE_ATTACH_WATCHDOG_MS = 5000;
-const LPOS_DEFAULT_BASE_URL = 'https://lpos.tail856ed3.ts.net';
+const LPOS_DEFAULT_BASE_URL = 'https://lpos.leaderpass.com';
 // PYTHON_CMD — bundled Python 3.10 on packaged Windows builds by default.
 // The bundled copy guarantees a known-good interpreter on machines where
 // no suitable system Python is installed (LP3-class machines).

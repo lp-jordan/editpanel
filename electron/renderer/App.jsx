@@ -252,7 +252,7 @@ function App() {
         const prefs = result?.data || {};
         const name = prefs.displayName || '';
         // Stored under lposBaseUrl (the canonical key written on save)
-        const url = prefs.lposBaseUrl || 'https://lpos.tail856ed3.ts.net';
+        const url = prefs.lposBaseUrl || 'https://lpos.leaderpass.com';
         const atem = prefs.atemFtpHost || '172.20.10.241';
         const useSystemPython = Boolean(prefs.useSystemPython);
         setSettingsDraft({ displayName: name, lposUrl: url, atemHost: atem, useSystemPython });
