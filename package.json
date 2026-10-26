@@ -36,20 +36,35 @@
           "!**/__pycache__/**",
           "!**/*.pyc"
         ]
-      },
-      {
-        "from": "vendor/python-win32",
-        "to": "python",
-        "filter": [
-          "**/*"
-        ]
       }
     ],
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**"
     ],
+    "protocols": [
+      {
+        "name": "EditPanel Link",
+        "schemes": [
+          "lpos-editpanel"
+        ]
+      }
+    ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "extraResources": [
+        {
+          "from": "vendor/python-win32",
+          "to": "python",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.video",
+      "identity": null
     },
     "nsis": {
       "oneClick": false,
