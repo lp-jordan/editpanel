@@ -118,3 +118,11 @@ Claude then writes `spikes/plans/<VIDEO>_plan.json` blind (without the finished 
 `MODE = "build"`: snaps every cut to the quietest frame within ±8 frames, builds
 `__SPIKE_auto_<VIDEO>_<n>`, forces each angle, adds 2-frame "Cross Fade 0 dB"
 audio crossfades, and compares cut points and removals with the finished edit.
+
+## `spike_auto_rough_cut_whisperx.py`
+
+Same build as `spike_auto_rough_cut.py`, from a merged two-pass WhisperX transcript
+instead of Resolve's. Needs `Desktop\Z8_whisperx_export.json` (client transcript, so kept
+out of git) and `Desktop\Z8_whisperx_plan.json`. Removal cuts never land inside a word.
+Builds `__SPIKE_auto_Z8_whisperx_<n>` with 2-frame audio crossfades at removals, 8-frame
+audio fades, and 8-frame picture Cross Dissolves at head and tail.

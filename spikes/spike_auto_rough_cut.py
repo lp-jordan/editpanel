@@ -53,10 +53,13 @@ CROSSFADE = {"type": "Cross Fade 0 dB", "category": "audio",
              "position": "end", "alignment": "center", "duration": 2}
 TIMELINE_BIN = "SEQUENCES"          # optional; falls back to the current bin
 DESKTOP = os.path.expanduser("~/Desktop")
-TRANSCRIPT = "resolve"               # "resolve" or "whisperx" (export + plan in spikes/plans/)
+# "resolve" or "whisperx" (export + plan in spikes/plans/); spike_auto_rough_cut_whisperx.py
+# sets TRANSCRIPT_OVERRIDE so nobody has to edit this file.
+TRANSCRIPT = globals().get("TRANSCRIPT_OVERRIDE", "resolve")
 _TAG = "" if TRANSCRIPT == "resolve" else f"_{TRANSCRIPT}"
-EXPORT_PATH = (os.path.join(DESKTOP, f"auto_cut_{VIDEO}_export.json") if TRANSCRIPT == "resolve"
-               else os.path.join(REPO, "spikes", "plans", f"{VIDEO}{_TAG}_export.json"))
+# Exports hold a client's full transcript, so they stay out of git: Desktop only.
+EXPORT_PATH = os.path.join(DESKTOP, f"auto_cut_{VIDEO}_export.json" if TRANSCRIPT == "resolve"
+                           else f"{VIDEO}{_TAG}_export.json")
 PLAN_PATHS = [os.path.join(REPO, "spikes", "plans", f"{VIDEO}{_TAG}_plan.json"),
               os.path.join(DESKTOP, f"{VIDEO}{_TAG}_plan.json")]
 if MODE == "auto":
@@ -451,6 +454,18 @@ def do_build(r: Any, project: Any) -> None:
         fade_out = _safe(lambda: aitems[-1].AddTransition({**CROSSFADE, "position": "end",
                                                            "alignment": "left", "duration": FADE_FRAMES}))
         say(f"  {FADE_FRAMES}-frame fade in: {'ok' if fade_in else 'FAILED'}; fade out: {'ok' if fade_out else 'FAILED'}")
+    vitems = sorted(_safe(lambda: tl.GetItemListInTrack("video", 1), []) or [], key=lambda x: x.GetStart())
+    if vitems:
+        def dissolve(item, edge, align):
+            for cat in ("simple", None):              # category name for built-in video transitions
+                opts = {"type": "Cross Dissolve", "position": edge, "alignment": align, "duration": FADE_FRAMES}
+                if cat:
+                    opts["category"] = cat
+                if _safe(lambda: item.AddTransition(opts)):
+                    return f"ok ({cat or 'no category'})"
+            return "FAILED"
+        say(f"  {FADE_FRAMES}-frame picture Cross Dissolve from black: {dissolve(vitems[0], 'start', 'right')}; "
+            f"to black: {dissolve(vitems[-1], 'end', 'left')}")
 
     # ── Compare with the finished edit ────────────────────────────────────────
     say(f"\n== 5. Compared with the finished '{VIDEO}' ==")
