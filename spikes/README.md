@@ -63,7 +63,7 @@ renders; reloads the preset at the end, and never edits the saved preset.
 Proves the "Build Timelines" mechanics on Resolve 21.1+ (which added
 `MediaPool.CreateMulticamClip`):
 
-1. Tags each clip's `Camera #` from its `CAM n` bin, then creates ONE day
+1. Uses cameras 1-4 + 6 (`CAMERAS`), tags `Camera #` from the `CAM n` bin if missing, then creates ONE day
    multicam: timecode sync, same-camera clips on one angle, no "Original Clips"
    bin. Reused on re-run.
 2. Finds recording spans from the source clips' timecode (gapless ATEM chunks

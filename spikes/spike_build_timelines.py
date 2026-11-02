@@ -46,6 +46,7 @@ MC_BIN = "SEQUENCES / MC"            # where the multicam clip goes (created if 
 MC_NAME: Optional[str] = None        # None = "<source bin name> MC"
 TIMELINE_BIN = "SEQUENCES"           # where the test timelines go
 TIMELINE_PREFIX = "__SPIKE_"
+CAMERAS = {1, 2, 3, 4, 6}            # 1-4 = angles, 6 = slate; others left out. None = all
 MAX_TIMELINES: Optional[int] = 3     # None = one timeline for every span
 MIN_SPAN_SECONDS = 2.0               # shorter spans are reported but not built
 MERGE_TOLERANCE = 2                  # frames of TC gap still treated as one recording
@@ -251,6 +252,12 @@ def main() -> None:
         say(f"⚠ {len(no_cam)} clip(s) with no CAM number in bin or name (left out): "
             + ", ".join(c["name"] for c in no_cam[:5]))
         clips = [c for c in clips if c["cam"] is not None]
+    if CAMERAS is not None:
+        left_out = sorted({c["cam"] for c in clips if c["cam"] not in CAMERAS})
+        clips = [c for c in clips if c["cam"] in CAMERAS]
+        say(f"Using cameras {sorted(CAMERAS)}; left out: {left_out or 'none'}")
+        if not clips:
+            raise RuntimeError("No clips left after the camera filter.")
 
     by_cam: Dict[int, List[Dict[str, Any]]] = {}
     for c in clips:
