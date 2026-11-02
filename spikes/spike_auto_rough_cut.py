@@ -207,8 +207,8 @@ def do_export(r: Any, project: Any) -> None:
     pad = int(PAD_S * fps)
     a = max(0, min(p["src_in"] for p in pieces) - pad)
     b = min(mc_frames, max(p["src_out"] for p in pieces) + pad)
-    angles = sorted({angle_of(p["name"]) for tl in tls.values() for p in multicam_pieces(tl)
-                     if p["mc"].GetUniqueId() == mc.GetUniqueId()}) if len(tls) < 400 else []
+    angles = sorted({angle_of(p["name"]) for p in pieces})
+    say(f"Found {VIDEO}: {len(pieces)} piece(s). (Resolve's console may only show output when the script ends.)")
     say(f"{VIDEO}: multicam '{mc.GetName()}' @ {fps}, raw section {frames_to_clock(a, fps)}–"
         f"{frames_to_clock(b, fps)} of the day ({(b - a) / fps:.0f}s); angles seen: {angles}")
 
