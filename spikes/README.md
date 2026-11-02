@@ -107,3 +107,14 @@ multicam piece's angle (from the item name), length and source range, then
 reports shot length per angle, cuts per minute, cut types (angle switch / trim /
 jump cut / backwards), how much is removed at trims, and which angle follows
 which. Writes `Desktop\past_edits_report.txt` + `past_edits_items.csv`.
+
+## `spike_auto_rough_cut.py`
+
+First automatic rough cut, judged against a real finished edit (Steve Heroux).
+`MODE = "export"`: finds finished timeline `VIDEO` (default `Z8`), transcribes its
+day multicam if needed, renders that raw section's audio and measures every
+frame's level, and saves words + levels to `Desktop\auto_cut_<VIDEO>_export.json`.
+Claude then writes `spikes/plans/<VIDEO>_plan.json` blind (without the finished edit).
+`MODE = "build"`: snaps every cut to the quietest frame within ±8 frames, builds
+`__SPIKE_auto_<VIDEO>_<n>`, forces each angle, adds 2-frame "Cross Fade 0 dB"
+audio crossfades, and compares cut points and removals with the finished edit.
