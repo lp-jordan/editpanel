@@ -90,3 +90,20 @@ split any piece. Then scrub by eye: does each piece show the camera its name say
 
 Windows: `exec(open(r"C:\lp-app-ecosystem\editpanel\spikes\spike_smartswitch_force_angle.py", encoding="utf-8").read())`
 Report: `Desktop\smartswitch_force_angle_spike.txt`.
+
+## `spike_transcribe_precision.py`
+
+Is Resolve's built-in transcription precise enough to cut with? Transcribes the
+day multicam in one go (falls back to a CAM 1 source clip), shows progress, saves
+every word + timing to `Desktop\transcript_words.json`, then builds two test
+timelines over a 2-minute window: `__SPIKE_words_<n>` (a marker on every word
+start; do they sit on the words?) and `__SPIKE_tight_<n>` (pauses over 0.5 s
+removed; any clipped words?). If it's not precise enough → WhisperX.
+
+## `spike_scan_past_edits.py`
+
+READ-ONLY. Open a finished project and run it: for every timeline it reads each
+multicam piece's angle (from the item name), length and source range, then
+reports shot length per angle, cuts per minute, cut types (angle switch / trim /
+jump cut / backwards), how much is removed at trims, and which angle follows
+which. Writes `Desktop\past_edits_report.txt` + `past_edits_items.csv`.
