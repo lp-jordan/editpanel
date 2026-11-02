@@ -333,13 +333,37 @@ def do_build(r: Any, project: Any) -> None:
     tl = mp.CreateEmptyTimeline(name)
     project.SetCurrentTimeline(tl)
     _safe(lambda: r.OpenPage("edit"))
-    appended = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": p["in"], "endFrame": p["out"]}
-                                    for p in pieces]) or []
-    items = [p for p in multicam_pieces(tl)]
-    say(f"{name}: {len(appended)} appended, {len(items)} video piece(s), "
-        f"{sum(p['out'] - p['in'] for p in pieces) / fps:.1f}s long")
+    # Picture and sound are placed separately (run 1: the audio followed every angle
+    # switch and went silent on angles with no audio). Video: one piece per plan row.
+    # Audio: one piece per KEPT RANGE — rows whose picture continues are merged, so
+    # the sound is only cut where material was actually removed.
+    rec0 = int(tl.GetStartFrame())
+    offs, t = [], 0
+    for p in pieces:
+        offs.append(t)
+        t += p["out"] - p["in"]
+    ranges = []                                     # [src_in, src_out, record offset]
+    for p, off in zip(pieces, offs):
+        if ranges and ranges[-1][1] == p["in"]:
+            ranges[-1][1] = p["out"]
+        else:
+            ranges.append([p["in"], p["out"], off])
+    vids = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": p["in"], "endFrame": p["out"],
+                                 "mediaType": 1, "trackIndex": 1, "recordFrame": rec0 + off}
+                                for p, off in zip(pieces, offs)]) or []
+    auds = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
+                                 "mediaType": 2, "trackIndex": 1, "recordFrame": rec0 + off}
+                                for a, b, off in ranges]) or []
+    items = multicam_pieces(tl)
+    aitems = sorted(_safe(lambda: tl.GetItemListInTrack("audio", 1), []) or [], key=lambda x: x.GetStart())
+    say(f"{name}: {len(vids)} video piece(s) (planned {len(pieces)}), {len(auds)} audio piece(s) "
+        f"(planned {len(ranges)} = one per kept range), {t / fps:.1f}s long")
+    starts_v = [int(it["start"]) for it in items]
+    misaligned = [int(x.GetStart()) for x in aitems if int(x.GetStart()) not in starts_v]
+    say(f"Audio pieces starting where no video piece starts: {misaligned or 'none'}; "
+        f"timeline ends — video {items[-1]['end'] if items else '?'}, audio {int(aitems[-1].GetEnd()) if aitems else '?'}")
 
-    # ── Force angles ──────────────────────────────────────────────────────────
+    # ── Force angles (video only) ─────────────────────────────────────────────
     say("\n== 3. Angles ==")
     for p, it in zip(pieces, items):
         if angle_of(it["name"]) == p["angle"]:
@@ -348,29 +372,25 @@ def do_build(r: Any, project: Any) -> None:
                 "wideAngleID": p["angle"], "wideAngleFrequency": r.SMART_SWITCH_WIDE_ANGLE_FREQ_HIGH,
                 "isUseWideAngleForIntroOutro": True, "isUseWideAngleForSilence": True,
                 "minEditDuration": 10.0}
-        ok = False
         for extra in ({"switchOnVideoOnly": True}, {}, {}):   # video-only first, then plain (+retry)
-            ok = _safe(lambda: it["item"].PerformMulticamSmartSwitch({**base, **extra}), False)
-            if ok:
+            if _safe(lambda: it["item"].PerformMulticamSmartSwitch({**base, **extra}), False):
                 p["video_only"] = bool(extra)
                 break
     items = multicam_pieces(tl)
     hits = sum(1 for p, it in zip(pieces, items) if angle_of(it["name"]) == p["angle"])
-    say(f"{hits}/{len(pieces)} piece(s) on the planned angle; video pieces now {len(items)}")
+    say(f"{hits}/{len(pieces)} piece(s) on the planned angle; video pieces now {len(items)}; "
+        f"switched with video-only mode: {sum(1 for p in pieces if p.get('video_only'))}")
     for p, it in zip(pieces, items):
         if angle_of(it["name"]) != p["angle"]:
             say(f"  ✗ {frames_to_clock(it['start'] - items[0]['start'], fps)} wanted {p['angle']}, got {angle_of(it['name'])}")
-    audio_names = [str(_safe(lambda: a.GetName(), "")) for a in
-                   (_safe(lambda: tl.GetItemListInTrack("audio", 1), []) or [])]
-    say(f"Audio track 1 pieces: {len(audio_names)}; angles their names show: "
-        f"{sorted({angle_of(n) for n in audio_names})} (should stay one source if audio didn't follow the picture)")
+    aitems = sorted(_safe(lambda: tl.GetItemListInTrack("audio", 1), []) or [], key=lambda x: x.GetStart())
+    say(f"Audio after angle switching: {len(aitems)} piece(s) (should still be {len(ranges)}), angles: "
+        f"{sorted({angle_of(str(_safe(lambda: x.GetName(), ''))) for x in aitems})} (should be the angle carrying sound)")
 
-    # ── Crossfades ────────────────────────────────────────────────────────────
-    say("\n== 4. 2-frame audio crossfades ==")
-    for t in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
-        aitems = sorted(_safe(lambda: tl.GetItemListInTrack("audio", t), []) or [], key=lambda x: x.GetStart())
-        done = sum(1 for x in aitems[:-1] if _safe(lambda: x.AddTransition(CROSSFADE)))
-        say(f"  A{t}: {done}/{max(0, len(aitems) - 1)} crossfade(s) added")
+    # ── Crossfades: only where audio was actually cut ─────────────────────────
+    say("\n== 4. 2-frame audio crossfades (removal cuts only) ==")
+    done = sum(1 for x in aitems[:-1] if _safe(lambda: x.AddTransition(CROSSFADE)))
+    say(f"  A1: {done}/{max(0, len(aitems) - 1)} crossfade(s) added")
 
     # ── Compare with the finished edit ────────────────────────────────────────
     say(f"\n== 5. Compared with the finished '{VIDEO}' ==")
