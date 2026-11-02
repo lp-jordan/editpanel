@@ -78,3 +78,15 @@ Edit `SOURCE_BIN` at the top if the footage isn't under `FOOTAGE / ATEM`.
 Report also saved to `~/Desktop/build_timelines_spike.txt`. Then check by hand:
 angle switching on a spike clip, and a multicam grade showing in every spike
 timeline.
+
+## `spike_smartswitch_force_angle.py`
+
+Tests whether a script can CHOOSE a multicam piece's angle (the API has no
+set-angle call). Builds `__SPIKE_force_angles_<n>` from 4 separate ranges of the
+day multicam, then runs SmartSwitch on each piece with the wanted angle named as
+"the wide" (wide for intro/outro/silence on, minimum shot 10 s). Reports each
+piece's name before/after (does the name show the angle?) and whether SmartSwitch
+split any piece. Then scrub by eye: does each piece show the camera its name says?
+
+Windows: `exec(open(r"C:\lp-app-ecosystem\editpanel\spikes\spike_smartswitch_force_angle.py", encoding="utf-8").read())`
+Report: `Desktop\smartswitch_force_angle_spike.txt`.
