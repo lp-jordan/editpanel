@@ -158,8 +158,13 @@ def render_audio(r: Any, project: Any, tl: Any, name: str) -> str:
     job = project.AddRenderJob()
     if not job:
         raise RuntimeError("AddRenderJob failed.")
-    project.StartRendering([job], False)
+    # Job IDs go in as separate arguments (same as helper/commands/start_render.py);
+    # passing a list returned without rendering (run 2: "Ready in 0s").
+    started = _safe(lambda: project.StartRendering(job), "raised")
+    say(f"StartRendering({job}) → {started}")
     t0 = time.time()
+    while not _safe(lambda: project.IsRenderingInProgress(), False) and time.time() - t0 < 10:
+        time.sleep(0.5)                    # give the job a moment to actually begin
     while _safe(lambda: project.IsRenderingInProgress(), False) and time.time() - t0 < 900:
         time.sleep(1)
     st = _safe(lambda: project.GetRenderJobStatus(job), {}) or {}
