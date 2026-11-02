@@ -194,8 +194,10 @@ def main() -> None:
     mp = project.GetMediaPool()
     root = mp.GetRootFolder()
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}'")
-    if not hasattr(mp, "CreateMulticamClip"):
-        raise RuntimeError("MediaPool.CreateMulticamClip missing — needs Resolve 21.1+.")
+    # hasattr() is useless on Resolve's API proxies (any name resolves), so test
+    # the 21.1 constants instead: on 21.0 they come back None.
+    if getattr(r, "MULTICAM_ANGLE_SYNC_TIMECODE", None) is None:
+        raise RuntimeError("This Resolve has no multicam scripting API — update to 21.1 or later.")
 
     # ── 1. Gather source clips ────────────────────────────────────────────────
     src = find_folder(root, SOURCE_BIN) if SOURCE_BIN else mp.GetCurrentFolder()
