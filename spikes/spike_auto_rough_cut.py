@@ -45,6 +45,10 @@ VIDEO = "Z8"                        # finished timeline whose raw section we re-
 PAD_S = 3                           # seconds of raw kept either side of that section
 REPO = r"C:\lp-app-ecosystem\editpanel"
 SNAP_FRAMES = 8                     # look this far either side of a planned cut for quiet
+CUT_PAD = 3                         # frames of room kept after the last sound / before the next
+                                    # at a removal → ~6 frames of silence across the join (Jordan)
+FADE_FRAMES = 8                     # audio fade in at the start / fade out at the end
+SPEECH_ABOVE_FLOOR_DB = 12          # "speech" = this much louder than the section's quiet floor
 CROSSFADE = {"type": "Cross Fade 0 dB", "category": "audio",
              "position": "end", "alignment": "center", "duration": 2}
 TIMELINE_BIN = "SEQUENCES"          # optional; falls back to the current bin
@@ -301,23 +305,54 @@ def do_build(r: Any, project: Any) -> None:
     pieces = plan["pieces"]
     say(f"Plan {plan_path}: {len(pieces)} piece(s)")
 
-    # ── Snap cut points to quiet ──────────────────────────────────────────────
-    say("\n== 1. Snap cuts to the quietest nearby frame ==")
-    for i, p in enumerate(pieces):
+    # ── Place cut points from the audio ───────────────────────────────────────
+    say("\n== 1. Cut points from the audio ==")
+    db, base = levels["db"], levels["start"]
+    floor = sorted(db)[len(db) // 10]
+    thr = floor + SPEECH_ABOVE_FLOOR_DB
+    say(f"Quiet floor {floor} dB → speech above {thr} dB")
+
+    def loud(x: int) -> bool:
+        return 0 <= x - base < len(db) and db[x - base] > thr
+
+    def speech_end(x: int) -> int:
+        """First quiet frame after the speech that ends near x."""
+        y = x
+        while loud(y) and y < x + SNAP_FRAMES:      # planned cut sat inside the tail
+            y += 1
+        while y > x - 2 * SNAP_FRAMES and not loud(y - 1):
+            y -= 1
+        return y
+
+    def speech_start(x: int) -> int:
+        """First loud frame of the speech that starts near x."""
+        y = x
+        while loud(y - 1) and y > x - SNAP_FRAMES:  # planned cut sat inside the onset
+            y -= 1
+        while y < x + 2 * SNAP_FRAMES and not loud(y):
+            y += 1
+        return y
+
+    for p in pieces:
         p["in0"], p["out0"] = p["in"], p["out"]
     for i in range(len(pieces) - 1):
         cur, nxt = pieces[i], pieces[i + 1]
-        if cur["out"] == nxt["in"]:                       # angle switch, picture continues
+        if cur["out"] == nxt["in"]:                       # angle switch: picture only, sound runs on
             f = snap(cur["out"], levels, cur["in"] + 1, nxt["out"] - 1)
             cur["out"] = nxt["in"] = f
-        else:                                             # removal: snap both edges
-            cur["out"] = snap(cur["out"], levels, cur["in"] + 1, nxt["in"])
-            nxt["in"] = snap(nxt["in"], levels, cur["out"], nxt["out"] - 1)
-    pieces[0]["in"] = snap(pieces[0]["in"], levels, levels["start"], pieces[0]["out"] - 1)
-    pieces[-1]["out"] = snap(pieces[-1]["out"], levels, pieces[-1]["in"] + 1,
-                             levels["start"] + len(levels["db"]))
+        else:                                             # removal: ~CUT_PAD of room each side
+            cur["out"] = min(speech_end(cur["out"]) + CUT_PAD, nxt["in"])
+            nxt["in"] = max(speech_start(nxt["in"]) - CUT_PAD, cur["out"])
+    head = speech_start(pieces[0]["in"])
+    pieces[0]["in"] = max(base, head - CUT_PAD - FADE_FRAMES)     # fade done before the first word
+    tail = speech_end(pieces[-1]["out"])
+    pieces[-1]["out"] = min(base + len(db), tail + CUT_PAD + FADE_FRAMES)  # silence, then fade
     moves = [abs(p["in"] - p["in0"]) for p in pieces] + [abs(p["out"] - p["out0"]) for p in pieces]
-    say(f"Snapping moved cut edges by: max {max(moves)} fr, avg {sum(moves) / len(moves):.1f} fr")
+    say(f"Cut edges moved by: max {max(moves)} fr, avg {sum(moves) / len(moves):.1f} fr")
+    for cur, nxt in zip(pieces, pieces[1:]):
+        if cur["out"] != nxt["in"]:
+            gap = (speech_start(nxt["in"]) - nxt["in"]) + (cur["out"] - speech_end(cur["out"]))
+            say(f"  removal join: {gap} fr of silence kept across the cut")
 
     # ── Build ─────────────────────────────────────────────────────────────────
     say("\n== 2. Build ==")
@@ -391,6 +426,12 @@ def do_build(r: Any, project: Any) -> None:
     say("\n== 4. 2-frame audio crossfades (removal cuts only) ==")
     done = sum(1 for x in aitems[:-1] if _safe(lambda: x.AddTransition(CROSSFADE)))
     say(f"  A1: {done}/{max(0, len(aitems) - 1)} crossfade(s) added")
+    if aitems:
+        fade_in = _safe(lambda: aitems[0].AddTransition({**CROSSFADE, "position": "start",
+                                                         "alignment": "right", "duration": FADE_FRAMES}))
+        fade_out = _safe(lambda: aitems[-1].AddTransition({**CROSSFADE, "position": "end",
+                                                           "alignment": "left", "duration": FADE_FRAMES}))
+        say(f"  {FADE_FRAMES}-frame fade in: {'ok' if fade_in else 'FAILED'}; fade out: {'ok' if fade_out else 'FAILED'}")
 
     # ── Compare with the finished edit ────────────────────────────────────────
     say(f"\n== 5. Compared with the finished '{VIDEO}' ==")

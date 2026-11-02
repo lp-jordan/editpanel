@@ -16,16 +16,16 @@
    "why": "punch-in for the contrast line (year-end review vs a new system)"
   },
   {
-   "in": 184296,
+   "in": 184362,
    "out": 184414,
    "angle": "Camera 6",
-   "why": "slider into 'Here's what the work of the day produced' \u2014 sets up the list"
+   "why": "slider into 'Here's what the work of the day produced'; hidden restart before it removed (transcript showed '(...)' but the audio has speech)"
   },
   {
-   "in": 184414,
+   "in": 184478,
    "out": 184767,
    "angle": "Camera 1",
-   "why": "list item 1: the 12-month audit"
+   "why": "list item 1: the 12-month audit; hidden restart of 'A full\u2026' removed (loud '(...)')"
   },
   {
    "in": 184956,
@@ -97,7 +97,7 @@
    "in": 187759,
    "out": 188005,
    "angle": "Camera 1",
-   "why": "close on the wide with the closing line; drop trailing chatter ('We just say')"
+   "why": "close on the wide with the closing line; drop trailing chatter ('We just say'); also a likely hidden restart at 'The quality of what\u2026' left in (flagged, not cut)"
   }
  ]
 }
