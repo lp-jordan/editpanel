@@ -358,8 +358,9 @@ def main() -> None:
         if tl_name in existing:
             say(f"  {tl_name}: exists, skipped")
             continue
-        start, end = a - mc_start_f, b - mc_start_f - 1  # end = last frame, inclusive
-        if start < 0 or (mc_frames and end >= mc_frames):
+        # endFrame is EXCLUSIVE (21.1.2 run: passing last-frame-inclusive came out 1 short)
+        start, end = a - mc_start_f, b - mc_start_f
+        if start < 0 or (mc_frames and end > mc_frames):
             say(f"  {tl_name}: span falls outside the multicam ({start}..{end} of {mc_frames}), skipped")
             continue
         mp.SetCurrentFolder(tl_bin)
