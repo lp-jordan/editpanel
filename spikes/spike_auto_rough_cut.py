@@ -136,15 +136,25 @@ def angle_of(name: str) -> str:
 # Audio levels
 # ──────────────────────────────────────────────────────────────────────────────
 def render_audio(r: Any, project: Any, tl: Any, name: str) -> str:
+    """Audio-only WAV render of `tl` to the Desktop (21.1: AudioFormat/AudioCodec settings)."""
     project.SetCurrentTimeline(tl)
-    codecs = _safe(lambda: project.GetRenderCodecs("wav"), {}) or {}
-    codec = next(iter(codecs.values()), None)
-    say(f"WAV codecs: {codecs} → using {codec}")
-    if not codec or not project.SetCurrentRenderFormatAndCodec("wav", codec):
-        raise RuntimeError("Couldn't select WAV render format.")
-    ok = project.SetRenderSettings({"SelectAllFrames": True, "TargetDir": DESKTOP, "CustomName": name,
-                                    "ExportVideo": False, "ExportAudio": True})
-    say(f"Render settings accepted: {ok}")
+    fmts = _safe(lambda: project.GetAudioRenderFormats(), {}) or {}
+    ext = next((e for f, e in fmts.items() if "wav" in f"{f} {e}".lower()), "wav")
+    codecs = _safe(lambda: project.GetAudioRenderCodecs(ext), {}) or {}
+    codec = next((c for d, c in codecs.items() if "pcm" in f"{d} {c}".lower()), next(iter(codecs.values()), None))
+    say(f"Audio formats: {fmts}; '{ext}' codecs: {codecs} → {codec}")
+    settings = {"SelectAllFrames": True, "TargetDir": DESKTOP, "CustomName": name,
+                "ExportVideo": False, "ExportAudio": True, "AudioFormat": ext,
+                "AudioBitDepth": 16, "AudioSampleRate": 48000}
+    if codec:
+        settings["AudioCodec"] = codec
+    ok = project.SetRenderSettings(settings)
+    say(f"Render settings accepted: {ok}; now {_safe(lambda: project.GetCurrentRenderFormatAndCodec())}")
+    if not ok:
+        raise RuntimeError("Audio-only WAV render settings were rejected.")
+    for f in os.listdir(DESKTOP):          # never measure a stale file from an earlier run
+        if f.startswith(name) and f.lower().endswith(".wav"):
+            _safe(lambda: os.remove(os.path.join(DESKTOP, f)))
     job = project.AddRenderJob()
     if not job:
         raise RuntimeError("AddRenderJob failed.")
