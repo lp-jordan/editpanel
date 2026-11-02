@@ -53,12 +53,15 @@ CROSSFADE = {"type": "Cross Fade 0 dB", "category": "audio",
              "position": "end", "alignment": "center", "duration": 2}
 TIMELINE_BIN = "SEQUENCES"          # optional; falls back to the current bin
 DESKTOP = os.path.expanduser("~/Desktop")
-EXPORT_PATH = os.path.join(DESKTOP, f"auto_cut_{VIDEO}_export.json")
-PLAN_PATHS = [os.path.join(REPO, "spikes", "plans", f"{VIDEO}_plan.json"),
-              os.path.join(DESKTOP, f"{VIDEO}_plan.json")]
+TRANSCRIPT = "resolve"               # "resolve" or "whisperx" (export + plan in spikes/plans/)
+_TAG = "" if TRANSCRIPT == "resolve" else f"_{TRANSCRIPT}"
+EXPORT_PATH = (os.path.join(DESKTOP, f"auto_cut_{VIDEO}_export.json") if TRANSCRIPT == "resolve"
+               else os.path.join(REPO, "spikes", "plans", f"{VIDEO}{_TAG}_export.json"))
+PLAN_PATHS = [os.path.join(REPO, "spikes", "plans", f"{VIDEO}{_TAG}_plan.json"),
+              os.path.join(DESKTOP, f"{VIDEO}{_TAG}_plan.json")]
 if MODE == "auto":
     MODE = "build" if (os.path.exists(EXPORT_PATH) and any(os.path.exists(p) for p in PLAN_PATHS)) else "export"
-REPORT_PATH = os.path.join(DESKTOP, f"auto_cut_{VIDEO}_{MODE}.txt")
+REPORT_PATH = os.path.join(DESKTOP, f"auto_cut_{VIDEO}{_TAG}_{MODE}.txt")
 
 BIN_SEP = " / "
 SILENCE = "(...)"
@@ -333,6 +336,11 @@ def do_build(r: Any, project: Any) -> None:
             y += 1
         return y
 
+    # Word edges guard the cuts only for a transcript with real word timing; Resolve's
+    # stretches words over pauses (Robin Bone + Z8), which would loosen every join.
+    spoken = ([] if TRANSCRIPT == "resolve"
+              else [w for w in exp["words"] if w["t"] != SILENCE and w["e"] > w["s"]])
+    say(f"Transcript: {TRANSCRIPT}, {len(spoken)} word(s) used as cut guards")
     for p in pieces:
         p["in0"], p["out0"] = p["in"], p["out"]
     for i in range(len(pieces) - 1):
@@ -341,8 +349,19 @@ def do_build(r: Any, project: Any) -> None:
             f = snap(cur["out"], levels, cur["in"] + 1, nxt["out"] - 1)
             cur["out"] = nxt["in"] = f
         else:                                             # removal: ~CUT_PAD of room each side
-            cur["out"] = min(speech_end(cur["out"]) + CUT_PAD, nxt["in"])
-            nxt["in"] = max(speech_start(nxt["in"]) - CUT_PAD, cur["out"])
+            # Never inside a word: the kept side must reach past the last kept word's end
+            # (and start before the first kept word), and must not reach into a removed word.
+            kept_end = max([w["e"] for w in spoken if cur["in0"] <= w["s"] < cur["out0"]] or [cur["in"]])
+            kept_start = min([w["s"] for w in spoken if nxt["in0"] <= w["s"] < nxt["out0"]] or [nxt["out"]])
+            cut_word_after = min([w["s"] for w in spoken if kept_end <= w["s"] < nxt["in0"]] or [nxt["in"]])
+            cut_word_before = max([w["e"] for w in spoken if cur["out0"] <= w["e"] <= kept_start] or [cur["out"]])
+            out = max(speech_end(cur["out"]), kept_end) + CUT_PAD
+            inn = min(speech_start(nxt["in"]), kept_start) - CUT_PAD
+            cur["out"] = min(out, cut_word_after)
+            nxt["in"] = max(inn, cut_word_before, cur["out"])
+            if cur["out"] < out or nxt["in"] > inn:
+                say(f"  ⚠ tight join near {frames_to_clock(cur['out'] - base, fps)}: a removed word sits "
+                    f"within {CUT_PAD} fr of the kept speech — check by ear")
     head = speech_start(pieces[0]["in"])
     pieces[0]["in"] = max(base, head - CUT_PAD - FADE_FRAMES)     # fade done before the first word
     tail = speech_end(pieces[-1]["out"])
@@ -364,7 +383,7 @@ def do_build(r: Any, project: Any) -> None:
     tl_bin = find_folder(mp.GetRootFolder(), TIMELINE_BIN)
     if tl_bin:
         mp.SetCurrentFolder(tl_bin)
-    name = unique_name(project, f"__SPIKE_auto_{VIDEO}")
+    name = unique_name(project, f"__SPIKE_auto_{VIDEO}{_TAG}")
     tl = mp.CreateEmptyTimeline(name)
     project.SetCurrentTimeline(tl)
     _safe(lambda: r.OpenPage("edit"))
