@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # ──────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ──────────────────────────────────────────────────────────────────────────────
-MODE = "export"                     # "export" first, then "build"
+MODE = "auto"                       # "auto" = build if the plan + export exist, else export
 VIDEO = "Z8"                        # finished timeline whose raw section we re-cut
 PAD_S = 3                           # seconds of raw kept either side of that section
 REPO = r"C:\lp-app-ecosystem\editpanel"
@@ -52,6 +52,8 @@ DESKTOP = os.path.expanduser("~/Desktop")
 EXPORT_PATH = os.path.join(DESKTOP, f"auto_cut_{VIDEO}_export.json")
 PLAN_PATHS = [os.path.join(REPO, "spikes", "plans", f"{VIDEO}_plan.json"),
               os.path.join(DESKTOP, f"{VIDEO}_plan.json")]
+if MODE == "auto":
+    MODE = "build" if (os.path.exists(EXPORT_PATH) and any(os.path.exists(p) for p in PLAN_PATHS)) else "export"
 REPORT_PATH = os.path.join(DESKTOP, f"auto_cut_{VIDEO}_{MODE}.txt")
 
 BIN_SEP = " / "
