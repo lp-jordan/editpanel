@@ -71,7 +71,12 @@ SILENCE = "(...)"
 _lines: List[str] = []
 
 
+_T0 = time.time()
+
+
 def say(msg: str = "") -> None:
+    if msg.startswith("\n== "):                      # stamp each step with elapsed time
+        msg = f"{msg}  [{time.time() - _T0:.1f}s]"
     print(msg)
     _lines.append(msg)
 
@@ -371,6 +376,11 @@ def do_build(r: Any, project: Any) -> None:
     pieces[-1]["out"] = min(base + len(db), tail + CUT_PAD + FADE_FRAMES)  # silence, then fade
     moves = [abs(p["in"] - p["in0"]) for p in pieces] + [abs(p["out"] - p["out0"]) for p in pieces]
     say(f"Cut edges moved by: max {max(moves)} fr, avg {sum(moves) / len(moves):.1f} fr")
+    t = 0
+    for p in pieces:                                   # where each piece sits, for ear checks
+        say(f"  {frames_to_clock(t, fps):>8} {p['angle']:9} source {p['in'] - base}–{p['out'] - base} "
+            f"(planned {p['in0'] - base}–{p['out0'] - base})")
+        t += p["out"] - p["in"]
     for cur, nxt in zip(pieces, pieces[1:]):
         if cur["out"] != nxt["in"]:
             gap = (speech_start(nxt["in"]) - nxt["in"]) + (cur["out"] - speech_end(cur["out"]))
@@ -515,8 +525,9 @@ def main() -> None:
 
 try:
     main()
+    say(f"\nTotal time: {time.time() - _T0:.1f}s")
 except Exception as exc:
-    say(f"\n✗ STOPPED: {exc}")
+    say(f"\n✗ STOPPED after {time.time() - _T0:.1f}s: {exc}")
 finally:
     try:
         with open(REPORT_PATH, "w", encoding="utf-8") as fh:
