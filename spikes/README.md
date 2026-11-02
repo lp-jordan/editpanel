@@ -57,3 +57,24 @@ Workspace ▸ Console ▸ `Py3`, then
 `exec(open(r"...\editpanel\spikes\spike_video_quality.py").read())`.
 Report prints and saves to `Desktop\resolve_bitrate_probe.txt`. Never queues or
 renders; reloads the preset at the end, and never edits the saved preset.
+
+## `spike_build_timelines.py`
+
+Proves the "Build Timelines" mechanics on Resolve 21.1+ (which added
+`MediaPool.CreateMulticamClip`):
+
+1. Tags each clip's `Camera #` from its `CAM n` bin, then creates ONE day
+   multicam: timecode sync, same-camera clips on one angle, no "Original Clips"
+   bin. Reused on re-run.
+2. Finds recording spans from the source clips' timecode (gapless ATEM chunks
+   merged, unioned across cameras).
+3. Creates one `__SPIKE_` timeline per span (first 3 by default) from the
+   multicam with `CreateTimelineFromClips`, and reports whether each piece
+   still points at the shared multicam.
+
+Run with the project open: Workspace ▸ Console ▸ `Py3`, then
+`exec(open("/Users/lpos/lp-app-ecosystem/editpanel/spikes/spike_build_timelines.py").read())`.
+Edit `SOURCE_BIN` at the top if the footage isn't under `FOOTAGE / ATEM`.
+Report also saved to `~/Desktop/build_timelines_spike.txt`. Then check by hand:
+angle switching on a spike clip, and a multicam grade showing in every spike
+timeline.
