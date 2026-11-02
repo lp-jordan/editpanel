@@ -159,6 +159,11 @@ def main() -> None:
             "minEditDuration": MIN_EDIT,
         }
         ok = _safe(lambda: it.PerformMulticamSmartSwitch(settings), "raised")
+        if ok is not True:
+            # Run 1 (21.1.2): the FIRST call returned False, the rest worked. Retry
+            # once to tell a one-off warm-up failure from a per-piece one.
+            retry = _safe(lambda: it.PerformMulticamSmartSwitch(settings), "raised")
+            ok = f"{ok}, retry → {retry}"
         say(f"  piece at {start_s}s, wide = {angle}: PerformMulticamSmartSwitch → {ok}")
 
     # ── 4. Read back ──────────────────────────────────────────────────────────
