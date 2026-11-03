@@ -23,7 +23,8 @@ The finished timelines are never changed.
 HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
     exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_collect_example.py", encoding="utf-8").read())
 That runs every timeline in PROFILES found in the open project. For another project,
-give the facts in the run line instead (one timeline per run), e.g.:
+give the facts in the run line instead. TIMELINE can be one name, a list, or "*"
+(lists every finished multicam timeline; add GO=True to collect them all), e.g.:
     TIMELINE="Ep 12 Final"; SPEAKERS=2; ROLES={"host":"host","guest":"guest"}; ANGLES={1:"wide",2:"CU guest",3:"CU host"}; RETAKES=False; AUDIENCE=False; NOTES="..."; exec(open(...).read())
 Two or more speakers (or one speaker whose mic isn't the multicam's default sound):
 run the same line twice, setting each speaker's track by hand in between.
@@ -65,12 +66,14 @@ PROFILES: Dict[str, Dict[str, Any]] = {
 COMMON = {"audio_fix_in_multicam": "yes (5 frames, done inside the multicam)"}
 
 if "TIMELINE" in globals():           # facts given in the run line
-    PROFILES = {globals()["TIMELINE"]: {
+    _facts = {
         "speakers": globals().get("SPEAKERS"), "roles": globals().get("ROLES", {}),
         "mics": globals().get("MICS", {}), "angles": globals().get("ANGLES", {}),
         "retakes": globals().get("RETAKES"), "audience": globals().get("AUDIENCE"),
         "notes": globals().get("NOTES", ""),
-    }}
+    }
+    _tl = globals()["TIMELINE"]          # a name, a list of names, or "*" = every finished edit
+    PROFILES = {n: dict(_facts) for n in ([_tl] if isinstance(_tl, str) else list(_tl))}
 
 BIN_SEP = " / "
 SILENCE = "(...)"
@@ -444,6 +447,25 @@ def main() -> None:
     project = r.GetProjectManager().GetCurrentProject()
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}'")
     present = all_timelines(project)
+    global PROFILES
+    if "*" in PROFILES:                                # every timeline cut from a multicam
+        facts = PROFILES.pop("*")
+        found = []
+        for n, t in present.items():
+            if n.startswith("__SPIKE_"):
+                continue
+            v1 = _safe(lambda: t.GetItemListInTrack("video", 1), []) or []
+            if any(is_multicam(i) for i in v1[:5]):
+                found.append((n, (int(t.GetEndFrame()) - int(t.GetStartFrame())) / float(
+                    project.GetSetting("timelineFrameRate") or 24)))
+        say(f"{len(found)} finished multicam timeline(s), {sum(d for _, d in found) / 60:.0f} min in all:")
+        for n, d in sorted(found):
+            say(f"  {n}  ({d / 60:.1f} min)")
+        if not globals().get("GO"):
+            say("\nNothing collected yet. Add GO=True to the run line to collect all of these "
+                "(or pass TIMELINE=[...] with the ones you want).")
+            return
+        PROFILES.update({n: dict(facts) for n, _ in found})
     only = globals().get("ONLY")                       # e.g. ONLY=["CedricConvo"]
     todo = [n for n in PROFILES if n in present and (not only or n in only)]
     missing = [n for n in PROFILES if n not in present]
