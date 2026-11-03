@@ -8,8 +8,9 @@ For each finished timeline in TIMELINES it:
      multicam audio item on every audio track (source in/out, enabled or disabled,
      channel mapping). Other items (graphics, b-roll, music) are only counted.
   2. Finds the raw section of the day multicam the edit was cut from (+ PAD_S).
-  3. Builds `__SPIKE_raw_<timeline>_<n>`: the raw section, with the SAME audio tracks
-     and channel mapping the finished edit used (so each mic lands on its own track).
+  3. Builds `__SPIKE_raw_<timeline>_<n>`: the raw section, with the SAME audio tracks,
+     multicam audio angle per track (SmartSwitch trick) and channel mapping the finished
+     edit used (so each mic lands on its own track).
   4. Renders one audio-only WAV per mic track (other tracks switched off), and
      measures the level of every frame.
   5. Adds Resolve's transcript of that section (transcribes the multicam once if needed).
@@ -258,7 +259,7 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
 
     audio: Dict[int, Dict[str, Any]] = {}
     for t in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
-        items, mappings = [], {}
+        items, mappings, mangles = [], {}, {}
         for it in _safe(lambda: tl.GetItemListInTrack("audio", t), []) or []:
             if not is_multicam(it):
                 ignored[f"A{t}"] = ignored.get(f"A{t}", 0) + 1
@@ -266,19 +267,23 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
             mapping = _safe(lambda: it.GetSourceAudioChannelMapping())
             if mapping:
                 mappings[mapping] = mappings.get(mapping, 0) + 1
+            ang = angle_of(str(_safe(lambda: it.GetName(), "")))   # the multicam audio angle in use
+            mangles[ang] = mangles.get(ang, 0) + 1
             items.append({"rec_in": int(it.GetStart()) - t_start, "rec_out": int(it.GetEnd()) - t_start,
                           "src_in": int(round(float(it.GetSourceStartFrame()))),
                           "src_out": int(round(float(it.GetSourceEndFrame()))),
-                          "enabled": bool(_safe(lambda: it.GetClipEnabled(), True))})
+                          "angle": ang, "enabled": bool(_safe(lambda: it.GetClipEnabled(), True))})
         if not items:
             continue
         items.sort(key=lambda x: x["rec_in"])
         main_map = max(mappings, key=mappings.get) if mappings else None
         audio[t] = {"subtype": _safe(lambda: tl.GetTrackSubType("audio", t)),
                     "track_enabled": bool(_safe(lambda: tl.GetIsTrackEnabled("audio", t), True)),
+                    "angle": max(mangles, key=mangles.get), "angles": mangles,
                     "mapping": main_map, "distinct_mappings": len(mappings), "items": items}
         off = sum(1 for x in items if not x["enabled"])
         say(f"A{t} ({audio[t]['subtype']}): {len(items)} multicam audio item(s), {off} disabled; "
+            f"audio angle(s) {mangles}; "
             f"{len(mappings)} channel mapping(s); track {'on' if audio[t]['track_enabled'] else 'OFF'}")
         if main_map:
             say(f"  mapping: {main_map}")
@@ -317,12 +322,30 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
                                        "mediaType": 2, "trackIndex": t, "recordFrame": rec0}]) or []
         if not placed:
             raise RuntimeError(f"Couldn't place the raw audio on A{t}.")
+        # The audio of a multicam item plays ONE angle's sound, and a new item starts on
+        # the default angle (run 1: all three tracks played Camera 1). Switch each track
+        # to the angle the edit used, with the same SmartSwitch trick as the video
+        # (switchOnVideoOnly off = the sound switches).
+        target = (audio.get(t) or {}).get("angle")
+        if target and target != "?" and angle_of(str(_safe(lambda: placed[0].GetName(), ""))) != target:
+            settings = {"analysisMode": r.SMART_SWITCH_ANALYSIS_MODE_NONE, "isAutoDetectWideAngle": False,
+                        "wideAngleID": target, "wideAngleFrequency": r.SMART_SWITCH_WIDE_ANGLE_FREQ_HIGH,
+                        "isUseWideAngleForIntroOutro": True, "isUseWideAngleForSilence": True,
+                        "minEditDuration": 10.0, "switchOnVideoOnly": False}
+            for _ in range(3):                         # the first call sometimes returns False
+                if _safe(lambda: placed[0].PerformMulticamSmartSwitch(settings), False):
+                    break
+        now = _safe(lambda: raw.GetItemListInTrack("audio", t), []) or []
+        got: Dict[str, int] = {}
+        for x in now:
+            g = angle_of(str(_safe(lambda: x.GetName(), "")))
+            got[g] = got.get(g, 0) + 1
         want = one_track_mapping((audio.get(t) or {}).get("mapping"))
-        if want:
-            ok = _safe(lambda: placed[0].SetSourceAudioChannelMapping(want), "raised")
-            say(f"A{t}: raw audio placed; same channel mapping as the edit → {ok}")
-        else:
-            say(f"A{t}: raw audio placed (default mapping)")
+        mapped = [bool(_safe(lambda: x.SetSourceAudioChannelMapping(want), False)) for x in now] if want else []
+        say(f"A{t}: raw audio placed; wanted angle {target}, got {got}"
+            + (f"; channel mapping copied on {sum(mapped)}/{len(mapped)}" if want else ""))
+        if target and set(got) != {target}:
+            say(f"  ⚠ A{t} is not all on {target} — that WAV will carry the wrong mic")
 
     say(f"\n== {tl_name}: audio per mic track ==")
     levels: Dict[str, List[float]] = {}
