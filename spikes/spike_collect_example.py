@@ -9,8 +9,8 @@ For each finished timeline in TIMELINES it:
      channel mapping). Other items (graphics, b-roll, music) are only counted.
   2. Finds the raw section of the day multicam the edit was cut from (+ PAD_S).
   3. Builds `__SPIKE_raw_<timeline>_<n>`: the raw section, with the SAME audio tracks,
-     multicam audio angle per track (SmartSwitch trick) and channel mapping the finished
-     edit used (so each mic lands on its own track).
+     same mic per track as the finished edit (another angle's sound comes straight from
+     that camera's clips, shifted by the multicam's audio fix).
   4. Renders one audio-only WAV per mic track (other tracks switched off), and
      measures the level of every frame.
   5. Adds Resolve's transcript of that section (transcribes the multicam once if needed).
@@ -60,6 +60,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
     },
 }
 COMMON = {"audio_fix_in_multicam": "yes (5 frames, done inside the multicam)"}
+AUDIO_FIX = int(globals().get("AUDIO_FIX", 5))   # frames the multicam's sound was moved later
 
 if "TIMELINE" in globals():           # facts given in the run line
     PROFILES = {globals()["TIMELINE"]: {
@@ -138,6 +139,17 @@ def is_multicam(it: Any) -> Optional[Any]:
     if mpi and "multicam" in str(_safe(lambda: mpi.GetClipProperty("Type"), "")).lower():
         return mpi
     return None
+
+
+def is_multicam_item(mpi: Any) -> bool:
+    return "multicam" in str(_safe(lambda: mpi.GetClipProperty("Type"), "")).lower()
+
+
+def _walk(folder: Any):
+    for clip in _safe(lambda: folder.GetClipList(), []) or []:
+        yield folder, clip
+    for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
+        yield from _walk(sub)
 
 
 def angle_of(name: str) -> str:
@@ -315,37 +327,52 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
                                  "mediaType": 1, "trackIndex": 1, "recordFrame": rec0}]):
         raise RuntimeError("Couldn't place the raw picture.")
     tracks = sorted(audio) or [1]
+    probe = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": a + 1,
+                                  "mediaType": 2, "trackIndex": 1, "recordFrame": rec0 + (b - a) + 100}]) or []
+    default_angle = angle_of(str(_safe(lambda: probe[0].GetName(), ""))) if probe else "?"
+    if probe:
+        raw.DeleteClips(probe)
+    cam_clips = []
+    for _, c in _walk(mp.GetRootFolder()):
+        if is_multicam_item(c) or "timeline" in str(_safe(lambda: c.GetClipProperty("Type"), "")).lower():
+            continue
+        tc, n = _safe(lambda: c.GetClipProperty("Start TC")), _safe(lambda: int(str(c.GetClipProperty("Frames"))))
+        cam = str(_safe(lambda: c.GetMetadata("Camera #"), "") or "").strip()
+        if tc and n and cam:
+            cs = tc_to_frames(tc, fps) - mc_start
+            cam_clips.append({"clip": c, "cam": cam, "s": cs, "e": cs + n, "name": str(_safe(lambda: c.GetName(), ""))})
+    say(f"Default multicam sound: {default_angle}; {len(cam_clips)} media-pool clip(s) with a Camera #")
     for t in tracks:                                   # same track layout as the finished edit
         while int(raw.GetTrackCount("audio") or 0) < t:
             raw.AddTrack("audio", (audio.get(t) or {}).get("subtype") or "stereo")
-        placed = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
-                                       "mediaType": 2, "trackIndex": t, "recordFrame": rec0}]) or []
-        if not placed:
-            raise RuntimeError(f"Couldn't place the raw audio on A{t}.")
-        # The audio of a multicam item plays ONE angle's sound, and a new item starts on
-        # the default angle (run 1: all three tracks played Camera 1). Switch each track
-        # to the angle the edit used, with the same SmartSwitch trick as the video
-        # (switchOnVideoOnly off = the sound switches).
         target = (audio.get(t) or {}).get("angle")
-        if target and target != "?" and angle_of(str(_safe(lambda: placed[0].GetName(), ""))) != target:
-            settings = {"analysisMode": r.SMART_SWITCH_ANALYSIS_MODE_NONE, "isAutoDetectWideAngle": False,
-                        "wideAngleID": target, "wideAngleFrequency": r.SMART_SWITCH_WIDE_ANGLE_FREQ_HIGH,
-                        "isUseWideAngleForIntroOutro": True, "isUseWideAngleForSilence": True,
-                        "minEditDuration": 10.0, "switchOnVideoOnly": False}
-            for _ in range(3):                         # the first call sometimes returns False
-                if _safe(lambda: placed[0].PerformMulticamSmartSwitch(settings), False):
-                    break
-        now = _safe(lambda: raw.GetItemListInTrack("audio", t), []) or []
-        got: Dict[str, int] = {}
-        for x in now:
-            g = angle_of(str(_safe(lambda: x.GetName(), "")))
-            got[g] = got.get(g, 0) + 1
-        want = one_track_mapping((audio.get(t) or {}).get("mapping"))
-        mapped = [bool(_safe(lambda: x.SetSourceAudioChannelMapping(want), False)) for x in now] if want else []
-        say(f"A{t}: raw audio placed; wanted angle {target}, got {got}"
-            + (f"; channel mapping copied on {sum(mapped)}/{len(mapped)}" if want else ""))
-        if target and set(got) != {target}:
-            say(f"  ⚠ A{t} is not all on {target} — that WAV will carry the wrong mic")
+        if not target or target in ("?", default_angle):
+            # The edit used the default angle's sound: place the multicam audio as is.
+            placed = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
+                                           "mediaType": 2, "trackIndex": t, "recordFrame": rec0}]) or []
+            if not placed:
+                raise RuntimeError(f"Couldn't place the raw audio on A{t}.")
+            want = one_track_mapping((audio.get(t) or {}).get("mapping"))
+            ok = _safe(lambda: placed[0].SetSourceAudioChannelMapping(want), False) if want else None
+            say(f"A{t}: multicam audio ({default_angle})" + (f"; channel mapping copied → {ok}" if want else ""))
+            continue
+        # A new multicam item always plays the default angle's sound, and switching it with
+        # SmartSwitch analyses the whole clip (run 2: ~6 h estimate). Instead place that
+        # angle's own camera clips by timecode, shifted by the audio fix done in the multicam.
+        cam = target.rsplit(" ", 1)[-1]
+        srcs = [c for c in cam_clips if c["cam"] == cam and c["e"] > a and c["s"] < b]
+        if not srcs:
+            say(f"⚠ A{t}: no media-pool clip with Camera # {cam} covers the section — skipped")
+            continue
+        infos = []
+        for c in sorted(srcs, key=lambda c: c["s"]):
+            lo, hi = max(a, c["s"]), min(b - AUDIO_FIX, c["e"])
+            if hi > lo:
+                infos.append({"mediaPoolItem": c["clip"], "startFrame": lo - c["s"], "endFrame": hi - c["s"],
+                              "mediaType": 2, "trackIndex": t, "recordFrame": rec0 + (lo - a) + AUDIO_FIX})
+        placed = mp.AppendToTimeline(infos) or []
+        say(f"A{t}: {target} sound from {len(placed)}/{len(infos)} camera clip(s) "
+            f"({', '.join(sorted({c['name'] for c in srcs}))}), shifted {AUDIO_FIX} fr like the multicam")
 
     say(f"\n== {tl_name}: audio per mic track ==")
     levels: Dict[str, List[float]] = {}
