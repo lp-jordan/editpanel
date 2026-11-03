@@ -199,13 +199,23 @@ def render_audio(project: Any, tl: Any, name: str) -> str:
     job = project.AddRenderJob()
     if not job:
         raise RuntimeError("AddRenderJob failed.")
-    project.StartRendering(job)
+    # The first render of a run sometimes never leaves "Ready" (C1, ConvoTest): retry the start.
     t0 = time.time()
-    while not _safe(lambda: project.IsRenderingInProgress(), False) and time.time() - t0 < 10:
-        time.sleep(0.5)
-    while _safe(lambda: project.IsRenderingInProgress(), False) and time.time() - t0 < 3600:
-        time.sleep(1)
-    st = _safe(lambda: project.GetRenderJobStatus(job), {}) or {}
+    st: Dict[str, Any] = {}
+    for attempt in range(1, 4):
+        started = _safe(lambda: project.StartRendering(job), "raised")
+        t1 = time.time()
+        while not _safe(lambda: project.IsRenderingInProgress(), False) and time.time() - t1 < 20:
+            if (_safe(lambda: project.GetRenderJobStatus(job), {}) or {}).get("JobStatus") == "Complete":
+                break                          # short renders can finish before we look
+            time.sleep(0.5)
+        while _safe(lambda: project.IsRenderingInProgress(), False) and time.time() - t0 < 3600:
+            time.sleep(1)
+        st = _safe(lambda: project.GetRenderJobStatus(job), {}) or {}
+        if st.get("JobStatus") == "Complete":
+            break
+        say(f"  {name}: attempt {attempt} — StartRendering → {started}, status {st.get('JobStatus')}; retrying")
+        time.sleep(3)
     _safe(lambda: project.DeleteRenderJob(job))
     path = next((os.path.join(DESKTOP, f) for f in os.listdir(DESKTOP)
                  if f.startswith(name) and f.lower().endswith(".wav")), None)
