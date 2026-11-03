@@ -116,7 +116,10 @@ def frames_to_clock(f: int, fps: float) -> str:
 
 def find_folder(root: Any, path: str) -> Optional[Any]:
     current = root
-    for seg in [s.strip() for s in path.split(BIN_SEP) if s.strip()]:
+    segs = [s.strip() for s in path.split(BIN_SEP) if s.strip()]
+    if segs and segs[0].lower() == str(_safe(lambda: root.GetName(), "")).lower():
+        segs = segs[1:]                                # "MASTER / ..." = the root bin itself
+    for seg in segs:
         current = next((c for c in (_safe(lambda: current.GetSubFolderList(), []) or [])
                         if _safe(lambda: c.GetName()) == seg), None)
         if current is None:
