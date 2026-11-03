@@ -1,0 +1,1526 @@
+{
+ "label": "ConvoTest",
+ "multicam": "mc1",
+ "fps": 23.976,
+ "note": "Blind plan: transcript (WhisperX, 2 passes) + mic levels + style guide only; the finished edit was never read.",
+ "video": [
+  {
+   "in": 4915,
+   "out": 5009,
+   "angle": "Camera 1",
+   "why": "open on the wide"
+  },
+  {
+   "in": 5009,
+   "out": 5273,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 5273,
+   "out": 5542,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 5589,
+   "out": 5643,
+   "angle": "Camera 3",
+   "why": "reaction (hides the removal)"
+  },
+  {
+   "in": 5643,
+   "out": 5825,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 5825,
+   "out": 5878,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 5878,
+   "out": 5975,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 6162,
+   "out": 6250,
+   "angle": "Camera 1",
+   "why": "H talking (angle change hides the removal)"
+  },
+  {
+   "in": 6363,
+   "out": 6439,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 6488,
+   "out": 6542,
+   "angle": "Camera 3",
+   "why": "reaction (hides the removal)"
+  },
+  {
+   "in": 6542,
+   "out": 6719,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 6764,
+   "out": 6817,
+   "angle": "Camera 3",
+   "why": "reaction (hides the removal)"
+  },
+  {
+   "in": 6817,
+   "out": 7112,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 7126,
+   "out": 7179,
+   "angle": "Camera 2",
+   "why": "reaction (hides the removal)"
+  },
+  {
+   "in": 7179,
+   "out": 7341,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 7341,
+   "out": 7580,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 7580,
+   "out": 7632,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 7632,
+   "out": 7823,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 7823,
+   "out": 7960,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 7960,
+   "out": 8200,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 8200,
+   "out": 8286,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 8286,
+   "out": 8526,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 8526,
+   "out": 8579,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 8579,
+   "out": 8822,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 8822,
+   "out": 9063,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 9063,
+   "out": 9114,
+   "angle": "Camera 2",
+   "why": "reaction: H listening"
+  },
+  {
+   "in": 9114,
+   "out": 9319,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 9319,
+   "out": 9557,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 9557,
+   "out": 9606,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 9606,
+   "out": 9844,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 9844,
+   "out": 9923,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 9923,
+   "out": 10164,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 10164,
+   "out": 10217,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 10217,
+   "out": 10456,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 10456,
+   "out": 10511,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 10511,
+   "out": 10751,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 10751,
+   "out": 10837,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 10837,
+   "out": 10888,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 10888,
+   "out": 11066,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 11066,
+   "out": 11308,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 11308,
+   "out": 11361,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 11361,
+   "out": 11599,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 11599,
+   "out": 11651,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 11651,
+   "out": 11735,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 11774,
+   "out": 11827,
+   "angle": "Camera 3",
+   "why": "reaction (hides the removal)"
+  },
+  {
+   "in": 11827,
+   "out": 12014,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 12014,
+   "out": 12100,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 12100,
+   "out": 12337,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 12337,
+   "out": 12391,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 12391,
+   "out": 12524,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 12524,
+   "out": 12765,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 12765,
+   "out": 13083,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 13083,
+   "out": 13287,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 13287,
+   "out": 13527,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 13527,
+   "out": 13581,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 13581,
+   "out": 13821,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 13821,
+   "out": 13910,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 13910,
+   "out": 14153,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 14153,
+   "out": 14204,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 14204,
+   "out": 14445,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 14445,
+   "out": 14516,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 14516,
+   "out": 14761,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 14761,
+   "out": 14814,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 14814,
+   "out": 14889,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 14889,
+   "out": 15125,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 15125,
+   "out": 15245,
+   "angle": "Camera 4",
+   "why": "guest's slider"
+  },
+  {
+   "in": 15245,
+   "out": 15349,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 15349,
+   "out": 15586,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 15586,
+   "out": 15673,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 15673,
+   "out": 15913,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 15913,
+   "out": 15966,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 15966,
+   "out": 16209,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 16209,
+   "out": 16265,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 16265,
+   "out": 16509,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 16509,
+   "out": 16589,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 16589,
+   "out": 16831,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 16831,
+   "out": 16884,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 16884,
+   "out": 17125,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 17125,
+   "out": 17176,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 17176,
+   "out": 17487,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 17487,
+   "out": 17727,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 17727,
+   "out": 17819,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 17819,
+   "out": 18059,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 18059,
+   "out": 18107,
+   "angle": "Camera 2",
+   "why": "reaction: H listening"
+  },
+  {
+   "in": 18107,
+   "out": 18203,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 18203,
+   "out": 18444,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 18444,
+   "out": 18527,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 18527,
+   "out": 18766,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 18766,
+   "out": 18811,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 18811,
+   "out": 19050,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 19050,
+   "out": 19101,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 19101,
+   "out": 19339,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 19339,
+   "out": 19422,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 19422,
+   "out": 19666,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 19666,
+   "out": 19720,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 19720,
+   "out": 19958,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 19958,
+   "out": 20013,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 20013,
+   "out": 20252,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 20252,
+   "out": 20340,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 20340,
+   "out": 20510,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 20556,
+   "out": 20607,
+   "angle": "Camera 3",
+   "why": "reaction (hides the removal)"
+  },
+  {
+   "in": 20607,
+   "out": 20797,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 20797,
+   "out": 20849,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 20849,
+   "out": 21077,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 21077,
+   "out": 21317,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 21317,
+   "out": 21425,
+   "angle": "Camera 4",
+   "why": "guest's slider"
+  },
+  {
+   "in": 21425,
+   "out": 21664,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 21664,
+   "out": 21753,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 21753,
+   "out": 22003,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 22003,
+   "out": 22054,
+   "angle": "Camera 2",
+   "why": "reaction: H listening"
+  },
+  {
+   "in": 22054,
+   "out": 22294,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 22294,
+   "out": 22414,
+   "angle": "Camera 4",
+   "why": "guest's slider"
+  },
+  {
+   "in": 22414,
+   "out": 22723,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 22723,
+   "out": 22963,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 22963,
+   "out": 23015,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 23015,
+   "out": 23252,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 23252,
+   "out": 23340,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 23340,
+   "out": 23581,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 23581,
+   "out": 23633,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 23633,
+   "out": 23874,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 23874,
+   "out": 23927,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 23927,
+   "out": 24115,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 24115,
+   "out": 24300,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 24300,
+   "out": 24547,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 24547,
+   "out": 24634,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 24634,
+   "out": 24876,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 24876,
+   "out": 24932,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 24932,
+   "out": 25188,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 25188,
+   "out": 25518,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 25537,
+   "out": 25590,
+   "angle": "Camera 2",
+   "why": "reaction (hides the removal)"
+  },
+  {
+   "in": 25590,
+   "out": 25716,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 25716,
+   "out": 25959,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 25959,
+   "out": 26012,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 26012,
+   "out": 26251,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 26251,
+   "out": 26330,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 26330,
+   "out": 26570,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 26570,
+   "out": 26625,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 26625,
+   "out": 26866,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 26866,
+   "out": 26924,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 26924,
+   "out": 27167,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 27167,
+   "out": 27252,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 27252,
+   "out": 27491,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 27491,
+   "out": 27544,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 27544,
+   "out": 27785,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 27785,
+   "out": 27839,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 27839,
+   "out": 28081,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 28081,
+   "out": 28167,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 28167,
+   "out": 28287,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 28330,
+   "out": 28388,
+   "angle": "Camera 3",
+   "why": "reaction (hides the removal)"
+  },
+  {
+   "in": 28388,
+   "out": 28566,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 28566,
+   "out": 28615,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 28615,
+   "out": 28857,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 28857,
+   "out": 28910,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 28910,
+   "out": 29143,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 29143,
+   "out": 29227,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 29227,
+   "out": 29466,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 29466,
+   "out": 29512,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 29512,
+   "out": 29779,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 29779,
+   "out": 30020,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 30020,
+   "out": 30105,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 30105,
+   "out": 30289,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 30289,
+   "out": 30534,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 30534,
+   "out": 30588,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 30588,
+   "out": 30823,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 30823,
+   "out": 30908,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 30908,
+   "out": 31147,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 31147,
+   "out": 31197,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 31197,
+   "out": 31438,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 31438,
+   "out": 31492,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 31492,
+   "out": 31567,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 31567,
+   "out": 31628,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 31628,
+   "out": 31869,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 31869,
+   "out": 31948,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 31948,
+   "out": 32187,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 32187,
+   "out": 32242,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 32242,
+   "out": 32575,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 32575,
+   "out": 32817,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 32817,
+   "out": 32870,
+   "angle": "Camera 2",
+   "why": "reaction: H listening"
+  },
+  {
+   "in": 32870,
+   "out": 33110,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 33110,
+   "out": 33237,
+   "angle": "Camera 4",
+   "why": "guest's slider"
+  },
+  {
+   "in": 33237,
+   "out": 33473,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 33473,
+   "out": 33563,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 33563,
+   "out": 33785,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 33785,
+   "out": 34023,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 34023,
+   "out": 34073,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 34073,
+   "out": 34312,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 34312,
+   "out": 34401,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 34401,
+   "out": 34641,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 34641,
+   "out": 34688,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 34688,
+   "out": 34927,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 34927,
+   "out": 34980,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 34980,
+   "out": 35216,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 35216,
+   "out": 35302,
+   "angle": "Camera 1",
+   "why": "wide two-shot"
+  },
+  {
+   "in": 35302,
+   "out": 35571,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 35610,
+   "out": 35662,
+   "angle": "Camera 3",
+   "why": "reaction (hides the removal)"
+  },
+  {
+   "in": 35662,
+   "out": 35855,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 35855,
+   "out": 35905,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 35905,
+   "out": 36152,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 36152,
+   "out": 36205,
+   "angle": "Camera 3",
+   "why": "reaction: G listening"
+  },
+  {
+   "in": 36205,
+   "out": 36429,
+   "angle": "Camera 2",
+   "why": "H talking"
+  },
+  {
+   "in": 36429,
+   "out": 36669,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 36669,
+   "out": 36720,
+   "angle": "Camera 2",
+   "why": "reaction: H listening"
+  },
+  {
+   "in": 36720,
+   "out": 36865,
+   "angle": "Camera 3",
+   "why": "G talking"
+  },
+  {
+   "in": 36865,
+   "out": 36964,
+   "angle": "Camera 1",
+   "why": "close on the wide"
+  }
+ ],
+ "mics": {
+  "host": [
+   [
+    5258,
+    5977
+   ],
+   [
+    6159,
+    6256
+   ],
+   [
+    6359,
+    6441
+   ],
+   [
+    6490,
+    7091
+   ],
+   [
+    7326,
+    7816
+   ],
+   [
+    7945,
+    8810
+   ],
+   [
+    9304,
+    10882
+   ],
+   [
+    11051,
+    11236
+   ],
+   [
+    11239,
+    12520
+   ],
+   [
+    12750,
+    13079
+   ],
+   [
+    13272,
+    14427
+   ],
+   [
+    14501,
+    14880
+   ],
+   [
+    15334,
+    17482
+   ],
+   [
+    18188,
+    20453
+   ],
+   [
+    20558,
+    21059
+   ],
+   [
+    22708,
+    23917
+   ],
+   [
+    23950,
+    23966
+   ],
+   [
+    23982,
+    24052
+   ],
+   [
+    24063,
+    24111
+   ],
+   [
+    24285,
+    24641
+   ],
+   [
+    24671,
+    25159
+   ],
+   [
+    25701,
+    28756
+   ],
+   [
+    28814,
+    29775
+   ],
+   [
+    30274,
+    31564
+   ],
+   [
+    31613,
+    32569
+   ],
+   [
+    33770,
+    36419
+   ]
+  ],
+  "guest": [
+   [
+    4909,
+    5244
+   ],
+   [
+    7085,
+    7323
+   ],
+   [
+    7808,
+    7951
+   ],
+   [
+    8807,
+    9297
+   ],
+   [
+    10457,
+    10474
+   ],
+   [
+    10873,
+    11039
+   ],
+   [
+    11232,
+    11246
+   ],
+   [
+    12509,
+    12759
+   ],
+   [
+    13068,
+    13279
+   ],
+   [
+    14430,
+    14511
+   ],
+   [
+    14874,
+    15337
+   ],
+   [
+    17457,
+    18173
+   ],
+   [
+    20455,
+    20512
+   ],
+   [
+    20686,
+    20717
+   ],
+   [
+    21062,
+    22720
+   ],
+   [
+    23909,
+    23985
+   ],
+   [
+    24042,
+    24071
+   ],
+   [
+    24100,
+    24273
+   ],
+   [
+    24644,
+    24675
+   ],
+   [
+    24896,
+    24912
+   ],
+   [
+    25173,
+    25711
+   ],
+   [
+    26630,
+    26650
+   ],
+   [
+    28746,
+    28804
+   ],
+   [
+    29764,
+    30274
+   ],
+   [
+    31552,
+    31624
+   ],
+   [
+    31705,
+    31723
+   ],
+   [
+    32560,
+    33758
+   ],
+   [
+    36414,
+    36958
+   ]
+  ]
+ },
+ "removals": [
+  {
+   "from": 0,
+   "to": 4915,
+   "why": "setup chatter and warm-up talk before the first question"
+  },
+  {
+   "from": 5542,
+   "to": 5583,
+   "why": "pause 53 fr \u2192 12"
+  },
+  {
+   "from": 5550,
+   "to": 5589,
+   "why": "false start (answer 1)"
+  },
+  {
+   "from": 5975,
+   "to": 6157,
+   "why": "pause 194 fr \u2192 12"
+  },
+  {
+   "from": 5975,
+   "to": 6162,
+   "why": "searching aloud / restart (answer 1)"
+  },
+  {
+   "from": 6250,
+   "to": 6363,
+   "why": "restart of a phrase (answer 1)"
+  },
+  {
+   "from": 6439,
+   "to": 6488,
+   "why": "pause 61 fr \u2192 12"
+  },
+  {
+   "from": 6719,
+   "to": 6764,
+   "why": "false start (answer 2)"
+  },
+  {
+   "from": 7112,
+   "to": 7126,
+   "why": "stammer at the start of a question"
+  },
+  {
+   "from": 11735,
+   "to": 11774,
+   "why": "pause 51 fr \u2192 12"
+  },
+  {
+   "from": 20510,
+   "to": 20556,
+   "why": "pause 58 fr \u2192 12"
+  },
+  {
+   "from": 25518,
+   "to": 25537,
+   "why": "false start in a question"
+  },
+  {
+   "from": 28287,
+   "to": 28330,
+   "why": "pause 55 fr \u2192 12"
+  },
+  {
+   "from": 35571,
+   "to": 35610,
+   "why": "pause 51 fr \u2192 12"
+  }
+ ]
+}
