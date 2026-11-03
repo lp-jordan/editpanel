@@ -80,6 +80,7 @@ BIN_SEP = " / "
 SILENCE = "(...)"
 _lines: List[str] = []
 _T0 = time.time()
+BLIND = bool(globals().get("BLIND"))   # blind test: the edit goes to a separate KEY file, never in the report
 
 
 def say(msg: str = "") -> None:
@@ -87,6 +88,12 @@ def say(msg: str = "") -> None:
         msg = f"{msg}  [{time.time() - _T0:.1f}s]"
     print(msg)
     _lines.append(msg)
+
+
+def edit_say(msg: str = "") -> None:
+    """Report lines that describe the finished edit — left out of a blind run."""
+    if not BLIND:
+        say(msg)
 
 
 def _safe(fn, default=None):
@@ -265,7 +272,7 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
     angles: Dict[str, int] = {}
     for p in video:
         angles[p["angle"]] = angles.get(p["angle"], 0) + 1
-    say(f"Video: {len(video)} multicam piece(s) on V1, angles {angles}; multicam '{mc.GetName()}' @ {fps}")
+    edit_say(f"Video: {len(video)} multicam piece(s) on V1, angles {angles}; multicam '{mc.GetName()}' @ {fps}")
 
     audio: Dict[int, Dict[str, Any]] = {}
     for t in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
@@ -292,13 +299,13 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
                     "angle": max(mangles, key=mangles.get), "angles": mangles,
                     "mapping": main_map, "distinct_mappings": len(mappings), "items": items}
         off = sum(1 for x in items if not x["enabled"])
-        say(f"A{t} ({audio[t]['subtype']}): {len(items)} multicam audio item(s), {off} disabled; "
+        edit_say(f"A{t} ({audio[t]['subtype']}): {len(items)} multicam audio item(s), {off} disabled; "
             f"audio angle(s) {mangles}; "
             f"{len(mappings)} channel mapping(s); track {'on' if audio[t]['track_enabled'] else 'OFF'}")
         if main_map:
-            say(f"  mapping: {main_map}")
+            edit_say(f"  mapping: {main_map}")
     if ignored:
-        say(f"Ignored (not multicam): {ignored}")
+        edit_say(f"Ignored (not multicam): {ignored}")
     for who, t in (profile.get("mics") or {}).items():
         found = (t in audio) if isinstance(t, int) else any(x["angle"] == t for x in audio.values())
         if not found:
@@ -309,8 +316,8 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
     ends = [p["src_out"] for p in video] + [x["src_out"] for a in audio.values() for x in a["items"]]
     a, b = max(0, min(srcs) - pad), min(mc_frames, max(ends) + pad)
     kept = sum(p["src_out"] - p["src_in"] for p in video)
-    say(f"Raw section {frames_to_clock(a, fps)}–{frames_to_clock(b, fps)} of the day "
-        f"({(b - a) / fps:.0f}s raw → {kept / fps:.0f}s finished)")
+    say(f"Raw section {frames_to_clock(a, fps)}–{frames_to_clock(b, fps)} of the day ({(b - a) / fps:.0f}s raw)")
+    edit_say(f"  → {kept / fps:.0f}s finished")
 
     # ── Raw audio, one file per speaker ───────────────────────────────────────
     # Multi-speaker: two runs. Run 1 builds `__SPIKE_mics_<tl>` (raw picture + one audio
@@ -435,14 +442,19 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
         say(f"{sum(1 for w in words if w['t'] != SILENCE)} word(s) in the raw section")
 
     out = os.path.join(DESKTOP, f"collect_{safe_name(tl_name)}_export.json")
+    edit = {"video": video, "audio": {str(k): v for k, v in audio.items()}, "ignored": ignored}
+    data = {"timeline": tl_name, "project": project.GetName(), "profile": {**COMMON, **profile},
+            "multicam": mc.GetName(), "fps": fps, "mc_start_tc": mc.GetClipProperty("Start TC"),
+            "section": [a, b], "raw_timelines": raw_names, "wavs": wavs,
+            "levels": {"start": a, "db_by_sound": levels}, "resolve_words": words}
     with open(out, "w", encoding="utf-8") as fh:
-        json.dump({"timeline": tl_name, "project": project.GetName(), "profile": {**COMMON, **profile},
-                   "multicam": mc.GetName(), "fps": fps, "mc_start_tc": mc.GetClipProperty("Start TC"),
-                   "section": [a, b], "raw_timelines": raw_names, "video": video,
-                   "audio": {str(k): v for k, v in audio.items()}, "ignored": ignored,
-                   "wavs": wavs, "levels": {"start": a, "db_by_sound": levels},
-                   "resolve_words": words}, fh, ensure_ascii=False)
+        json.dump(data if BLIND else {**data, **edit}, fh, ensure_ascii=False)
     say(f"Saved {out}")
+    if BLIND:                                          # the answer key: keep it on this machine for now
+        key = os.path.join(DESKTOP, f"collect_{safe_name(tl_name)}_KEY.json")
+        with open(key, "w", encoding="utf-8") as fh:
+            json.dump({"timeline": tl_name, **edit}, fh, ensure_ascii=False)
+        say(f"Answer key saved to {key} — DON'T send it until the cut plan is committed.")
     say(f"Copy to the Mac: {os.path.basename(out)} + {', '.join(wavs.values())}")
 
 
