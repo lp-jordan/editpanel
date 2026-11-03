@@ -127,9 +127,13 @@ def force_angle(r: Any, item: Any, angle: str, video_only: bool) -> bool:
             "wideAngleID": angle, "wideAngleFrequency": r.SMART_SWITCH_WIDE_ANGLE_FREQ_HIGH,
             "isUseWideAngleForIntroOutro": True, "isUseWideAngleForSilence": True,
             "minEditDuration": 10.0, "switchOnVideoOnly": video_only}
-    for _ in range(3):                                # the first call sometimes returns False
-        if _safe(lambda: item.PerformMulticamSmartSwitch(base), False):
-            return True
+    # Video-only mode refused every piece in the ConvoTest build (as in Z8, where only the
+    # plain mode worked); plain mode is safe because the audio clips aren't linked.
+    modes = [base, {**base, "switchOnVideoOnly": False}] if video_only else [base]
+    for opts in modes:
+        for _ in range(2):                            # the first call sometimes returns False
+            if _safe(lambda: item.PerformMulticamSmartSwitch(opts), False) and angle_of(item) == angle:
+                return True
     return False
 
 
