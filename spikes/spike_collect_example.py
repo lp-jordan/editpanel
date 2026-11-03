@@ -11,8 +11,8 @@ For each finished timeline in TIMELINES it:
   3. Builds `__SPIKE_raw_<timeline>_<n>`: the raw section, with the SAME audio tracks,
      same mic per track as the finished edit (another angle's sound comes straight from
      that camera's clips, shifted by the multicam's audio fix).
-  4. Renders one audio-only WAV per mic track (other tracks switched off), and
-     measures the level of every frame.
+  4. Renders one audio-only WAV per mic (one raw timeline each), and measures the
+     level of every frame.
   5. Adds Resolve's transcript of that section (transcribes the multicam once if needed).
   6. Saves Desktop\\collect_<timeline>_export.json (+ the WAVs) — copy them to the Mac.
      They hold client speech: keep them out of git.
@@ -42,8 +42,8 @@ TIMELINE_BIN = "SEQUENCES"           # optional; falls back to the current bin
 RESOLVE_TRANSCRIPT = True            # also save Resolve's words (fast; WhisperX runs on the Mac)
 DESKTOP = os.path.expanduser("~/Desktop")
 
-# Facts per finished timeline (Jordan, 2026-11-03). MICS = audio track in the finished
-# timeline that carries that person's mic. Speakers are named by role, not by name.
+# Facts per finished timeline (Jordan, 2026-11-03). MICS = the audio track number in the
+# finished timeline, or the multicam sound angle ("Camera 2"), that carries that person's mic. Speakers are named by role, not by name.
 PROFILES: Dict[str, Dict[str, Any]] = {
     "Aug Solo Episode": {
         "speakers": 1, "roles": {"host": "host"}, "mics": {"host": 1},
@@ -52,7 +52,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "notes": "Mostly retakes and flubs, some tangent trimming. Graphics on V2 (ignore).",
     },
     "CedricConvo": {
-        "speakers": 2, "roles": {"host": "host", "guest": "guest"}, "mics": {"host": 2, "guest": 3},
+        "speakers": 2, "roles": {"host": "host", "guest": "guest"}, "mics": {"host": "Camera 2", "guest": "Camera 3"},   # sound angle (run 3: edit A1 = Camera 2 sound, A2 = Camera 3)
         "angles": {1: "wide two-shot", 2: "CU guest", 3: "CU host", 4: "slider (on guest)"},
         "retakes": False, "audience": False,
         "notes": "Free-flowing conversation, still edited. Both mic tracks used; sections of each "
@@ -302,8 +302,9 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
     if ignored:
         say(f"Ignored (not multicam): {ignored}")
     for who, t in (profile.get("mics") or {}).items():
-        if t not in audio:
-            say(f"⚠ {who}'s mic should be on A{t}, but A{t} has no multicam audio — check the report above")
+        found = (t in audio) if isinstance(t, int) else any(x["angle"] == t for x in audio.values())
+        if not found:
+            say(f"⚠ {who}'s mic ({t}) isn't used by any multicam audio in the edit — check the report above")
 
     pad = int(PAD_S * fps)
     srcs = [p["src_in"] for p in video] + [x["src_in"] for a in audio.values() for x in a["items"]]
@@ -313,25 +314,12 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
     say(f"Raw section {frames_to_clock(a, fps)}–{frames_to_clock(b, fps)} of the day "
         f"({(b - a) / fps:.0f}s raw → {kept / fps:.0f}s finished)")
 
-    say(f"\n== {tl_name}: raw section timeline ==")
+    say(f"\n== {tl_name}: raw audio, one timeline per mic ==")
+    # One timeline per mic sound: run 3 switched the other tracks off before each render,
+    # but Resolve rendered the full mix every time (all three WAVs identical).
     tl_bin = find_folder(mp.GetRootFolder(), TIMELINE_BIN)
     if tl_bin:
         mp.SetCurrentFolder(tl_bin)
-    raw_name = unique_name(project, f"__SPIKE_raw_{safe_name(tl_name)}")
-    raw = mp.CreateEmptyTimeline(raw_name)
-    if not raw:
-        raise RuntimeError("Couldn't create the raw section timeline.")
-    project.SetCurrentTimeline(raw)
-    rec0 = int(raw.GetStartFrame())
-    if not mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
-                                 "mediaType": 1, "trackIndex": 1, "recordFrame": rec0}]):
-        raise RuntimeError("Couldn't place the raw picture.")
-    tracks = sorted(audio) or [1]
-    probe = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": a + 1,
-                                  "mediaType": 2, "trackIndex": 1, "recordFrame": rec0 + (b - a) + 100}]) or []
-    default_angle = angle_of(str(_safe(lambda: probe[0].GetName(), ""))) if probe else "?"
-    if probe:
-        raw.DeleteClips(probe)
     cam_clips = []
     for _, c in _walk(mp.GetRootFolder()):
         if is_multicam_item(c) or "timeline" in str(_safe(lambda: c.GetClipProperty("Type"), "")).lower():
@@ -341,55 +329,65 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
         if tc and n and cam:
             cs = tc_to_frames(tc, fps) - mc_start
             cam_clips.append({"clip": c, "cam": cam, "s": cs, "e": cs + n, "name": str(_safe(lambda: c.GetName(), ""))})
-    say(f"Default multicam sound: {default_angle}; {len(cam_clips)} media-pool clip(s) with a Camera #")
-    for t in tracks:                                   # same track layout as the finished edit
-        while int(raw.GetTrackCount("audio") or 0) < t:
-            raw.AddTrack("audio", (audio.get(t) or {}).get("subtype") or "stereo")
-        target = (audio.get(t) or {}).get("angle")
-        if not target or target in ("?", default_angle):
-            # The edit used the default angle's sound: place the multicam audio as is.
-            placed = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
-                                           "mediaType": 2, "trackIndex": t, "recordFrame": rec0}]) or []
-            if not placed:
-                raise RuntimeError(f"Couldn't place the raw audio on A{t}.")
-            want = one_track_mapping((audio.get(t) or {}).get("mapping"))
-            ok = _safe(lambda: placed[0].SetSourceAudioChannelMapping(want), False) if want else None
-            say(f"A{t}: multicam audio ({default_angle})" + (f"; channel mapping copied → {ok}" if want else ""))
-            continue
-        # A new multicam item always plays the default angle's sound, and switching it with
-        # SmartSwitch analyses the whole clip (run 2: ~6 h estimate). Instead place that
-        # angle's own camera clips by timecode, shifted by the audio fix done in the multicam.
-        cam = target.rsplit(" ", 1)[-1]
-        srcs = [c for c in cam_clips if c["cam"] == cam and c["e"] > a and c["s"] < b]
-        if not srcs:
-            say(f"⚠ A{t}: no media-pool clip with Camera # {cam} covers the section — skipped")
-            continue
-        infos = []
-        for c in sorted(srcs, key=lambda c: c["s"]):
-            lo, hi = max(a, c["s"]), min(b - AUDIO_FIX, c["e"])
-            if hi > lo:
-                infos.append({"mediaPoolItem": c["clip"], "startFrame": lo - c["s"], "endFrame": hi - c["s"],
-                              "mediaType": 2, "trackIndex": t, "recordFrame": rec0 + (lo - a) + AUDIO_FIX})
-        placed = mp.AppendToTimeline(infos) or []
-        say(f"A{t}: {target} sound from {len(placed)}/{len(infos)} camera clip(s) "
-            f"({', '.join(sorted({c['name'] for c in srcs}))}), shifted {AUDIO_FIX} fr like the multicam")
-
-    say(f"\n== {tl_name}: audio per mic track ==")
+    sounds: List[str] = []                             # distinct mic sounds, in track order
+    for t in sorted(audio):
+        if audio[t]["angle"] not in sounds:
+            sounds.append(audio[t]["angle"])
+    sounds = sounds or ["?"]
     levels: Dict[str, List[float]] = {}
     wavs: Dict[str, str] = {}
-    n_tracks = int(raw.GetTrackCount("audio") or 0)
-    for t in tracks:
-        for u in range(1, n_tracks + 1):
-            raw.SetTrackEnable("audio", u, u == t)
-        try:
-            wav = render_audio(project, raw, f"collect_{safe_name(tl_name)}_A{t}")
-        finally:
-            for u in range(1, n_tracks + 1):
-                raw.SetTrackEnable("audio", u, True)
+    raw_names: Dict[str, str] = {}
+    default_angle = "?"
+    for snd in sounds:
+        tag = safe_name(snd)
+        raw_name = unique_name(project, f"__SPIKE_raw_{safe_name(tl_name)}_{tag}")
+        raw = mp.CreateEmptyTimeline(raw_name)
+        if not raw:
+            raise RuntimeError("Couldn't create a raw section timeline.")
+        project.SetCurrentTimeline(raw)
+        rec0 = int(raw.GetStartFrame())
+        if not mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
+                                     "mediaType": 1, "trackIndex": 1, "recordFrame": rec0}]):
+            raise RuntimeError("Couldn't place the raw picture.")
+        placed = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
+                                       "mediaType": 2, "trackIndex": 1, "recordFrame": rec0}]) or []
+        if not placed:
+            raise RuntimeError("Couldn't place the raw audio.")
+        default_angle = angle_of(str(_safe(lambda: placed[0].GetName(), "")))
+        if snd in ("?", default_angle):
+            mapping = next((audio[t]["mapping"] for t in sorted(audio) if audio[t]["angle"] == snd), None)
+            want = one_track_mapping(mapping)
+            ok = _safe(lambda: placed[0].SetSourceAudioChannelMapping(want), False) if want else None
+            say(f"{raw_name}: multicam sound ({default_angle})" + (f"; channel mapping copied → {ok}" if want else ""))
+        else:
+            # A new multicam item always plays the default angle's sound, and switching it
+            # with SmartSwitch analyses the whole clip (run 2: ~6 h). Place that angle's own
+            # camera clips by timecode instead, shifted by the audio fix done in the multicam.
+            raw.DeleteClips(placed)
+            cam = snd.rsplit(" ", 1)[-1]
+            srcs = [c for c in cam_clips if c["cam"] == cam and c["e"] > a and c["s"] < b]
+            if not srcs:
+                say(f"⚠ {snd}: no media-pool clip with Camera # {cam} covers the section — skipped")
+                continue
+            infos = []
+            for c in sorted(srcs, key=lambda c: c["s"]):
+                lo, hi = max(a, c["s"]), min(b - AUDIO_FIX, c["e"])
+                if hi > lo:
+                    infos.append({"mediaPoolItem": c["clip"], "startFrame": lo - c["s"], "endFrame": hi - c["s"],
+                                  "mediaType": 2, "trackIndex": 1, "recordFrame": rec0 + (lo - a) + AUDIO_FIX})
+            got = mp.AppendToTimeline(infos) or []
+            say(f"{raw_name}: {snd} sound from {len(got)}/{len(infos)} camera clip(s) "
+                f"({', '.join(sorted({c['name'] for c in srcs}))}), shifted {AUDIO_FIX} fr like the multicam")
+        wav = render_audio(project, raw, f"collect_{safe_name(tl_name)}_{tag}")
         lv = frame_levels(wav, fps)
-        levels[str(t)], wavs[str(t)] = lv, os.path.basename(wav)
-        say(f"  A{t}: {len(lv)} frame level(s) (expected {b - a}); quietest {min(lv)} dB, "
+        levels[snd], wavs[snd], raw_names[snd] = lv, os.path.basename(wav), raw_name
+        say(f"  {snd}: {len(lv)} frame level(s) (expected {b - a}); quietest {min(lv)} dB, "
             f"median {sorted(lv)[len(lv) // 2]} dB")
+    if len(levels) > 1:                                # the run-3 failure, caught next time
+        ks = list(levels)
+        same = sum(1 for x, y in zip(levels[ks[0]], levels[ks[1]]) if x == y)
+        say(f"  {ks[0]} vs {ks[1]}: {same}/{len(levels[ks[0]])} frames identical"
+            + ("  ⚠ same audio — the mics were NOT separated" if same > 0.9 * len(levels[ks[0]]) else ""))
 
     words = []
     if RESOLVE_TRANSCRIPT:
@@ -420,9 +418,9 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
     with open(out, "w", encoding="utf-8") as fh:
         json.dump({"timeline": tl_name, "project": project.GetName(), "profile": {**COMMON, **profile},
                    "multicam": mc.GetName(), "fps": fps, "mc_start_tc": mc.GetClipProperty("Start TC"),
-                   "section": [a, b], "raw_timeline": raw_name, "video": video,
+                   "section": [a, b], "raw_timelines": raw_names, "video": video,
                    "audio": {str(k): v for k, v in audio.items()}, "ignored": ignored,
-                   "wavs": wavs, "levels": {"start": a, "db_by_track": levels},
+                   "wavs": wavs, "levels": {"start": a, "db_by_sound": levels},
                    "resolve_words": words}, fh, ensure_ascii=False)
     say(f"Saved {out}")
     say(f"Copy to the Mac: {os.path.basename(out)} + {', '.join(wavs.values())}")
@@ -433,7 +431,8 @@ def main() -> None:
     project = r.GetProjectManager().GetCurrentProject()
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}'")
     present = all_timelines(project)
-    todo = [n for n in PROFILES if n in present]
+    only = globals().get("ONLY")                       # e.g. ONLY=["CedricConvo"]
+    todo = [n for n in PROFILES if n in present and (not only or n in only)]
     missing = [n for n in PROFILES if n not in present]
     if missing:
         say(f"Not in this project (skipped): {missing}")
