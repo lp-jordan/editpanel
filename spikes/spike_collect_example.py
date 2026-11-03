@@ -24,7 +24,8 @@ HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
     exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_collect_example.py", encoding="utf-8").read())
 That runs every timeline in PROFILES found in the open project. For another project,
 give the facts in the run line instead. TIMELINE can be one name, a list, or "*"
-(lists every finished multicam timeline; add GO=True to collect them all), e.g.:
+(lists every finished multicam timeline, or only those in BIN="A / B"; add GO=True to
+collect them all), e.g.:
     TIMELINE="Ep 12 Final"; SPEAKERS=2; ROLES={"host":"host","guest":"guest"}; ANGLES={1:"wide",2:"CU guest",3:"CU host"}; RETAKES=False; AUDIENCE=False; NOTES="..."; exec(open(...).read())
 Two or more speakers (or one speaker whose mic isn't the multicam's default sound):
 run the same line twice, setting each speaker's track by hand in between.
@@ -451,8 +452,21 @@ def main() -> None:
     if "*" in PROFILES:                                # every timeline cut from a multicam
         facts = PROFILES.pop("*")
         found = []
+        in_bin = None
+        if globals().get("BIN"):                       # e.g. BIN="SEQUENCES / Finals" (and its sub-bins)
+            folder = find_folder(project.GetMediaPool().GetRootFolder(), globals()["BIN"])
+            if folder is None:
+                raise RuntimeError(f"No bin {globals()['BIN']!r}")
+            in_bin = set()
+            stack = [folder]
+            while stack:
+                f = stack.pop()
+                stack += _safe(lambda: f.GetSubFolderList(), []) or []
+                for c in _safe(lambda: f.GetClipList(), []) or []:
+                    if "timeline" in str(_safe(lambda: c.GetClipProperty("Type"), "")).lower():
+                        in_bin.add(str(_safe(lambda: c.GetName(), "")))
         for n, t in present.items():
-            if n.startswith("__SPIKE_"):
+            if n.startswith("__SPIKE_") or (in_bin is not None and n not in in_bin):
                 continue
             v1 = _safe(lambda: t.GetItemListInTrack("video", 1), []) or []
             if any(is_multicam(i) for i in v1[:5]):
