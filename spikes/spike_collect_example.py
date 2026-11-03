@@ -23,8 +23,10 @@ The finished timelines are never changed.
 HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
     exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_collect_example.py", encoding="utf-8").read())
 That runs every timeline in PROFILES found in the open project. For another project,
-give the facts in the run line instead, e.g.:
-    TIMELINE="Ep 12 Final"; SPEAKERS=2; ROLES={"host":"host","guest":"guest"}; MICS={"host":2,"guest":3}; ANGLES={1:"wide",2:"CU guest",3:"CU host"}; RETAKES=False; AUDIENCE=False; exec(open(...).read())
+give the facts in the run line instead (one timeline per run), e.g.:
+    TIMELINE="Ep 12 Final"; SPEAKERS=2; ROLES={"host":"host","guest":"guest"}; ANGLES={1:"wide",2:"CU guest",3:"CU host"}; RETAKES=False; AUDIENCE=False; NOTES="..."; exec(open(...).read())
+Two or more speakers (or one speaker whose mic isn't the multicam's default sound):
+run the same line twice, setting each speaker's track by hand in between.
 Report saved to Desktop\\collect_report.txt.
 """
 
@@ -313,7 +315,8 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
     tl_bin = find_folder(mp.GetRootFolder(), TIMELINE_BIN)
     if tl_bin:
         mp.SetCurrentFolder(tl_bin)
-    roles = list((profile.get("roles") or {"speaker": "speaker"}).keys())
+    roles = list((profile.get("roles") or {}).keys()) or \
+        [f"speaker{i}" for i in range(1, int(profile.get("speakers") or 1) + 1)]
     mics_name = f"__SPIKE_mics_{safe_name(tl_name)}"
     mics = all_timelines(project).get(mics_name)
     levels: Dict[str, List[float]] = {}
@@ -342,9 +345,20 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
         say(f"  {key}: {len(lv)} frame level(s) (expected {b - a}); quietest {min(lv)} dB, "
             f"median {sorted(lv)[len(lv) // 2]} dB")
 
-    if len(roles) == 1:
+    solo_raw = None
+    if len(roles) == 1 and mics is None:
+        # One speaker is automatic only when the edit used the multicam's default sound;
+        # otherwise it falls back to the by-hand mic setup below.
+        solo_raw = build(unique_name(project, f"__SPIKE_raw_{safe_name(tl_name)}"), 1)
+        default = angle_of(str(_safe(lambda: solo_raw.GetItemListInTrack("audio", 1)[0].GetName(), "")))
+        edit_snd = next((audio[t]["angle"] for t in sorted(audio)), default)
+        if edit_snd != default:
+            say(f"The edit's sound is {edit_snd}, not the multicam default ({default}) — set the mic by hand")
+            _safe(lambda: mp.DeleteTimelines([solo_raw]))
+            solo_raw = None
+    if solo_raw is not None:
         say(f"\n== {tl_name}: raw audio (one speaker) ==")
-        raw = build(unique_name(project, f"__SPIKE_raw_{safe_name(tl_name)}"), 1)
+        raw = solo_raw
         want = one_track_mapping(next((audio[t]["mapping"] for t in sorted(audio)), None))
         if want:
             item = (raw.GetItemListInTrack("audio", 1) or [None])[0]
