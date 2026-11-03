@@ -8,11 +8,12 @@ For each finished timeline in TIMELINES it:
      multicam audio item on every audio track (source in/out, enabled or disabled,
      channel mapping). Other items (graphics, b-roll, music) are only counted.
   2. Finds the raw section of the day multicam the edit was cut from (+ PAD_S).
-  3. Builds `__SPIKE_raw_<timeline>_<n>`: the raw section, with the SAME audio tracks,
-     same mic per track as the finished edit (another angle's sound comes straight from
-     that camera's clips, shifted by the multicam's audio fix).
-  4. Renders one audio-only WAV per mic (one raw timeline each), and measures the
-     level of every frame.
+  3–4. One speaker: builds `__SPIKE_raw_<timeline>_<n>` and renders its sound.
+     Two or more speakers, in TWO runs of the same line:
+       run 1 builds `__SPIKE_mics_<timeline>` (raw picture + one audio track per speaker,
+             named by role) and stops — set each track to that person's mic by hand;
+       run 2 renders one audio-only WAV per track.
+     Each WAV's level is measured on every frame.
   5. Adds Resolve's transcript of that section (transcribes the multicam once if needed).
   6. Saves Desktop\\collect_<timeline>_export.json (+ the WAVs) — copy them to the Mac.
      They hold client speech: keep them out of git.
@@ -60,7 +61,6 @@ PROFILES: Dict[str, Dict[str, Any]] = {
     },
 }
 COMMON = {"audio_fix_in_multicam": "yes (5 frames, done inside the multicam)"}
-AUDIO_FIX = int(globals().get("AUDIO_FIX", 5))   # frames the multicam's sound was moved later
 
 if "TIMELINE" in globals():           # facts given in the run line
     PROFILES = {globals()["TIMELINE"]: {
@@ -139,17 +139,6 @@ def is_multicam(it: Any) -> Optional[Any]:
     if mpi and "multicam" in str(_safe(lambda: mpi.GetClipProperty("Type"), "")).lower():
         return mpi
     return None
-
-
-def is_multicam_item(mpi: Any) -> bool:
-    return "multicam" in str(_safe(lambda: mpi.GetClipProperty("Type"), "")).lower()
-
-
-def _walk(folder: Any):
-    for clip in _safe(lambda: folder.GetClipList(), []) or []:
-        yield folder, clip
-    for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
-        yield from _walk(sub)
 
 
 def angle_of(name: str) -> str:
@@ -314,80 +303,90 @@ def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None
     say(f"Raw section {frames_to_clock(a, fps)}–{frames_to_clock(b, fps)} of the day "
         f"({(b - a) / fps:.0f}s raw → {kept / fps:.0f}s finished)")
 
-    say(f"\n== {tl_name}: raw audio, one timeline per mic ==")
-    # One timeline per mic sound: run 3 switched the other tracks off before each render,
-    # but Resolve rendered the full mix every time (all three WAVs identical).
+    # ── Raw audio, one file per speaker ───────────────────────────────────────
+    # Multi-speaker: two runs. Run 1 builds `__SPIKE_mics_<tl>` (raw picture + one audio
+    # track per speaker, named by role) and stops; Jordan sets each track to that person's
+    # mic by hand (angle, channels — however the edit did it). Run 2 renders each track
+    # from its own copy of that timeline with the other tracks' clips deleted.
+    # (Runs 3–4: the ATEM camera files all carry the same audio, so picking a mic
+    # automatically from the edit's audio angles didn't work.)
     tl_bin = find_folder(mp.GetRootFolder(), TIMELINE_BIN)
     if tl_bin:
         mp.SetCurrentFolder(tl_bin)
-    cam_clips = []
-    for _, c in _walk(mp.GetRootFolder()):
-        if is_multicam_item(c) or "timeline" in str(_safe(lambda: c.GetClipProperty("Type"), "")).lower():
-            continue
-        tc, n = _safe(lambda: c.GetClipProperty("Start TC")), _safe(lambda: int(str(c.GetClipProperty("Frames"))))
-        cam = str(_safe(lambda: c.GetMetadata("Camera #"), "") or "").strip()
-        if tc and n and cam:
-            cs = tc_to_frames(tc, fps) - mc_start
-            cam_clips.append({"clip": c, "cam": cam, "s": cs, "e": cs + n, "name": str(_safe(lambda: c.GetName(), ""))})
-    sounds: List[str] = []                             # distinct mic sounds, in track order
-    for t in sorted(audio):
-        if audio[t]["angle"] not in sounds:
-            sounds.append(audio[t]["angle"])
-    sounds = sounds or ["?"]
+    roles = list((profile.get("roles") or {"speaker": "speaker"}).keys())
+    mics_name = f"__SPIKE_mics_{safe_name(tl_name)}"
+    mics = all_timelines(project).get(mics_name)
     levels: Dict[str, List[float]] = {}
     wavs: Dict[str, str] = {}
-    raw_names: Dict[str, str] = {}
-    default_angle = "?"
-    for snd in sounds:
-        tag = safe_name(snd)
-        raw_name = unique_name(project, f"__SPIKE_raw_{safe_name(tl_name)}_{tag}")
-        raw = mp.CreateEmptyTimeline(raw_name)
-        if not raw:
-            raise RuntimeError("Couldn't create a raw section timeline.")
-        project.SetCurrentTimeline(raw)
-        rec0 = int(raw.GetStartFrame())
+
+    def build(name: str, n_tracks: int) -> Any:
+        t = mp.CreateEmptyTimeline(name)
+        if not t:
+            raise RuntimeError(f"Couldn't create {name}.")
+        project.SetCurrentTimeline(t)
+        rec0 = int(t.GetStartFrame())
         if not mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
                                      "mediaType": 1, "trackIndex": 1, "recordFrame": rec0}]):
             raise RuntimeError("Couldn't place the raw picture.")
-        placed = mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
-                                       "mediaType": 2, "trackIndex": 1, "recordFrame": rec0}]) or []
-        if not placed:
-            raise RuntimeError("Couldn't place the raw audio.")
-        default_angle = angle_of(str(_safe(lambda: placed[0].GetName(), "")))
-        if snd in ("?", default_angle):
-            mapping = next((audio[t]["mapping"] for t in sorted(audio) if audio[t]["angle"] == snd), None)
-            want = one_track_mapping(mapping)
-            ok = _safe(lambda: placed[0].SetSourceAudioChannelMapping(want), False) if want else None
-            say(f"{raw_name}: multicam sound ({default_angle})" + (f"; channel mapping copied → {ok}" if want else ""))
-        else:
-            # A new multicam item always plays the default angle's sound, and switching it
-            # with SmartSwitch analyses the whole clip (run 2: ~6 h). Place that angle's own
-            # camera clips by timecode instead, shifted by the audio fix done in the multicam.
-            raw.DeleteClips(placed)
-            cam = snd.rsplit(" ", 1)[-1]
-            srcs = [c for c in cam_clips if c["cam"] == cam and c["e"] > a and c["s"] < b]
-            if not srcs:
-                say(f"⚠ {snd}: no media-pool clip with Camera # {cam} covers the section — skipped")
-                continue
-            infos = []
-            for c in sorted(srcs, key=lambda c: c["s"]):
-                lo, hi = max(a, c["s"]), min(b - AUDIO_FIX, c["e"])
-                if hi > lo:
-                    infos.append({"mediaPoolItem": c["clip"], "startFrame": lo - c["s"], "endFrame": hi - c["s"],
-                                  "mediaType": 2, "trackIndex": 1, "recordFrame": rec0 + (lo - a) + AUDIO_FIX})
-            got = mp.AppendToTimeline(infos) or []
-            say(f"{raw_name}: {snd} sound from {len(got)}/{len(infos)} camera clip(s) "
-                f"({', '.join(sorted({c['name'] for c in srcs}))}), shifted {AUDIO_FIX} fr like the multicam")
-        wav = render_audio(project, raw, f"collect_{safe_name(tl_name)}_{tag}")
+        for k in range(1, n_tracks + 1):
+            while int(t.GetTrackCount("audio") or 0) < k:
+                t.AddTrack("audio", "stereo")
+            if not mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": a, "endFrame": b,
+                                         "mediaType": 2, "trackIndex": k, "recordFrame": rec0}]):
+                raise RuntimeError(f"Couldn't place the raw audio on A{k}.")
+        return t
+
+    def measure(key: str, wav: str) -> None:
         lv = frame_levels(wav, fps)
-        levels[snd], wavs[snd], raw_names[snd] = lv, os.path.basename(wav), raw_name
-        say(f"  {snd}: {len(lv)} frame level(s) (expected {b - a}); quietest {min(lv)} dB, "
+        levels[key], wavs[key] = lv, os.path.basename(wav)
+        say(f"  {key}: {len(lv)} frame level(s) (expected {b - a}); quietest {min(lv)} dB, "
             f"median {sorted(lv)[len(lv) // 2]} dB")
-    if len(levels) > 1:                                # the run-3 failure, caught next time
-        ks = list(levels)
-        same = sum(1 for x, y in zip(levels[ks[0]], levels[ks[1]]) if x == y)
-        say(f"  {ks[0]} vs {ks[1]}: {same}/{len(levels[ks[0]])} frames identical"
-            + ("  ⚠ same audio — the mics were NOT separated" if same > 0.9 * len(levels[ks[0]]) else ""))
+
+    if len(roles) == 1:
+        say(f"\n== {tl_name}: raw audio (one speaker) ==")
+        raw = build(unique_name(project, f"__SPIKE_raw_{safe_name(tl_name)}"), 1)
+        want = one_track_mapping(next((audio[t]["mapping"] for t in sorted(audio)), None))
+        if want:
+            item = (raw.GetItemListInTrack("audio", 1) or [None])[0]
+            say(f"Channel mapping copied from the edit → {_safe(lambda: item.SetSourceAudioChannelMapping(want), False)}")
+        measure(roles[0], render_audio(project, raw, f"collect_{safe_name(tl_name)}_{roles[0]}"))
+    elif mics is None:
+        say(f"\n== {tl_name}: PART 1 — set the mics by hand ==")
+        mics = build(mics_name, len(roles))
+        for k, role in enumerate(roles, 1):
+            mics.SetTrackName("audio", k, role)
+        say(f"Built {mics_name}: raw picture + {len(roles)} audio track(s): "
+            + ", ".join(f"A{k} = {role}" for k, role in enumerate(roles, 1)))
+        say("Now set each track so it plays ONLY that person's mic (multicam audio angle,")
+        say("channels — whatever you did in the edit). Don't move or trim the clips.")
+        say("Then run the same line again: part 2 renders one WAV per track.")
+        return
+    else:
+        say(f"\n== {tl_name}: PART 2 — one WAV per speaker from {mics_name} ==")
+        n = int(mics.GetTrackCount("audio") or 0)
+        names = {k: (_safe(lambda: mics.GetTrackName("audio", k)) or f"A{k}") for k in range(1, n + 1)}
+        for k in range(1, n + 1):
+            if not (_safe(lambda: mics.GetItemListInTrack("audio", k), []) or []):
+                continue
+            project.SetCurrentTimeline(mics)
+            dup = mics.DuplicateTimeline(unique_name(project, f"__SPIKE_render_{safe_name(tl_name)}_{names[k]}"))
+            if not dup:
+                raise RuntimeError("DuplicateTimeline failed.")
+            for u in range(1, n + 1):                  # keep only track k's sound
+                if u != k:
+                    gone = _safe(lambda: dup.GetItemListInTrack("audio", u), []) or []
+                    if gone:
+                        dup.DeleteClips(gone)
+            try:
+                measure(names[k], render_audio(project, dup, f"collect_{safe_name(tl_name)}_{names[k]}"))
+            finally:
+                _safe(lambda: mp.DeleteTimelines([dup]))
+        if len(levels) > 1:                            # the run-3/4 failure, caught again if it recurs
+            ks = list(levels)
+            same = sum(1 for x, y in zip(levels[ks[0]], levels[ks[1]]) if x == y)
+            say(f"  {ks[0]} vs {ks[1]}: {same}/{len(levels[ks[0]])} frames identical"
+                + ("  ⚠ same audio — the mics were NOT separated" if same > 0.9 * len(levels[ks[0]]) else ""))
+    raw_names = {"mics": mics_name} if mics is not None else {}
 
     words = []
     if RESOLVE_TRANSCRIPT:
