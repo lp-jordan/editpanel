@@ -27,6 +27,8 @@ give the facts in the run line instead. TIMELINE can be one name, a list, or "*"
 (lists every finished multicam timeline, or only those in BIN="A / B"; add GO=True to
 collect them all), e.g.:
     TIMELINE="Ep 12 Final"; SPEAKERS=2; ROLES={"host":"host","guest":"guest"}; ANGLES={1:"wide",2:"CU guest",3:"CU host"}; RETAKES=False; AUDIENCE=False; NOTES="..."; exec(open(...).read())
+Or skip the finished edit entirely and give the multicam timecodes (TIMELINE is then just a label):
+    TIMELINE="Convo test"; MULTICAM="DAY_MC"; SECTION=("14:02:10:00","14:21:40:00"); SPEAKERS=2; ...
 Two or more speakers (or one speaker whose mic isn't the multicam's default sound):
 run the same line twice, setting each speaker's track by hand in between.
 Report saved to Desktop\\collect_report.txt.
@@ -73,6 +75,8 @@ if "TIMELINE" in globals():           # facts given in the run line
         "retakes": globals().get("RETAKES"), "audience": globals().get("AUDIENCE"),
         "notes": globals().get("NOTES", ""),
     }
+    if globals().get("SECTION"):          # SECTION=("HH:MM:SS:FF","HH:MM:SS:FF"), MULTICAM="name"
+        _facts.update({"section": list(globals()["SECTION"]), "multicam": globals().get("MULTICAM")})
     _tl = globals()["TIMELINE"]          # a name, a list of names, or "*" = every finished edit
     PROFILES = {n: dict(_facts) for n in ([_tl] if isinstance(_tl, str) else list(_tl))}
 
@@ -150,8 +154,15 @@ def unique_name(project: Any, base: str) -> str:
     return f"{base}_{n}"
 
 
-def is_multicam(it: Any) -> Optional[Any]:
-    mpi = _safe(lambda: it.GetMediaPoolItem())
+def _walk(folder: Any):
+    for clip in _safe(lambda: folder.GetClipList(), []) or []:
+        yield clip
+    for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
+        yield from _walk(sub)
+
+
+def is_multicam(it: Any, item: bool = True) -> Optional[Any]:
+    mpi = _safe(lambda: it.GetMediaPoolItem()) if item else it
     if mpi and "multicam" in str(_safe(lambda: mpi.GetClipProperty("Type"), "")).lower():
         return mpi
     return None
@@ -245,79 +256,97 @@ def one_track_mapping(raw_json: Optional[str]) -> Optional[str]:
 # ──────────────────────────────────────────────────────────────────────────────
 def collect(r: Any, project: Any, tl_name: str, profile: Dict[str, Any]) -> None:
     mp = project.GetMediaPool()
-    tl = all_timelines(project).get(tl_name)
-    if tl is None:
-        raise RuntimeError(f"No timeline named {tl_name!r}")
-    t_start = int(tl.GetStartFrame())
+    if profile.get("section"):
+        # Section given as multicam timecodes: the finished edit is never read.
+        mc = next((c for c in _walk(mp.GetRootFolder())
+                   if is_multicam(c, item=False) and _safe(lambda: c.GetName()) == profile.get("multicam")), None)
+        if mc is None:
+            raise RuntimeError(f"No multicam named {profile.get('multicam')!r} in the media pool")
+        fps = float(mc.GetClipProperty("FPS") or project.GetSetting("timelineFrameRate"))
+        mc_start = tc_to_frames(mc.GetClipProperty("Start TC"), fps)
+        mc_frames = int(str(mc.GetClipProperty("Frames")))
+        a = max(0, tc_to_frames(profile["section"][0], fps) - mc_start)
+        b = min(mc_frames, tc_to_frames(profile["section"][1], fps) - mc_start)
+        if b <= a:
+            raise RuntimeError(f"Section {profile['section']} is outside multicam {mc.GetName()!r} "
+                               f"(starts {mc.GetClipProperty('Start TC')})")
+        video, audio, ignored = [], {}, {}
+        say(f"\n== {tl_name}: section {profile['section'][0]}–{profile['section'][1]} of '{mc.GetName()}' ==")
+        say(f"Raw section {frames_to_clock(a, fps)}–{frames_to_clock(b, fps)} of the day ({(b - a) / fps:.0f}s raw)")
+    else:
+        tl = all_timelines(project).get(tl_name)
+        if tl is None:
+            raise RuntimeError(f"No timeline named {tl_name!r}")
+        t_start = int(tl.GetStartFrame())
 
-    say(f"\n== {tl_name}: the edit ==")
-    video, ignored = [], {}
-    for t in range(1, int(tl.GetTrackCount("video") or 0) + 1):
-        for it in _safe(lambda: tl.GetItemListInTrack("video", t), []) or []:
-            if t == 1 and is_multicam(it):
-                name = str(_safe(lambda: it.GetName(), ""))
-                video.append({"rec_in": int(it.GetStart()) - t_start, "rec_out": int(it.GetEnd()) - t_start,
+        say(f"\n== {tl_name}: the edit ==")
+        video, ignored = [], {}
+        for t in range(1, int(tl.GetTrackCount("video") or 0) + 1):
+            for it in _safe(lambda: tl.GetItemListInTrack("video", t), []) or []:
+                if t == 1 and is_multicam(it):
+                    name = str(_safe(lambda: it.GetName(), ""))
+                    video.append({"rec_in": int(it.GetStart()) - t_start, "rec_out": int(it.GetEnd()) - t_start,
+                                  "src_in": int(round(float(it.GetSourceStartFrame()))),
+                                  "src_out": int(round(float(it.GetSourceEndFrame()))),
+                                  "angle": angle_of(name), "enabled": bool(_safe(lambda: it.GetClipEnabled(), True))})
+                else:
+                    ignored[f"V{t}"] = ignored.get(f"V{t}", 0) + 1
+        video.sort(key=lambda p: p["rec_in"])
+        if not video:
+            raise RuntimeError(f"{tl_name} has no multicam pieces on V1")
+        mc = next(m for m in (is_multicam(i) for i in tl.GetItemListInTrack("video", 1)) if m)
+        fps = float(mc.GetClipProperty("FPS") or project.GetSetting("timelineFrameRate"))
+        mc_start = tc_to_frames(mc.GetClipProperty("Start TC"), fps)
+        mc_frames = int(str(mc.GetClipProperty("Frames")))
+        angles: Dict[str, int] = {}
+        for p in video:
+            angles[p["angle"]] = angles.get(p["angle"], 0) + 1
+        edit_say(f"Video: {len(video)} multicam piece(s) on V1, angles {angles}; multicam '{mc.GetName()}' @ {fps}")
+
+        audio: Dict[int, Dict[str, Any]] = {}
+        for t in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
+            items, mappings, mangles = [], {}, {}
+            for it in _safe(lambda: tl.GetItemListInTrack("audio", t), []) or []:
+                if not is_multicam(it):
+                    ignored[f"A{t}"] = ignored.get(f"A{t}", 0) + 1
+                    continue
+                mapping = _safe(lambda: it.GetSourceAudioChannelMapping())
+                if mapping:
+                    mappings[mapping] = mappings.get(mapping, 0) + 1
+                ang = angle_of(str(_safe(lambda: it.GetName(), "")))   # the multicam audio angle in use
+                mangles[ang] = mangles.get(ang, 0) + 1
+                items.append({"rec_in": int(it.GetStart()) - t_start, "rec_out": int(it.GetEnd()) - t_start,
                               "src_in": int(round(float(it.GetSourceStartFrame()))),
                               "src_out": int(round(float(it.GetSourceEndFrame()))),
-                              "angle": angle_of(name), "enabled": bool(_safe(lambda: it.GetClipEnabled(), True))})
-            else:
-                ignored[f"V{t}"] = ignored.get(f"V{t}", 0) + 1
-    video.sort(key=lambda p: p["rec_in"])
-    if not video:
-        raise RuntimeError(f"{tl_name} has no multicam pieces on V1")
-    mc = next(m for m in (is_multicam(i) for i in tl.GetItemListInTrack("video", 1)) if m)
-    fps = float(mc.GetClipProperty("FPS") or project.GetSetting("timelineFrameRate"))
-    mc_start = tc_to_frames(mc.GetClipProperty("Start TC"), fps)
-    mc_frames = int(str(mc.GetClipProperty("Frames")))
-    angles: Dict[str, int] = {}
-    for p in video:
-        angles[p["angle"]] = angles.get(p["angle"], 0) + 1
-    edit_say(f"Video: {len(video)} multicam piece(s) on V1, angles {angles}; multicam '{mc.GetName()}' @ {fps}")
-
-    audio: Dict[int, Dict[str, Any]] = {}
-    for t in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
-        items, mappings, mangles = [], {}, {}
-        for it in _safe(lambda: tl.GetItemListInTrack("audio", t), []) or []:
-            if not is_multicam(it):
-                ignored[f"A{t}"] = ignored.get(f"A{t}", 0) + 1
+                              "angle": ang, "enabled": bool(_safe(lambda: it.GetClipEnabled(), True))})
+            if not items:
                 continue
-            mapping = _safe(lambda: it.GetSourceAudioChannelMapping())
-            if mapping:
-                mappings[mapping] = mappings.get(mapping, 0) + 1
-            ang = angle_of(str(_safe(lambda: it.GetName(), "")))   # the multicam audio angle in use
-            mangles[ang] = mangles.get(ang, 0) + 1
-            items.append({"rec_in": int(it.GetStart()) - t_start, "rec_out": int(it.GetEnd()) - t_start,
-                          "src_in": int(round(float(it.GetSourceStartFrame()))),
-                          "src_out": int(round(float(it.GetSourceEndFrame()))),
-                          "angle": ang, "enabled": bool(_safe(lambda: it.GetClipEnabled(), True))})
-        if not items:
-            continue
-        items.sort(key=lambda x: x["rec_in"])
-        main_map = max(mappings, key=mappings.get) if mappings else None
-        audio[t] = {"subtype": _safe(lambda: tl.GetTrackSubType("audio", t)),
-                    "track_enabled": bool(_safe(lambda: tl.GetIsTrackEnabled("audio", t), True)),
-                    "angle": max(mangles, key=mangles.get), "angles": mangles,
-                    "mapping": main_map, "distinct_mappings": len(mappings), "items": items}
-        off = sum(1 for x in items if not x["enabled"])
-        edit_say(f"A{t} ({audio[t]['subtype']}): {len(items)} multicam audio item(s), {off} disabled; "
-            f"audio angle(s) {mangles}; "
-            f"{len(mappings)} channel mapping(s); track {'on' if audio[t]['track_enabled'] else 'OFF'}")
-        if main_map:
-            edit_say(f"  mapping: {main_map}")
-    if ignored:
-        edit_say(f"Ignored (not multicam): {ignored}")
-    for who, t in (profile.get("mics") or {}).items():
-        found = (t in audio) if isinstance(t, int) else any(x["angle"] == t for x in audio.values())
-        if not found:
-            say(f"⚠ {who}'s mic ({t}) isn't used by any multicam audio in the edit — check the report above")
+            items.sort(key=lambda x: x["rec_in"])
+            main_map = max(mappings, key=mappings.get) if mappings else None
+            audio[t] = {"subtype": _safe(lambda: tl.GetTrackSubType("audio", t)),
+                        "track_enabled": bool(_safe(lambda: tl.GetIsTrackEnabled("audio", t), True)),
+                        "angle": max(mangles, key=mangles.get), "angles": mangles,
+                        "mapping": main_map, "distinct_mappings": len(mappings), "items": items}
+            off = sum(1 for x in items if not x["enabled"])
+            edit_say(f"A{t} ({audio[t]['subtype']}): {len(items)} multicam audio item(s), {off} disabled; "
+                f"audio angle(s) {mangles}; "
+                f"{len(mappings)} channel mapping(s); track {'on' if audio[t]['track_enabled'] else 'OFF'}")
+            if main_map:
+                edit_say(f"  mapping: {main_map}")
+        if ignored:
+            edit_say(f"Ignored (not multicam): {ignored}")
+        for who, t in (profile.get("mics") or {}).items():
+            found = (t in audio) if isinstance(t, int) else any(x["angle"] == t for x in audio.values())
+            if not found:
+                say(f"⚠ {who}'s mic ({t}) isn't used by any multicam audio in the edit — check the report above")
 
-    pad = int(PAD_S * fps)
-    srcs = [p["src_in"] for p in video] + [x["src_in"] for a in audio.values() for x in a["items"]]
-    ends = [p["src_out"] for p in video] + [x["src_out"] for a in audio.values() for x in a["items"]]
-    a, b = max(0, min(srcs) - pad), min(mc_frames, max(ends) + pad)
-    kept = sum(p["src_out"] - p["src_in"] for p in video)
-    say(f"Raw section {frames_to_clock(a, fps)}–{frames_to_clock(b, fps)} of the day ({(b - a) / fps:.0f}s raw)")
-    edit_say(f"  → {kept / fps:.0f}s finished")
+        pad = int(PAD_S * fps)
+        srcs = [p["src_in"] for p in video] + [x["src_in"] for a in audio.values() for x in a["items"]]
+        ends = [p["src_out"] for p in video] + [x["src_out"] for a in audio.values() for x in a["items"]]
+        a, b = max(0, min(srcs) - pad), min(mc_frames, max(ends) + pad)
+        kept = sum(p["src_out"] - p["src_in"] for p in video)
+        say(f"Raw section {frames_to_clock(a, fps)}–{frames_to_clock(b, fps)} of the day ({(b - a) / fps:.0f}s raw)")
+        edit_say(f"  → {kept / fps:.0f}s finished")
 
     # ── Raw audio, one file per speaker ───────────────────────────────────────
     # Multi-speaker: two runs. Run 1 builds `__SPIKE_mics_<tl>` (raw picture + one audio
@@ -496,8 +525,8 @@ def main() -> None:
             return
         PROFILES.update({n: dict(facts) for n, _ in found})
     only = globals().get("ONLY")                       # e.g. ONLY=["CedricConvo"]
-    todo = [n for n in PROFILES if n in present and (not only or n in only)]
-    missing = [n for n in PROFILES if n not in present]
+    todo = [n for n in PROFILES if (n in present or PROFILES[n].get("section")) and (not only or n in only)]
+    missing = [n for n in PROFILES if n not in present and not PROFILES[n].get("section")]
     if missing:
         say(f"Not in this project (skipped): {missing}")
     if not todo:
