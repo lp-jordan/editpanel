@@ -51,8 +51,9 @@ def split_plan(plan: dict, n: int) -> list:
     return parts
 
 
-def main() -> None:
-    args = sys.argv[1:]
+def main(argv=None) -> list:
+    """Returns the video ranges when joined= is used (else [])."""
+    args = sys.argv[1:] if argv is None else list(argv)
     src, out_path = args[0], args[1]
     opts = dict(a.split("=", 1) for a in args[2:] if "=" in a and not a.endswith(".json") and ".json:" not in a)
     plan_args = [a for a in args[2:] if a.endswith(".json") or ".json:" in a]
@@ -72,8 +73,10 @@ def main() -> None:
                  if not part or k == part]
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
     # the multicam: its resource id, start timecode and angle IDs by name
-    media = re.search(r'<media name=([\'"])(.*?)\1 id="(r\d+)">\s*<multicam [^>]*tcStart="([^"]+)"', resources)
-    if not media or any(media.group(2) != p["multicam"] for _, p in jobs):
+    want = {p["multicam"] for _, p in jobs}
+    media = next((m for m in re.finditer(r'<media name=([\'"])(.*?)\1 id="(r\d+)">\s*<multicam [^>]*tcStart="([^"]+)"',
+                                         resources) if m.group(2) in want), None)
+    if not media or len(want) != 1:
         raise SystemExit(f"multicam not found in {src}")
     mc_name, mc_id = media.group(2), media.group(3)
     num, den = media.group(4).rstrip("s").split("/")
@@ -137,7 +140,8 @@ def main() -> None:
                 "                    <spine>", *body, "                    </spine>",
                 "                </sequence>", "            </project>"]
 
-    out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE fcpxml>", '<fcpxml version="1.14">',
+    version = re.search(r'<fcpxml version="([^"]+)"', xml).group(1)   # write what Resolve exported
+    out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE fcpxml>", f'<fcpxml version="{version}">',
            "    " + resources, "    <library>", '        <event name="__SPIKE_xml batch">']
     if joined:
         # every video back to back in ONE timeline (one import = one multicam copy); the
@@ -154,6 +158,7 @@ def main() -> None:
         json.dump({"timeline": joined, "videos": ranges}, open(rpath, "w", encoding="utf-8"), indent=1)
         print(f"{rpath}: {len(ranges)} range(s)")
     else:
+        ranges = []
         for name, plan in jobs:
             lines, total, summary = spine(plan, 0)
             out += project(name, lines, total)
@@ -161,6 +166,7 @@ def main() -> None:
     out += ["        </event>", "    </library>", "</fcpxml>", ""]
     open(out_path, "w", encoding="utf-8").write("\n".join(out))
     print(f"{out_path}: {1 if joined else len(jobs)} timeline(s)")
+    return ranges
 
 
 if __name__ == "__main__":
