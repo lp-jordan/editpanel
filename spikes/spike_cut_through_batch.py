@@ -166,7 +166,7 @@ def main() -> None:
 try:
     main()
     say(f"\nTotal time: {time.time() - _T0:.1f}s")
-except Exception as exc:
+except (Exception, SystemExit) as exc:                # make_fcpxml stops with SystemExit
     say(f"\n✗ STOPPED after {time.time() - _T0:.1f}s: {exc}")
 finally:
     try:
