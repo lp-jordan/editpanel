@@ -51,7 +51,8 @@ def walk(folder: Any):
     for clip in _safe(lambda: folder.GetClipList(), []) or []:
         yield folder, clip
     for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
-        yield from walk(sub)
+        if _safe(lambda: sub.GetName()) != QUARANTINE_BIN:   # the quarantined original is out of play
+            yield from walk(sub)
 
 
 def multicams(mp: Any, name: str):
@@ -122,6 +123,10 @@ def main() -> None:
         say(f"  {t.GetName()}: {len(v1)} picture clip(s) {angs}; multicam(s) used {[k[:8] for k in ids]}; " + "; ".join(auds))
     say(f"Multicam copies used across the new timeline(s): {len(copies)}" +
         ("  ✓ one copy for the whole batch" if len(copies) == 1 else ""))
+    if len(after) == len(before) and set(copies) <= {orig_id}:
+        say(f"✓ REUSED the existing {name} [{orig_id[:8]}] — no new copy")
+    elif len(after) > len(before):
+        say(f"✗ made another copy (existing {name} [{orig_id[:8]}] was not reused)")
     if len(new) == 1 and not BATCH:
         v1 = sorted(_safe(lambda: new[0].GetItemListInTrack("video", 1), []) or [], key=lambda x: x.GetStart())
         hits = sum(1 for p, it in zip(plan["video"], v1) if angle_of(it) == p["angle"])

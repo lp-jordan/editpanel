@@ -11,11 +11,12 @@ written as FCPXML 1.14 the way Resolve exports a multicam edit:
 The <resources> (formats, assets, the multicam and its angle IDs) are copied from an FCPXML
 that Resolve exported from the same project, so the multicam definition matches exactly.
 
-Several plans (or one plan split=N ways) go into ONE file as separate timelines, so one
-import makes one multicam copy for the whole batch.
+Several plans (or one plan split=N ways) can go into one file as separate timelines.
 
 Usage (any machine with Python 3):
-    python3 make_fcpxml.py <resolve_export.fcpxml> <out.fcpxml> [role="Camera N" ...] [split=N] <plan.json[:name]> ...
+    python3 make_fcpxml.py <resolve_export.fcpxml> <out.fcpxml> [role="Camera N" ...] [split=N [part=K]] <plan.json[:name]> ...
+Resolve's ImportTimelineFromFile only takes the FIRST timeline in a file, so use part=K
+to write one split per file.
 e.g. python3 make_fcpxml.py Info.fcpxml ConvoTest_xml.fcpxml host="Camera 2" guest="Camera 3" \
          plans/ConvoTest_plan.json:__SPIKE_xml_ConvoTest
 The output names the client's media, so keep it out of git.
@@ -54,6 +55,7 @@ def main() -> None:
     opts = dict(a.split("=", 1) for a in args[2:] if "=" in a and not a.endswith(".json") and ".json:" not in a)
     plan_args = [a for a in args[2:] if a.endswith(".json") or ".json:" in a]
     split = int(opts.pop("split", "1"))
+    part = int(opts.pop("part", "0"))                       # keep only the Nth split (1-based)
     mic_angle = opts
     xml = open(src, encoding="utf-8").read()
     jobs = []                                               # (timeline name, plan)
@@ -63,7 +65,8 @@ def main() -> None:
         plan = json.load(open(path, encoding="utf-8"))
         name = name or f"__SPIKE_xml_{plan.get('label', 'cut')}"
         parts = split_plan(plan, split) if split > 1 else [plan]
-        jobs += [(f"{name}_{k}" if len(parts) > 1 else name, p) for k, p in enumerate(parts, 1)]
+        jobs += [(f"{name}_{k}" if len(parts) > 1 else name, p) for k, p in enumerate(parts, 1)
+                 if not part or k == part]
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
     # the multicam: its resource id, start timecode and angle IDs by name
     media = re.search(r'<media name=([\'"])(.*?)\1 id="(r\d+)">\s*<multicam [^>]*tcStart="([^"]+)"', resources)
