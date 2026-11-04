@@ -14,7 +14,10 @@ the multicam (sourceClipsFolders), then checks:
 A file whose timeline names come from the file (make_fcpxml.py split/joined): add BATCH=True.
 Every import makes a new copy of the multicam (tested 2026-11-04), so a batch is imported as
 one joined timeline and cut up with spike_split_batch.py.
-QUARANTINE=True moves the original multicam into an "MC QUARANTINE" bin once a copy exists.
+ARCHIVE=True (once a copy exists): the original multicam moves to its own root bin
+ORIG_BIN (default "MC ORIGINAL") and stays the source of the raw/prep timelines; the imported
+copy stays in the multicam's bin as the primary. Timelines that use the original are listed;
+RAW="*" (or a list of names) moves those timelines into ORIG_BIN too.
 
 HOW TO RUN (Windows Resolve machine, project open, FCPXML on the Desktop, after `git pull`):
     XML="ConvoTest_xml.fcpxml"; LABEL="ConvoTest"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_import_fcpxml.py", encoding="utf-8").read())
@@ -29,8 +32,10 @@ from typing import Any, List
 XML = globals().get("XML", "ConvoTest_xml.fcpxml")
 LABEL = globals().get("LABEL", "ConvoTest")
 BATCH = bool(globals().get("BATCH"))                   # the file holds several timelines (names come from it)
-QUARANTINE = bool(globals().get("QUARANTINE"))         # move the original multicam into its own bin after import
-QUARANTINE_BIN = "MC QUARANTINE"
+ARCHIVE = bool(globals().get("ARCHIVE") or globals().get("QUARANTINE"))  # original multicam → its own bin
+ORIG_BIN = globals().get("ORIG_BIN", "MC ORIGINAL")
+RAW = globals().get("RAW")                             # "*" or [names]: timelines on the original to move with it
+SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}                # the original is out of play in these
 REPO = r"C:\lp-app-ecosystem\editpanel"
 DESKTOP = os.path.expanduser("~/Desktop")
 _lines: List[str] = []
@@ -49,12 +54,24 @@ def _safe(fn, default=None):
         return default
 
 
-def walk(folder: Any):
+def walk(folder: Any, skip=SKIP_BINS):
     for clip in _safe(lambda: folder.GetClipList(), []) or []:
         yield folder, clip
     for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
-        if _safe(lambda: sub.GetName()) != QUARANTINE_BIN:   # the quarantined original is out of play
-            yield from walk(sub)
+        if _safe(lambda: sub.GetName()) not in skip:
+            yield from walk(sub, skip)
+
+
+def uses(tl: Any) -> set:
+    """Unique IDs of the media pool items a timeline's clips come from."""
+    ids = set()
+    for kind in ("video", "audio"):
+        for k in range(1, int(tl.GetTrackCount(kind) or 0) + 1):
+            for it in _safe(lambda: tl.GetItemListInTrack(kind, k), []) or []:
+                mpi = _safe(lambda: it.GetMediaPoolItem())
+                if mpi:
+                    ids.add(mpi.GetUniqueId())
+    return ids
 
 
 def multicams(mp: Any, name: str):
@@ -133,13 +150,27 @@ def main() -> None:
         v1 = sorted(_safe(lambda: new[0].GetItemListInTrack("video", 1), []) or [], key=lambda x: x.GetStart())
         hits = sum(1 for p, it in zip(plan["video"], v1) if angle_of(it) == p["angle"])
         say(f"Picture angles matching the plan: {hits}/{len(plan['video'])}")
-    if QUARANTINE and len(after) > len(before):
+    if ARCHIVE and len(after) > len(before):
         root = mp.GetRootFolder()
-        q = next((f for f in (root.GetSubFolderList() or []) if f.GetName() == QUARANTINE_BIN), None) \
-            or mp.AddSubFolder(root, QUARANTINE_BIN)
-        moved = _safe(lambda: mp.MoveClips([orig], q), False)
-        say(f"Original {name} [{orig_id[:8]}] moved to bin '{QUARANTINE_BIN}': {moved} "
-            f"(older timelines still point at it; the new copy is now the one to use)")
+        dest = next((f for f in (root.GetSubFolderList() or []) if f.GetName() == ORIG_BIN), None) \
+            or mp.AddSubFolder(root, ORIG_BIN)
+        new_names = {x.GetName() for x in new}
+        raw = [project.GetTimelineByIndex(i) for i in range(1, int(project.GetTimelineCount()) + 1)]
+        raw = [x for x in raw if x.GetName() not in new_names and orig_id in uses(x)]
+        say(f"Timelines on the original {name} [{orig_id[:8]}]: {len(raw)} — {[x.GetName() for x in raw]}")
+        pick = {x.GetName() for x in raw} if RAW == "*" else set(RAW or [])
+        tl_items = [c for _, c in walk(root, set())
+                    if "timeline" in str(_safe(lambda: c.GetClipProperty("Type"), "")).lower()
+                    and _safe(lambda: c.GetName()) in pick]
+        _safe(lambda: mp.MoveClips([orig] + tl_items, dest), False)
+        where = {c.GetUniqueId(): _safe(lambda: f.GetName()) for f, c in walk(root, set())}
+        say(f"Original {name} [{orig_id[:8]}] now in bin '{where.get(orig_id)}' "
+            f"{'✓' if where.get(orig_id) == ORIG_BIN else '✗ (move did not stick)'}; "
+            f"copy stays in '{_safe(lambda: orig_folder.GetName())}' as the primary")
+        if pick:
+            moved = sum(1 for c in tl_items if where.get(c.GetUniqueId()) == ORIG_BIN)
+            say(f"Raw timelines moved with it: {moved}/{len(pick)}"
+                + ("" if len(tl_items) == len(pick) else f" (only {len(tl_items)} found in the media pool)"))
     say(f"\nOpen the new timeline(s) and check angles + mics. Grade is shared with the original (checked before).")
 
 
@@ -154,5 +185,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE"):    # the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW"):    # the console keeps run-line settings between runs
         globals().pop(_k, None)
