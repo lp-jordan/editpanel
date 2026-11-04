@@ -11,7 +11,9 @@ the multicam (sourceClipsFolders), then checks:
   - whether the new timeline's clips point at the ORIGINAL multicam (unique ID),
   - picture angles vs the plan, and each audio track's angle.
 
-A file with several timelines (make_fcpxml.py with several plans or split=N): add BATCH=True.
+A file whose timeline names come from the file (make_fcpxml.py split/joined): add BATCH=True.
+Every import makes a new copy of the multicam (tested 2026-11-04), so a batch is imported as
+one joined timeline and cut up with spike_split_batch.py.
 QUARANTINE=True moves the original multicam into an "MC QUARANTINE" bin once a copy exists.
 
 HOW TO RUN (Windows Resolve machine, project open, FCPXML on the Desktop, after `git pull`):
@@ -152,3 +154,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
+    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE"):    # the console keeps run-line settings between runs
+        globals().pop(_k, None)

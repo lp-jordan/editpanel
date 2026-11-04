@@ -15,8 +15,10 @@ Several plans (or one plan split=N ways) can go into one file as separate timeli
 
 Usage (any machine with Python 3):
     python3 make_fcpxml.py <resolve_export.fcpxml> <out.fcpxml> [role="Camera N" ...] [split=N [part=K]] <plan.json[:name]> ...
-Resolve's ImportTimelineFromFile only takes the FIRST timeline in a file, so use part=K
-to write one split per file.
+Resolve's ImportTimelineFromFile only takes the FIRST timeline in a file, and every import
+makes a new copy of the multicam. joined=NAME writes all videos back to back in ONE timeline
+(one import, one copy) plus <out>_ranges.json; spike_split_batch.py then cuts it into one
+timeline per video inside Resolve.
 e.g. python3 make_fcpxml.py Info.fcpxml ConvoTest_xml.fcpxml host="Camera 2" guest="Camera 3" \
          plans/ConvoTest_plan.json:__SPIKE_xml_ConvoTest
 The output names the client's media, so keep it out of git.
@@ -56,6 +58,7 @@ def main() -> None:
     plan_args = [a for a in args[2:] if a.endswith(".json") or ".json:" in a]
     split = int(opts.pop("split", "1"))
     part = int(opts.pop("part", "0"))                       # keep only the Nth split (1-based)
+    joined = opts.pop("joined", "")                         # put every timeline into one, named this
     mic_angle = opts
     xml = open(src, encoding="utf-8").read()
     jobs = []                                               # (timeline name, plan)
@@ -80,15 +83,13 @@ def main() -> None:
     seq_tc = 86400                                          # 01:00:00:00 at 24 fps timebase
     src_t = lambda f: t(mc_tc + f)                          # multicam-relative frame → source time
 
-    out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE fcpxml>", '<fcpxml version="1.14">',
-           "    " + resources, "    <library>", '        <event name="__SPIKE_xml batch">']
-    for name, plan in jobs:
+    def spine(plan: dict, base: int):
+        """Picture clips (record offset `base`) with the mics hanging off the first one."""
         pieces = plan["video"]
         offs, rec = [], 0
         for p in pieces:
             offs.append(rec)
             rec += p["out"] - p["in"]
-        total = rec
         # each speaker's open mic, mapped from kept source to record (split where the source jumps)
         lanes = []
         for role in plan["mics"]:
@@ -104,38 +105,62 @@ def main() -> None:
                     else:
                         clips.append([lo, hi, r0])
             lanes.append((role, clips))
-        first = pieces[0]
-        out += [f"            <project name={quoteattr(name)}>",
-                f'                <sequence tcFormat="NDF" tcStart="{t(seq_tc)}" duration="{t(total)}" format="{fmt}">',
-                "                    <spine>"]
+        first, lines = pieces[0], []
         for k, (p, off) in enumerate(zip(pieces, offs)):
-            out.append(f'                        <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
-                       f'duration="{t(p["out"] - p["in"])}" offset="{t(seq_tc + off)}" start="{src_t(p["in"])}">')
-            out.append(f'                            <mc-source srcEnable="video" angleID="{angles[p["angle"]]}"/>')
+            lines.append(f'                        <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
+                         f'duration="{t(p["out"] - p["in"])}" offset="{t(seq_tc + base + off)}" start="{src_t(p["in"])}">')
+            lines.append(f'                            <mc-source srcEnable="video" angleID="{angles[p["angle"]]}"/>')
             if k == 0:                                      # every mic hangs off the first clip
                 for lane, (role, clips) in enumerate(lanes, 1):
                     angle = mic_angle.get(role)
                     if not angle:
                         raise SystemExit(f"no mic angle given for {role!r} (add {role}=\"Camera N\")")
-                    out.append(f'                            <spine lane="{lane}" offset="{src_t(first["in"])}">')
+                    lines.append(f'                            <spine lane="{lane}" offset="{src_t(first["in"])}">')
                     pos = 0
                     for s, e, r0 in clips:
                         if r0 > pos:
-                            out.append(f'                                <gap name="Gap" duration="{t(r0 - pos)}" '
-                                       f'offset="{t(pos)}" start="3600/1s"/>')
-                        out.append(f'                                <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
-                                   f'duration="{t(e - s)}" offset="{t(r0)}" start="{src_t(s)}">')
-                        out.append(f'                                    <mc-source srcEnable="audio" angleID="{angles[angle]}"/>')
-                        out.append("                                </mc-clip>")
+                            lines.append(f'                                <gap name="Gap" duration="{t(r0 - pos)}" '
+                                         f'offset="{t(pos)}" start="3600/1s"/>')
+                        lines.append(f'                                <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
+                                     f'duration="{t(e - s)}" offset="{t(r0)}" start="{src_t(s)}">')
+                        lines.append(f'                                    <mc-source srcEnable="audio" angleID="{angles[angle]}"/>')
+                        lines.append("                                </mc-clip>")
                         pos = r0 + (e - s)
-                    out.append("                            </spine>")
-            out.append("                        </mc-clip>")
-        out += ["                    </spine>", "                </sequence>", "            </project>"]
-        print(f"  {name}: {len(pieces)} picture clip(s), " +
-              ", ".join(f"{role} {len(c)} audio clip(s)" for role, c in lanes) + f", {float(total * FD) / 60:.1f} min")
+                    lines.append("                            </spine>")
+            lines.append("                        </mc-clip>")
+        summary = ", ".join(f"{role} {len(c)} audio clip(s)" for role, c in lanes)
+        return lines, rec, f"{len(pieces)} picture clip(s), {summary}"
+
+    def project(name: str, body: list, total: int) -> list:
+        return [f"            <project name={quoteattr(name)}>",
+                f'                <sequence tcFormat="NDF" tcStart="{t(seq_tc)}" duration="{t(total)}" format="{fmt}">',
+                "                    <spine>", *body, "                    </spine>",
+                "                </sequence>", "            </project>"]
+
+    out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE fcpxml>", '<fcpxml version="1.14">',
+           "    " + resources, "    <library>", '        <event name="__SPIKE_xml batch">']
+    if joined:
+        # every video back to back in ONE timeline (one import = one multicam copy); the
+        # ranges file tells spike_split_batch.py where each video starts and ends
+        body, ranges, base = [], [], 0
+        for name, plan in jobs:
+            lines, total, summary = spine(plan, base)
+            body += lines
+            ranges.append({"name": name, "start": base, "end": base + total})
+            print(f"  {name}: frames {base}-{base + total}, {summary}, {float(total * FD) / 60:.1f} min")
+            base += total
+        out += project(joined, body, base)
+        rpath = out_path.rsplit(".", 1)[0] + "_ranges.json"
+        json.dump({"timeline": joined, "videos": ranges}, open(rpath, "w", encoding="utf-8"), indent=1)
+        print(f"{rpath}: {len(ranges)} range(s)")
+    else:
+        for name, plan in jobs:
+            lines, total, summary = spine(plan, 0)
+            out += project(name, lines, total)
+            print(f"  {name}: {summary}, {float(total * FD) / 60:.1f} min")
     out += ["        </event>", "    </library>", "</fcpxml>", ""]
     open(out_path, "w", encoding="utf-8").write("\n".join(out))
-    print(f"{out_path}: {len(jobs)} timeline(s)")
+    print(f"{out_path}: {1 if joined else len(jobs)} timeline(s)")
 
 
 if __name__ == "__main__":
