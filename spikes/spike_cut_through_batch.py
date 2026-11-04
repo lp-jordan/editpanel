@@ -22,6 +22,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import time
 from typing import Any, List
 
@@ -67,6 +68,18 @@ def export_type(r: Any):
     raise RuntimeError("This Resolve offers no FCPXML export type")
 
 
+def bundle_xml(path: str):
+    """FCPXML 1.10+ exports as a bundle folder with Info.fcpxml inside; older ones as a file."""
+    for p in (path, path + "d", os.path.splitext(path)[0] + ".fcpxmld"):
+        if os.path.isfile(p):
+            return p
+        if os.path.isdir(p):
+            inner = [os.path.join(p, f) for f in os.listdir(p) if f.lower().endswith(".fcpxml")]
+            if inner:
+                return inner[0]
+    return None
+
+
 def run_script(name: str, settings: dict, r: Any) -> None:
     """Run a sibling spike in its own namespace and fold its report into this one."""
     g = {"__name__": "__main__", "resolve": r, **settings}
@@ -106,18 +119,24 @@ def main() -> None:
     if not tmp:
         raise RuntimeError("Couldn't make the throwaway multicam timeline")
     mcdef = os.path.join(DESKTOP, f"mcdef_{LABEL}.fcpxml")
+    for p in (mcdef, mcdef + "d"):                      # leftovers from an earlier run
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
+        elif os.path.isfile(p):
+            os.remove(p)
     ok = _safe(lambda: tmp.Export(mcdef, etype), False) or _safe(lambda: tmp.Export(mcdef, etype, r.EXPORT_NONE), False)
     other = next((project.GetTimelineByIndex(i) for i in range(1, int(project.GetTimelineCount()) + 1)
                   if project.GetTimelineByIndex(i).GetName() != tmp.GetName()), None)
     if other:
         project.SetCurrentTimeline(other)
     gone = _safe(lambda: mp.DeleteTimelines([tmp]), False)
-    if not ok or not os.path.exists(mcdef):
+    src = bundle_xml(mcdef)
+    if not ok or not src:
         raise RuntimeError(f"FCPXML {version} export failed")
-    xml = open(mcdef, encoding="utf-8").read()
+    xml = open(src, encoding="utf-8").read()
     angles = re.findall(r'<mc-angle name="([^"]+)" angleID="([^"]+)"', xml)
     say(f"1. Exported {name} as FCPXML {version} in {time.time() - t1:.1f}s "
-        f"({os.path.getsize(mcdef) // 1024} KB, {len(re.findall(r'<asset ', xml))} source file(s), "
+        f"({os.path.relpath(src, DESKTOP)}, {os.path.getsize(src) // 1024} KB, {len(re.findall(r'<asset ', xml))} source file(s), "
         f"angles {[a for a, _ in angles]}); throwaway timeline deleted: {gone}")
 
     # 2. the joined timeline, built on that description
@@ -127,7 +146,7 @@ def main() -> None:
     spec.loader.exec_module(mk)
     out = os.path.join(DESKTOP, f"{LABEL}_joined.fcpxml")
     plan_arg = os.path.join(SPIKES, "plans", f"{LABEL}_plan.json") + f":{base}"
-    args = [mcdef, out, *(f"{k}={v}" for k, v in MICS.items()), f"split={SPLIT}", f"joined={joined}", plan_arg]
+    args = [src, out, *(f"{k}={v}" for k, v in MICS.items()), f"split={SPLIT}", f"joined={joined}", plan_arg]
     ranges = mk.main(args)
     say(f"2. Built {os.path.basename(out)}: {len(ranges)} video(s) in one timeline ({time.time() - t1:.1f}s)")
 
