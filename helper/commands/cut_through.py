@@ -157,3 +157,49 @@ def handle_ct_run_spike(payload: Dict[str, Any], log_func=None) -> Dict[str, Any
         return run_spike(path, settings, rh.resolve, emit, repo_dir=os.path.dirname(os.path.normpath(os.path.abspath(spikes_dir))))
     finally:
         _run_lock.release()
+
+
+def angle_of(item_name: str, mc_name: str) -> str:
+    """A multicam piece's active angle, from its item name ("<MC> - Camera 2")."""
+    if mc_name and item_name.startswith(mc_name + " - "):
+        return item_name[len(mc_name) + 3:]
+    return item_name.rsplit(" - ", 1)[-1] if " - " in item_name else "?"
+
+
+def read_timeline(tl: Any) -> Dict[str, Any]:
+    """Every multicam piece on the picture track with the most of them: record start/end, the
+    multicam source in/out (multicam frames, the unit the cut plan uses) and the angle. Same read
+    as the Z8 comparison (spike_auto_rough_cut.py / spike_scan_past_edits.py)."""
+    fps = float(_safe(lambda: tl.GetSetting("timelineFrameRate"), 0) or 0) or 24.0
+    by_track: Dict[int, List[Dict[str, Any]]] = {}
+    for t in range(1, int(_safe(lambda: tl.GetTrackCount("video"), 0) or 0) + 1):
+        for it in _safe(lambda: tl.GetItemListInTrack("video", t), []) or []:
+            mpi = _safe(lambda: it.GetMediaPoolItem())
+            if not mpi or "multicam" not in str(_safe(lambda: mpi.GetClipProperty("Type"), "") or "").lower():
+                continue
+            mc = _safe(lambda: mpi.GetName(), "") or ""
+            by_track.setdefault(t, []).append({
+                "mc": mc, "angle": angle_of(str(_safe(lambda: it.GetName(), "")), mc),
+                "start": int(_safe(lambda: it.GetStart(), 0)), "end": int(_safe(lambda: it.GetEnd(), 0)),
+                "src_in": int(round(float(_safe(lambda: it.GetSourceStartFrame(), 0)))),
+                "src_out": int(round(float(_safe(lambda: it.GetSourceEndFrame(), 0)))),
+            })
+    track = max(by_track, key=lambda k: len(by_track[k])) if by_track else None
+    pieces = sorted(by_track.get(track, []), key=lambda p: p["start"])
+    return {"name": _safe(lambda: tl.GetName()), "fps": fps, "track": track, "pieces": pieces}
+
+
+def handle_ct_read_timeline(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
+    from .. import resolve_helper as rh
+
+    if not rh.project:
+        raise RuntimeError("No project open in Resolve")
+    name = str(payload.get("name") or "")
+    for i in range(1, int(rh.project.GetTimelineCount() or 0) + 1):
+        tl = rh.project.GetTimelineByIndex(i)
+        if _safe(lambda: tl.GetName()) == name:
+            out = read_timeline(tl)
+            if log_func:
+                log_func(f"[cut-through] read {len(out['pieces'])} multicam piece(s) from {name!r}")
+            return out
+    raise RuntimeError(f"No timeline named {name!r}")

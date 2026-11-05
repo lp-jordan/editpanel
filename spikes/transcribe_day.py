@@ -17,6 +17,7 @@ Uses the C:\\wxbench environment from bench_whisper.py (already set up on LP1).
 Run (normal Command Prompt):
     C:\\wxbench\\Scripts\\python C:\\lp-app-ecosystem\\editpanel\\spikes\\transcribe_day.py Convo2
 Quick test first (first 3 minutes of each mic): add  minutes=3
+Second, verbatim pass (restarts, "uh"s, cut-off words; ~2× the GPU time): add  verbatim=1
 Already transcribed, just measure the audio (levels + loud-without-words marks, no Whisper): add  levels_only=1
 Days without mic WAVs: the day file lists one angle's camera clips instead (ATEM mix or in-camera
 audio); those are decoded with PyAV or ffmpeg (first audio track) and every source on one angle becomes one
@@ -36,6 +37,9 @@ DESKTOP = os.path.expanduser("~/Desktop")
 SR = 16000
 OWN_MARGIN_DB = 3.0          # "clear" = its mic is this much louder than any other mic ("own" = just louder)
 TURN_GAP_SEC = 1.0           # a new transcript line when the speaker changes or after this pause
+# verbatim=1: a second pass primed to write disfluencies (Z8's verbatim pass heard the restarts, "uh"s
+# and cut-off words the clean pass drops); only words the clean pass missed are added, marked "v"
+VERBATIM_PROMPT = "Umm, let me think like, hmm... Okay, here's what I'm, like, thinking. So, uh, I- I mean, you know, we- we did that."
 
 
 def cuda_dlls() -> None:
@@ -190,6 +194,32 @@ def frame_levels(m: dict, fs: float) -> dict:
     return {"start": f0, "db": [int(round(max(-100.0, v))) for v in db]}
 
 
+def clip_stretched(words: list, m: dict, fs: float, max_frames: int = 24) -> int:
+    """Whisper stretches a word over speech it dropped (Z8: "produced." ran on for 2 s). A word
+    longer than 1 s is cut back to where its mic goes quiet; anything loud after that then shows
+    up as unheard sound. Returns how many words were clipped (the old end is kept as "e0")."""
+    lv = frame_levels(m, fs)
+    db, f0 = lv["db"], lv["start"]
+    own = [w for w in words if w["mic"] == m["angle"] and w["own"]]
+    if not own or not db:
+        return 0
+    inside = sorted(db[int(w["s"]) - f0] for w in own[::5] if 0 <= int(w["s"]) - f0 < len(db))
+    thr = (inside[len(inside) // 2] if inside else -30) - 24
+    n = 0
+    for w in own:
+        if w["e"] - w["s"] <= max_frames:
+            continue
+        quiet = 0
+        for f in range(int(w["s"]) + 6, int(w["e"])):
+            i = f - f0
+            quiet = quiet + 1 if 0 <= i < len(db) and db[i] < thr else 0
+            if quiet >= 4:                                      # 4 quiet frames = the word is over
+                w["e0"], w["e"] = w["e"], float(f - 3)
+                n += 1
+                break
+    return n
+
+
 def write_levels(label: str, mics: list, fs: float) -> str:
     p = os.path.join(DESKTOP, f"levels_{label}.json")
     json.dump({"label": label, "frame_sec": fs, "mics": {m["angle"]: frame_levels(m, fs) for m in mics}},
@@ -257,10 +287,12 @@ def main() -> None:
         # cutting from the waveform, plus the loud-without-words marks — and keep the words
         wp = os.path.join(DESKTOP, f"words_{label}.json")
         data = json.load(open(wp, encoding="utf-8"))
+        clipped = sum(clip_stretched(data["words"], m, fs) for m in mics)
         data["unheard"] = [u for m in mics for u in unheard_speech(m, data["words"], fs)]
         json.dump(data, open(wp, "w", encoding="utf-8"))
         write_levels(label, mics, fs)
-        print(f"Measured levels for {len(mics)} track(s); {len(data['unheard'])} loud stretch(es) with no words. "
+        print(f"Measured levels for {len(mics)} track(s); {clipped} stretched word(s) clipped; "
+              f"{len(data['unheard'])} loud stretch(es) with no words. "
               f"Saved levels_{label}.json, updated words_{label}.json", flush=True)
         return
 
@@ -273,20 +305,21 @@ def main() -> None:
     model = WhisperModel("large-v3", device=device, compute_type="float16" if device == "cuda" else "int8")
     report.append(f"Model on {device} loaded in {time.time() - t0:.0f}s")
 
-    words = []
-    for m in mics:
+    verbatim = opts.get("verbatim") == "1"
+
+    def whisper_pass(m: dict, prompt: str = None, tag: str = "") -> list:
         clip = m["audio"][m["lo"]:m["hi"]]
         clip = np.clip(clip * m["gain"], -1, 1).astype(np.float32)
+        print(f"Finding speech in {m['angle']}{tag} ({len(clip) / SR / 60:.1f} min)…", flush=True)
         t0 = time.time()
-        print(f"Finding speech in {m['angle']} ({len(clip) / SR / 60:.1f} min)…", flush=True)
         segs, _ = model.transcribe(clip, language="en", beam_size=5, word_timestamps=True, vad_filter=True,
-                                   condition_on_previous_text=False)
-        n = 0
+                                   condition_on_previous_text=False, initial_prompt=prompt)
+        out = []
         total = (m["hi"] - m["lo"]) / SR
         for s in segs:
             pct = min(100, int(100 * s.end / total)) if total else 100
             bar = "#" * (pct // 4) + "-" * (25 - pct // 4)
-            print(f"\r  {m['angle']} [{bar}] {pct:3d}%  {s.end / 60:.1f}/{total / 60:.1f} min  "
+            print(f"\r  {m['angle']}{tag} [{bar}] {pct:3d}%  {s.end / 60:.1f}/{total / 60:.1f} min  "
                   f"{time.time() - t0:.0f}s", end="", flush=True)
             for w in s.words or []:
                 a, b = w.start + m["lo"] / SR, w.end + m["lo"] / SR
@@ -294,17 +327,32 @@ def main() -> None:
                 mine = level_db(m["audio"], a, b) + 20 * math.log10(m["gain"])
                 other = max([level_db(o["audio"], a, b) + 20 * math.log10(o["gain"])
                              for o in mics if o is not m] or [-120.0])
-                words.append({"mic": m["angle"], "w": w.word.strip(), "s": round(a / fs, 1), "e": round(b / fs, 1),
-                              "p": round(w.probability, 2), "db": round(mine, 1), "other_db": round(other, 1),
-                              "own": mine > other, "clear": mine >= other + OWN_MARGIN_DB})
-                n += 1
+                out.append({"mic": m["angle"], "w": w.word.strip(), "s": round(a / fs, 1), "e": round(b / fs, 1),
+                            "p": round(w.probability, 2), "db": round(mine, 1), "other_db": round(other, 1),
+                            "own": mine > other, "clear": mine >= other + OWN_MARGIN_DB})
         print(flush=True)
-        secs = (m["hi"] - m["lo"]) / SR
         took = time.time() - t0
-        report.append(f"  {m['angle']}: {n} words, {secs / 60:.1f} min in {took:.0f}s = {secs / took:.1f}x real time "
-                      f"(raised {20 * math.log10(m['gain']):.0f} dB)")
+        report.append(f"  {m['angle']}{tag}: {len(out)} words, {total / 60:.1f} min in {took:.0f}s = "
+                      f"{total / max(took, 1e-6):.1f}x real time (raised {20 * math.log10(m['gain']):.0f} dB)")
+        return out
+
+    words = []
+    for m in mics:
+        base = whisper_pass(m)
+        words += base
+        if verbatim:
+            extra = []
+            for w in whisper_pass(m, VERBATIM_PROMPT, " (verbatim)"):
+                # a word the clean pass didn't write: no clean word overlaps more than 40% of it
+                if not any(min(w["e"], b["e"]) - max(w["s"], b["s"]) > 0.4 * min(w["e"] - w["s"], b["e"] - b["s"] or 1)
+                           for b in base if b["e"] > w["s"] - 30 and b["s"] < w["e"] + 30):
+                    extra.append({**w, "v": True})
+            words += extra
+            report.append(f"  {m['angle']}: verbatim pass added {len(extra)} word(s) the clean pass missed")
 
     words.sort(key=lambda w: (w["s"], w["mic"]))
+    clipped = sum(clip_stretched(words, m, fs) for m in mics)
+    report.append(f"{clipped} stretched word(s) clipped where the audio goes quiet")
     unheard = [u for m in mics for u in unheard_speech(m, words, fs)]
     report.append(f"{len(unheard)} loud stretch(es) with no words (possible dropped flubs)")
     write_levels(label, mics, fs)

@@ -13,7 +13,8 @@ const CT_STEPS = [
   { key: 'prep', title: 'Prep' },
   { key: 'transcribe', title: 'Transcribe' },
   { key: 'plan', title: 'Plan' },
-  { key: 'build', title: 'Build' }
+  { key: 'build', title: 'Build' },
+  { key: 'score', title: 'Score' }
 ];
 
 function ctDuration(ms) {
@@ -60,6 +61,8 @@ function CutThroughPage({ connected }) {
   const [minutes, setMinutes] = React.useState('');
   const [planForm, setPlanForm] = React.useState({ start: '', end: '', extra: '', cuts: '', delivery: 'scripted' });
   const [bins, setBins] = React.useState([]);
+  const [timelines, setTimelines] = React.useState([]);
+  const [scoreTimeline, setScoreTimeline] = React.useState('');
   const [openReports, setOpenReports] = React.useState({});
   const [errors, setErrors] = React.useState({});
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -92,6 +95,9 @@ function CutThroughPage({ connected }) {
     window.leaderpassAPI.call('list_media_bins')
       .then((res) => setBins(Array.isArray(res?.data?.bins) ? res.data.bins : []))
       .catch(() => setBins([]));
+    window.leaderpassAPI.call('list_timelines')
+      .then((res) => setTimelines((res?.data?.timelines || []).map((t) => t.name).filter((n) => n && !n.startsWith('__SPIKE_'))))
+      .catch(() => setTimelines([]));
   }, [connected]);
 
   const running = ct && ct.busy;
@@ -208,7 +214,7 @@ function CutThroughPage({ connected }) {
               <div className="ct-progress-text">
                 <span>{p.phase
                   ? `${p.phase}${p.phaseAt ? ` · ${ctDuration(now - p.phaseAt)}` : ''}`
-                  : `${p.angle} · mic ${p.mic}/${p.mics} · ${p.doneMin.toFixed(1)}/${p.totalMin.toFixed(1)} min`}</span>
+                  : `${p.angle} · ${p.mic}/${p.mics} · ${p.doneMin.toFixed(1)}/${p.totalMin.toFixed(1)} min`}</span>
                 <span className="dim">{p.bar != null ? p.bar : p.overall}%</span>
               </div>
               <div className="run-progress-track"><div className="run-progress-fill" style={{ width: `${(p.bar != null ? p.bar : p.overall) || 0}%` }} /></div>
@@ -279,6 +285,29 @@ function CutThroughPage({ connected }) {
         </div>
       );
     }
+    if (key === 'score') {
+      const d = st.data;
+      return (
+        <div className="ct-facts">
+          {st.status !== 'running' && (
+            <label className="ct-inline ct-grow">
+              <span className="settings-label">Finished edit</span>
+              <select className="settings-input" value={scoreTimeline} onChange={(e) => setScoreTimeline(e.target.value)}>
+                <option value="">{timelines.length ? 'Choose…' : 'No timelines'}</option>
+                {timelines.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </label>
+          )}
+          {d && (
+            <div className="ct-fact-row">
+              {d.removal_coverage_pct !== null && <span className="tag">{d.removal_coverage_pct}% of removals matched</span>}
+              <span className="tag">{d.cuts.ours_within_1s}/{d.cuts.ours} cuts within 1 s</span>
+              {d.same_angle_pct !== null && <span className="tag">{d.same_angle_pct}% same angle</span>}
+            </div>
+          )}
+        </div>
+      );
+    }
     if (key === 'build') {
       return (
         <div className="ct-facts">
@@ -327,6 +356,12 @@ function CutThroughPage({ connected }) {
               onClick={() => call(key, () => api.runPlan({ ...planForm, punch: solo ? punch : '' }))}>{ct.planExists ? 'Redraft' : 'Draft'}</button>
           )}
         </>
+      );
+    }
+    if (key === 'score') {
+      return (
+        <button type="button" className="btn small ghost" disabled={busy || !connected || !ct.planExists || !scoreTimeline}
+          onClick={() => call(key, () => api.runScore({ timeline: scoreTimeline }))}>Score</button>
       );
     }
     if (key === 'build') {

@@ -69,6 +69,7 @@ const COMMAND_OWNER = Object.freeze({
   // spikes/ pipeline steps (day prep, batch build) inside the Resolve worker.
   ct_list_multicams: WORKERS.resolve,
   ct_run_spike: WORKERS.resolve,
+  ct_read_timeline: WORKERS.resolve,   // Cut-through Score: read a finished edit
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -152,6 +153,7 @@ const COMMAND_SCHEMAS = Object.freeze({
   import_media: { required: ['files'], types: { parent_bin: 'string' } },
   ct_list_multicams: { required: [] },
   ct_run_spike: { required: ['spikes_dir', 'script'], types: { spikes_dir: 'string', script: 'string' } },
+  ct_read_timeline: { required: ['name'], types: { name: 'string' } },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });

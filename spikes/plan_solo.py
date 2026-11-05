@@ -296,6 +296,27 @@ def main(argv) -> None:
                 break
     kept = [k for k in kept_of(merged) if k[1] - k[0] >= 6]          # crumbs between two removals
 
+    # head and tail from the waveform (Jordan's rule): the 8-frame fade-in ends 3 frames before the
+    # first sound, and the 8-frame fade-out starts at least 3 frames after the last sound
+    FADE, AIR = 8, 3
+    if LV and kept:
+        a0 = kept[0][0]
+        first = next((f for f in range(a0, kept[0][1]) if sound(f)), None)
+        if first is not None:
+            prev = next((f for f in range(first - 1, max(0, first - 120), -1) if sound(f) and removed(f)), None)
+            head = first - AIR - FADE
+            if prev is not None:
+                head = max(head, prev + 1 + AIR)               # never pull in the cut pre-roll's sound
+            kept[0][0] = max(0, min(head, kept[0][1] - 1))
+        b0 = kept[-1][1]
+        last = next((f for f in range(b0 - 1, kept[-1][0], -1) if sound(f)), None)
+        if last is not None:
+            nxt = next((f for f in range(last + 1, last + 120) if sound(f) and removed(f)), None)
+            tail = last + 1 + AIR + FADE
+            if nxt is not None:
+                tail = min(tail, nxt - AIR)                    # never take in the cut post-roll
+            kept[-1][1] = max(kept[-1][0] + 1, tail)
+
     # 5. picture. With Claude's shot list (removals file "shots": [{at, angle}]) the cuts are its
     # choices; the code only keeps the hard rules: an angle change at every removal join (no jump
     # cut) and no blink-length shot between two of its own cuts. Without it: the rule rhythm below.

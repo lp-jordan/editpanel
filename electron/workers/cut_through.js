@@ -24,8 +24,9 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { randomUUID } = require('crypto');
 const claude = require('./cut_through_claude');
+const { scorePlan } = require('./cut_through_score');
 
-const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build'];
+const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'score'];
 const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
 const DEFAULT_WX_PYTHON = 'C:\\wxbench\\Scripts\\python.exe';
 const MAX_LOG_LINES = 400;
@@ -179,7 +180,8 @@ function createCutThrough(opts) {
       transcript: path.join(desktopDir, `transcript_${label}.txt`),
       transcribeReport: path.join(desktopDir, `transcribe_${label}.txt`),
       plan: path.join(st.spikesDir, 'plans', `${label}_plan.json`),
-      buildReport: path.join(desktopDir, `cut_through_${label}.txt`)
+      buildReport: path.join(desktopDir, `cut_through_${label}.txt`),
+      scoreReport: path.join(desktopDir, `score_${label}.txt`)
     };
   }
 
@@ -279,7 +281,8 @@ function createCutThrough(opts) {
       prep: [f.day, f.prepReport],
       transcribe: [f.words, f.transcribeReport],
       plan: [f.plan, null],
-      build: [f.buildReport, f.buildReport]
+      build: [f.buildReport, f.buildReport],
+      score: [f.scoreReport, f.scoreReport]
     };
     for (const key of STEP_KEYS) {
       const [out, rep] = marks[key];
@@ -373,6 +376,30 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
+  /** Compare the plan with Jordan's finished timeline (Z8): removals, cuts, angles, pacing. */
+  async function runScore({ timeline } = {}) {
+    if (!timeline) throw new Error('Pick the finished timeline');
+    const f = files();
+    const plan = readJson(f.plan);
+    if (!plan) throw new Error('No plan for this label yet');
+    const st = begin('score');
+    st.traceId = randomUUID();
+    let error = null;
+    let report = [];
+    try {
+      const res = await sendWorkerRequest({ cmd: 'ct_read_timeline', name: String(timeline), trace_id: st.traceId }, 'resolve');
+      const out = scorePlan({ plan, finished: res.data, words: readJson(f.words) });
+      report = out.lines;
+      fs.writeFileSync(f.scoreReport, report.join('\n') + '\n', 'utf8');
+      fs.writeFileSync(f.scoreReport.replace(/\.txt$/, '.json'), JSON.stringify(out.data, null, 1), 'utf8');
+      st.data = out.data;
+    } catch (err) {
+      error = err instanceof Error ? err.message : errMsg(err);
+    }
+    finish('score', { error, report, reportFile: f.scoreReport, data: error ? null : st.data });
+    return snapshot();
+  }
+
   /** Lines streamed from the Resolve worker for a running step (by trace id). */
   function onWorkerLog(traceId, message) {
     if (!traceId || !s.busy) return;
@@ -433,16 +460,20 @@ function createCutThrough(opts) {
       const sp = spans.get(m.angle) || { from: m.from_sec, to: m.to_sec };
       spans.set(m.angle, { from: Math.min(sp.from, m.from_sec), to: Math.max(sp.to, m.to_sec) });
     });
-    const plan = [...spans.entries()].map(([angle, sp]) => {
+    // one speaker: a second, verbatim pass (Z8 — hears the restarts and "uh"s the clean pass drops)
+    const verbatim = spans.size === 1;
+    const plan = [...spans.entries()].flatMap(([angle, sp]) => {
       const total = Math.max(0, (sp.to - sp.from) / 60);
-      return { angle, totalMin: mins ? Math.min(total, mins) : total };
+      const one = { angle, totalMin: mins ? Math.min(total, mins) : total };
+      return verbatim ? [one, { ...one, angle: `${angle} (verbatim)` }] : [one];
     });
     const grand = plan.reduce((a, m) => a + m.totalMin, 0) || 1;
     let micIdx = -1;
     let lastAngle = null;
     st.progress = { angle: null, pct: 0, doneMin: 0, totalMin: 0, mic: 0, mics: plan.length, overall: 0, phase: 'Starting' };
     const started = Date.now();
-    const args = [path.join(spikesDir, 'transcribe_day.py'), s.label, `dir=${desktopDir}`, ...(mins ? [`minutes=${mins}`] : [])];
+    const args = [path.join(spikesDir, 'transcribe_day.py'), s.label, `dir=${desktopDir}`, ...(mins ? [`minutes=${mins}`] : []),
+      ...(verbatim ? ['verbatim=1'] : [])];
     const res = await runChild('transcribe', wxPython, args, {
       onLine: (line) => {
         const r = parseRead(line);
@@ -630,6 +661,7 @@ function createCutThrough(opts) {
     runPlan,
     useExistingPlan,
     runBuild,
+    runScore,
     onWorkerLog,
     _planners: PLANNERS
   };

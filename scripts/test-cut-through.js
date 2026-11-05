@@ -46,6 +46,19 @@ fs.mkdirSync(FAKE_SPIKES, { recursive: true });
   assert.strictEqual(ct.dayFrames({ length_sec: 120.12, frame_sec: [1001, 24000] }), 2880);
   console.log('✓ helpers');
 }
+{
+  const { scorePlan } = require('../electron/workers/cut_through_score');
+  const plan = { multicam: 'mc', fps: 24, video: [{ in: 0, out: 100, angle: 'A' }, { in: 200, out: 300, angle: 'B' }, { in: 350, out: 500, angle: 'A' }] };
+  const finished = { name: 'J', fps: 24, pieces: [{ mc: 'mc', angle: 'A', src_in: 0, src_out: 100 }, { mc: 'mc', angle: 'A', src_in: 220, src_out: 500 },
+    { mc: 'other', angle: 'B', src_in: 0, src_out: 999 }] };
+  const { data } = scorePlan({ plan, finished });
+  assert.deepStrictEqual(data.removed_s, { jordan: 5, ours: 6.3, overlap: 4.2, ours_only: 2.1 });   // he cut 100–220; we cut 100–200 + 300–350
+  assert.strictEqual(data.removal_coverage_pct, 83);
+  assert.deepStrictEqual(data.cuts, { ours: 2, jordan: 1, ours_within_1s: 1, jordan_within_1s: 1 });
+  assert.strictEqual(data.same_angle_pct, 76);   // both keep 0–100 + 350–500 on A (250 fr) and 220–300 on B vs A (80 fr): 250/330
+  assert.ok(data.extra.length === 1 && data.extra[0].from === 300 && data.missed.length === 1 && data.missed[0].from === 200);
+  console.log('✓ score: removal overlap, cuts within 1 s, same-angle share, disagreement lists');
+}
 
 // ── fakes ──────────────────────────────────────────────────────
 const FAKE_RESOLVE = String.raw`
@@ -334,6 +347,8 @@ class WhisperModel:
         # a "word" wherever the clip is loud (seconds from the clip's start)
         loud = np.flatnonzero(np.abs(clip) > 0.5)
         secs = sorted({int(i // 16000) for i in loud})
+        if k.get("initial_prompt"):
+            return [_S(s, s + 1, [_W(s, s + 0.5, f"w{s}"), _W(s + 0.6, s + 0.8, "uh")]) for s in secs], None
         return [_S(s, s + 1, [_W(s, s + 0.5, f"w{s}")]) for s in secs], None
 `);
   const out = execFileSync(process.env.CT_TEST_PYTHON, [path.join(SPIKES, 'transcribe_day.py'), 'Cam1', `dir=${DESKTOP}`],
@@ -346,6 +361,13 @@ class WhisperModel:
   assert.ok(words.words.every((w) => w.own));
   assert.ok(/camera audio, 1 track/.test(fs.readFileSync(path.join(DESKTOP, 'transcribe_Cam1.txt'), 'utf8')));
   assert.ok(/reading 1\/2 CAM1_01\.mov 100%/.test(out) && /Finding speech in Camera 1 \(2\.0 min\)…/.test(out), out);
+  assert.ok(fs.existsSync(path.join(DESKTOP, 'levels_Cam1.json')), 'no levels file');
+  // verbatim=1: the second pass adds only what the clean pass missed (the "uh"s), marked v
+  const vout = execFileSync(process.env.CT_TEST_PYTHON, [path.join(SPIKES, 'transcribe_day.py'), 'Cam1', `dir=${DESKTOP}`, 'verbatim=1'],
+    { env: { ...PY_ENV, PYTHONPATH: STUBS }, encoding: 'utf8' });
+  const vw = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'words_Cam1.json'), 'utf8')).words;
+  assert.deepStrictEqual(vw.map((w) => `${w.w}${w.v ? '*' : ''}`), ['w10', 'uh*', 'w65', 'uh*'], vout);
+  assert.ok(/Camera 1 \(verbatim\) \[/.test(vout) && /verbatim pass added 2 word/.test(fs.readFileSync(path.join(DESKTOP, 'transcribe_Cam1.txt'), 'utf8')));
   // quick test (minutes=0.5 → first 30 s of the multicam): stops reading CAM1_01 early, skips CAM1_02
   const q = execFileSync(process.env.CT_TEST_PYTHON, ['-c', [
     'import sys, runpy, av',
@@ -386,6 +408,23 @@ class WhisperModel:
   ].join('\n')], { encoding: 'utf8' }).trim();
   assert.strictEqual(uh, '5.00-5.80', uh);
   console.log('✓ transcribe_day.py: finds a 0.8 s mutter with no words, ignores a 150 ms click');
+  // a word Whisper stretched over a dropped stumble is clipped where the audio goes quiet (Z8)
+  const sw = execFileSync(process.env.CT_TEST_PYTHON, ['-c', [
+    'import sys, numpy as np', `sys.path.insert(0, ${JSON.stringify(SPIKES)})`, 'import transcribe_day as t',
+    'SR = 16000; fs = 1001 / 24000; rng = np.random.default_rng(2)',
+    'x = (rng.standard_normal(8 * SR) * 0.001).astype(np.float32)',
+    'x[int(1.0 * SR):int(1.4 * SR)] = rng.standard_normal(int(0.4 * SR)) * 0.1',
+    'x[int(2.2 * SR):int(2.8 * SR)] = rng.standard_normal(int(0.6 * SR)) * 0.1',
+    'm = {"angle": "Camera 1", "audio": x, "lo": 0, "hi": len(x), "gain": 1.0}',
+    'words = [{"mic": "Camera 1", "w": "produced.", "s": 1.0 / fs, "e": 3.0 / fs, "own": True, "db": -20}]',
+    'for k in range(12):',
+    '    a = 4 + k * 0.2; x[int(a * SR):int((a + 0.15) * SR)] = rng.standard_normal(int(0.15 * SR)) * 0.1',
+    '    words.append({"mic": "Camera 1", "w": "x", "s": a / fs, "e": (a + 0.15) / fs, "own": True, "db": -20})',
+    'n = t.clip_stretched(words, m, fs); u = t.unheard_speech(m, words, fs)',
+    'print(n, f"{words[0][\'e\'] * fs:.2f}", " ".join(f"{v[\'s\'] * fs:.2f}-{v[\'e\'] * fs:.2f}" for v in u))'
+  ].join('\n')], { encoding: 'utf8' }).trim().split(' ');
+  assert.ok(sw[0] === '1' && Number(sw[1]) > 1.35 && Number(sw[1]) < 1.55 && sw[2] === '2.20-2.80', sw.join(' '));
+  console.log('✓ transcribe_day.py: verbatim pass adds only the missed words; a stretched word is clipped and the stumble it hid surfaces');
 } else {
   console.log('- transcribe_day.py check skipped (set CT_TEST_PYTHON to a Python with numpy)');
 }
@@ -438,6 +477,14 @@ sys.stdout.write(json.dumps(res))`;
         proc.on('close', () => { try { resolve({ data: JSON.parse(out) }); } catch (e) { reject(e); } });
         proc.stdin.end(JSON.stringify(payload));
       });
+    }
+    if (payload.cmd === 'ct_read_timeline') {
+      const plan = JSON.parse(fs.readFileSync(path.join(FAKE_SPIKES, 'plans', `${payload.name.replace(/^Jordan_/, '')}_plan.json`), 'utf8'));
+      // "Jordan's edit": our pieces, but he also removed the first 2 s of the longest one
+      const longest = plan.video.reduce((b, v, k) => (v.out - v.in > plan.video[b].out - plan.video[b].in ? k : b), 0);
+      const pieces = plan.video.map((v, k) => ({ mc: plan.multicam, angle: v.angle, start: 0, end: 0,
+        src_in: k === longest ? v.in + 48 : v.in, src_out: v.out }));
+      return Promise.resolve({ data: { name: payload.name, fps: plan.fps, track: 1, pieces } });
     }
     if (payload.cmd === 'ct_run_spike' && payload.script === 'spike_cut_through_batch.py') {
       return Promise.resolve({ data: { lines: ['1. Exported', '4. Split done (2.0s)', '', 'Total time: 16.0s'], error: null, stopped: null } });
@@ -642,6 +689,12 @@ sys.stdout.write(json.dumps(res))`;
       if (loud(f) && gone(f)) assert.fail(`kept word "${x.w}" clipped at frame ${f}`);
     }
   });
+  // head and tail from the waveform: fade-in ends 3 fr before the first sound, fade-out starts 3 fr after the last
+  const firstSound = lv.findIndex((v) => v > -40);
+  let lastSound = lv.length - 1;
+  while (lastSound > 0 && !(lv[lastSound] > -40)) lastSound -= 1;
+  assert.strictEqual(vv[0].in, firstSound - 11, 'head');
+  assert.strictEqual(vv[vv.length - 1].out, lastSound + 1 + 3 + 8, 'tail');
   const joins = new Set(soloPlan.removals.map((r) => r.to));
   for (const x of vv.slice(1).filter((x) => !joins.has(x.in))) {
     assert.ok(!loud(x.in), `picture cut at ${x.in} lands on sound`);
@@ -655,6 +708,13 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(fs.existsSync(path.join(DESKTOP, 'claude_edit_Solo2_claude-opus-5-5.json')), 'no per-model copy');
   assert.ok(/solo_plan,claude-opus-5-5,high,2400,900,0,0,0\.028,/.test(fs.readFileSync(path.join(DESKTOP, 'cut_through_costs.csv'), 'utf8')));
   assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-'), 'key in the snapshot');
+  // Score against "Jordan's edit" (the fake worker's copy of this plan minus 2 s he cut)
+  const sc = (await c3.runScore({ timeline: 'Jordan_Solo2' })).steps.score;
+  assert.strictEqual(sc.status, 'done', sc.error);
+  assert.ok(fs.existsSync(path.join(DESKTOP, 'score_Solo2.txt')) && fs.existsSync(path.join(DESKTOP, 'score_Solo2.json')));
+  assert.strictEqual(sc.data.removed_s.ours_only, 0);
+  assert.ok(sc.data.missed.length === 1 && sc.data.missed[0].seconds === 2 && sc.data.same_angle_pct === 100, JSON.stringify(sc.data));
+  assert.ok(sc.report.some((l) => /^Jordan removed, we kept/.test(l)), sc.report.join('\n'));
   // stage: the lighter brief + looser pause rule reach Claude and the planner
   const stage = (await c3.runPlan({ delivery: 'stage' })).steps.plan;
   assert.strictEqual(stage.status, 'done', stage.error);
