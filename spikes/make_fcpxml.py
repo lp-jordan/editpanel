@@ -37,6 +37,11 @@ def t(frames) -> str:
     return f"{v.numerator}/{v.denominator}s" if v else "0/1s"
 
 
+def attrs(tag: str) -> dict:
+    """An element's attributes, whatever order Resolve wrote them in (it differs by version)."""
+    return dict(re.findall(r'([\w:-]+)="([^"]*)"', tag))
+
+
 def split_plan(plan: dict, n: int) -> list:
     """Cut one plan into n consecutive timelines (at picture-piece boundaries)."""
     v = plan["video"]
@@ -74,14 +79,15 @@ def main(argv=None) -> list:
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
     # the multicam: its resource id, start timecode and angle IDs by name
     want = {p["multicam"] for _, p in jobs}
-    media = next((m for m in re.finditer(r'<media name=([\'"])(.*?)\1 id="(r\d+)">\s*<multicam [^>]*tcStart="([^"]+)"',
-                                         resources) if m.group(2) in want), None)
+    media = next(((attrs(m.group(1)), attrs(m.group(2)))
+                  for m in re.finditer(r"<media ([^>]*)>\s*<multicam ([^>]*)>", resources)
+                  if attrs(m.group(1)).get("name") in want), None)
     if not media or len(want) != 1:
-        raise SystemExit(f"multicam not found in {src}")
-    mc_name, mc_id = media.group(2), media.group(3)
-    num, den = media.group(4).rstrip("s").split("/")
+        raise SystemExit(f"multicam {sorted(want)} not found in {src}")
+    mc_name, mc_id = media[0]["name"], media[0]["id"]
+    num, den = media[1]["tcStart"].rstrip("s").split("/")
     mc_tc = Fraction(int(num), int(den)) / FD               # multicam start, in frames
-    angles = dict((n, i) for n, i in re.findall(r'<mc-angle name="([^"]+)" angleID="([^"]+)"', resources))
+    angles = {a["name"]: a["angleID"] for a in map(attrs, re.findall(r"<mc-angle ([^>]*)>", resources))}
     fmt = re.search(r'<sequence [^>]*format="(r\d+)"', xml).group(1)
     seq_tc = 86400                                          # 01:00:00:00 at 24 fps timebase
     src_t = lambda f: t(mc_tc + f)                          # multicam-relative frame → source time
