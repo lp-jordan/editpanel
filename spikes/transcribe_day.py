@@ -139,6 +139,44 @@ def level_db(x: np.ndarray, a: float, b: float) -> float:
     return 20 * math.log10(float(np.sqrt(np.mean(seg.astype(np.float64) ** 2))) + 1e-9)
 
 
+def unheard_speech(m: dict, words: list, fs: float) -> list:
+    """Stretches on this mic that are loud like its words but where Whisper wrote nothing: in a
+    solo take these are usually flubs / restarts Whisper dropped (Z8 lesson). Multicam frames."""
+    x = m["audio"][m["lo"]:m["hi"]] * m["gain"]
+    hop = SR // 50                                             # 20 ms
+    n = len(x) // hop
+    if n == 0:
+        return []
+    env = 20 * np.log10(np.sqrt(np.mean(x[:n * hop].reshape(n, hop).astype(np.float64) ** 2, axis=1)) + 1e-9)
+    own = [w for w in words if w["mic"] == m["angle"] and w["own"]]
+    if len(own) < 10:
+        return []
+    word_db = np.median([w["db"] + 20 * math.log10(m["gain"]) for w in own])
+    loud = env > word_db - 10
+    covered = np.zeros(n, bool)
+    for w in own:                                              # words (+150 ms each side) are heard
+        a = int((w["s"] * fs - m["lo"] / SR - 0.15) * 50)
+        b = int((w["e"] * fs - m["lo"] / SR + 0.15) * 50) + 1
+        covered[max(0, a):max(0, b)] = True
+    out, k = [], 0
+    hot = loud & ~covered
+    while k < n:
+        if not hot[k]:
+            k += 1
+            continue
+        j = k
+        gap = 0
+        while j < n and (hot[j] or gap < 5):                   # bridge < 100 ms dips
+            gap = 0 if hot[j] else gap + 1
+            j += 1
+        j -= gap
+        if (j - k) / 50 >= 0.3:
+            s0 = m["lo"] / SR + k / 50
+            out.append({"mic": m["angle"], "s": round(s0 / fs, 1), "e": round((m["lo"] / SR + j / 50) / fs, 1)})
+        k = j + 1
+    return out
+
+
 def mmss(sec: float) -> str:
     return f"{int(sec // 60):02d}:{sec % 60:04.1f}"
 
@@ -235,10 +273,12 @@ def main() -> None:
                       f"(raised {20 * math.log10(m['gain']):.0f} dB)")
 
     words.sort(key=lambda w: (w["s"], w["mic"]))
+    unheard = [u for m in mics for u in unheard_speech(m, words, fs)]
+    report.append(f"{len(unheard)} loud stretch(es) with no words (possible dropped flubs)")
     own = [w for w in words if w["own"]]
     report.append(f"{len(words)} words, {len(own)} owned (rest = the other person heard on that mic)")
     json.dump({"label": label, "multicam": day["multicam"], "fps": day["fps"], "frame_sec": day["frame_sec"],
-               "angles": day["angles"], "mics": [m["angle"] for m in mics], "words": words},
+               "angles": day["angles"], "mics": [m["angle"] for m in mics], "words": words, "unheard": unheard},
               open(os.path.join(DESKTOP, f"words_{label}.json"), "w", encoding="utf-8"))
 
     lines, cur = [], None

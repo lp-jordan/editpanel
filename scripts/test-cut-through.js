@@ -170,6 +170,36 @@ print(f"{len(words)} words")
 fs.writeFileSync(path.join(TMP, 'fake_resolve.py'), FAKE_RESOLVE);
 fs.writeFileSync(path.join(FAKE_SPIKES, 'transcribe_day.py'), FAKE_TRANSCRIBE);
 for (const f of ['spike_day_prep.py', 'plan_convo.py', 'plan_solo.py']) fs.copyFileSync(path.join(SPIKES, f), path.join(FAKE_SPIKES, f));
+fs.mkdirSync(path.join(FAKE_SPIKES, 'prompts'));
+fs.copyFileSync(path.join(SPIKES, 'prompts', 'solo_editor.md'), path.join(FAKE_SPIKES, 'prompts', 'solo_editor.md'));
+
+/** A scripted solo take: count retake, repeat retake, stutter, long pause, a callback that stays. */
+function scriptedTake() {
+  const fps = 24000 / 1001;
+  const words = [];
+  let t = 2.0;
+  const say = (text, gap) => {
+    for (const w of text.split(' ')) {
+      words.push({ mic: 'Camera 1', w, s: +(t * fps).toFixed(1), e: +((t + 0.35) * fps).toFixed(1), p: 0.9, db: -20, other_db: -120, own: true, clear: true });
+      t += 0.4;
+    }
+    t += gap;
+  };
+  say('Leadership starts with listening to your team every single day.', 3.0);
+  say('The best managers build trust through small consistent actions and', 0.4);
+  say('one, two, three.', 1.0);
+  say('The best managers build trust through small consistent actions over time.', 0.5);
+  say('When you you ask questions people feel heard.', 0.6);
+  say('Feedback should be specific and timely so people', 1.2);
+  say('Feedback should be specific and timely so that people can act on it.', 0.5);
+  say('We talked about culture and how culture changes when leaders listen.', 0.5);
+  say('That is how culture changes.', 2.0);
+  return { words, fps, seconds: t + 5 };
+}
+const CLEAN = 'Leadership starts with listening to your team every single day. The best managers build trust through small consistent actions over time. ' +
+  'When you ask questions people feel heard. Feedback should be specific and timely so that people can act on it. ' +
+  'We talked about culture and how culture changes when leaders listen. That is how culture changes.';
+
 // The batch needs Resolve for real; the worker side is faked below, so a
 // placeholder is enough for the allow-list path check.
 fs.writeFileSync(path.join(FAKE_SPIKES, 'spike_cut_through_batch.py'), 'REPO = r"C:\\lp-app-ecosystem\\editpanel"\n_lines = []\nprint("repo", REPO)\n_lines.append("✗ STOPPED after 0.1s: fake")\n');
@@ -318,31 +348,30 @@ class WhisperModel:
     assert.ok(Math.abs(Number(n[0]) - 32000) < 400 && Number(n[1]) > 0.05, n.join(' '));
     console.log('✓ transcribe_day.py: ffmpeg fallback decodes a real camera-style file (first track, 16 kHz mono)');
   }
+  // loud stretches with no words (dropped flubs) — what Claude sees as ⟨unheard speech⟩
+  const uh = execFileSync(process.env.CT_TEST_PYTHON, ['-c', [
+    'import sys, math, numpy as np', `sys.path.insert(0, ${JSON.stringify(SPIKES)})`, 'import transcribe_day as t',
+    'SR = 16000; fs = 1001 / 24000; rng = np.random.default_rng(1)',
+    'x = (rng.standard_normal(10 * SR) * 0.001).astype(np.float32)',
+    'x[1 * SR:3 * SR] = rng.standard_normal(2 * SR) * 0.1',
+    'x[5 * SR:int(5.8 * SR)] = rng.standard_normal(int(0.8 * SR)) * 0.08',
+    'x[8 * SR:int(8.15 * SR)] = rng.standard_normal(int(0.15 * SR)) * 0.1',
+    'words = []',
+    'for k in range(10):',
+    '    a = 1 + k * 0.2; seg = x[int(a * SR):int((a + 0.18) * SR)]',
+    '    words.append({"mic": "Camera 1", "s": a / fs, "e": (a + 0.18) / fs, "own": True, "db": 20 * math.log10(float(np.sqrt(np.mean(seg.astype(np.float64) ** 2))) + 1e-9)})',
+    'u = t.unheard_speech({"angle": "Camera 1", "audio": x, "lo": 0, "hi": len(x), "gain": 1.0}, words, fs)',
+    'print(" ".join(f"{v[\'s\'] * fs:.2f}-{v[\'e\'] * fs:.2f}" for v in u))'
+  ].join('\n')], { encoding: 'utf8' }).trim();
+  assert.strictEqual(uh, '5.00-5.80', uh);
+  console.log('✓ transcribe_day.py: finds a 0.8 s mutter with no words, ignores a 150 ms click');
 } else {
   console.log('- transcribe_day.py check skipped (set CT_TEST_PYTHON to a Python with numpy)');
 }
 
 // ── 2d. plan_solo.py on a scripted take: count retake, repeat retake, stutter, long pause ──
 {
-  const fps = 24000 / 1001;
-  const words = [];
-  let t = 2.0;
-  const say = (text, gap) => {
-    for (const w of text.split(' ')) {
-      words.push({ mic: 'Camera 1', w, s: +(t * fps).toFixed(1), e: +((t + 0.35) * fps).toFixed(1), p: 0.9, db: -20, other_db: -120, own: true, clear: true });
-      t += 0.4;
-    }
-    t += gap;
-  };
-  say('Leadership starts with listening to your team every single day.', 3.0);
-  say('The best managers build trust through small consistent actions and', 0.4);
-  say('one, two, three.', 1.0);
-  say('The best managers build trust through small consistent actions over time.', 0.5);
-  say('When you you ask questions people feel heard.', 0.6);
-  say('Feedback should be specific and timely so people', 1.2);
-  say('Feedback should be specific and timely so that people can act on it.', 0.5);
-  say('We talked about culture and how culture changes when leaders listen.', 0.5);   // a topic repeat that stays
-  say('That is how culture changes.', 2.0);
+  const { words, fps, seconds: t } = scriptedTake();
   const angles = ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4'];
   const wp = path.join(TMP, 'solo_words.json'), dp = path.join(TMP, 'solo_day.json'), pp = path.join(TMP, 'solo_plan.json');
   fs.writeFileSync(wp, JSON.stringify({ label: 'SoloT', multicam: 'mc_x', fps, frame_sec: [1001, 24000], angles, mics: ['Camera 1'], words }));
@@ -351,9 +380,7 @@ class WhisperModel:
   const plan = JSON.parse(fs.readFileSync(pp, 'utf8'));
   const cut = (f) => plan.removals.some((r) => r.from <= f && f < r.to);
   const kept = words.filter((w) => !cut(w.s)).map((w) => w.w).join(' ');
-  assert.strictEqual(kept, 'Leadership starts with listening to your team every single day. The best managers build trust through small consistent actions over time. ' +
-    'When you ask questions people feel heard. Feedback should be specific and timely so that people can act on it. ' +
-    'We talked about culture and how culture changes when leaders listen. That is how culture changes.', out);
+  assert.strictEqual(kept, CLEAN, out);
   assert.ok(words.every((w) => cut(w.s) === cut(w.e - 0.5)), 'a word is cut in half');
   const v = plan.video;
   assert.strictEqual(v[0].angle, 'Camera 1');
@@ -492,7 +519,7 @@ sys.stdout.write(json.dumps(res))`;
     assert.ok(s2.steps[k].earlier, k);
   }
 
-  // solo day: plan_solo.py drafts it; an existing plan is accepted too
+  // solo day: Claude edits it (needs a key); an existing plan is accepted too
   const day = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_E2E_test.json'), 'utf8'));
   day.mics = day.mics.slice(0, 1);
   fs.writeFileSync(path.join(DESKTOP, 'day_Solo1.json'), JSON.stringify(day));
@@ -500,12 +527,81 @@ sys.stdout.write(json.dumps(res))`;
   c2.select({ mc: 'mc_test', label: 'Solo1' });
   assert.strictEqual(c2.snapshot().planKind, 'solo');
   assert.throws(() => c2.useExistingPlan(), /No readable/);
-  const solo = (await c2.runPlan({ punch: 'Camera 3', extra: 'Camera 2', cuts: '' })).steps.plan;
-  assert.strictEqual(solo.status, 'done', `${solo.error}\n${solo.log.join('\n')}`);
-  assert.ok(solo.data.pieces >= 1 && solo.data.angles['Camera 1'] >= 1, JSON.stringify(solo.data));   // fake words repeat → mostly retakes
-  assert.ok(solo.report.some((l) => l.startsWith('angles:')), solo.report.join('\n'));
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  await assert.rejects(c2.runPlan({}), /Add a Claude API key/);
+  if (savedKey) process.env.ANTHROPIC_API_KEY = savedKey;
   fs.copyFileSync(path.join(FAKE_SPIKES, 'plans', 'E2E_test_plan.json'), path.join(FAKE_SPIKES, 'plans', 'Solo1_plan.json'));
   assert.strictEqual(c2.useExistingPlan().steps.plan.status, 'done');
+
+  // ── Claude as the solo editor (a stand-in client; the real API isn't called) ──
+  const take = scriptedTake();
+  const unheardAt = take.words.filter((w) => w.w === 'Feedback')[1].s - 20;   // a dropped mutter before the retake
+  const soloDay = { ...day, angles: ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4'], length_sec: take.seconds, audio_source: 'camera',
+    mics: [{ ...day.mics[0], angle: 'Camera 1' }] };
+  fs.writeFileSync(path.join(DESKTOP, 'day_Solo2.json'), JSON.stringify(soloDay));
+  fs.writeFileSync(path.join(DESKTOP, 'words_Solo2.json'), JSON.stringify({ label: 'Solo2', multicam: 'mc_test', fps: take.fps, frame_sec: [1001, 24000],
+    angles: soloDay.angles, mics: ['Camera 1'], words: take.words, unheard: [{ mic: 'Camera 1', s: unheardAt, e: unheardAt + 14 }] }));
+  const requests = [];
+  const fakeClaude = { beta: { messages: { stream: (params) => {
+    requests.push(params);
+    const text = params.messages[0].content;
+    const ids = [...text.matchAll(/(\d+) (\S+)/g)].map((m) => ({ id: Number(m[1]), w: m[2] }));
+    const at = (w, n = 0) => ids.filter((x) => x.w === w)[n].id;
+    const unheard = Number(/(\d+) ⟨unheard speech/.exec(text)[1]);
+    const answer = { removals: [
+      { from: at('The'), to: at('three.'), kind: 'retake', reason: 'first try, redone after the count' },
+      { from: at('you', 0), to: at('you', 0), kind: 'false_start', reason: 'you you' },
+      { from: at('Feedback', 0), to: unheard, kind: 'retake', reason: 'first try + a mutter' }
+    ], notes: ['check the callback at the end'] };
+    const handlers = {};
+    return {
+      on: (ev, fn) => { handlers[ev] = fn; },
+      finalMessage: async () => {
+        const body = JSON.stringify(answer);
+        if (handlers.text) handlers.text(body);
+        return { model: params.model, stop_reason: 'end_turn', content: [{ type: 'text', text: body }],
+          usage: { input_tokens: 2400, output_tokens: 900, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
+      }
+    };
+  } } } };
+  const c3 = ct.createCutThrough({ sendWorkerRequest: w.send, broadcast: () => {}, getPrefs: () => prefs,
+    setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP, claudeClient: fakeClaude });
+  c3.select({ mc: 'mc_test', label: 'Solo2' });
+  assert.strictEqual(c3.snapshot().planKind, 'solo');
+  const cl = (await c3.runPlan({ extra: 'Camera 4' })).steps.plan;
+  assert.strictEqual(cl.status, 'done', `${cl.error}\n${cl.log.join('\n')}`);
+  const req = requests[0];
+  assert.strictEqual(req.model, 'claude-opus-5-5');
+  assert.deepStrictEqual(req.thinking, { type: 'adaptive' });
+  assert.strictEqual(req.output_config.effort, 'high');
+  assert.strictEqual(req.output_config.format.type, 'json_schema');
+  assert.strictEqual(req.fallbacks, 'default');
+  assert.deepStrictEqual(req.betas, ['server-side-fallback-2026-07-01']);
+  assert.ok(req.system.includes('Keep the last good take'));
+  assert.ok(/⟨pause 3\.\d s⟩/.test(req.messages[0].content) && /\[0:02\] 0 Leadership/.test(req.messages[0].content), req.messages[0].content.slice(0, 300));
+  const soloPlan = JSON.parse(fs.readFileSync(path.join(FAKE_SPIKES, 'plans', 'Solo2_plan.json'), 'utf8'));
+  const gone = (f) => soloPlan.removals.some((r) => r.from <= f && f < r.to);
+  assert.strictEqual(take.words.filter((x) => !gone(x.s)).map((x) => x.w).join(' '), CLEAN);
+  assert.ok(gone(unheardAt + 7), 'the unheard mutter stayed');
+  assert.ok(soloPlan.removals.some((r) => r.why.startsWith('claude retake')) && /Claude/.test(soloPlan.note));
+  const vv = soloPlan.video;
+  assert.ok(vv[0].angle === 'Camera 1' && vv[vv.length - 1].angle === 'Camera 1' && vv.every((x, k) => !k || x.angle !== vv[k - 1].angle));
+  assert.ok(!JSON.stringify(soloPlan).includes('managers'), 'client words in the plan');
+  assert.ok(cl.log.some((l) => /^Claude \(claude-opus-5-5, effort high\): 3 removals .* \$0\.028/.test(l)), cl.log.join('\n'));
+  assert.ok(cl.log.some((l) => l.includes('note: check the callback')));
+  assert.strictEqual(cl.reportFile, path.join(DESKTOP, 'claude_edit_Solo2.json'));
+  assert.ok(/solo_plan,claude-opus-5-5,high,2400,900,0,0,0\.028,/.test(fs.readFileSync(path.join(DESKTOP, 'cut_through_costs.csv'), 'utf8')));
+  assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-'), 'key in the snapshot');
+  // a declined / broken answer fails the step with the reason, and keeps the log
+  fakeClaude.beta.messages.stream = () => ({ on: () => {}, finalMessage: async () => ({ stop_reason: 'refusal', stop_details: { category: 'test' }, content: [], usage: {} }) });
+  const declined = (await c3.runPlan({})).steps.plan;
+  assert.ok(declined.status === "failed" && /Claude: Claude declined \(test\)/.test(declined.error), declined.error);
+  // key setting: saved on this machine, shown masked
+  c3.updateSettings({ anthropicKey: 'sk-ant-test-1234' });
+  assert.strictEqual(c3.snapshot().settings.claudeKey, 'saved …1234');
+  assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-ant-test'), 'key leaked to the renderer');
+  console.log('✓ Claude solo editor: request shape, token ranges → frame-exact plan (last takes kept, unheard mutter cut), cost logged, refusal reported, key never sent to the page');
 
   await new Promise((r) => setTimeout(r, 200));
   assert.ok(updates.length > 0, 'no updates broadcast');

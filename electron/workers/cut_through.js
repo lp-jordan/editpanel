@@ -23,6 +23,7 @@ const os = require('os');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { randomUUID } = require('crypto');
+const claude = require('./cut_through_claude');
 
 const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build'];
 const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
@@ -126,6 +127,7 @@ function createCutThrough(opts) {
     setPrefs = () => {},
     pythonCmd = 'python3',         // the app's own Python (plan_convo is stdlib only)
     ffmpegPath = '',               // bundled ffmpeg: transcribe_day.py's decode fallback
+    claudeClient = null,           // tests: a stand-in for the Anthropic client
     isPackaged = false,
     appDir = path.join(__dirname, '..', '..'),
     desktopDir = path.join(os.homedir(), 'Desktop')   // = Python's expanduser("~/Desktop")
@@ -153,8 +155,18 @@ function createCutThrough(opts) {
       spikesDir: p.spikesDir || defaultSpikesDir({ isPackaged, appDir }),
       wxPython: p.wxPython || (process.platform === 'win32' ? DEFAULT_WX_PYTHON : 'python3'),
       seqBin: p.seqBin === undefined ? DEFAULT_SEQ_BIN : p.seqBin,
+      claudeModel: p.claudeModel || claude.DEFAULT_MODEL,
+      claudeEffort: p.claudeEffort || 'high',
+      // the key itself never goes to the renderer
+      claudeKey: claudeKey() ? (p.anthropicKey ? `saved …${p.anthropicKey.slice(-4)}` : 'from ANTHROPIC_API_KEY') : null,
       desktopDir
     };
+  }
+
+  /** Claude API key: the one saved on this machine (page settings), else ANTHROPIC_API_KEY. */
+  function claudeKey() {
+    const p = (getPrefs() || {}).cutThrough || {};
+    return p.anthropicKey || process.env.ANTHROPIC_API_KEY || null;
   }
 
   function files(label = s.label) {
@@ -314,7 +326,7 @@ function createCutThrough(opts) {
   function updateSettings(patch = {}) {
     const p = (getPrefs() || {}).cutThrough || {};
     const next = { ...p };
-    for (const k of ['spikesDir', 'wxPython', 'seqBin']) {
+    for (const k of ['spikesDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort']) {
       if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
     }
     setPrefs({ cutThrough: next });
@@ -479,7 +491,8 @@ function createCutThrough(opts) {
   // spikes from the style guide (no LLM); an LLM pass plugs in here later.
   const PLANNERS = {
     convo: { script: 'plan_convo.py', args: ({ extra }) => (extra ? [`extra=${extra}`] : []) },
-    solo: { script: 'plan_solo.py', args: ({ extra, punch }) => [...(punch ? [`punch=${punch}`] : []), ...(extra ? [`extra=${extra}`] : [])] }
+    solo: { script: 'plan_solo.py', args: ({ extra, punch, removalsFile }) => [...(punch ? [`punch=${punch}`] : []), ...(extra ? [`extra=${extra}`] : []),
+      ...(removalsFile ? [`removals=${removalsFile}`] : [])] }
   };
   function runPlanner(kind, o) {
     const { script, args } = PLANNERS[kind];
@@ -499,14 +512,46 @@ function createCutThrough(opts) {
     const b = end === '' || end === undefined || end === null ? total : Number(end);
     if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0 || b <= a) throw new Error('End must be after start');
     const cutList = parseCuts(cuts);
-    begin('plan');
+    const st0 = settings();
+    if (kind === 'solo' && !claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
+    const st = begin('plan');
     const started = Date.now();
-    const res = await runPlanner(kind, { files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, punch: punch || null, cuts: cutList });
+    const o = { files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, punch: punch || null, cuts: cutList };
+    if (kind === 'solo') {
+      // Claude decides every removal (the Z8 method); plan_solo.py then does pauses, picture, audio
+      st.progress = { phase: 'Claude is reading the transcript', phaseAt: Date.now(), bar: null };
+      emit();
+      try {
+        const out = await claude.planWithClaude({
+          label: s.label, wordsPath: f.words, dayPath: f.day, desktopDir,
+          promptPath: path.join(st0.spikesDir, 'prompts', 'solo_editor.md'),
+          start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort,
+          client: claudeClient,
+          log: (line) => { pushLog('plan', line); emit(); },
+          onEvent: (ev) => {
+            if (ev.type === 'writing' && !String(st.progress.phase).startsWith('Claude is writing')) {
+              st.progress = { phase: 'Claude is writing the edit', phaseAt: Date.now(), bar: null };
+              emit();
+            }
+          }
+        });
+        out.lines.forEach((line) => pushLog('plan', line));
+        o.removalsFile = out.removalsFile;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : errMsg(err);   // SDK errors carry status + message
+        pushLog('plan', `✗ ${msg}`);
+        finish('plan', { error: `Claude: ${msg}`, report: st.log.slice(), reportFile: saveLog('plan') });
+        return snapshot();
+      }
+      st.progress = { phase: 'Building the plan (pauses, angles)', phaseAt: Date.now(), bar: null };
+      emit();
+    }
+    const res = await runPlanner(kind, o);
     let error = res.error;
     if (!error && res.code !== 0) error = exitError('plan', PLANNERS[kind].script, res.code);
     if (!error && !(mtime(f.plan) >= started - 2000)) error = `${s.label}_plan.json was not written`;
-    const st = s.steps.plan;
-    finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : f.plan, data: error ? null : planSummary(readJson(f.plan)) });
+    finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : (kind === 'solo' ? path.join(desktopDir, `claude_edit_${s.label}.json`) : f.plan),
+      data: error ? null : planSummary(readJson(f.plan)) });
     return snapshot();
   }
 

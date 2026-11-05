@@ -20,11 +20,13 @@ Rules (docs/ai-rough-cut-style-guide.md, "One speaker, scripted with retakes" + 
     (side / slider) as ~5.5 s inserts; every removal sits on an angle change (no jump cuts).
   * Audio: a WAV day keeps its one mic open over everything kept; a camera-audio day (no WAVs)
     marks the plan audio = camera, and the build turns the ATEM mix (Camera 1 audio) on.
-NOT handled yet (the LLM pass): producer notes / off-camera chatter, a retake reworded rather
+removals=<file>: Claude's edit (EditPanel's Cut-through, cut_through_claude.js) replaces the
+rule-based retake/stutter/count detection; pause trims, picture and audio still run here.
+NOT handled by the rules alone (Claude's job): producer notes / off-camera chatter, a retake reworded rather
 than repeated, deliberate emphasis repeats ("let me say that again" with no count) — check those.
 
 Usage:
-    python plan_solo.py <words.json> <day.json> <out_plan.json> [start=<frame>] [end=<frame>]
+    python plan_solo.py <words.json> <day.json> <out_plan.json> [start=<frame>] [end=<frame>] [removals=<file>]
         [wide="Camera 1"] [punch="Camera 2"] [extra="Camera 4" ...] [cut=<from>-<to> ...]
 """
 import json
@@ -104,52 +106,58 @@ def main(argv) -> None:
         return a, max(a, b)
 
     removals, floor = [], 0
-    # 1. the repeat (+ cue words widen the look-back)
-    content = [k for k, t in enumerate(T) if t and t not in FILLER]
-    key_at = {}
-    for n, k in enumerate(content[:len(content) - REPEAT_N + 1]):
-        key = tuple(T[x] for x in content[n:n + REPEAT_N])
-        if sum(1 for t in key if t not in STOP) < 2:
-            continue
-        hits = key_at.setdefault(key, [])
-        for i in hits:                                    # earliest earlier attempt in the window
-            if i < floor:
+    # removals=<file>: the edit decisions come from Claude (cut_through_claude.js) as frame
+    # spans; the rule-based detection below is skipped and the rest (pauses, picture, audio) runs
+    given = json.load(open(o["removals"], encoding="utf-8")) if o.get("removals") else None
+    if given:
+        start, end = given["start"], given["end"]
+    else:
+        # 1. the repeat (+ cue words widen the look-back)
+        content = [k for k, t in enumerate(T) if t and t not in FILLER]
+        key_at = {}
+        for n, k in enumerate(content[:len(content) - REPEAT_N + 1]):
+            key = tuple(T[x] for x in content[n:n + REPEAT_N])
+            if sum(1 for t in key if t not in STOP) < 2:
                 continue
-            cue = has_cue(i, k)
-            win = CUE_WINDOW_SEC if cue else WINDOW_SEC
-            if not 0 < secs(i, k) <= win:
-                continue
-            # free talk repeats its topic phrases: a long span needs a real re-read (5+ words
-            # in a row again) or a cue between the takes
-            ci, ck = content.index(i), n
-            run = 0
-            while ck + run < len(content) and ci + run < ck and T[content[ci + run]] == T[content[ck + run]]:
-                run += 1
-            # a quick restart breaks off mid-sentence; a finished sentence in between = a callback
-            ended = any(re.search(r"[.?!]$", W[x]["w"].strip()) for x in range(i, k))
-            if cue or run >= 5 or (secs(i, k) <= 8 and run >= REPEAT_N and not ended):
-                removals.append((i, k, "retake (repeat)"))
-                floor = k
-                break
-        hits.append(k)
-    # 2. stutters / quick restarts: "the the", "so here so here"
-    for k in range(1, len(T)):
-        for n in (1, 2):
-            if k - 2 * n + 1 < 0 or k + 1 < 2 * n:
-                continue
-            a, b = T[k - 2 * n + 1:k - n + 1], T[k - n + 1:k + 1]
-            if a == b and all(a) and not any(t in FILLER or t.isdigit() for t in a) and \
-                    (W[k - n + 1]["s"] - W[k - n]["e"]) * frame_sec < 1.5:
-                removals.append((k - 2 * n + 1, k - n + 1, "stutter"))
-    # 3. a count with no repeat after it: the sentence before it through the count
-    for k in range(len(T) - 2):
-        if all(T[k + x] in COUNT[x] for x in range(3)):
-            if any(i <= k < j for i, j, _ in removals):
-                continue
-            s = k
-            while s > 0 and not re.search(r"[.?!]$", W[s - 1]["w"].strip()) and secs(s - 1, k) < 60:
-                s -= 1
-            removals.append((s, k + 3, "count"))
+            hits = key_at.setdefault(key, [])
+            for i in hits:                                    # earliest earlier attempt in the window
+                if i < floor:
+                    continue
+                cue = has_cue(i, k)
+                win = CUE_WINDOW_SEC if cue else WINDOW_SEC
+                if not 0 < secs(i, k) <= win:
+                    continue
+                # free talk repeats its topic phrases: a long span needs a real re-read (5+ words
+                # in a row again) or a cue between the takes
+                ci, ck = content.index(i), n
+                run = 0
+                while ck + run < len(content) and ci + run < ck and T[content[ci + run]] == T[content[ck + run]]:
+                    run += 1
+                # a quick restart breaks off mid-sentence; a finished sentence in between = a callback
+                ended = any(re.search(r"[.?!]$", W[x]["w"].strip()) for x in range(i, k))
+                if cue or run >= 5 or (secs(i, k) <= 8 and run >= REPEAT_N and not ended):
+                    removals.append((i, k, "retake (repeat)"))
+                    floor = k
+                    break
+            hits.append(k)
+        # 2. stutters / quick restarts: "the the", "so here so here"
+        for k in range(1, len(T)):
+            for n in (1, 2):
+                if k - 2 * n + 1 < 0 or k + 1 < 2 * n:
+                    continue
+                a, b = T[k - 2 * n + 1:k - n + 1], T[k - n + 1:k + 1]
+                if a == b and all(a) and not any(t in FILLER or t.isdigit() for t in a) and \
+                        (W[k - n + 1]["s"] - W[k - n]["e"]) * frame_sec < 1.5:
+                    removals.append((k - 2 * n + 1, k - n + 1, "stutter"))
+        # 3. a count with no repeat after it: the sentence before it through the count
+        for k in range(len(T) - 2):
+            if all(T[k + x] in COUNT[x] for x in range(3)):
+                if any(i <= k < j for i, j, _ in removals):
+                    continue
+                s = k
+                while s > 0 and not re.search(r"[.?!]$", W[s - 1]["w"].strip()) and secs(s - 1, k) < 60:
+                    s -= 1
+                removals.append((s, k + 3, "count"))
 
     spans = []
     for i, j, why in removals:
@@ -157,6 +165,9 @@ def main(argv) -> None:
         if b > a:
             spans.append({"from": a, "to": b, "why": why, "words": (i, j)})
     spans += [{"from": a, "to": b, "why": "editorial (listed)", "words": None} for a, b in cuts]
+    if given:
+        spans += [{"from": int(r["from"]), "to": int(r["to"]), "why": f"claude {r['why']}", "words": None}
+                  for r in given["removals"] if r["to"] > r["from"]]
     spans.sort(key=lambda r: r["from"])
     merged = []
     for r in spans:
@@ -266,7 +277,8 @@ def main(argv) -> None:
     camera = day.get("audio_source") == "camera"
     mics = {} if camera else {talker: [[a, b] for a, b in kept]}
     plan = {"label": data["label"], "multicam": data["multicam"], "fps": fps,
-            "note": "Draft by plan_solo.py (style-guide solo rules from the words file; no LLM).",
+            "note": ("Edit by Claude (removals) + plan_solo.py (pauses, picture, audio)." if given else
+                     "Draft by plan_solo.py (style-guide solo rules from the words file; no LLM)."),
             "mic_angles": {} if camera else {talker: talker}, "video": video, "mics": mics,
             "audio": {"source": "camera" if camera else "wav", "angle": talker},
             "removals": [{"from": r["from"], "to": r["to"], "why": r["why"]} for r in merged]}

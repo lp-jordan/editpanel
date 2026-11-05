@@ -64,6 +64,7 @@ function CutThroughPage({ connected }) {
   const [errors, setErrors] = React.useState({});
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [settingsDraft, setSettingsDraft] = React.useState({ spikesDir: '', wxPython: '' });
+  const [keyDraft, setKeyDraft] = React.useState('');
 
   const apply = React.useCallback((res, key) => {
     if (res && res.data) setCt(res.data);
@@ -410,6 +411,26 @@ function CutThroughPage({ connected }) {
                 onChange={(e) => setSettingsDraft({ ...settingsDraft, wxPython: e.target.value })}
                 onBlur={() => call('settings', () => api.updateSettings({ wxPython: settingsDraft.wxPython }))} />
             </label>
+            <div className="ct-form-row">
+              <label className="ct-inline ct-grow">
+                <span className="settings-label">Claude API key</span>
+                <input className="settings-input" type="password" autoComplete="off" value={keyDraft}
+                  placeholder={ct.settings.claudeKey || 'Not set'}
+                  onChange={(e) => setKeyDraft(e.target.value)}
+                  onBlur={() => {
+                    if (!keyDraft.trim()) return;
+                    call('settings', () => api.updateSettings({ anthropicKey: keyDraft.trim() })).then(() => setKeyDraft(''));
+                  }} />
+              </label>
+              <label className="ct-inline">
+                <span className="settings-label">Claude model</span>
+                <select className="settings-input" value={ct.settings.claudeModel}
+                  onChange={(e) => call('settings', () => api.updateSettings({ claudeModel: e.target.value }))}>
+                  <option value="claude-opus-5-5">Opus 5.5</option>
+                  <option value="claude-sonnet-5-5">Sonnet 5.5</option>
+                </select>
+              </label>
+            </div>
             <span className="hint">Output: {ct.settings.desktopDir}</span>
             {errors.settings && <div className="notice error">{errors.settings}</div>}
           </div>
