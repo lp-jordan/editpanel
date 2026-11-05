@@ -182,9 +182,14 @@ def main() -> None:
     if other:
         project.SetCurrentTimeline(other)
     _safe(lambda: mp.DeleteTimelines([tmp]))
-    inner = next((p for p in (os.path.join(mcdef + "d", "Info.fcpxml"), mcdef) if os.path.isfile(p)), None)
-    if not inner and os.path.isdir(mcdef + "d"):
-        inner = next((os.path.join(mcdef + "d", f) for f in os.listdir(mcdef + "d") if f.lower().endswith(".fcpxml")), None)
+    inner = None                                     # a file, or a bundle FOLDER named .fcpxml or .fcpxmld
+    for p in (mcdef, mcdef + "d"):
+        if os.path.isfile(p):
+            inner = p
+        elif os.path.isdir(p):
+            inner = next((os.path.join(p, f) for f in os.listdir(p) if f.lower().endswith(".fcpxml")), None)
+        if inner:
+            break
     say(f"Export: {', '.join(tried) or 'no FCPXML export type offered'} → {inner or 'no file written'}")
     if not inner:
         raise RuntimeError("export failed")
