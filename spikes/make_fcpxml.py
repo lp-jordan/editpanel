@@ -60,12 +60,15 @@ def cam_no(name: str) -> int:
     return int(m.group(1)) if m else 999
 
 
-def atem_out(media_xml: str, atem_angle: str = "Camera 1"):
+def atem_out(media_xml: str, atem_angle: str = "Camera 1", strip_audio: bool = True):
     """The copy is rebuilt from this description on every import (2026-11-05):
       * angles are written in camera order (Camera 1, 2, 3, 4) so the copy's stack matches the
         original's (Resolve exports them in its own order, e.g. 3, 2, 4, 1);
       * the ATEM angle's audio (the mix on Camera 1) comes in red in every copy, so the copy gets
         that angle as picture only and the mix is cut as plain clips of the file, like the mics.
+        ROOT CAUSE found later the same day: the copy only links an angle's audio when the importing
+        timeline USES the multicam's audio (mc-source srcEnable="audio"/"all"). So the default now
+        (atem=mc, strip_audio=False) keeps Camera 1 as exported and cuts A1 from the multicam's audio.
     Returns (media xml, [(angle offset s, duration s, media start s, asset ref, file name)])."""
     root = ET.fromstring(media_xml)
     mc = root.find("multicam")
@@ -83,6 +86,8 @@ def atem_out(media_xml: str, atem_angle: str = "Camera 1"):
                 continue
             o, d, st = secs(el.get("offset")), secs(el.get("duration", "0s")), secs(el.get("start", "0s"))
             runs.append((o, d, st, el.get("ref"), el.get("name")))
+            if not strip_audio:
+                continue
             clip = ET.Element("clip", {x: el.get(x) for x in ("name", "start", "duration", "enabled", "tcFormat",
                                                                "offset", "format") if el.get(x) is not None})
             for child in list(el):
@@ -168,19 +173,21 @@ def main(argv=None) -> list:
             angle_wavs.update(found)
             print("  mic WAVs placed in the multicam (cut as plain clips): " +
                   ", ".join(f"{n} under {a} at +{float(o):.3f}s" for a, (_, n, o, _) in sorted(angle_wavs.items())))
-    atem_mode = opts.pop("atem", "cut")                     # cut = ATEM mix as plain clips on A1; off = old way
+    atem_mode = opts.pop("atem", "mc")                      # mc = A1 cut from the multicam's Camera 1 audio (the copy
+                                                            # then links it: green); cut = plain clips of the file; off
     atem_on = opts.pop("atem_on", "0") == "1"               # the mix is the fallback: clips disabled by default
     atem_runs = []
     global LAST_ATEM
     LAST_ATEM = None
-    if atem_mode == "cut":
+    if atem_mode in ("cut", "mc"):
         for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
-            fixed, runs = atem_out(block)
+            fixed, runs = atem_out(block, strip_audio=atem_mode == "cut")
             resources = resources.replace(block, fixed)
             atem_runs += runs
         if atem_runs:
-            LAST_ATEM = atem_runs[0][4]
-            print(f"  ATEM mix (Camera 1 audio) cut as plain clips of {LAST_ATEM} on A1; angles in camera order")
+            LAST_ATEM = atem_runs[0][4] if atem_mode == "cut" else "Camera 1"
+            print(f"  ATEM mix (Camera 1 audio) on A1 " + ("as plain clips of " + LAST_ATEM if atem_mode == "cut"
+                  else "from the multicam (keeps it linked in the copy)") + "; angles in camera order")
     # the multicam: its resource id, start timecode and angle IDs by name
     want = {p["multicam"] for _, p in jobs}
     media = next(((attrs(m.group(1)), attrs(m.group(2)))
@@ -250,10 +257,16 @@ def main(argv=None) -> list:
                                 lines.append(f'                                <gap name="Gap" duration="{t(r0 - pos)}" '
                                              f'offset="{t(pos)}" start="3600/1s"/>')
                             sec = Fraction(s_) * FD
-                            o, d, st, ref, fname = next((x for x in atem_runs if x[0] <= sec < x[0] + x[1]), atem_runs[0])
-                            lines.append(f'                                <asset-clip ref="{ref}" name={quoteattr(fname)} '
-                                         f'srcEnable="audio" duration="{t(e_ - s_)}" offset="{t(r0)}" '
-                                         f'start="{fmt_s(st + sec - o)}" enabled="{int(on)}"/>')
+                            if atem_mode == "mc":
+                                lines.append(f'                                <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
+                                             f'duration="{t(e_ - s_)}" offset="{t(r0)}" start="{src_t(s_)}" enabled="{int(on)}">')
+                                lines.append(f'                                    <mc-source srcEnable="audio" angleID="{angles["Camera 1"]}"/>')
+                                lines.append("                                </mc-clip>")
+                            else:
+                                o, d, st, ref, fname = next((x for x in atem_runs if x[0] <= sec < x[0] + x[1]), atem_runs[0])
+                                lines.append(f'                                <asset-clip ref="{ref}" name={quoteattr(fname)} '
+                                             f'srcEnable="audio" duration="{t(e_ - s_)}" offset="{t(r0)}" '
+                                             f'start="{fmt_s(st + sec - o)}" enabled="{int(on)}"/>')
                             pos = r0 + (e_ - s_)
                         lines.append("                            </spine>")
                         continue
