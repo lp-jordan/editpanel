@@ -55,7 +55,7 @@ def fmt_s(v: Fraction) -> str:
     return f"{v.numerator}/{v.denominator}s" if v else "0/1s"
 
 
-def split_off_angle_tracks(media_xml: str):
+def split_off_angle_tracks(media_xml: str, remove: bool = True):
     """Resolve exports an angle's extra tracks (the mic WAV Jordan placed under a camera) as a
     second run in the same list, restarting at offset 0. On import Resolve places those clips by
     TIMECODE, and the recorder's WAVs start at 00:00:00:00, so they land hours before the video
@@ -74,7 +74,8 @@ def split_off_angle_tracks(media_xml: str):
                 run += 1
             end = o + secs(el.get("duration", "0s"))
             if run:
-                ang.remove(el)
+                if remove:
+                    ang.remove(el)
                 if el.tag == "asset-clip" and ang.get("name") not in wavs:
                     wavs[ang.get("name")] = (el.get("ref"), el.get("name"), o, secs(el.get("start", "0s")))
     return ET.tostring(root, encoding="unicode"), wavs
@@ -103,6 +104,7 @@ def main(argv=None) -> list:
     split = int(opts.pop("split", "1"))
     part = int(opts.pop("part", "0"))                       # keep only the Nth split (1-based)
     joined = opts.pop("joined", "")                         # put every timeline into one, named this
+    keep_tracks = opts.pop("angle_tracks", "strip") == "keep"   # leave the mic WAVs in the copy's angles
     mic_angle = opts
     xml = open(src, encoding="utf-8").read()
     jobs = []                                               # (timeline name, plan)
@@ -117,9 +119,10 @@ def main(argv=None) -> list:
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
     angle_wavs = {}
     for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
-        fixed, found = split_off_angle_tracks(block)
+        fixed, found = split_off_angle_tracks(block, remove=not keep_tracks)
         if found:
-            resources = resources.replace(block, fixed)
+            if not keep_tracks:
+                resources = resources.replace(block, fixed)
             angle_wavs.update(found)
             print("  mic WAVs placed in the multicam (cut as plain clips): " +
                   ", ".join(f"{n} under {a} at +{float(o):.3f}s" for a, (_, n, o, _) in sorted(angle_wavs.items())))

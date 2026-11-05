@@ -184,6 +184,21 @@ def reference_levels(project: Any, mc_id: str, skip: set, angles: set) -> dict:
     return out
 
 
+def mix_level(project: Any, mp: Any, mc: Any, frame: int, tag: str):
+    """Loudness of a multicam's own audio (the ATEM mix on Camera 1) over 10 s from `frame`,
+    via a throwaway timeline (deleted again)."""
+    tl = mp.CreateEmptyTimeline(f"__SPIKE_mixcheck_{tag}_{int(time.time()) % 100000}")
+    if not tl:
+        return None
+    project.SetCurrentTimeline(tl)
+    its = _safe(lambda: mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": frame,
+                                               "endFrame": frame + 240, "mediaType": 2}]), []) or []
+    modes = [m for m in (_safe(lambda: tl.GetNormalizeAudioModes(), []) or []) if "Peak" not in m]
+    lv = (_safe(lambda: its[0].AnalyzeAudioLevels(modes[0]), {}) or {}) if its and modes else {}
+    _safe(lambda: mp.DeleteTimelines([tl]))
+    return lv.get("Integrated")
+
+
 def uses(tl: Any) -> set:
     """Unique IDs of the media pool items a timeline's clips come from."""
     ids = set()
@@ -276,6 +291,17 @@ def main() -> None:
                 for k in range(1, int(t.GetTrackCount("audio") or 0) + 1))))
         good = self_check(project, t)
         globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and good
+    copy = next((c for _, c in after if c.GetUniqueId() not in {b.GetUniqueId() for _, b in before}), None)
+    if copy and plan.get("mics"):
+        frame = sorted(plan["mics"][next(iter(plan["mics"]))])[0][0] + 24   # inside the first talking stretch
+        back = new[0] if new else None
+        lc, lo = mix_level(project, mp, copy, frame, "copy"), mix_level(project, mp, orig, frame, "orig")
+        if back:
+            project.SetCurrentTimeline(back)
+        bad = (lc is None or lc <= -90) and lo is not None and lo > -90
+        globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and not bad
+        say(f"    check ATEM mix (multicam audio): copy {lc} LUFS vs original {lo} LUFS "
+            f"{'✗ offline in the copy' if bad else '✓'}")
     say(f"Multicam copies used across the new timeline(s): {len(copies)}" +
         ("  ✓ one copy for the whole batch" if len(copies) == 1 else ""))
     if len(after) == len(before) and set(copies) <= {orig_id}:
