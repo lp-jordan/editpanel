@@ -32,6 +32,15 @@ const MAX_LOG_LINES = 400;
 // `  Camera 2 [######-------------------]  24%  5.4/22.6 min  41s`
 const PROGRESS_RE = /^\s*(.*?)\s*\[([#-]+)\]\s+(\d+)%\s+([\d.]+)\/([\d.]+)\s*min(?:\s+(\d+)s)?/;
 
+// `  reading 1/3 CAM1_01.mov  45%  812 MB` (transcribe_day.py while it reads the audio)
+const READ_RE = /^\s*reading (\d+)\/(\d+) (.*?)\s+(\d+)%\s+([\d.]+) MB/;
+
+function parseRead(line) {
+  const m = READ_RE.exec(String(line || ''));
+  if (!m) return null;
+  return { file: Number(m[1]), files: Number(m[2]), name: m[3], pct: Math.min(100, Number(m[4])), mb: Number(m[5]) };
+}
+
 function parseProgress(line) {
   const m = PROGRESS_RE.exec(String(line || ''));
   if (!m) return null;
@@ -423,15 +432,24 @@ function createCutThrough(opts) {
     const args = [path.join(spikesDir, 'transcribe_day.py'), s.label, `dir=${desktopDir}`, ...(mins ? [`minutes=${mins}`] : [])];
     const res = await runChild('transcribe', wxPython, args, {
       onLine: (line) => {
+        const r = parseRead(line);
+        if (r) {
+          // reading the audio (a long camera file off the NAS takes minutes): its own bar
+          const phase = `Reading audio ${r.file}/${r.files} · ${r.name} · ${Math.round(r.mb)} MB`;
+          if (st.progress.phase !== phase && !String(st.progress.phase || '').startsWith(`Reading audio ${r.file}/`)) st.progress.phaseAt = Date.now();
+          st.progress = { ...st.progress, phase, bar: Math.round(100 * ((r.file - 1) + r.pct / 100) / r.files) };
+          return true;
+        }
         const p = parseProgress(line);
         if (!p) {
-          if (/^Reading |^Loading the model/.test(line.trim())) st.progress.phase = line.trim().replace(/…$/, '');
+          const t = line.trim();
+          if (t.endsWith('…')) st.progress = { ...st.progress, phase: t.replace(/…$/, ''), phaseAt: Date.now(), bar: null };
           return false;
         }
         if (p.angle !== lastAngle) { micIdx += 1; lastAngle = p.angle; }
         const before = plan.slice(0, Math.max(0, micIdx)).reduce((a, m) => a + m.totalMin, 0);
         const overall = Math.min(100, Math.round(100 * (before + p.doneMin) / grand));
-        st.progress = { ...p, mic: micIdx + 1, mics: plan.length, overall, phase: null };
+        st.progress = { ...p, mic: micIdx + 1, mics: plan.length, overall, phase: null, bar: null };
         return true;
       }
     });
@@ -560,6 +578,7 @@ function errMsg(err) {
 module.exports = {
   createCutThrough,
   parseProgress,
+  parseRead,
   sanitizeLabel,
   micAngles,
   planKind,

@@ -35,6 +35,8 @@ fs.mkdirSync(FAKE_SPIKES, { recursive: true });
   const p = ct.parseProgress('  Camera 2 [######-------------------]  24%  5.4/22.6 min  41s');
   assert.deepStrictEqual(p, { angle: 'Camera 2', pct: 24, doneMin: 5.4, totalMin: 22.6, seconds: 41 });
   assert.strictEqual(ct.parseProgress('Loading the model on cuda…'), null);
+  assert.deepStrictEqual(ct.parseRead('\r  reading 1/3 CAM 1 01.mov  45%  812 MB'), { file: 1, files: 3, name: 'CAM 1 01.mov', pct: 45, mb: 812 });
+  assert.strictEqual(ct.parseProgress('  reading 1/3 CAM1_01.mov  45%  812 MB'), null);
   assert.strictEqual(ct.parseProgress('  Camera 3 [#########################] 100%  22.6/22.6 min  180s').pct, 100);
   assert.strictEqual(ct.sanitizeLabel(' Frenzy Q4 / mc_2 '), 'Frenzy_Q4_mc_2');
   assert.deepStrictEqual(ct.parseCuts('100-200, 300-450'), ['100-200', '300-450']);
@@ -132,9 +134,14 @@ if os.environ.get("CT_FAKE_FAIL") == "1":
     raise ModuleNotFoundError("No module named 'av'")
 day = json.load(open(os.path.join(desk, f"day_{label}.json"), encoding="utf-8"))
 print(f"Reading {len(day['mics'])} mic file(s)…", flush=True)
+for i, m in enumerate(day["mics"], 1):
+    for pct in (30, 60, 100):
+        print(f"\r  reading {i}/{len(day['mics'])} {m['name']} {pct:3d}%  {pct * 9:.0f} MB", end="\n" if pct == 100 else "", flush=True)
+        time.sleep(0.6 if slow else 0.01)
 print("Loading the model on cuda…", flush=True)
 words = []
 for m in day["mics"]:
+    print(f"Finding speech in {m['angle']} (2.0 min)…", flush=True)
     total = (m["to_sec"] - m["from_sec"]) / 60
     for k in range(1, 5):
         pct = 25 * k
@@ -239,13 +246,16 @@ if (process.env.CT_TEST_PYTHON) {
   fs.writeFileSync(path.join(STUBS, 'av.py'), String.raw`
 import numpy as np
 class _Frame:
-    def __init__(self, x): self.x, self.pts = x, 0
+    def __init__(self, x, t): self.x, self.pts, self.time = x, 0, t
     def to_ndarray(self): return self.x.reshape(1, -1)
 class AudioResampler:
     def __init__(self, format, layout, rate): assert (format, layout, rate) == ("s16", "mono", 16000)
     def resample(self, f): return [] if f is None else [f]
+class _Stream:
+    duration, time_base = 70, 1
 class _Streams:
-    audio = ["a0"]
+    audio = [_Stream()]
+DECODED = []
 class _Container:
     def __init__(self, path): self.path, self.streams = path, _Streams()
     def __enter__(self): return self
@@ -256,7 +266,8 @@ class _Container:
         at = 20 if "CAM1_01" in self.path else 5
         x[at * 16000:(at + 1) * 16000] = 3277
         for i in range(0, len(x), 16000):
-            yield _Frame(x[i:i + 16000])
+            DECODED.append((self.path, i // 16000))
+            yield _Frame(x[i:i + 16000], i / 16000)
 def open(path, mode="r"):
     return _Container(path)
 `);
@@ -283,6 +294,16 @@ class WhisperModel:
   assert.deepStrictEqual(words.words.map((w) => Math.round(w.s / fps)), [10, 65], JSON.stringify(words.words));
   assert.ok(words.words.every((w) => w.own));
   assert.ok(/camera audio, 1 track/.test(fs.readFileSync(path.join(DESKTOP, 'transcribe_Cam1.txt'), 'utf8')));
+  assert.ok(/reading 1\/2 CAM1_01\.mov 100%/.test(out) && /Finding speech in Camera 1 \(2\.0 min\)…/.test(out), out);
+  // quick test (minutes=0.5 → first 30 s of the multicam): stops reading CAM1_01 early, skips CAM1_02
+  const q = execFileSync(process.env.CT_TEST_PYTHON, ['-c', [
+    'import sys, runpy, av',
+    `sys.argv = ["transcribe_day.py", "Cam1", ${JSON.stringify('dir=' + DESKTOP)}, "minutes=0.5"]`,
+    `runpy.run_path(${JSON.stringify(path.join(SPIKES, 'transcribe_day.py'))}, run_name="__main__")`,
+    'print("DECODED", max(t for p, t in av.DECODED if "CAM1_01" in p), sum(1 for p, t in av.DECODED if "CAM1_02" in p))'
+  ].join('\n')], { env: { ...PY_ENV, PYTHONPATH: STUBS }, encoding: 'utf8' });
+  const dec = /DECODED (\d+) (\d+)/.exec(q);
+  assert.ok(dec && Number(dec[1]) <= 42 && Number(dec[2]) === 0, q);   // file 10 s + 30 s window + 1 s margin
   console.log('✓ transcribe_day.py: camera clips on one angle → one track on the multicam clock');
   // ffmpeg fallback on a real file (needs an ffmpeg binary; EditPanel passes its bundled one)
   let ffmpeg = null;
@@ -364,10 +385,15 @@ sys.stdout.write(json.dumps(res))`;
   // transcribe, canceled midway
   process.env.CT_FAKE_SLOW = '1';
   const pending = c.runTranscribe({});
-  await new Promise((r) => setTimeout(r, 1800));
+  await new Promise((r) => setTimeout(r, 900));
+  const reading = c.snapshot().steps.transcribe;
+  assert.ok(/^Reading audio 1\/2 · 02MIC2.WAV · \d+ MB$/.test(reading.progress.phase), JSON.stringify(reading.progress));
+  assert.ok(reading.progress.bar > 0 && reading.progress.bar < 50 && reading.progress.phaseAt, JSON.stringify(reading.progress));
+  await new Promise((r) => setTimeout(r, 3600));
   const mid = c.snapshot().steps.transcribe;
   assert.strictEqual(mid.status, 'running');
-  assert.ok(mid.progress && (mid.progress.angle === 'Camera 2' || mid.progress.phase), JSON.stringify(mid.progress));
+  assert.ok(mid.progress && (mid.progress.angle === 'Camera 2' || /^Finding speech in Camera 2/.test(mid.progress.phase || '')), JSON.stringify(mid.progress));
+  assert.ok(!mid.log.some((l) => /reading \d/.test(l)), 'reading lines leaked into the log');
   c.cancel();
   snap = await pending;
   assert.strictEqual(snap.steps.transcribe.status, 'canceled');

@@ -197,10 +197,12 @@ function CutThroughPage({ connected }) {
           {st.status === 'running' && p && (
             <div className="ct-progress">
               <div className="ct-progress-text">
-                <span>{p.phase || `${p.angle} · mic ${p.mic}/${p.mics} · ${p.doneMin.toFixed(1)}/${p.totalMin.toFixed(1)} min`}</span>
-                <span className="dim">{p.overall}%</span>
+                <span>{p.phase
+                  ? `${p.phase}${p.phaseAt ? ` · ${ctDuration(now - p.phaseAt)}` : ''}`
+                  : `${p.angle} · mic ${p.mic}/${p.mics} · ${p.doneMin.toFixed(1)}/${p.totalMin.toFixed(1)} min`}</span>
+                <span className="dim">{p.bar != null ? p.bar : p.overall}%</span>
               </div>
-              <div className="run-progress-track"><div className="run-progress-fill" style={{ width: `${p.overall || 0}%` }} /></div>
+              <div className="run-progress-track"><div className="run-progress-fill" style={{ width: `${(p.bar != null ? p.bar : p.overall) || 0}%` }} /></div>
             </div>
           )}
         </div>

@@ -65,24 +65,44 @@ def read_wav(path: str) -> np.ndarray:
     return x
 
 
-def decode_av(path: str) -> np.ndarray:
+def read_progress(tag: str, pct: int, mb: float, final: bool = False) -> None:
+    """`  reading 1/3 CAM1_01.mov  45%  812 MB` — EditPanel's Cut-through page parses this."""
+    print(f"\r  reading {tag} {min(100, pct):3d}%  {mb:.0f} MB", end="\n" if final else "", flush=True)
+
+
+def decode_av(path: str, until: float = None, tag: str = "") -> np.ndarray:
     """First audio track → 16 kHz mono via PyAV, called directly: faster-whisper's own
-    decode_audio passes av.open(metadata_errors=…), which newer PyAV (LP1's wxbench) rejects."""
+    decode_audio passes av.open(metadata_errors=…), which newer PyAV (LP1's wxbench) rejects.
+    A camera file is read end to end (audio sits between the video), so a long one takes a
+    while off the NAS: progress is printed; `until` (file seconds) stops early for quick tests."""
     import av
     parts = []
+    size = os.path.getsize(path) if os.path.isfile(path) else 0
     with av.open(path) as container:
         stream = container.streams.audio[0]
         resampler = av.AudioResampler(format="s16", layout="mono", rate=SR)
+        total = until or (float(stream.duration * stream.time_base) if stream.duration
+                          else (container.duration or 0) / 1e6) or 0
+        last = 0.0
 
         def take(frames):
             for f in frames if isinstance(frames, list) else [frames]:
                 if f is not None:
                     parts.append(f.to_ndarray().reshape(-1))
 
+        pct = 0
         for frame in container.decode(stream):
+            t = float(frame.time or 0)
             frame.pts = None
             take(resampler.resample(frame))
+            if time.time() - last > 1:
+                last = time.time()
+                pct = int(100 * t / total) if total else 0
+                read_progress(tag, pct, pct / 100 * size / 1e6)
+            if until and t > until:
+                break
         take(resampler.resample(None))                      # flush
+        read_progress(tag, 100, (pct / 100 if until else 1) * size / 1e6, final=True)
     return (np.concatenate(parts) if parts else np.zeros(0, np.int16)).astype(np.float32) / 32768.0
 
 
@@ -95,16 +115,18 @@ def decode_ffmpeg(path: str) -> np.ndarray:
     return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
 
 
-def read_audio(path: str) -> np.ndarray:
+def read_audio(path: str, until: float = None, tag: str = "") -> np.ndarray:
     """Any source → 16 kHz mono float32: PCM WAVs directly, camera files (mov/mp4/mxf…) through
     PyAV, else ffmpeg (first audio track, channels mixed down)."""
     if path.lower().endswith(".wav"):
         try:
-            return read_wav(path)
+            x = read_wav(path)
+            read_progress(tag, 100, os.path.getsize(path) / 1e6, final=True)
+            return x
         except (wave.Error, KeyError):
             pass                                         # not plain PCM — decode it
     try:
-        return decode_av(path)
+        return decode_av(path, until, tag)
     except Exception as exc:
         print(f"  PyAV couldn't decode {os.path.basename(path)} ({type(exc).__name__}: {exc}); trying ffmpeg", flush=True)
         return decode_ffmpeg(path)
@@ -137,9 +159,19 @@ def main() -> None:
     # all sources under one angle (camera clips, split recorder files) share one track
     t0 = time.time()
     tracks = {}
-    print(f"Reading {len(day['mics'])} audio file(s)…", flush=True)
+    track_lo = {}
     for m in day["mics"]:
-        x = read_audio(m["path"])
+        track_lo[m["angle"]] = min(track_lo.get(m["angle"], m["from_sec"]), m["from_sec"])
+    print(f"Reading {len(day['mics'])} audio file(s)…", flush=True)
+    for i, m in enumerate(day["mics"], 1):
+        tag = f"{i}/{len(day['mics'])} {m['name']}"
+        until = None
+        if limit:                                            # quick test: only what the window needs
+            until = track_lo[m["angle"]] + limit / SR - m["file_zero_sec"] + 1
+            if track_lo[m["angle"]] + limit / SR <= m["from_sec"]:
+                read_progress(tag, 100, 0, final=True)       # starts after the window: skip the file
+                continue
+        x = read_audio(m["path"], until, tag)
         shift = int(round(m["file_zero_sec"] * SR))             # file 0:00 sits here in the multicam
         lo, hi = int(m["from_sec"] * SR), int(m["to_sec"] * SR)
         t = tracks.get(m["angle"])
@@ -176,6 +208,7 @@ def main() -> None:
         clip = m["audio"][m["lo"]:m["hi"]]
         clip = np.clip(clip * m["gain"], -1, 1).astype(np.float32)
         t0 = time.time()
+        print(f"Finding speech in {m['angle']} ({len(clip) / SR / 60:.1f} min)…", flush=True)
         segs, _ = model.transcribe(clip, language="en", beam_size=5, word_timestamps=True, vad_filter=True,
                                    condition_on_previous_text=False)
         n = 0
