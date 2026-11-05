@@ -37,7 +37,8 @@ LABEL = globals().get("LABEL", "ConvoTest")
 BATCH = bool(globals().get("BATCH"))                   # the file holds several timelines (names come from it)
 ARCHIVE = bool(globals().get("ARCHIVE") or globals().get("QUARANTINE"))  # original multicam → its own bin
 ORIG_BIN = globals().get("ORIG_BIN", "MC ORIGINAL")
-RAW = globals().get("RAW")                             # "*" or [names]: timelines on the original to move with it
+RAW = globals().get("RAW")
+MICS = globals().get("MICS") or {}                     # role → mic angle; puts each person's clips on their track                             # "*" or [names]: timelines on the original to move with it
 SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}                # the original is out of play in these
 REPO = r"C:\lp-app-ecosystem\editpanel"
 DESKTOP = os.path.expanduser("~/Desktop")
@@ -103,6 +104,23 @@ def png_mean(data: bytes):
             tot[0] += line[i]; tot[1] += line[i + 1]; tot[2] += line[i + 2]
         prev = line
     return tuple(round(v / (w * h)) for v in tot)
+
+
+def fix_mic_tracks(project: Any, tl: Any, want: dict) -> None:
+    """Put every mic clip on its person's track (track k = k-th role's mic angle): Resolve packs
+    the imported mic storylines onto A1/A2 as space allows, mixing the two people."""
+    project.SetCurrentTimeline(tl)
+    moved = failed = 0
+    for k in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
+        for it in list(_safe(lambda: tl.GetItemListInTrack("audio", k), []) or []):
+            dest = want.get(angle_of(it))
+            if dest and dest != k:
+                if _safe(lambda: it.SetPosition({"trackIndex": dest}, False), False):
+                    moved += 1
+                else:
+                    failed += 1
+    if moved or failed:
+        say(f"    mic clips moved to their person's track: {moved}" + (f" (✗ {failed} could not move)" if failed else ""))
 
 
 def self_check(project: Any, tl: Any) -> bool:
@@ -217,6 +235,12 @@ def main() -> None:
                 a[angle_of(x)] = a.get(angle_of(x), 0) + 1
             auds.append(f"A{k} {len(its)} {a}")
         say(f"  {t.GetName()}: {len(v1)} picture clip(s) {angs}; multicam(s) used {[k[:8] for k in ids]}; " + "; ".join(auds))
+        if MICS:
+            fix_mic_tracks(project, t, {MICS[role]: k for k, role in enumerate(plan["mics"], 1) if role in MICS})
+            _safe(lambda: say("    after: " + "; ".join(
+                f"A{k} " + str({a: sum(1 for x in t.GetItemListInTrack('audio', k) if angle_of(x) == a)
+                                for a in {angle_of(x) for x in t.GetItemListInTrack('audio', k)}})
+                for k in range(1, int(t.GetTrackCount("audio") or 0) + 1))))
         good = self_check(project, t)
         globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and good
     say(f"Multicam copies used across the new timeline(s): {len(copies)}" +
@@ -266,5 +290,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
         globals().pop(_k, None)

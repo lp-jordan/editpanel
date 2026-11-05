@@ -155,7 +155,7 @@ def main() -> None:
     # 3. import → one copy (primary); original archived
     t1 = time.time()
     g = run_script("spike_import_fcpxml.py", {"XML": os.path.basename(out), "LABEL": LABEL, "BATCH": True,
-                                          "ARCHIVE": True, "RAW": RAW}, r)
+                                          "ARCHIVE": True, "RAW": RAW, "MICS": MICS}, r)
     say(f"3. Import done ({time.time() - t1:.1f}s)")
     if not g.get("CHECK_OK", True):
         raise RuntimeError("the imported multicam copy failed its self-check — not splitting "

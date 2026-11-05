@@ -26,6 +26,7 @@ The output names the client's media, so keep it out of git.
 import json
 import re
 import sys
+import xml.etree.ElementTree as ET
 from fractions import Fraction
 from xml.sax.saxutils import quoteattr
 
@@ -40,6 +41,52 @@ def t(frames) -> str:
 def attrs(tag: str) -> dict:
     """An element's attributes, whatever order Resolve wrote them in (it differs by version)."""
     return dict(re.findall(r'([\w:-]+)="([^"]*)"', tag))
+
+
+def secs(v: str) -> Fraction:
+    v = v.rstrip("s")
+    if "/" in v:
+        n, d = v.split("/")
+        return Fraction(int(n), int(d))
+    return Fraction(v)
+
+
+def fmt_s(v: Fraction) -> str:
+    return f"{v.numerator}/{v.denominator}s" if v else "0/1s"
+
+
+def stack_angle_tracks(media_xml: str):
+    """Resolve exports an angle's extra tracks (e.g. the mic WAV under a camera) as a second run
+    in the same list, restarting at offset 0 — and its importer drops them, so the copy's angles
+    came in with no mic audio (2026-11-05). Rewrite each later run as connected clips (lane -1,
+    -2…) hung on the first-run clip they start under, the standard FCPXML way to stack tracks."""
+    root = ET.fromstring(media_xml)
+    moved = 0
+    for ang in root.iter("mc-angle"):
+        runs, end = [[]], Fraction(0)
+        for el in list(ang):
+            if "offset" not in el.attrib:
+                runs[-1].append(el)
+                continue
+            o = secs(el.get("offset"))
+            if runs[-1] and o < end:
+                runs.append([])
+            runs[-1].append(el)
+            end = o + secs(el.get("duration", "0s"))
+        hosts = [e for e in runs[0] if e.tag != "gap" and "offset" in e.attrib]
+        for lane, run in enumerate(runs[1:], 1):
+            for el in run:
+                ang.remove(el)
+                if el.tag == "gap" or not hosts:
+                    continue
+                o = secs(el.get("offset"))
+                host = next((h for h in hosts if secs(h.get("offset")) <= o < secs(h.get("offset")) + secs(h.get("duration"))),
+                            hosts[0])
+                el.set("offset", fmt_s(secs(host.get("start", "0s")) + o - secs(host.get("offset"))))
+                el.set("lane", str(-lane))
+                host.append(el)
+                moved += 1
+    return ET.tostring(root, encoding="unicode"), moved
 
 
 def split_plan(plan: dict, n: int) -> list:
@@ -77,6 +124,11 @@ def main(argv=None) -> list:
         jobs += [(f"{name}_{k}" if len(parts) > 1 else name, p) for k, p in enumerate(parts, 1)
                  if not part or k == part]
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
+    for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
+        fixed, moved = stack_angle_tracks(block)
+        if moved:
+            resources = resources.replace(block, fixed)
+            print(f"  multicam angles: {moved} extra-track clip(s) restacked as connected clips")
     # the multicam: its resource id, start timecode and angle IDs by name
     want = {p["multicam"] for _, p in jobs}
     media = next(((attrs(m.group(1)), attrs(m.group(2)))
@@ -124,7 +176,7 @@ def main(argv=None) -> list:
                     angle = mic_angle.get(role)
                     if not angle:
                         raise SystemExit(f"no mic angle given for {role!r} (add {role}=\"Camera N\")")
-                    lines.append(f'                            <spine lane="{lane}" offset="{src_t(first["in"])}">')
+                    lines.append(f'                            <spine lane="{-lane}" offset="{src_t(first["in"])}">')
                     pos = 0
                     for s, e, r0 in clips:
                         if r0 > pos:
