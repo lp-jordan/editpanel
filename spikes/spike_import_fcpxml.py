@@ -153,6 +153,29 @@ def self_check(project: Any, tl: Any) -> bool:
     return ok
 
 
+def reference_levels(project: Any, mc_id: str, skip: set, angles: set) -> dict:
+    """Control for the silence check: the same loudness measurement on mic clips from an
+    existing timeline cut from the ORIGINAL multicam (known to have sound)."""
+    modes = None
+    out = {}
+    for i in range(1, int(project.GetTimelineCount()) + 1):
+        tl = project.GetTimelineByIndex(i)
+        if tl.GetName() in skip:
+            continue
+        for k in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
+            for it in _safe(lambda: tl.GetItemListInTrack("audio", k), []) or []:
+                ang = angle_of(it)
+                mpi = _safe(lambda: it.GetMediaPoolItem())
+                if ang in angles and ang not in out and mpi and mpi.GetUniqueId() == mc_id:
+                    project.SetCurrentTimeline(tl)
+                    modes = modes or [m for m in (tl.GetNormalizeAudioModes() or []) if "Peak" not in m]
+                    lv = _safe(lambda: it.AnalyzeAudioLevels(modes[0]), {}) or {}
+                    out[ang] = (tl.GetName(), lv.get("Integrated"))
+        if angles <= set(out):
+            break
+    return out
+
+
 def uses(tl: Any) -> set:
     """Unique IDs of the media pool items a timeline's clips come from."""
     ids = set()
@@ -253,6 +276,15 @@ def main() -> None:
         v1 = sorted(_safe(lambda: new[0].GetItemListInTrack("video", 1), []) or [], key=lambda x: x.GetStart())
         hits = sum(1 for p, it in zip(plan["video"], v1) if angle_of(it) == p["angle"])
         say(f"Picture angles matching the plan: {hits}/{len(plan['video'])}")
+    if not globals().get("CHECK_OK", True) and MICS:
+        ref = reference_levels(project, orig_id, {x.GetName() for x in new}, set(MICS.values()))
+        for ang, (tname, lufs) in sorted(ref.items()):
+            say(f"    control: {ang} audio on the ORIGINAL in '{tname}': {lufs} LUFS")
+        if ref and all(l is not None and l <= -90 for _, l in ref.values()):
+            say("    → the original measures silent too: the loudness check can't be trusted here, "
+                "listen to the copy instead")
+        elif not ref:
+            say("    → no timeline on the original uses those audio angles; no control measured")
     if not globals().get("CHECK_OK", True):
         say("✗ SELF-CHECK FAILED — the copy looks broken; original left in place, nothing archived")
     if ARCHIVE and len(after) > len(before) and globals().get("CHECK_OK", True):
