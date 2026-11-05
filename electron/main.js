@@ -2544,6 +2544,7 @@ app.whenReady().then(() => {
     getPrefs: () => controlPlane.getPreferences(),
     setPrefs: (patch) => controlPlane.setPreferences(patch),
     pythonCmd: PYTHON_CMD,
+    ffmpegPath,
     isPackaged: app.isPackaged,
     appDir: path.join(__dirname, '..')
   });

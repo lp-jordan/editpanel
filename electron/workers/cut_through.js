@@ -116,6 +116,7 @@ function createCutThrough(opts) {
     getPrefs = () => ({}),
     setPrefs = () => {},
     pythonCmd = 'python3',         // the app's own Python (plan_convo is stdlib only)
+    ffmpegPath = '',               // bundled ffmpeg: transcribe_day.py's decode fallback
     isPackaged = false,
     appDir = path.join(__dirname, '..', '..'),
     desktopDir = path.join(os.homedir(), 'Desktop')   // = Python's expanduser("~/Desktop")
@@ -367,7 +368,7 @@ function createCutThrough(opts) {
         proc = spawn(command, args, {
           cwd: settings().spikesDir,
           windowsHide: true,
-          env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
+          env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {}) }
         });
       } catch (err) {
         resolve({ code: null, error: errMsg(err) });

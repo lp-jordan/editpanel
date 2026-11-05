@@ -18,7 +18,7 @@ Run (normal Command Prompt):
     C:\\wxbench\\Scripts\\python C:\\lp-app-ecosystem\\editpanel\\spikes\\transcribe_day.py Convo2
 Quick test first (first 3 minutes of each mic): add  minutes=3
 Days without mic WAVs: the day file lists one angle's camera clips instead (ATEM mix or in-camera
-audio); those are decoded with PyAV (first audio track) and every source on one angle becomes one
+audio); those are decoded with PyAV or ffmpeg (first audio track) and every source on one angle becomes one
 track on the multicam clock.
 """
 import glob
@@ -65,16 +65,49 @@ def read_wav(path: str) -> np.ndarray:
     return x
 
 
+def decode_av(path: str) -> np.ndarray:
+    """First audio track → 16 kHz mono via PyAV, called directly: faster-whisper's own
+    decode_audio passes av.open(metadata_errors=…), which newer PyAV (LP1's wxbench) rejects."""
+    import av
+    parts = []
+    with av.open(path) as container:
+        stream = container.streams.audio[0]
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=SR)
+
+        def take(frames):
+            for f in frames if isinstance(frames, list) else [frames]:
+                if f is not None:
+                    parts.append(f.to_ndarray().reshape(-1))
+
+        for frame in container.decode(stream):
+            frame.pts = None
+            take(resampler.resample(frame))
+        take(resampler.resample(None))                      # flush
+    return (np.concatenate(parts) if parts else np.zeros(0, np.int16)).astype(np.float32) / 32768.0
+
+
+def decode_ffmpeg(path: str) -> np.ndarray:
+    """Fallback: an ffmpeg binary (EditPanel passes its bundled one as FFMPEG_PATH)."""
+    import subprocess
+    exe = os.environ.get("FFMPEG_PATH") or "ffmpeg"
+    raw = subprocess.run([exe, "-nostdin", "-v", "error", "-i", path, "-map", "0:a:0", "-ac", "1", "-ar", str(SR),
+                          "-f", "s16le", "-"], capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+
+
 def read_audio(path: str) -> np.ndarray:
-    """Any source → 16 kHz mono float32: PCM WAVs directly, camera files (mov/mp4/mxf…) via PyAV
-    (faster-whisper's decoder; first audio track, channels mixed down)."""
+    """Any source → 16 kHz mono float32: PCM WAVs directly, camera files (mov/mp4/mxf…) through
+    PyAV, else ffmpeg (first audio track, channels mixed down)."""
     if path.lower().endswith(".wav"):
         try:
             return read_wav(path)
         except (wave.Error, KeyError):
-            pass                                         # not plain PCM — let PyAV decode it
-    from faster_whisper.audio import decode_audio
-    return decode_audio(path, sampling_rate=SR).astype(np.float32)
+            pass                                         # not plain PCM — decode it
+    try:
+        return decode_av(path)
+    except Exception as exc:
+        print(f"  PyAV couldn't decode {os.path.basename(path)} ({type(exc).__name__}: {exc}); trying ffmpeg", flush=True)
+        return decode_ffmpeg(path)
 
 
 def level_db(x: np.ndarray, a: float, b: float) -> float:

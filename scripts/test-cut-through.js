@@ -232,14 +232,33 @@ if (process.env.CT_TEST_PYTHON) {
   const STUBS = path.join(TMP, 'stubs');
   fs.mkdirSync(path.join(STUBS, 'faster_whisper'), { recursive: true });
   fs.writeFileSync(path.join(STUBS, 'ctranslate2.py'), 'def get_cuda_device_count():\n    return 0\n');
-  fs.writeFileSync(path.join(STUBS, 'faster_whisper', 'audio.py'), String.raw`
+  // faster-whisper's decode_audio breaks on LP1's newer PyAV (metadata_errors=…): must not be used
+  fs.writeFileSync(path.join(STUBS, 'faster_whisper', 'audio.py'),
+    'def decode_audio(*a, **k):\n    raise TypeError("open() got an unexpected keyword argument \'metadata_errors\'")\n');
+  // new-style PyAV: open() without metadata_errors, resample() returns a list
+  fs.writeFileSync(path.join(STUBS, 'av.py'), String.raw`
 import numpy as np
-def decode_audio(path, sampling_rate=16000):
-    # 70 s file: a loud burst at file second 20 (CAM1_01) / 5 (CAM1_02), quiet elsewhere
-    x = np.full(70 * sampling_rate, 0.001, np.float32)
-    at = 20 if "CAM1_01" in path else 5
-    x[at * sampling_rate:(at + 1) * sampling_rate] = 0.1
-    return x
+class _Frame:
+    def __init__(self, x): self.x, self.pts = x, 0
+    def to_ndarray(self): return self.x.reshape(1, -1)
+class AudioResampler:
+    def __init__(self, format, layout, rate): assert (format, layout, rate) == ("s16", "mono", 16000)
+    def resample(self, f): return [] if f is None else [f]
+class _Streams:
+    audio = ["a0"]
+class _Container:
+    def __init__(self, path): self.path, self.streams = path, _Streams()
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def decode(self, stream):
+        # 70 s file: a loud burst at file second 20 (CAM1_01) / 5 (CAM1_02), quiet elsewhere
+        x = np.full(70 * 16000, 33, np.int16)
+        at = 20 if "CAM1_01" in self.path else 5
+        x[at * 16000:(at + 1) * 16000] = 3277
+        for i in range(0, len(x), 16000):
+            yield _Frame(x[i:i + 16000])
+def open(path, mode="r"):
+    return _Container(path)
 `);
   fs.writeFileSync(path.join(STUBS, 'faster_whisper', '__init__.py'), String.raw`
 import numpy as np
@@ -265,6 +284,19 @@ class WhisperModel:
   assert.ok(words.words.every((w) => w.own));
   assert.ok(/camera audio, 1 track/.test(fs.readFileSync(path.join(DESKTOP, 'transcribe_Cam1.txt'), 'utf8')));
   console.log('✓ transcribe_day.py: camera clips on one angle → one track on the multicam clock');
+  // ffmpeg fallback on a real file (needs an ffmpeg binary; EditPanel passes its bundled one)
+  let ffmpeg = null;
+  try { ffmpeg = require('ffmpeg-static'); } catch (_) {}
+  if (ffmpeg && fs.existsSync(ffmpeg)) {
+    const mov = path.join(TMP, 'tone.mov');
+    execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2:sample_rate=48000',
+      '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=2', '-shortest', '-ac', '2', mov]);
+    const n = execFileSync(process.env.CT_TEST_PYTHON, ['-c',
+      `import sys; sys.path.insert(0, ${JSON.stringify(SPIKES)}); import transcribe_day as t; x = t.decode_ffmpeg(${JSON.stringify(mov)}); print(len(x), round(float(abs(x).max()), 2))`],
+      { env: { ...PY_ENV, FFMPEG_PATH: ffmpeg }, encoding: 'utf8' }).trim().split(' ');
+    assert.ok(Math.abs(Number(n[0]) - 32000) < 400 && Number(n[1]) > 0.05, n.join(' '));
+    console.log('✓ transcribe_day.py: ffmpeg fallback decodes a real camera-style file (first track, 16 kHz mono)');
+  }
 } else {
   console.log('- transcribe_day.py check skipped (set CT_TEST_PYTHON to a Python with numpy)');
 }
