@@ -169,7 +169,13 @@ def main() -> None:
                  if norm(_safe(lambda: c.GetClipProperty("File Path"), "")) == path), None)
     if not pool:
         raise RuntimeError(f"no pool clip for {path}")
-    a_start, a_dur, a_attrs = audio_start(r, project, mp, pool)
+    try:                                             # cross-check only: Resolve's own audio-only description
+        a_start, a_dur, a_attrs = audio_start(r, project, mp, pool)
+    except Exception as exc:
+        # Jordan's working export showed the audio-only asset = the picture's start and length
+        say(f"(audio-only probe: {exc}; using the picture's start/length, as in Jordan's working export)")
+        a_start, a_dur = secs(c1["start"]), secs(c1["duration"])
+        a_attrs = dict(re.findall(r'([\w:-]+)="([^"]*)"', asset.group(1)))
     v_start, v_dur, v_off = secs(c1["start"]), secs(c1["duration"]), secs(c1["offset"])
     shift = a_start - v_start
     fd = Fraction(1001, 24000)
