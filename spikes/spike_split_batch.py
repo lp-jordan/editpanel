@@ -84,7 +84,7 @@ def finish(project: Any, tl: Any) -> str:
     for name, its in t.items():
         if not name.startswith("A") or not its:
             continue
-        on = [bool(_safe(lambda: it.GetIsEnabled(), True)) for it in its]
+        on = [bool(_safe(lambda: it.GetClipEnabled(), True)) for it in its]
         xf = 0
         for (a, ea), (b, eb) in zip(zip(its, on), zip(its[1:], on[1:])):
             jump = abs(float(b.GetSourceStartFrame()) - float(a.GetSourceEndFrame())) > 1

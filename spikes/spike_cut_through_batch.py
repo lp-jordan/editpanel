@@ -211,7 +211,8 @@ def main() -> None:
     t1 = time.time()
     g = run_script("spike_import_fcpxml.py", {"XML": os.path.basename(out), "LABEL": LABEL, "BATCH": True,
                                           "ARCHIVE": True, "RAW": RAW, "MICS": MICS,
-                                              "MIC_FILES": {n: a for n, (_, a, _) in wavs.items()}}, r)
+                                              "MIC_FILES": {n: a for n, (_, a, _) in wavs.items()},
+                                              "ATEM_FILE": getattr(mk, "LAST_ATEM", None)}, r)
     say(f"3. Import done ({time.time() - t1:.1f}s)")
     if not g.get("CHECK_OK", True):
         raise RuntimeError("the imported multicam copy failed its self-check — not splitting "

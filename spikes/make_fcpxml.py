@@ -55,6 +55,48 @@ def fmt_s(v: Fraction) -> str:
     return f"{v.numerator}/{v.denominator}s" if v else "0/1s"
 
 
+def cam_no(name: str) -> int:
+    m = re.search(r"(\d+)\s*$", name or "")
+    return int(m.group(1)) if m else 999
+
+
+def atem_out(media_xml: str, atem_angle: str = "Camera 1"):
+    """The copy is rebuilt from this description on every import (2026-11-05):
+      * angles are written in camera order (Camera 1, 2, 3, 4) so the copy's stack matches the
+        original's (Resolve exports them in its own order, e.g. 3, 2, 4, 1);
+      * the ATEM angle's audio (the mix on Camera 1) comes in red in every copy, so the copy gets
+        that angle as picture only and the mix is cut as plain clips of the file, like the mics.
+    Returns (media xml, [(angle offset s, duration s, media start s, asset ref, file name)])."""
+    root = ET.fromstring(media_xml)
+    mc = root.find("multicam")
+    angs = sorted(mc.findall("mc-angle"), key=lambda a: cam_no(a.get("name")))
+    for a in mc.findall("mc-angle"):
+        mc.remove(a)
+    for a in angs:
+        mc.append(a)
+    runs = []
+    for ang in mc.findall("mc-angle"):
+        if ang.get("name") != atem_angle:
+            continue
+        for k, el in enumerate(list(ang)):
+            if el.tag != "asset-clip" or "offset" not in el.attrib:
+                continue
+            o, d, st = secs(el.get("offset")), secs(el.get("duration", "0s")), secs(el.get("start", "0s"))
+            runs.append((o, d, st, el.get("ref"), el.get("name")))
+            clip = ET.Element("clip", {x: el.get(x) for x in ("name", "start", "duration", "enabled", "tcFormat",
+                                                               "offset", "format") if el.get(x) is not None})
+            for child in list(el):
+                clip.append(child)
+            ET.SubElement(clip, "video", {"start": el.get("start"), "duration": el.get("duration"),
+                                          "ref": el.get("ref"), "offset": el.get("start")})
+            ang.remove(el)
+            ang.insert(k, clip)
+    return ET.tostring(root, encoding="unicode"), runs
+
+
+LAST_ATEM = None                       # file name of the ATEM mix clip in the last build (for the import)
+
+
 def split_off_angle_tracks(media_xml: str, remove: bool = True):
     """Resolve exports an angle's extra tracks (the mic WAV Jordan placed under a camera) as a
     second run in the same list, restarting at offset 0. On import Resolve places those clips by
@@ -126,6 +168,19 @@ def main(argv=None) -> list:
             angle_wavs.update(found)
             print("  mic WAVs placed in the multicam (cut as plain clips): " +
                   ", ".join(f"{n} under {a} at +{float(o):.3f}s" for a, (_, n, o, _) in sorted(angle_wavs.items())))
+    atem_mode = opts.pop("atem", "cut")                     # cut = ATEM mix as plain clips on A1; off = old way
+    atem_on = opts.pop("atem_on", "0") == "1"               # the mix is the fallback: clips disabled by default
+    atem_runs = []
+    global LAST_ATEM
+    LAST_ATEM = None
+    if atem_mode == "cut":
+        for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
+            fixed, runs = atem_out(block)
+            resources = resources.replace(block, fixed)
+            atem_runs += runs
+        if atem_runs:
+            LAST_ATEM = atem_runs[0][4]
+            print(f"  ATEM mix (Camera 1 audio) cut as plain clips of {LAST_ATEM} on A1; angles in camera order")
     # the multicam: its resource id, start timecode and angle IDs by name
     want = {p["multicam"] for _, p in jobs}
     media = next(((attrs(m.group(1)), attrs(m.group(2)))
@@ -165,6 +220,20 @@ def main(argv=None) -> list:
                     else:
                         clips.append([lo, hi, r0, on])
             lanes.append((role, clips))
+        if atem_runs:                                       # A1: the ATEM mix, cut with the picture
+            clips = []
+            for p, off in zip(pieces, offs):
+                marks = sorted({p["in"], p["out"], *(x for o, d, *_ in atem_runs
+                                                     for x in (round(o / FD), round((o + d) / FD))
+                                                     if p["in"] < x < p["out"])})
+                for lo, hi in zip(marks, marks[1:]):
+                    r0 = off + (lo - p["in"])
+                    last = clips[-1] if clips else None
+                    if last and last[1] == lo and last[2] + (last[1] - last[0]) == r0:
+                        last[1] = hi
+                    else:
+                        clips.append([lo, hi, r0, atem_on])
+            lanes.insert(0, ("ATEM", clips))
         first, lines = pieces[0], []
         for k, (p, off) in enumerate(zip(pieces, offs)):
             lines.append(f'                        <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
@@ -172,6 +241,21 @@ def main(argv=None) -> list:
             lines.append(f'                            <mc-source srcEnable="video" angleID="{angles[p["angle"]]}"/>')
             if k == 0:                                      # every mic hangs off the first clip
                 for lane, (role, clips) in enumerate(lanes, 1):
+                    if role == "ATEM":
+                        lines.append(f'                            <spine lane="{-lane}" offset="{src_t(first["in"])}">')
+                        pos = 0
+                        for s_, e_, r0, on in clips:
+                            if r0 > pos:
+                                lines.append(f'                                <gap name="Gap" duration="{t(r0 - pos)}" '
+                                             f'offset="{t(pos)}" start="3600/1s"/>')
+                            sec = Fraction(s_) * FD
+                            o, d, st, ref, fname = next((x for x in atem_runs if x[0] <= sec < x[0] + x[1]), atem_runs[0])
+                            lines.append(f'                                <asset-clip ref="{ref}" name={quoteattr(fname)} '
+                                         f'srcEnable="audio" duration="{t(e_ - s_)}" offset="{t(r0)}" '
+                                         f'start="{fmt_s(st + sec - o)}" enabled="{int(on)}"/>')
+                            pos = r0 + (e_ - s_)
+                        lines.append("                            </spine>")
+                        continue
                     angle = mic_angle.get(role)
                     if not angle:
                         raise SystemExit(f"no mic angle given for {role!r} (add {role}=\"Camera N\")")

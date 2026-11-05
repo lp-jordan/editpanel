@@ -39,6 +39,7 @@ ARCHIVE = bool(globals().get("ARCHIVE") or globals().get("QUARANTINE"))  # origi
 ORIG_BIN = globals().get("ORIG_BIN", "MC ORIGINAL")
 RAW = globals().get("RAW")
 MICS = globals().get("MICS") or {}                     # role → mic angle; puts each person's clips on their track
+ATEM_FILE = globals().get("ATEM_FILE")                 # the ATEM mix clip's file (cut on A1), if any
 MIC_FILES = globals().get("MIC_FILES") or {}           # mic WAV file → the angle it sits under                             # "*" or [names]: timelines on the original to move with it
 SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}                # the original is out of play in these
 REPO = r"C:\lp-app-ecosystem\editpanel"
@@ -213,7 +214,7 @@ def self_check(project: Any, tl: Any) -> bool:
         its = _safe(lambda: tl.GetItemListInTrack("audio", k), []) or []
         if not its or not modes:
             continue
-        its = [x for x in its if _safe(lambda: x.GetIsEnabled(), True)] or its   # an open (enabled) stretch
+        its = [x for x in its if _safe(lambda: x.GetClipEnabled(), True)] or its   # an open (enabled) stretch
         lv = _safe(lambda: its[0].AnalyzeAudioLevels(modes[0]), {}) or {}
         lufs = lv.get("Integrated")
         silent = lufs is not None and lufs <= -90
@@ -349,8 +350,11 @@ def main() -> None:
             auds.append(f"A{k} {len(its)} {a}")
         say(f"  {t.GetName()}: {len(v1)} picture clip(s) {angs}; multicam(s) used {[k[:8] for k in ids]}; " + "; ".join(auds))
         if MICS:
-            want = {MICS[role]: k for k, role in enumerate(plan["mics"], 1) if role in MICS}
+            first = 2 if ATEM_FILE else 1                   # A1 = ATEM mix, then one track per person
+            want = {MICS[role]: k for k, role in enumerate(plan["mics"], first) if role in MICS}
             want.update({f: want[a] for f, a in MIC_FILES.items() if a in want})
+            if ATEM_FILE:
+                want[ATEM_FILE] = 1
             fix_mic_tracks(project, t, want)
             _safe(lambda: say("    after: " + "; ".join(
                 f"A{k} " + str({a: sum(1 for x in t.GetItemListInTrack('audio', k) if clip_label(x) == a)
@@ -362,7 +366,7 @@ def main() -> None:
         good = self_check(project, t) and not wrong
         globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and good
     copy = next((c for _, c in after if c.GetUniqueId() not in {b.GetUniqueId() for _, b in before}), None)
-    if copy and plan.get("mics"):
+    if copy and plan.get("mics") and not ATEM_FILE:   # with ATEM_FILE the mix is cut as plain clips (A1 check above)
         frame = sorted(plan["mics"][next(iter(plan["mics"]))])[0][0] + 24   # inside the first talking stretch
         back = new[0] if new else None
         lc, lo = mix_level(project, mp, copy, frame, "copy"), mix_level(project, mp, orig, frame, "orig")
@@ -428,5 +432,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "ATEM_FILE"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
         globals().pop(_k, None)
