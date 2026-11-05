@@ -27,6 +27,9 @@ from typing import Any, Dict, List, Optional
 RANGES = globals().get("RANGES", "ConvoTest_joined_ranges.json")
 SEQ_BIN = globals().get("SEQ_BIN")                     # where the cut timelines go, "A / B" path
 KEEP_JOINED = bool(globals().get("KEEP_JOINED"))
+FINISH = globals().get("FINISH", True)                 # crossfades + head/tail fades (style guide)
+FADE_FRAMES = 8
+CROSSFADE = {"type": "Cross Fade 0 dB", "category": "audio", "position": "end", "alignment": "center", "duration": 2}
 DESKTOP = os.path.expanduser("~/Desktop")
 _lines: List[str] = []
 _T0 = time.time()
@@ -68,6 +71,43 @@ def timeline_items(folder: Any, names: set) -> Dict[str, Any]:
     for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
         out.update(timeline_items(sub, names))
     return out
+
+
+def finish(project: Any, tl: Any) -> str:
+    """Style guide finishing: 2-frame "Cross Fade 0 dB" only where audio was removed (the source
+    jumps) and the mic is open on at least one side; 8-frame audio fades at head and tail;
+    8-frame picture Cross Dissolve from/to black. Also counts the disabled (gated) mic clips."""
+    project.SetCurrentTimeline(tl)
+    t = tracks(tl)
+    start, end = tl.GetStartFrame(), tl.GetEndFrame()
+    out = []
+    for name, its in t.items():
+        if not name.startswith("A") or not its:
+            continue
+        on = [bool(_safe(lambda: it.GetIsEnabled(), True)) for it in its]
+        xf = 0
+        for (a, ea), (b, eb) in zip(zip(its, on), zip(its[1:], on[1:])):
+            jump = abs(float(b.GetSourceStartFrame()) - float(a.GetSourceEndFrame())) > 1
+            if int(a.GetEnd()) == int(b.GetStart()) and jump and (ea or eb):
+                xf += bool(_safe(lambda: a.AddTransition(CROSSFADE)))
+        head = int(its[0].GetStart()) == start and bool(_safe(lambda: its[0].AddTransition(
+            {**CROSSFADE, "position": "start", "alignment": "right", "duration": FADE_FRAMES})))
+        tail = int(its[-1].GetEnd()) == end and bool(_safe(lambda: its[-1].AddTransition(
+            {**CROSSFADE, "position": "end", "alignment": "left", "duration": FADE_FRAMES})))
+        out.append(f"{name} {len(its)} clips ({on.count(False)} gated off), {xf} crossfade(s), "
+                   f"fade in {'✓' if head else '✗'} out {'✓' if tail else '✗'}")
+    v = t.get("V1", [])
+    if v:
+        def dissolve(item, edge, align):
+            for cat in ("simple", None):
+                opts = {"type": "Cross Dissolve", "position": edge, "alignment": align, "duration": FADE_FRAMES}
+                if cat:
+                    opts["category"] = cat
+                if _safe(lambda: item.AddTransition(opts)):
+                    return "✓"
+            return "✗"
+        out.append(f"picture from black {dissolve(v[0], 'start', 'right')} to black {dissolve(v[-1], 'end', 'left')}")
+    return "; ".join(out)
 
 
 def tracks(tl: Any) -> Dict[str, List[Any]]:
@@ -152,6 +192,8 @@ def main() -> None:
             f"starts at +{lead} fr; length {length} fr (want {v['end'] - v['start']}); "
             f"{'straddling clips: ' + str(straddle) + '; ' if straddle else ''}sync {', '.join(sync)} "
             f"({time.time() - t1:.1f}s)")
+        if FINISH:
+            say(f"    finish: {finish(project, dup)}")
     say(f"Clean splits: {clean}/{len(spec['videos'])}")
     if seq and built:
         items = timeline_items(mp.GetRootFolder(), set(built))
@@ -181,5 +223,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("RANGES", "SEQ_BIN", "KEEP_JOINED"):       # the console keeps run-line settings between runs
+    for _k in ("RANGES", "SEQ_BIN", "KEEP_JOINED", "FINISH"):       # the console keeps run-line settings between runs
         globals().pop(_k, None)

@@ -145,20 +145,22 @@ def main(argv=None) -> list:
         for p in pieces:
             offs.append(rec)
             rec += p["out"] - p["in"]
-        # each speaker's open mic, mapped from kept source to record (split where the source jumps)
+        # each speaker's mic runs under the whole cut, split where the source jumps (a removal)
+        # and where the mic opens/closes; closed = a disabled clip (Jordan's enable/disable gating)
         lanes = []
         for role in plan["mics"]:
-            clips = []
-            for s, e in sorted(plan["mics"][role]):
-                for p, off in zip(pieces, offs):
-                    lo, hi = max(s, p["in"]), min(e, p["out"])
-                    if hi <= lo:
-                        continue
+            opens = sorted(plan["mics"][role])
+            clips = []                                      # [src in, src out, record offset, enabled]
+            for p, off in zip(pieces, offs):
+                marks = sorted({p["in"], p["out"], *(x for a, b in opens for x in (a, b) if p["in"] < x < p["out"])})
+                for lo, hi in zip(marks, marks[1:]):
+                    on = any(a <= lo and hi <= b for a, b in opens)
                     r0 = off + (lo - p["in"])
-                    if clips and clips[-1][1] == lo and clips[-1][2] + (clips[-1][1] - clips[-1][0]) == r0:
-                        clips[-1][1] = hi
+                    last = clips[-1] if clips else None
+                    if last and last[1] == lo and last[2] + (last[1] - last[0]) == r0 and last[3] == on:
+                        last[1] = hi                        # angle-only switch: no audio cut
                     else:
-                        clips.append([lo, hi, r0])
+                        clips.append([lo, hi, r0, on])
             lanes.append((role, clips))
         first, lines = pieces[0], []
         for k, (p, off) in enumerate(zip(pieces, offs)):
@@ -173,7 +175,7 @@ def main(argv=None) -> list:
                     wav = angle_wavs.get(angle)              # Jordan's mic WAV under that angle
                     lines.append(f'                            <spine lane="{-lane}" offset="{src_t(first["in"])}">')
                     pos = 0
-                    for s, e, r0 in clips:
+                    for s, e, r0, on in clips:
                         if r0 > pos:
                             lines.append(f'                                <gap name="Gap" duration="{t(r0 - pos)}" '
                                          f'offset="{t(pos)}" start="3600/1s"/>')
@@ -181,16 +183,16 @@ def main(argv=None) -> list:
                             ref, fname, o, inp = wav
                             lines.append(f'                                <asset-clip ref="{ref}" name={quoteattr(fname)} '
                                          f'duration="{t(e - s)}" offset="{t(r0)}" '
-                                         f'start="{fmt_s(inp + Fraction(s) * FD - o)}" enabled="1"/>')
+                                         f'start="{fmt_s(inp + Fraction(s) * FD - o)}" enabled="{int(on)}"/>')
                         else:                                    # mic recorded into the camera file
                             lines.append(f'                                <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
-                                         f'duration="{t(e - s)}" offset="{t(r0)}" start="{src_t(s)}">')
+                                         f'duration="{t(e - s)}" offset="{t(r0)}" start="{src_t(s)}" enabled="{int(on)}">')
                             lines.append(f'                                    <mc-source srcEnable="audio" angleID="{angles[angle]}"/>')
                             lines.append("                                </mc-clip>")
                         pos = r0 + (e - s)
                     lines.append("                            </spine>")
             lines.append("                        </mc-clip>")
-        summary = ", ".join(f"{role} {len(c)} audio clip(s)" for role, c in lanes)
+        summary = ", ".join(f"{role} {len(c)} audio clip(s) ({sum(1 for x in c if x[3])} open)" for role, c in lanes)
         return lines, rec, f"{len(pieces)} picture clip(s), {summary}"
 
     def project(name: str, body: list, total: int) -> list:

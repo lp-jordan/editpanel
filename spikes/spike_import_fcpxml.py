@@ -152,6 +152,7 @@ def self_check(project: Any, tl: Any) -> bool:
         its = _safe(lambda: tl.GetItemListInTrack("audio", k), []) or []
         if not its or not modes:
             continue
+        its = [x for x in its if _safe(lambda: x.GetIsEnabled(), True)] or its   # an open (enabled) stretch
         lv = _safe(lambda: its[0].AnalyzeAudioLevels(modes[0]), {}) or {}
         lufs = lv.get("Integrated")
         silent = lufs is not None and lufs <= -90
