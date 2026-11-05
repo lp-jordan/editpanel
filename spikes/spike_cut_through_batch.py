@@ -124,6 +124,25 @@ def main() -> None:
             shutil.rmtree(p, ignore_errors=True)
         elif os.path.isfile(p):
             os.remove(p)
+    # Probe export-type numbers just past the newest named one: a 1.11–1.14 export the API
+    # doesn't name would show up here (each probe file's own header says what it is).
+    probes = []
+    if isinstance(etype, int):
+        pdir = os.path.join(DESKTOP, f"mcdef_probe_{LABEL}")
+        shutil.rmtree(pdir, ignore_errors=True)
+        os.makedirs(pdir, exist_ok=True)
+        for n in range(etype + 1, etype + 9):
+            pp = os.path.join(pdir, f"t{n}.fcpxml")
+            if not _safe(lambda: tmp.Export(pp, n), False):
+                probes.append(f"{n}: no")
+                continue
+            found = bundle_xml(pp) or next((os.path.join(pdir, f) for f in os.listdir(pdir) if f.startswith(f"t{n}")), None)
+            head = open(found, encoding="utf-8", errors="replace").read(400) if found and os.path.isfile(found) else ""
+            v = re.search(r'<fcpxml version="([^"]+)"', head)
+            probes.append(f"{n}: {'FCPXML ' + v.group(1) if v else 'not FCPXML'}")
+            if v and tuple(map(int, v.group(1).split("."))) > tuple(map(int, version.split("."))):
+                version, etype = v.group(1), n
+        shutil.rmtree(pdir, ignore_errors=True)
     ok = _safe(lambda: tmp.Export(mcdef, etype), False) or _safe(lambda: tmp.Export(mcdef, etype, r.EXPORT_NONE), False)
     other = next((project.GetTimelineByIndex(i) for i in range(1, int(project.GetTimelineCount()) + 1)
                   if project.GetTimelineByIndex(i).GetName() != tmp.GetName()), None)
@@ -139,6 +158,7 @@ def main() -> None:
     say(f"1. Exported {name} as FCPXML {version} in {time.time() - t1:.1f}s "
         f"({os.path.relpath(src, DESKTOP)}, {os.path.getsize(src) // 1024} KB, {len(re.findall(r'<asset ', xml))} source file(s), "
         f"angles {angles}); throwaway timeline deleted: {gone}; export types offered: {offered or '(not listed)'}")
+    say(f"   Export type probe past the newest named one: {probes or '(skipped)'}")
 
     # 2. the joined timeline, built on that description
     t1 = time.time()
