@@ -4731,3 +4731,46 @@ button.status-bar-chip-btn:disabled {
   color: var(--muted-soft);
   opacity: 0.7;
 }
+
+/* ─── Cut-through (beta) page ─────────────────────────────── */
+
+.ct-page { gap: 12px; max-width: 900px; margin: 0 auto; }
+.ct-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ct-project { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ct-panel, .ct-step { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+.ct-step.is-running { border-color: var(--info-soft); }
+.ct-step.is-failed { border-color: var(--danger-soft); }
+.ct-step-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ct-step-num { color: var(--text-dim); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.ct-step-title { margin: 0; font-size: 1rem; font-weight: 700; color: var(--text-strong); }
+.ct-step-status { font-size: 0.85rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ct-step-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.ct-form-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.ct-inline { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ct-grow { flex: 1 1 220px; }
+.ct-num { width: 96px; }
+.ct-label { width: 160px; }
+.ct-facts { display: flex; flex-direction: column; gap: 10px; }
+.ct-fact-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ct-fact-col { display: flex; flex-direction: column; gap: 6px; }
+.ct-mic { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 0.9rem; }
+.ct-mic-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.ct-progress { display: flex; flex-direction: column; gap: 6px; }
+.ct-progress-text { display: flex; justify-content: space-between; gap: 12px; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+.ct-report {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ct-report.live { max-height: 200px; }
+.ct-settings-toggle { align-self: flex-start; }

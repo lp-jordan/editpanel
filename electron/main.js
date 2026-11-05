@@ -14,6 +14,7 @@ const {
 const { LposClient } = require('./workers/lpos_client');
 const { JobsDb } = require('./store/jobs-db');
 const { listSessions: atemListSessions, ingestSessions: atemIngestSessions } = require('./workers/atem_ftp');
+const { createCutThrough } = require('./workers/cut_through');
 const {
   WORKERS,
   RetryableError,
@@ -130,6 +131,7 @@ let lposClient = null;
 let lposHeartbeatTimer = null;
 let jobsDb = null;
 let atemCancelToken = null; // { canceled: boolean }
+let cutThrough = null; // Cut-through (beta) orchestrator — see workers/cut_through.js
 let resolveAutoConnectDone = false; // attempt auto-connect once per app session only
 let pendingEpLinkUrl = null; // captured before whenReady if the OS hands us a callback URL at cold start
 
@@ -340,6 +342,9 @@ function handleWorkerLine(state, line) {
         message: eventMessage,
         metrics: normalized.envelope.metrics
       };
+      // Cut-through steps run spikes in this worker; their prints arrive as
+      // log events tagged with the step's trace id.
+      if (cutThrough) cutThrough.onWorkerLog(normalized.envelope.trace_id, eventMessage);
       BrowserWindow.getAllWindows().forEach(w => {
         w.webContents.send('worker-event', logEvent);
         w.webContents.send('helper-message', eventMessage);
@@ -2533,6 +2538,16 @@ app.whenReady().then(() => {
   });
   jobEngine.resumeRecoverableJobs();
 
+  cutThrough = createCutThrough({
+    sendWorkerRequest,
+    broadcast: (channel, payload) => BrowserWindow.getAllWindows().forEach(w => w.webContents.send(channel, payload)),
+    getPrefs: () => controlPlane.getPreferences(),
+    setPrefs: (patch) => controlPlane.setPreferences(patch),
+    pythonCmd: PYTHON_CMD,
+    isPackaged: app.isPackaged,
+    appDir: path.join(__dirname, '..')
+  });
+
   // --- Result items DB ---
   try {
     jobsDb = new JobsDb(path.join(app.getPath('userData'), 'jobs-history.db'));
@@ -3411,6 +3426,33 @@ app.whenReady().then(() => {
 
   // lpos:b2-sync-* IPC handlers removed 2026-05-27 — see LPOS /settings/storage.
 
+  // --- Cut-through (beta) IPC ---
+  // Every call returns { ok, data: snapshot } or { ok: false, error }; live
+  // state is pushed on 'cut-through:update'. Long steps resolve when done.
+  const ctCall = (fn) => async (_e, arg = {}) => {
+    try {
+      return { ok: true, data: await fn(arg || {}) };
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err), data: cutThrough.snapshot() };
+    }
+  };
+  ipcMain.handle('cut-through:state', ctCall(() => cutThrough.snapshot()));
+  ipcMain.handle('cut-through:list-multicams', ctCall(() => cutThrough.listMulticams()));
+  ipcMain.handle('cut-through:select', ctCall((a) => cutThrough.select(a)));
+  ipcMain.handle('cut-through:settings', ctCall((a) => cutThrough.updateSettings(a)));
+  ipcMain.handle('cut-through:prep', ctCall(() => cutThrough.runPrep()));
+  ipcMain.handle('cut-through:transcribe', ctCall((a) => cutThrough.runTranscribe(a)));
+  ipcMain.handle('cut-through:cancel', ctCall(() => cutThrough.cancel()));
+  ipcMain.handle('cut-through:plan', ctCall((a) => cutThrough.runPlan(a)));
+  ipcMain.handle('cut-through:use-plan', ctCall(() => cutThrough.useExistingPlan()));
+  ipcMain.handle('cut-through:build', ctCall((a) => cutThrough.runBuild(a)));
+  ipcMain.handle('cut-through:open-path', async (_e, p) => {
+    if (typeof p !== 'string' || !p) return { ok: false, error: 'no path' };
+    if (!fs.existsSync(p)) return { ok: false, error: 'Not found' };
+    shell.showItemInFolder(p);
+    return { ok: true };
+  });
+
   // --- ATEM FTP IPC ---
 
   ipcMain.handle('atem:list-sessions', async (_, host) => {
@@ -4232,6 +4274,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+  if (cutThrough) cutThrough.cancel();   // don't leave a GPU transcription running
   if (lposHeartbeatTimer) { clearInterval(lposHeartbeatTimer); lposHeartbeatTimer = null; }
   stopReconcileLoop();
   lposClient = null;

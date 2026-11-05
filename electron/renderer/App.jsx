@@ -18,7 +18,8 @@ const ROUTE_LABELS = {
   '/prep': 'Prep',
   '/edit': 'Edit',
   '/deliver': 'Deliver',
-  '/settings': 'Settings'
+  '/settings': 'Settings',
+  '/cut-through': 'Cut-through'
 };
 
 function getRouteFromHash() {
@@ -877,6 +878,15 @@ function App() {
           actionLabel: 'Open',
           onClick: () => setOpenSeqOpen(true),
           requiresResolve: true
+        },
+        {
+          // Cut-through (beta), 2026-11-05: day multicam → AI rough cuts.
+          key: 'cut-through',
+          label: 'Cut-through (beta)',
+          description: 'Rough cuts from a day multicam.',
+          actionLabel: 'Open',
+          onClick: () => navigateTo('/cut-through'),
+          requiresResolve: false
         }
       ]
     },
@@ -1105,6 +1115,17 @@ function App() {
               focusToken lets the Jobs-tab pill (above) snap the panel open +
               filter to Unassigned in one motion. */}
           {route === '/deliver' && <ExportsPanel focusToken={exportsFocusToken} focusFilter={exportsFocusFilter} />}
+        </main>
+      </div>
+    );
+  }
+
+  function renderCutThroughPage() {
+    return (
+      <div className="app-inner">
+        <HoverNav route="/edit" onNavigate={navigateTo} />
+        <main className="app-content">
+          <CutThroughPage connected={connected} />
         </main>
       </div>
     );
@@ -1369,6 +1390,8 @@ function App() {
     ? renderHomePage()
     : route === '/settings'
     ? renderSettingsPage()
+    : route === '/cut-through'
+    ? renderCutThroughPage()
     : renderWorkspacePage();
 
   return (

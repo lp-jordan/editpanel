@@ -65,6 +65,10 @@ const COMMAND_OWNER = Object.freeze({
   // registered here or validateRequestEnvelope rejects it as an unknown command
   // before the request reaches the Python worker (see note above).
   import_media: WORKERS.resolve,
+  // Cut-through (beta), 2026-11-05: list the project's multicams and run the
+  // spikes/ pipeline steps (day prep, batch build) inside the Resolve worker.
+  ct_list_multicams: WORKERS.resolve,
+  ct_run_spike: WORKERS.resolve,
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -146,6 +150,8 @@ const COMMAND_SCHEMAS = Object.freeze({
   // cam_number}; the schema layer only checks top-level scalars, so per-item
   // validation lives in the Python handler (handle_import_media).
   import_media: { required: ['files'], types: { parent_bin: 'string' } },
+  ct_list_multicams: { required: [] },
+  ct_run_spike: { required: ['spikes_dir', 'script'], types: { spikes_dir: 'string', script: 'string' } },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });

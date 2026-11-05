@@ -199,6 +199,26 @@ contextBridge.exposeInMainWorld('lposAPI', {
   },
 });
 
+// Cut-through (beta): drives editpanel/spikes/ pipeline steps (main: workers/cut_through.js).
+contextBridge.exposeInMainWorld('cutThroughAPI', {
+  getState: () => ipcRenderer.invoke('cut-through:state'),
+  listMulticams: () => ipcRenderer.invoke('cut-through:list-multicams'),
+  select: (payload) => ipcRenderer.invoke('cut-through:select', payload),
+  updateSettings: (patch) => ipcRenderer.invoke('cut-through:settings', patch),
+  runPrep: () => ipcRenderer.invoke('cut-through:prep'),
+  runTranscribe: (payload) => ipcRenderer.invoke('cut-through:transcribe', payload),
+  cancel: () => ipcRenderer.invoke('cut-through:cancel'),
+  runPlan: (payload) => ipcRenderer.invoke('cut-through:plan', payload),
+  useExistingPlan: () => ipcRenderer.invoke('cut-through:use-plan'),
+  runBuild: (payload) => ipcRenderer.invoke('cut-through:build', payload),
+  showInFolder: (p) => ipcRenderer.invoke('cut-through:open-path', p),
+  onUpdate(callback) {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('cut-through:update', handler);
+    return () => ipcRenderer.removeListener('cut-through:update', handler);
+  }
+});
+
 contextBridge.exposeInMainWorld('atemAPI', {
   listSessions(host) {
     return ipcRenderer.invoke('atem:list-sessions', host);
