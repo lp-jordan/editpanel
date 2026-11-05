@@ -6,8 +6,8 @@
  *
  *   prep        spike_day_prep.py           Resolve worker (ct_run_spike)
  *   transcribe  transcribe_day.py <LABEL>   child process (C:\wxbench venv, GPU)
- *   plan        plan_convo.py               child process (app Python) — 2+ mics
- *               (solo: PLANNERS.solo is the seam for the solo/LLM planner)
+ *   plan        plan_convo.py / plan_solo.py child process (app Python) — 2+ mic
+ *               angles = conversation, else one speaker (PLANNERS; the LLM pass plugs in there)
  *   build       spike_cut_through_batch.py  Resolve worker (ct_run_spike)
  *
  * Outputs stay where the spikes put them: the Windows Desktop (day_, words_,
@@ -474,25 +474,24 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
-  // Planner seam. A planner takes the day + words files and writes
-  // spikes/plans/<LABEL>_plan.json (the batch's input). `convo` is the
-  // rule-based plan_convo.py spike; `solo` (one talker, retakes) plugs in here
-  // once it exists — until then the page only accepts an existing plan file.
+  // Planners: each takes the day + words files and writes
+  // spikes/plans/<LABEL>_plan.json (the batch's input). Both are rule-based
+  // spikes from the style guide (no LLM); an LLM pass plugs in here later.
   const PLANNERS = {
-    convo: async ({ files: f, start, end, extra, cuts }) => {
-      fs.mkdirSync(path.dirname(f.plan), { recursive: true });
-      const args = [path.join(settings().spikesDir, 'plan_convo.py'), f.words, f.day, f.plan, `start=${start}`, `end=${end}`,
-        ...(extra ? [`extra=${extra}`] : []), ...cuts.map((c) => `cut=${c}`)];
-      return runChild('plan', pythonCmd, args);
-    },
-    solo: null
+    convo: { script: 'plan_convo.py', args: ({ extra }) => (extra ? [`extra=${extra}`] : []) },
+    solo: { script: 'plan_solo.py', args: ({ extra, punch }) => [...(punch ? [`punch=${punch}`] : []), ...(extra ? [`extra=${extra}`] : [])] }
   };
+  function runPlanner(kind, o) {
+    const { script, args } = PLANNERS[kind];
+    const f = o.files;
+    fs.mkdirSync(path.dirname(f.plan), { recursive: true });
+    return runChild('plan', pythonCmd, [path.join(settings().spikesDir, script), f.words, f.day, f.plan,
+      `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`)]);
+  }
 
-  async function runPlan({ start, end, extra, cuts } = {}) {
+  async function runPlan({ start, end, extra, punch, cuts } = {}) {
     if (!s.day) throw new Error('Run Prep first');
     const kind = planKind(s.day);
-    const planner = PLANNERS[kind];
-    if (!planner) throw new Error('Solo planner not built yet');
     const f = files();
     if (!fs.existsSync(f.words)) throw new Error('Run Transcribe first');
     const total = dayFrames(s.day);
@@ -502,9 +501,9 @@ function createCutThrough(opts) {
     const cutList = parseCuts(cuts);
     begin('plan');
     const started = Date.now();
-    const res = await planner({ files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, cuts: cutList });
+    const res = await runPlanner(kind, { files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, punch: punch || null, cuts: cutList });
     let error = res.error;
-    if (!error && res.code !== 0) error = exitError('plan', 'plan_convo.py', res.code);
+    if (!error && res.code !== 0) error = exitError('plan', PLANNERS[kind].script, res.code);
     if (!error && !(mtime(f.plan) >= started - 2000)) error = `${s.label}_plan.json was not written`;
     const st = s.steps.plan;
     finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : f.plan, data: error ? null : planSummary(readJson(f.plan)) });

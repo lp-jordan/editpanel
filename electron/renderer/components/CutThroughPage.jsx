@@ -135,7 +135,11 @@ function CutThroughPage({ connected }) {
   const mcOptions = ct.multicams || [];
   const mcKnown = !ct.mc || mcOptions.some((m) => m.name === ct.mc);
   const dupe = mcOptions.find((m) => m.name === ct.mc && m.duplicate);
-  const extraChoices = (day?.angles || []).filter((a) => a !== 'Camera 1' && !(day?.micAngles || []).includes(a));
+  const solo = ct.planKind === 'solo';
+  const punchChoices = (day?.angles || []).filter((a) => a !== 'Camera 1');
+  const punch = planForm.punch || (punchChoices.includes('Camera 2') ? 'Camera 2' : punchChoices[0] || '');
+  const extraChoices = (day?.angles || []).filter((a) => a !== 'Camera 1' &&
+    (solo ? a !== punch : !(day?.micAngles || []).includes(a)));
   const seqBin = ct.settings.seqBin;
   const binChoices = bins.includes(seqBin) || !seqBin ? bins : [seqBin, ...bins];
 
@@ -212,8 +216,7 @@ function CutThroughPage({ connected }) {
       const summary = st.data;
       return (
         <div className="ct-facts">
-          {ct.planKind === 'solo' && <div className="notice warning">Solo planner not built yet</div>}
-          {ct.planKind === 'convo' && st.status !== 'running' && (
+          {ct.planKind && st.status !== 'running' && (
             <div className="ct-form-row">
               <label className="ct-inline">
                 <span className="settings-label">Start</span>
@@ -225,6 +228,14 @@ function CutThroughPage({ connected }) {
                 <input className="settings-input ct-num" inputMode="numeric" placeholder={String(day?.frames || '')} value={planForm.end}
                   onChange={(e) => setPlanForm({ ...planForm, end: e.target.value.replace(/\D/g, '') })} />
               </label>
+              {solo && punchChoices.length > 0 && (
+                <label className="ct-inline">
+                  <span className="settings-label">Punch-in</span>
+                  <select className="settings-input" value={punch} onChange={(e) => setPlanForm({ ...planForm, punch: e.target.value, extra: planForm.extra === e.target.value ? '' : planForm.extra })}>
+                    {punchChoices.map((a) => <option key={a} value={a}>{a}</option>)}
+                  </select>
+                </label>
+              )}
               {extraChoices.length > 0 && (
                 <label className="ct-inline">
                   <span className="settings-label">Extra angle</span>
@@ -296,13 +307,9 @@ function CutThroughPage({ connected }) {
             <button type="button" className="btn small ghost" disabled={busy}
               onClick={() => call(key, () => api.useExistingPlan())}>Use existing</button>
           )}
-          {ct.planKind === 'solo' && (
-            <button type="button" className="btn small ghost" disabled={busy}
-              onClick={() => call(key, () => api.select({ mc: ct.mc, label: ct.label }))}>Check again</button>
-          )}
-          {ct.planKind === 'convo' && (
+          {ct.planKind && (
             <button type="button" className={btnClass(key)} disabled={busy || steps.transcribe.status !== 'done'}
-              onClick={() => call(key, () => api.runPlan(planForm))}>{ct.planExists ? 'Redraft' : 'Draft'}</button>
+              onClick={() => call(key, () => api.runPlan({ ...planForm, punch: solo ? punch : '' }))}>{ct.planExists ? 'Redraft' : 'Draft'}</button>
           )}
         </>
       );

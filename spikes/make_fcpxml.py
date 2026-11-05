@@ -232,7 +232,8 @@ def main(argv=None) -> list:
                     if last and last[1] == lo and last[2] + (last[1] - last[0]) == r0:
                         last[1] = hi
                     else:
-                        clips.append([lo, hi, r0, atem_on])
+                        # a day with no mic WAVs (plan audio = camera): the mix IS the audio → on
+                        clips.append([lo, hi, r0, atem_on or (plan.get("audio") or {}).get("source") == "camera"])
             lanes.insert(0, ("ATEM", clips))
         first, lines = pieces[0], []
         for k, (p, off) in enumerate(zip(pieces, offs)):

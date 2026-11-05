@@ -169,7 +169,7 @@ print(f"{len(words)} words")
 
 fs.writeFileSync(path.join(TMP, 'fake_resolve.py'), FAKE_RESOLVE);
 fs.writeFileSync(path.join(FAKE_SPIKES, 'transcribe_day.py'), FAKE_TRANSCRIBE);
-for (const f of ['spike_day_prep.py', 'plan_convo.py']) fs.copyFileSync(path.join(SPIKES, f), path.join(FAKE_SPIKES, f));
+for (const f of ['spike_day_prep.py', 'plan_convo.py', 'plan_solo.py']) fs.copyFileSync(path.join(SPIKES, f), path.join(FAKE_SPIKES, f));
 // The batch needs Resolve for real; the worker side is faked below, so a
 // placeholder is enough for the allow-list path check.
 fs.writeFileSync(path.join(FAKE_SPIKES, 'spike_cut_through_batch.py'), 'REPO = r"C:\\lp-app-ecosystem\\editpanel"\n_lines = []\nprint("repo", REPO)\n_lines.append("✗ STOPPED after 0.1s: fake")\n');
@@ -322,6 +322,49 @@ class WhisperModel:
   console.log('- transcribe_day.py check skipped (set CT_TEST_PYTHON to a Python with numpy)');
 }
 
+// ── 2d. plan_solo.py on a scripted take: count retake, repeat retake, stutter, long pause ──
+{
+  const fps = 24000 / 1001;
+  const words = [];
+  let t = 2.0;
+  const say = (text, gap) => {
+    for (const w of text.split(' ')) {
+      words.push({ mic: 'Camera 1', w, s: +(t * fps).toFixed(1), e: +((t + 0.35) * fps).toFixed(1), p: 0.9, db: -20, other_db: -120, own: true, clear: true });
+      t += 0.4;
+    }
+    t += gap;
+  };
+  say('Leadership starts with listening to your team every single day.', 3.0);
+  say('The best managers build trust through small consistent actions and', 0.4);
+  say('one, two, three.', 1.0);
+  say('The best managers build trust through small consistent actions over time.', 0.5);
+  say('When you you ask questions people feel heard.', 0.6);
+  say('Feedback should be specific and timely so people', 1.2);
+  say('Feedback should be specific and timely so that people can act on it.', 0.5);
+  say('We talked about culture and how culture changes when leaders listen.', 0.5);   // a topic repeat that stays
+  say('That is how culture changes.', 2.0);
+  const angles = ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4'];
+  const wp = path.join(TMP, 'solo_words.json'), dp = path.join(TMP, 'solo_day.json'), pp = path.join(TMP, 'solo_plan.json');
+  fs.writeFileSync(wp, JSON.stringify({ label: 'SoloT', multicam: 'mc_x', fps, frame_sec: [1001, 24000], angles, mics: ['Camera 1'], words }));
+  fs.writeFileSync(dp, JSON.stringify({ multicam: 'mc_x', fps, frame_sec: [1001, 24000], length_sec: t + 5, angles, audio_source: 'camera', mics: [{ angle: 'Camera 1' }] }));
+  const out = execFileSync(PY, [path.join(SPIKES, 'plan_solo.py'), wp, dp, pp, 'extra=Camera 4'], { encoding: 'utf8' });
+  const plan = JSON.parse(fs.readFileSync(pp, 'utf8'));
+  const cut = (f) => plan.removals.some((r) => r.from <= f && f < r.to);
+  const kept = words.filter((w) => !cut(w.s)).map((w) => w.w).join(' ');
+  assert.strictEqual(kept, 'Leadership starts with listening to your team every single day. The best managers build trust through small consistent actions over time. ' +
+    'When you ask questions people feel heard. Feedback should be specific and timely so that people can act on it. ' +
+    'We talked about culture and how culture changes when leaders listen. That is how culture changes.', out);
+  assert.ok(words.every((w) => cut(w.s) === cut(w.e - 0.5)), 'a word is cut in half');
+  const v = plan.video;
+  assert.strictEqual(v[0].angle, 'Camera 1');
+  assert.strictEqual(v[v.length - 1].angle, 'Camera 1');
+  assert.ok(v.every((x, k) => k === 0 || x.angle !== v[k - 1].angle), 'jump cut');
+  assert.deepStrictEqual(plan.audio, { source: 'camera', angle: 'Camera 1' });
+  assert.deepStrictEqual(plan.mics, {});
+  assert.ok(!JSON.stringify(plan).includes('managers'), 'words leaked into the plan');
+  console.log('✓ plan_solo.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio');
+}
+
 // ── 3. orchestrator end to end ─────────────────────────────────
 function fakeWorker() {
   const calls = [];
@@ -449,15 +492,18 @@ sys.stdout.write(json.dumps(res))`;
     assert.ok(s2.steps[k].earlier, k);
   }
 
-  // solo day: no planner, existing plan accepted
+  // solo day: plan_solo.py drafts it; an existing plan is accepted too
   const day = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_E2E_test.json'), 'utf8'));
   day.mics = day.mics.slice(0, 1);
   fs.writeFileSync(path.join(DESKTOP, 'day_Solo1.json'), JSON.stringify(day));
   fs.copyFileSync(path.join(DESKTOP, 'words_E2E_test.json'), path.join(DESKTOP, 'words_Solo1.json'));
   c2.select({ mc: 'mc_test', label: 'Solo1' });
   assert.strictEqual(c2.snapshot().planKind, 'solo');
-  await assert.rejects(c2.runPlan({}), /Solo planner not built yet/);
   assert.throws(() => c2.useExistingPlan(), /No readable/);
+  const solo = (await c2.runPlan({ punch: 'Camera 3', extra: 'Camera 2', cuts: '' })).steps.plan;
+  assert.strictEqual(solo.status, 'done', `${solo.error}\n${solo.log.join('\n')}`);
+  assert.ok(solo.data.pieces >= 1 && solo.data.angles['Camera 1'] >= 1, JSON.stringify(solo.data));   // fake words repeat → mostly retakes
+  assert.ok(solo.report.some((l) => l.startsWith('angles:')), solo.report.join('\n'));
   fs.copyFileSync(path.join(FAKE_SPIKES, 'plans', 'E2E_test_plan.json'), path.join(FAKE_SPIKES, 'plans', 'Solo1_plan.json'));
   assert.strictEqual(c2.useExistingPlan().steps.plan.status, 'done');
 
