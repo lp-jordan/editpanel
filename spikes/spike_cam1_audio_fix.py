@@ -16,6 +16,9 @@ clip's audio only → FCPXML export → the audio asset), then imports one 10 s 
 Angles are written in camera order. Copy "<mc> C1 audio_run" in bin __SPIKE_CAM1, timeline
 __SPIKE_c1_audio_run. Open the copy: is Camera 1's audio green, on track 1, and in sync?
 
+With AUDIO_FILE="tcA" it uses that timecoded WAV (Camera 1's audio as a file stamped with the
+picture's start TC) instead → copy "<mc> C1 wav_run".
+
 HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
     LABEL="Convo2"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_cam1_audio_fix.py", encoding="utf-8").read())
 Clean up as before:
@@ -32,6 +35,7 @@ from typing import Any, List
 from urllib.parse import unquote
 
 LABEL = globals().get("LABEL", "Convo2")
+AUDIO_FILE = globals().get("AUDIO_FILE")   # e.g. "tcA": use that timecoded WAV (pool clip name contains it) as Camera 1's audio
 REPO = r"C:\lp-app-ecosystem\editpanel"
 SPIKES = os.path.join(REPO, "spikes")
 DESKTOP = os.path.expanduser("~/Desktop")
@@ -207,23 +211,34 @@ def main() -> None:
     pic = f'<clip {keep}>{ac.group(2)}<video start="{c1["start"]}" duration="{c1["duration"]}" ref="{c1["ref"]}" ' \
           f'offset="{c1["start"]}"/></clip>'
     aud_off = v_off + shift
+    aud_name, aud_src, variant = c1["name"], asset.group(2), "audio_run"
+    if AUDIO_FILE:                                   # a separate WAV stamped with Camera 1's start timecode
+        wav = next((c for p, f in folders(mp.GetRootFolder()) if BIN not in p for c in clips(f)
+                    if AUDIO_FILE.lower() in str(_safe(lambda: c.GetName(), "")).lower()), None)
+        if not wav:
+            raise RuntimeError(f"no pool clip whose name contains {AUDIO_FILE!r}")
+        aud_name = wav.GetName()
+        aud_src = "file://localhost/" + str(wav.GetClipProperty("File Path")).replace("\\", "/").replace(" ", "%20")
+        aud_off, a_start, a_dur = v_off, v_start, v_dur          # same start TC as the picture → same place
+        variant = "wav_run"
+        say(f"Camera 1 audio from {aud_name} (Start TC {wav.GetClipProperty('Start TC')}), placed with the picture")
     run = (f'<gap name="Gap" start="3600/1s" duration="{fr(aud_off)}" offset="0/1s"/>'
-           f'<clip name="{c1["name"]}" start="{fr(a_start)}" duration="{fr(a_dur)}" enabled="1" offset="{fr(aud_off)}">'
+           f'<clip name="{aud_name}" start="{fr(a_start)}" duration="{fr(a_dur)}" enabled="1" offset="{fr(aud_off)}">'
            f'<audio srcCh="1, 2" start="{fr(a_start)}" duration="{fr(a_dur)}" ref="r_c1aud" offset="{fr(a_start)}"/></clip>')
     new_cam1 = cam1.replace(ac.group(0), pic).replace("</mc-angle>", run + "</mc-angle>")
-    asset_xml = (f'<asset name="{c1["name"]}" start="{fr(a_start)}" duration="{fr(a_dur)}" id="r_c1aud" '
+    asset_xml = (f'<asset name="{aud_name}" start="{fr(a_start)}" duration="{fr(a_dur)}" id="r_c1aud" '
                  f'audioChannels="{a_attrs.get("audioChannels", "2")}" audioSources="1" hasAudio="1">'
-                 f'<media-rep kind="original-media" src="{asset.group(2)}"/></asset>')
+                 f'<media-rep kind="original-media" src="{aud_src}"/></asset>')
     v_run = xml0.replace(cam1, new_cam1).replace("</resources>", asset_xml + "</resources>")
 
     search = [f for p, f in folders(mp.GetRootFolder())
               if any(norm(_safe(lambda: c.GetClipProperty("File Path"), "")) in
-                     {norm(unquote(s).replace("file://localhost/", "")) for s in re.findall(r'src="([^"]+)"', xml0)}
+                     {norm(unquote(s).replace("file://localhost/", "")) for s in re.findall(r'src="([^"]+)"', v_run)}
                      for c in clips(f))]
     root = mp.GetRootFolder()
     spike_bin = next((f for f in (_safe(lambda: root.GetSubFolderList(), []) or []) if f.GetName() == BIN), None) \
         or mp.AddSubFolder(root, BIN)
-    for v, text in (("audio_run", v_run),):
+    for v, text in ((variant, v_run),):
         tname = f"__SPIKE_c1_{v}"
         text = text.replace("__SPIKE_c1_base", tname)
         path_v = os.path.join(DESKTOP, f"cam1fix_{v}.fcpxml")
@@ -242,7 +257,7 @@ def main() -> None:
             if _safe(lambda: c.GetParentFolder().GetName()) != BIN:
                 _safe(lambda: mp.MoveClips([c], spike_bin))
         say(f"{v}: import {'ok' if tl else 'FAILED'}; {len(new)} copy → '{name} C1 {v}'")
-    say(f"\nOpen '{name} C1 audio_run': Camera 1 audio green? on track 1? in sync with the picture?")
+    say(f"\nOpen '{name} C1 {variant}': Camera 1 audio green? on track 1? in sync with the picture?")
 
 
 try:
