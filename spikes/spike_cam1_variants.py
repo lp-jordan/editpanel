@@ -21,6 +21,10 @@ Each copy is renamed "<mc> C1 <variant>" and left in bin __SPIKE_CAM1 with its t
 __SPIKE_c1_<variant>. Open each copy and note: Camera 1 audio red or green? Angle stack order?
 Nothing else in the project changes.
 
+ONLY="src_all" (2026-11-05): the green Robin Bone runs used the multicam's audio in the timeline
+(64 × srcEnable="audio"); every red run used picture only. These two variants make the test
+timeline take picture AND sound from the multicam (srcEnable="all"): as exported, and sorted.
+
 HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
     LABEL="Convo2"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_cam1_variants.py", encoding="utf-8").read())
 Uses the multicam named in plans/<LABEL>_plan.json; prefers the one in "MC ORIGINAL" (the original).
@@ -37,6 +41,7 @@ from typing import Any, List
 
 LABEL = globals().get("LABEL", "Convo2")
 CLEAN = bool(globals().get("CLEAN"))
+ONLY = globals().get("ONLY")   # "src_all": only the variants whose timeline uses the multicam's audio
 REPO = r"C:\lp-app-ecosystem\editpanel"
 SPIKES = os.path.join(REPO, "spikes")
 DESKTOP = os.path.expanduser("~/Desktop")
@@ -211,7 +216,11 @@ def main() -> None:
               if any(_norm(_safe(lambda: c.GetClipProperty('File Path'), '')) in srcs for c in clips(f))]
     say(f"Source bins searched: {len(search)}")
 
-    variants = {
+    use_audio = lambda x: x.replace('<mc-source srcEnable="video"', '<mc-source srcEnable="all"')
+    if ONLY == "src_all":                             # the timeline uses the multicam's AUDIO too (green runs did)
+        variants = {"src_all": use_audio(xml0), "src_all_sorted": use_audio(sort_angles(xml0))}
+    else:
+      variants = {
         "control": xml0,
         "sorted": sort_angles(xml0),
         "clip_av": cam1_clip_av(sort_angles(xml0)),
@@ -265,5 +274,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("LABEL", "CLEAN"):
+    for _k in ("LABEL", "CLEAN", "ONLY"):
         globals().pop(_k, None)
