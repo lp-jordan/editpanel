@@ -138,4 +138,9 @@ audio fades, and 8-frame picture Cross Dissolves at head and tail.
    faster-whisper large-v3 on the GPU per mic, words on the multicam frame grid, each word owned by
    the mic where it's loudest (after per-mic gain). Writes `words_<LABEL>.json`,
    `transcript_<LABEL>.txt`, `transcribe_<LABEL>.txt` to the Desktop (client words: never into git).
-3. Claude writes `plans/<LABEL>_plan.json` from those; then the usual `spike_cut_through_batch.py` run.
+3. **Plan** (Mac or any Python 3): `python3 plan_convo.py words_<LABEL>.json day_<LABEL>.json plans/<LABEL>_plan.json start=<frame> end=<frame> [extra="Camera 4"] [cut=<from>-<to> ...]`
+   drafts the cut from the style guide's conversation rules, with no LLM: talker on screen (angle N = person on camera N), ~10 s close-ups
+   broken by reactions / the wide, open + close on the wide, ≥ 2 s shots, pauses > 30 fr trimmed
+   to 11 fr on an angle change, mic gating (backchannels that step on the talker stay closed).
+   The plan carries `mic_angles`, so the cut-through run needs no `MICS`.
+4. `LABEL="<LABEL>"; exec(open(r"C:\lp-app-ecosystem\editpanel\spikes\spike_cut_through_batch.py", encoding="utf-8").read())`

@@ -17,6 +17,8 @@ Generated files go to the Desktop (they name client media — never into git).
 
 HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
     LABEL="ConvoTest"; MICS={"host": "Camera 2", "guest": "Camera 3"}; SPLIT=3; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_cut_through_batch.py", encoding="utf-8").read())
+Plans from plan_convo.py carry their mic angles, so MICS can be left out:
+    LABEL="Convo2"; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_cut_through_batch.py", encoding="utf-8").read())
 Optional: RAW="*" (or names) moves the original's timelines into "MC ORIGINAL" too.
 Report saved to Desktop\\cut_through_<LABEL>.txt (includes the import and split reports).
 """
@@ -143,6 +145,8 @@ def main() -> None:
     plan = json.load(open(os.path.join(SPIKES, "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
     name = plan["multicam"]
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — cut-through {LABEL}")
+    global MICS
+    MICS = MICS or plan.get("mic_angles") or {}         # newer plans carry it (angle N = person on camera N)
     missing = [role for role in plan["mics"] if role not in MICS]
     if missing:
         raise RuntimeError(f"MICS needs an angle for {missing}")
