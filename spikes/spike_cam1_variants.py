@@ -177,7 +177,7 @@ def main() -> None:
     mini_path = os.path.join(DESKTOP, "cam1_plan.json")
     json.dump(mini, open(mini_path, "w", encoding="utf-8"))
     base = os.path.join(DESKTOP, "cam1_control.fcpxml")
-    mk.main([inner, base, f"{mini_path}:__SPIKE_c1_control"])
+    mk.main([inner, base, "atem=off", f"{mini_path}:__SPIKE_c1_control"])   # copy keeps Camera 1 audio (the thing under test)
     xml0 = open(base, encoding="utf-8").read()
     angle_order = [a for a in re.findall(r'<mc-angle [^>]*name="([^"]+)"', xml0)]
     say(f"Exported angle order: {angle_order}")
