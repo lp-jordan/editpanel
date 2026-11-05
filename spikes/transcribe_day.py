@@ -17,6 +17,7 @@ Uses the C:\\wxbench environment from bench_whisper.py (already set up on LP1).
 Run (normal Command Prompt):
     C:\\wxbench\\Scripts\\python C:\\lp-app-ecosystem\\editpanel\\spikes\\transcribe_day.py Convo2
 Quick test first (first 3 minutes of each mic): add  minutes=3
+Already transcribed, just measure the audio (levels + loud-without-words marks, no Whisper): add  levels_only=1
 Days without mic WAVs: the day file lists one angle's camera clips instead (ATEM mix or in-camera
 audio); those are decoded with PyAV or ffmpeg (first audio track) and every source on one angle becomes one
 track on the multicam clock.
@@ -177,6 +178,25 @@ def unheard_speech(m: dict, words: list, fs: float) -> list:
     return out
 
 
+def frame_levels(m: dict, fs: float) -> dict:
+    """The track's level on every multicam frame (dB after its gain), for placing cuts from the
+    waveform the way the Z8 build did: {"start": first frame, "db": [int per frame]}."""
+    f0, f1 = int(m["lo"] / SR / fs), int(m["hi"] / SR / fs)
+    edges = (np.arange(f0, f1 + 1) * fs * SR).round().astype(np.int64)
+    x = (m["audio"].astype(np.float64) * m["gain"]) ** 2
+    sums = np.add.reduceat(x, edges[:-1]) if len(edges) > 1 else np.zeros(0)
+    n = np.maximum(np.diff(edges), 1)
+    db = 10 * np.log10(sums / n + 1e-12)
+    return {"start": f0, "db": [int(round(max(-100.0, v))) for v in db]}
+
+
+def write_levels(label: str, mics: list, fs: float) -> str:
+    p = os.path.join(DESKTOP, f"levels_{label}.json")
+    json.dump({"label": label, "frame_sec": fs, "mics": {m["angle"]: frame_levels(m, fs) for m in mics}},
+              open(p, "w", encoding="utf-8"))
+    return p
+
+
 def mmss(sec: float) -> str:
     return f"{int(sec // 60):02d}:{sec % 60:04.1f}"
 
@@ -232,6 +252,18 @@ def main() -> None:
     report.append(f"Read audio in {time.time() - t0:.0f}s ({day.get('audio_source', 'wav')} audio, "
                   f"{len(mics)} track(s))")
 
+    if opts.get("levels_only") == "1":
+        # an already transcribed day: measure the audio only (no Whisper) — per-frame levels for
+        # cutting from the waveform, plus the loud-without-words marks — and keep the words
+        wp = os.path.join(DESKTOP, f"words_{label}.json")
+        data = json.load(open(wp, encoding="utf-8"))
+        data["unheard"] = [u for m in mics for u in unheard_speech(m, data["words"], fs)]
+        json.dump(data, open(wp, "w", encoding="utf-8"))
+        write_levels(label, mics, fs)
+        print(f"Measured levels for {len(mics)} track(s); {len(data['unheard'])} loud stretch(es) with no words. "
+              f"Saved levels_{label}.json, updated words_{label}.json", flush=True)
+        return
+
     cuda_dlls()
     import ctranslate2
     from faster_whisper import WhisperModel
@@ -275,6 +307,7 @@ def main() -> None:
     words.sort(key=lambda w: (w["s"], w["mic"]))
     unheard = [u for m in mics for u in unheard_speech(m, words, fs)]
     report.append(f"{len(unheard)} loud stretch(es) with no words (possible dropped flubs)")
+    write_levels(label, mics, fs)
     own = [w for w in words if w["own"]]
     report.append(f"{len(words)} words, {len(own)} owned (rest = the other person heard on that mic)")
     json.dump({"label": label, "multicam": day["multicam"], "fps": day["fps"], "frame_sec": day["frame_sec"],
@@ -299,7 +332,7 @@ def main() -> None:
     with open(os.path.join(DESKTOP, f"transcribe_{label}.txt"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(report) + "\n")
     print("\n".join(report))
-    print(f"Saved words_{label}.json, transcript_{label}.txt, transcribe_{label}.txt on the Desktop")
+    print(f"Saved words_{label}.json, levels_{label}.json, transcript_{label}.txt, transcribe_{label}.txt on the Desktop")
 
 
 if __name__ == "__main__":

@@ -129,6 +129,27 @@ args = [a for a in sys.argv[1:] if "=" not in a]
 opts = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
 label, desk = args[0], opts["dir"]
 slow = os.environ.get("CT_FAKE_SLOW") == "1"
+if opts.get("levels_only") == "1":
+    import math
+    fs = 1001 / 24000
+    day = json.load(open(os.path.join(desk, f"day_{label}.json"), encoding="utf-8"))
+    data = json.load(open(os.path.join(desk, f"words_{label}.json"), encoding="utf-8"))
+    n = int(day["length_sec"] / fs) + 1
+    db = [-60] * n
+    ws = sorted(data["words"], key=lambda w: w["s"])
+    for k, w in enumerate(ws):
+        hi = math.ceil(w["e"]) + 4
+        if k + 1 < len(ws):
+            hi = min(hi, int(ws[k + 1]["s"]) - 1)
+        for f in range(int(w["s"]), max(hi, int(w["s"]) + 1)):
+            db[f] = -20
+    for u in data.get("unheard") or []:
+        for f in range(int(u["s"]), math.ceil(u["e"])):
+            db[f] = -22
+    print(f"\r  reading 1/1 CAM1.mov 100%  9 MB", flush=True)
+    json.dump({"label": label, "frame_sec": fs, "mics": {data["mics"][0]: {"start": 0, "db": db}}},
+              open(os.path.join(desk, f"levels_{label}.json"), "w"))
+    sys.exit(0)
 if os.environ.get("CT_FAKE_FAIL") == "1":
     print("Reading 2 audio file(s)…", flush=True)
     raise ModuleNotFoundError("No module named 'av'")
@@ -548,11 +569,19 @@ sys.stdout.write(json.dumps(res))`;
     const text = params.messages[0].content;
     const ids = [...text.matchAll(/(\d+) (\S+)/g)].map((m) => ({ id: Number(m[1]), w: m[2] }));
     const at = (w, n = 0) => ids.filter((x) => x.w === w)[n].id;
-    const unheard = Number(/(\d+) ⟨unheard speech/.exec(text)[1]);
+    const unheard = Number(/(\d+) ⟨unheard sound/.exec(text)[1]);
     const answer = { removals: [
       { from: at('The'), to: at('three.'), kind: 'retake', reason: 'first try, redone after the count' },
       { from: at('you', 0), to: at('you', 0), kind: 'false_start', reason: 'you you' },
       { from: at('Feedback', 0), to: unheard, kind: 'retake', reason: 'first try + a mutter' }
+    ], shots: [
+      { from: at('Leadership'), angle: 'Camera 1', why: 'open wide' },
+      { from: at('every'), angle: 'Camera 2', why: 'the point' },
+      { from: at('The', 1), angle: 'Camera 1', why: 'after the retake' },
+      { from: at('Feedback', 1), angle: 'Camera 2', why: 'new point' },
+      { from: at('We'), angle: 'Camera 4', why: 'insert' },
+      { from: at('That'), angle: 'Camera 1', why: 'close wide' },
+      { from: 99999, angle: 'Camera 9', why: 'bad' }
     ], notes: ['check the callback at the end'] };
     const handlers = {};
     return {
@@ -569,8 +598,10 @@ sys.stdout.write(json.dumps(res))`;
     setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP, claudeClient: fakeClaude });
   c3.select({ mc: 'mc_test', label: 'Solo2' });
   assert.strictEqual(c3.snapshot().planKind, 'solo');
-  const cl = (await c3.runPlan({ extra: 'Camera 4' })).steps.plan;
+  assert.ok(!fs.existsSync(path.join(DESKTOP, 'levels_Solo2.json')));
+  const cl = (await c3.runPlan({ extra: 'Camera 4', delivery: 'scripted' })).steps.plan;
   assert.strictEqual(cl.status, 'done', `${cl.error}\n${cl.log.join('\n')}`);
+  assert.ok(fs.existsSync(path.join(DESKTOP, 'levels_Solo2.json')), 'no levels-only pass');
   const req = requests[0];
   assert.strictEqual(req.model, 'claude-opus-5-5');
   assert.deepStrictEqual(req.thinking, { type: 'adaptive' });
@@ -578,7 +609,13 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(req.output_config.format.type, 'json_schema');
   assert.strictEqual(req.fallbacks, 'default');
   assert.deepStrictEqual(req.betas, ['server-side-fallback-2026-07-01']);
-  assert.ok(req.system.includes('Keep the last good take'));
+  assert.ok(req.system.includes('Keep the last good take') && req.system.includes('Cut on the thought'));
+  assert.deepStrictEqual(req.output_config.format.schema.properties.shots.items.properties.angle.enum,
+    ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4']);
+  assert.strictEqual(req.max_tokens, 128000);
+  assert.ok(/Delivery: Scripted/.test(req.messages[0].content) &&
+    /Angles: Camera 1 = the wide; Camera 2 = the close-up \(punch-in\); Camera 3 = another angle; Camera 4 = an insert angle/.test(req.messages[0].content),
+    req.messages[0].content.slice(0, 400));
   assert.ok(/⟨pause 3\.\d s⟩/.test(req.messages[0].content) && /\[0:02\] 0 Leadership/.test(req.messages[0].content), req.messages[0].content.slice(0, 300));
   const soloPlan = JSON.parse(fs.readFileSync(path.join(FAKE_SPIKES, 'plans', 'Solo2_plan.json'), 'utf8'));
   const gone = (f) => soloPlan.removals.some((r) => r.from <= f && f < r.to);
@@ -586,14 +623,44 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(gone(unheardAt + 7), 'the unheard mutter stayed');
   assert.ok(soloPlan.removals.some((r) => r.why.startsWith('claude retake')) && /Claude/.test(soloPlan.note));
   const vv = soloPlan.video;
-  assert.ok(vv[0].angle === 'Camera 1' && vv[vv.length - 1].angle === 'Camera 1' && vv.every((x, k) => !k || x.angle !== vv[k - 1].angle));
+  assert.ok(vv[0].angle === 'Camera 1' && vv[vv.length - 1].angle === 'Camera 1' && vv.every((x, k) => !k || x.angle !== vv[k - 1].angle),
+    JSON.stringify(vv.map((x) => x.angle)));
+  assert.ok(vv.some((x) => x.angle === 'Camera 4') && vv.some((x) => x.why === 'claude shot'), 'Claude shots not used');
+  // Z8 placement: every cut sits on the waveform, not on Whisper's (early) word ends
+  const lv = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'levels_Solo2.json'), 'utf8')).mics['Camera 1'].db;
+  const loud = (f) => lv[f] > -40;
+  for (const r of soloPlan.removals) {
+    const quietBefore = [1, 2, 3].every((k) => !loud(r.from - k));
+    const quietAfter = [0, 1, 2].every((k) => !loud(r.to + k));
+    assert.ok((quietBefore && quietAfter) || r.to - r.from < 20, `removal ${r.from}-${r.to} (${r.why}) not 3 fr clear of sound`);
+  }
+  take.words.forEach((x, k) => {
+    if (gone(x.s)) return;
+    const next = take.words[k + 1];
+    const own = next ? Math.min(Math.ceil(x.e) + 3, Math.floor(next.s) - 2) : Math.ceil(x.e) + 3;   // this word's own sound
+    for (let f = Math.floor(x.s); f <= own; f++) {
+      if (loud(f) && gone(f)) assert.fail(`kept word "${x.w}" clipped at frame ${f}`);
+    }
+  });
+  const joins = new Set(soloPlan.removals.map((r) => r.to));
+  for (const x of vv.slice(1).filter((x) => !joins.has(x.in))) {
+    assert.ok(!loud(x.in), `picture cut at ${x.in} lands on sound`);
+  }
   assert.ok(!JSON.stringify(soloPlan).includes('managers'), 'client words in the plan');
-  assert.ok(cl.log.some((l) => /^Claude \(claude-opus-5-5, effort high\): 3 removals .* \$0\.028/.test(l)), cl.log.join('\n'));
+  assert.ok(cl.log.some((l) => /^Claude \(claude-opus-5-5, effort high, scripted\): 3 removals .*, 6 shots .* \$0\.028/.test(l)), cl.log.join('\n'));
+  assert.ok(cl.log.some((l) => /skipped shot/.test(l)), 'bad shot not reported');
+  assert.ok(cl.log.some((l) => /shots: Claude; .*cuts placed from the waveform/.test(l)), cl.log.join('\n'));
   assert.ok(cl.log.some((l) => l.includes('note: check the callback')));
   assert.strictEqual(cl.reportFile, path.join(DESKTOP, 'claude_edit_Solo2.json'));
   assert.ok(fs.existsSync(path.join(DESKTOP, 'claude_edit_Solo2_claude-opus-5-5.json')), 'no per-model copy');
   assert.ok(/solo_plan,claude-opus-5-5,high,2400,900,0,0,0\.028,/.test(fs.readFileSync(path.join(DESKTOP, 'cut_through_costs.csv'), 'utf8')));
   assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-'), 'key in the snapshot');
+  // stage: the lighter brief + looser pause rule reach Claude and the planner
+  const stage = (await c3.runPlan({ delivery: 'stage' })).steps.plan;
+  assert.strictEqual(stage.status, 'done', stage.error);
+  assert.ok(/Delivery: Live stage talk/.test(requests[requests.length - 1].messages[0].content));
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(DESKTOP, 'removals_Solo2.json'), 'utf8')).pauses, { max: 36, left: 18 });
+  assert.ok(stage.log.some((l) => /pauses > 36 fr → 18 fr/.test(l)), stage.log.join('\n'));
   // a declined / broken answer fails the step with the reason, and keeps the log
   fakeClaude.beta.messages.stream = () => ({ on: () => {}, finalMessage: async () => ({ stop_reason: 'refusal', stop_details: { category: 'test' }, content: [], usage: {} }) });
   const declined = (await c3.runPlan({})).steps.plan;
@@ -602,7 +669,7 @@ sys.stdout.write(json.dumps(res))`;
   c3.updateSettings({ anthropicKey: 'sk-ant-test-1234' });
   assert.strictEqual(c3.snapshot().settings.claudeKey, 'saved …1234');
   assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-ant-test'), 'key leaked to the renderer');
-  console.log('✓ Claude solo editor: request shape, token ranges → frame-exact plan (last takes kept, unheard mutter cut), cost logged, refusal reported, key never sent to the page');
+  console.log('✓ Claude solo editor: request shape, removals + shots → plan (last takes kept, unheard mutter cut, Claude\'s angles), cuts placed from the waveform (levels-only pass), stage delivery, cost logged, refusal reported, key never sent to the page');
 
   await new Promise((r) => setTimeout(r, 200));
   assert.ok(updates.length > 0, 'no updates broadcast');

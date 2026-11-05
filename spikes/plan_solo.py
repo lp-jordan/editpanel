@@ -27,6 +27,7 @@ than repeated, deliberate emphasis repeats ("let me say that again" with no coun
 
 Usage:
     python plan_solo.py <words.json> <day.json> <out_plan.json> [start=<frame>] [end=<frame>] [removals=<file>]
+        [levels=<levels_LABEL.json>] [pause_max=<fr>] [pause_left=<fr>]
         [wide="Camera 1"] [punch="Camera 2"] [extra="Camera 4" ...] [cut=<from>-<to> ...]
 """
 import json
@@ -106,6 +107,63 @@ def main(argv) -> None:
             b = end
         return a, max(a, b)
 
+    # Z8: cuts are placed from the waveform, not from Whisper's word times (which run a few frames
+    # early or late). levels=<file> is transcribe_day.py's per-frame level of the talker's track.
+    LV = None
+    if o.get("levels"):
+        lvj = json.load(open(o["levels"], encoding="utf-8"))
+        tr = lvj["mics"].get(talker) or next(iter(lvj["mics"].values()))
+        LV = (int(tr["start"]), tr["db"])
+
+    def lvl(f):
+        i = int(f) - LV[0]
+        return LV[1][i] if 0 <= i < len(LV[1]) else -100
+
+    if LV:
+        inside = [lvl(f) for w in W[::3] for f in range(int(w["s"]) + 1, int(w["e"]))]
+        speech_db = sorted(inside)[len(inside) // 2] if inside else -30
+        floor_db = sorted(LV[1])[len(LV[1]) // 10] if LV[1] else -100
+        THR = max(floor_db + 6, speech_db - 24)        # "sound": the talker or anything as loud
+
+    def sound(f):
+        return lvl(f) > THR
+
+    def after_sound(prev_end, limit, pad):
+        """First frame of the cut after kept audio: `pad` frames after its last sound."""
+        last = None
+        for f in range(int(prev_end) - 8, int(min(prev_end + 10, limit)) + 1):
+            if sound(f):
+                last = f
+        return (last + 1 if last is not None else int(prev_end)) + pad
+
+    def before_sound(next_start, limit, pad):
+        """End of the cut before kept audio: `pad` frames before its first sound."""
+        for f in range(int(max(next_start - 10, limit)), int(next_start) + 9):
+            if sound(f):
+                return f - pad
+        return int(next_start) - pad
+
+    def quietest(lo, hi):
+        """The quietest frame in [lo, hi], the latest of the near-quietest (cuts just before speech)."""
+        lo, hi = int(lo), int(hi)
+        if hi < lo:
+            return lo
+        m = min(lvl(f) for f in range(lo, hi + 1))
+        return max(f for f in range(lo, hi + 1) if lvl(f) <= m + 3)
+
+    def snap_removal(r):
+        """Z8 join: 3 frames after the last kept sound, 3 before the next (~6 fr of air across)."""
+        if not LV or r.get("prev_end") is None and r.get("next_start") is None:
+            return int(r["from"]), int(r["to"])
+        a, b = int(r["from"]), int(r["to"])
+        if r.get("prev_end") is not None:
+            pe, cs = r["prev_end"], r.get("cut_start", r["from"])
+            a = after_sound(pe, cs - 2, 3) if cs - pe >= 4 else quietest(pe - 2, cs + 2)
+        if r.get("next_start") is not None:
+            ns, ce = r["next_start"], r.get("cut_end", r["to"])
+            b = before_sound(ns, ce + 2, 3) if ns - ce >= 4 else quietest(ce - 2, ns + 2)
+        return (a, b) if b > a else (int(r["from"]), int(r["to"]))
+
     removals, floor = [], 0
     # removals=<file>: the edit decisions come from Claude (cut_through_claude.js) as frame
     # spans; the rule-based detection below is skipped and the rest (pauses, picture, audio) runs
@@ -167,8 +225,10 @@ def main(argv) -> None:
             spans.append({"from": a, "to": b, "why": why, "words": (i, j)})
     spans += [{"from": a, "to": b, "why": "editorial (listed)", "words": None} for a, b in cuts]
     if given:
-        spans += [{"from": int(r["from"]), "to": int(r["to"]), "why": f"claude {r['why']}", "words": None}
-                  for r in given["removals"] if r["to"] > r["from"]]
+        for r in given["removals"]:
+            a, b = snap_removal(r)
+            if b > a:
+                spans.append({"from": a, "to": b, "why": f"claude {r['why']}", "words": None})
     spans.sort(key=lambda r: r["from"])
     merged = []
     for r in spans:
@@ -186,13 +246,27 @@ def main(argv) -> None:
     def removed(f):
         return any(r["from"] <= f < r["to"] for r in merged)
 
-    speech = [(int(w["s"]), int(w["e"]) + 1) for w in W if not removed(int(w["s"]))]
+    # loud stretches with no words (laughter, applause, a dropped word) are sound, not dead air
+    gp = (given or {}).get("pauses") or {}                # the delivery's pause rule (stage: looser)
+    pause_max = int(o.get("pause_max", gp.get("max", PAUSE_MAX)))
+    pause_left = int(o.get("pause_left", gp.get("left", PAUSE_LEFT)))
+    loud = [(int(u["s"]), int(u["e"]) + 1) for u in data.get("unheard") or []
+            if (talker is None or u.get("mic") == talker) and start <= u["s"] < end]
+    speech = sorted([(int(w["s"]), int(w["e"]) + 1) for w in W if not removed(int(w["s"]))] +
+                    [x for x in loud if not removed(x[0])])
     last = None
     for s, e in speech:
-        if last is not None and s - last > PAUSE_MAX:
-            a, b = last + 6, s - (PAUSE_LEFT - 6)
+        if last is not None and s - last > pause_max:
+            if LV:                                      # leave pause_left frames of air, split around the join
+                a = after_sound(last, s - 2, pause_left // 2)
+                b = before_sound(s, a + 1, pause_left - pause_left // 2)
+                if b <= a:
+                    last = e if last is None else max(last, e)
+                    continue
+            else:
+                a, b = last + 6, s - (pause_left - 6)
             if not any(r["from"] <= a < r["to"] or r["from"] < b <= r["to"] for r in merged):
-                merged.append({"from": a, "to": b, "why": f"pause {s - last} fr → {PAUSE_LEFT}", "words": None})
+                merged.append({"from": a, "to": b, "why": f"pause {s - last} fr → {pause_left}", "words": None})
         last = e if last is None else max(last, e)
     merged.sort(key=lambda r: r["from"])
 
@@ -222,57 +296,98 @@ def main(argv) -> None:
                 break
     kept = [k for k in kept_of(merged) if k[1] - k[0] >= 6]          # crumbs between two removals
 
-    # 5. picture: wide ↔ punch-in backbone, inserts, an angle change at every join
+    # 5. picture. With Claude's shot list (removals file "shots": [{at, angle}]) the cuts are its
+    # choices; the code only keeps the hard rules: an angle change at every removal join (no jump
+    # cut) and no blink-length shot between two of its own cuts. Without it: the rule rhythm below.
+    claude_shots = sorted((given or {}).get("shots") or [], key=lambda x: x["at"])
+    if LV:                                              # picture cuts: the quiet before the word
+        for x in claude_shots:
+            if x.get("start") is not None and x.get("prev_end") is not None:
+                x["at"] = quietest(x["prev_end"], x["start"]) if x["start"] - x["prev_end"] >= 2 \
+                    else quietest(x["start"] - 4, x["start"] + 1)
+    if claude_shots:
+        known = set(angles)
+        for x in claude_shots:                          # a shot opening right after a removal starts
+            if x.get("start") is not None and x.get("prev_end") is None:   # exactly on that join
+                seg = next(((a, b) for a, b in kept if a <= x["start"] < b), None)
+                if seg and x["start"] - seg[0] < 48:
+                    x["at"] = seg[0]
+        marks = [x for x in claude_shots if x.get("angle") in known]
+
+        def angle_at(f):
+            cur = marks[0]["angle"]
+            for x in marks:
+                if x["at"] > f:
+                    break
+                cur = x["angle"]
+            return cur
+
+        shots = []
+        for si, (a, b) in enumerate(kept):
+            cuts = [a] + [x["at"] for x in marks if a < x["at"] < b]
+            for x0, y0 in zip(cuts, cuts[1:] + [b]):
+                ang, join = angle_at(x0), x0 == a and si > 0
+                if shots and not join and (ang == shots[-1]["angle"] or y0 - x0 < 36):
+                    shots[-1]["to"] = y0                   # same angle again, or a <1.5 s blink: hold
+                    continue
+                shots.append({"from": x0, "to": y0, "angle": ang, "kind": "claude", "join": join})
+        for x, y in zip(shots, shots[1:]):                 # a removal must sit on an angle change
+            if y["angle"] == x["angle"] and len(known) > 1:
+                y["angle"] = punch if x["angle"] == wide else wide
+                y["kind"] = "forced"
     cycle = ["wide", "punch"] * 2 + (["extra"] if extra else [])
-    pick = {"wide": wide, "punch": punch}
-    shots, n, ex = [], 0, 0
-    for si, (a, b) in enumerate(kept):
-        f = a
-        while f < b:
-            kind = cycle[n % len(cycle)]
-            ang = pick.get(kind) or extra[ex % len(extra)]
-            length = OPEN_WIDE if not shots else LEN[kind]
-            if not shots:
-                kind, ang = "wide", wide
-            elif f == a and shots[-1]["angle"] == ang and len({wide, punch, *extra}) > 1:   # a join: never the same angle
+    if not claude_shots:
+        pick = {"wide": wide, "punch": punch}
+        shots, n, ex = [], 0, 0
+        for si, (a, b) in enumerate(kept):
+            f = a
+            while f < b:
+                kind = cycle[n % len(cycle)]
+                ang = pick.get(kind) or extra[ex % len(extra)]
+                length = OPEN_WIDE if not shots else LEN[kind]
+                if not shots:
+                    kind, ang = "wide", wide
+                elif f == a and shots[-1]["angle"] == ang and len({wide, punch, *extra}) > 1:   # a join: never the same angle
+                    n += 1
+                    continue
+                g = min(b, f + length)
+                if b - g < MIN_SHOT:
+                    g = b                                      # don't leave a sliver before the join
+                if shots and f != a and g - f < MIN_SHOT:
+                    shots[-1]["to"] = g                        # too short and not at a join: absorb
+                else:
+                    shots.append({"from": f, "to": g, "angle": ang, "kind": kind, "join": f == a and si > 0})
+                if kind == "extra":
+                    ex += 1
                 n += 1
-                continue
-            g = min(b, f + length)
-            if b - g < MIN_SHOT:
-                g = b                                      # don't leave a sliver before the join
-            if shots and f != a and g - f < MIN_SHOT:
-                shots[-1]["to"] = g                        # too short and not at a join: absorb
-            else:
-                shots.append({"from": f, "to": g, "angle": ang, "kind": kind, "join": f == a and si > 0})
-            if kind == "extra":
-                ex += 1
-            n += 1
-            f = g
-    # close on the wide
-    last = shots[-1]
-    if last["angle"] != wide:
-        prev_wide = len(shots) > 1 and shots[-2]["angle"] == wide
-        if prev_wide and not last["join"]:
-            shots.pop()
-            shots[-1]["to"] = last["to"]                   # the wide before it runs to the end
-        elif not prev_wide:
-            last.update(angle=wide, kind="wide")
-        elif last["to"] - last["from"] >= 2 * MIN_SHOT:
-            # after a removal it has to stay off the wide: split, and close on the wide (~4 s)
-            cut = last["to"] - max(MIN_SHOT, min(OPEN_WIDE, (last["to"] - last["from"]) // 2))
-            shots.append({"from": cut, "to": last["to"], "angle": wide, "kind": "wide", "join": False})
-            last["to"] = cut
-        elif len(shots) < 3 or shots[-3]["angle"] != punch:
-            shots[-2].update(angle=punch, kind="punch")    # short last shot after a removal: swap
-            last.update(angle=wide, kind="wide")
-    # last guard: no jump cut at a join, no same-angle neighbours
-    for x, y in zip(shots, shots[1:]):
-        if y["angle"] == x["angle"] and punch != wide:
-            y["angle"], y["kind"] = (punch, "punch") if x["angle"] == wide else (wide, "wide")
-    why = {"wide": "wide", "punch": "punch-in", "extra": "insert"}
+                f = g
+        # close on the wide
+        last = shots[-1]
+        if last["angle"] != wide:
+            prev_wide = len(shots) > 1 and shots[-2]["angle"] == wide
+            if prev_wide and not last["join"]:
+                shots.pop()
+                shots[-1]["to"] = last["to"]                   # the wide before it runs to the end
+            elif not prev_wide:
+                last.update(angle=wide, kind="wide")
+            elif last["to"] - last["from"] >= 2 * MIN_SHOT:
+                # after a removal it has to stay off the wide: split, and close on the wide (~4 s)
+                cut = last["to"] - max(MIN_SHOT, min(OPEN_WIDE, (last["to"] - last["from"]) // 2))
+                shots.append({"from": cut, "to": last["to"], "angle": wide, "kind": "wide", "join": False})
+                last["to"] = cut
+            elif len(shots) < 3 or shots[-3]["angle"] != punch:
+                shots[-2].update(angle=punch, kind="punch")    # short last shot after a removal: swap
+                last.update(angle=wide, kind="wide")
+        # last guard: no jump cut at a join, no same-angle neighbours
+        for x, y in zip(shots, shots[1:]):
+            if y["angle"] == x["angle"] and punch != wide:
+                y["angle"], y["kind"] = (punch, "punch") if x["angle"] == wide else (wide, "wide")
+    why = {"wide": "wide", "punch": "punch-in", "extra": "insert", "claude": "claude shot",
+           "forced": "angle change forced at a removal"}
     video = [{"in": s["from"], "out": s["to"], "angle": s["angle"],
               "why": why[s["kind"]] + (" (after a removal)" if s["join"] else "")} for s in shots]
-    video[0]["why"], video[-1]["why"] = "open on the wide", "close on the wide"
+    if not claude_shots:
+        video[0]["why"], video[-1]["why"] = "open on the wide", "close on the wide"
 
     # 6. audio
     camera = day.get("audio_source") == "camera"
@@ -291,6 +406,12 @@ def main(argv) -> None:
     print(f"{len(video)} picture pieces, {len(merged)} removals ({', '.join(f'{k} {v}' for k, v in kinds.items())}), "
           f"kept {kept_f / fps / 60:.1f} of {raw_f / fps / 60:.1f} min, {len(video) / max(kept_f / fps / 60, 1e-9):.1f} cuts/min")
     print("angles:", dict(Counter(v["angle"] for v in video)), f"| audio: {plan['audio']['source']} ({talker})")
+    lens = sorted((v["out"] - v["in"]) / fps for v in video)
+    print(f"shots: {'Claude' if claude_shots else 'rule rhythm'}; median {lens[len(lens) // 2]:.1f} s, "
+          f"10–90% {lens[len(lens) // 10]:.1f}–{lens[len(lens) * 9 // 10]:.1f} s"
+          + (f"; {sum(1 for v in video if v['why'].startswith('angle change forced'))} angle(s) forced at removals"
+             if claude_shots else "") + f"; pauses > {pause_max} fr → {pause_left} fr"
+          + ("; cuts placed from the waveform" if LV else "; cuts on word times (no levels file)"))
 
     print("Removed (check these):")
     for r in merged:

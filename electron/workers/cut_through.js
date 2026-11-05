@@ -175,6 +175,7 @@ function createCutThrough(opts) {
       day: path.join(desktopDir, `day_${label}.json`),
       prepReport: path.join(desktopDir, `day_prep_${label}.txt`),
       words: path.join(desktopDir, `words_${label}.json`),
+      levels: path.join(desktopDir, `levels_${label}.json`),
       transcript: path.join(desktopDir, `transcript_${label}.txt`),
       transcribeReport: path.join(desktopDir, `transcribe_${label}.txt`),
       plan: path.join(st.spikesDir, 'plans', `${label}_plan.json`),
@@ -491,8 +492,8 @@ function createCutThrough(opts) {
   // spikes from the style guide (no LLM); an LLM pass plugs in here later.
   const PLANNERS = {
     convo: { script: 'plan_convo.py', args: ({ extra }) => (extra ? [`extra=${extra}`] : []) },
-    solo: { script: 'plan_solo.py', args: ({ extra, punch, removalsFile }) => [...(punch ? [`punch=${punch}`] : []), ...(extra ? [`extra=${extra}`] : []),
-      ...(removalsFile ? [`removals=${removalsFile}`] : [])] }
+    solo: { script: 'plan_solo.py', args: ({ extra, punch, removalsFile, levelsFile }) => [...(punch ? [`punch=${punch}`] : []), ...(extra ? [`extra=${extra}`] : []),
+      ...(removalsFile ? [`removals=${removalsFile}`] : []), ...(levelsFile ? [`levels=${levelsFile}`] : [])] }
   };
   function runPlanner(kind, o) {
     const { script, args } = PLANNERS[kind];
@@ -502,7 +503,7 @@ function createCutThrough(opts) {
       `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`)]);
   }
 
-  async function runPlan({ start, end, extra, punch, cuts } = {}) {
+  async function runPlan({ start, end, extra, punch, cuts, delivery } = {}) {
     if (!s.day) throw new Error('Run Prep first');
     const kind = planKind(s.day);
     const f = files();
@@ -518,7 +519,27 @@ function createCutThrough(opts) {
     const started = Date.now();
     const o = { files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, punch: punch || null, cuts: cutList };
     if (kind === 'solo') {
-      // Claude decides every removal (the Z8 method); plan_solo.py then does pauses, picture, audio
+      // Z8 cuts from the waveform: an older transcription has no per-frame levels yet → one
+      // levels-only pass over the audio (no Whisper), which also adds the loud-without-words marks
+      if (!fs.existsSync(f.levels)) {
+        st.progress = { phase: 'Measuring the audio (levels for cut placement)', phaseAt: Date.now(), bar: null };
+        emit();
+        const lv = await runChild('plan', st0.wxPython, [path.join(st0.spikesDir, 'transcribe_day.py'), s.label, `dir=${desktopDir}`, 'levels_only=1'], {
+          onLine: (line) => {
+            const r = parseRead(line);
+            if (!r) return false;
+            st.progress = { ...st.progress, phase: `Measuring the audio · ${r.name} · ${Math.round(r.mb)} MB`, bar: r.pct };
+            return true;
+          }
+        });
+        if (lv.error || lv.code !== 0 || !fs.existsSync(f.levels)) {
+          const why = lv.error || exitError('plan', 'transcribe_day.py levels_only', lv.code);
+          finish('plan', { error: why, report: st.log.slice(), reportFile: saveLog('plan') });
+          return snapshot();
+        }
+      }
+      o.levelsFile = f.levels;
+      // Claude edits like Z8 — every removal and every shot; plan_solo.py places the cuts
       st.progress = { phase: 'Claude is reading the transcript', phaseAt: Date.now(), bar: null };
       emit();
       try {
@@ -526,6 +547,8 @@ function createCutThrough(opts) {
           label: s.label, wordsPath: f.words, dayPath: f.day, desktopDir,
           promptPath: path.join(st0.spikesDir, 'prompts', 'solo_editor.md'),
           start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort,
+          delivery: claude.DELIVERY[delivery] ? delivery : 'scripted',
+          roles: { punch: o.punch || undefined, extra: o.extra ? [o.extra] : [] },
           client: claudeClient,
           log: (line) => { pushLog('plan', line); emit(); },
           onEvent: (ev) => {
@@ -543,7 +566,7 @@ function createCutThrough(opts) {
         finish('plan', { error: `Claude: ${msg}`, report: st.log.slice(), reportFile: saveLog('plan') });
         return snapshot();
       }
-      st.progress = { phase: 'Building the plan (pauses, angles)', phaseAt: Date.now(), bar: null };
+      st.progress = { phase: 'Placing the cuts on the waveform', phaseAt: Date.now(), bar: null };
       emit();
     }
     const res = await runPlanner(kind, o);

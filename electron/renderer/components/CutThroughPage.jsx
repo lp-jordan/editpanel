@@ -58,7 +58,7 @@ function CutThroughPage({ connected }) {
   const [now, setNow] = React.useState(Date.now());
   const [labelDraft, setLabelDraft] = React.useState('');
   const [minutes, setMinutes] = React.useState('');
-  const [planForm, setPlanForm] = React.useState({ start: '', end: '', extra: '', cuts: '' });
+  const [planForm, setPlanForm] = React.useState({ start: '', end: '', extra: '', cuts: '', delivery: 'scripted' });
   const [bins, setBins] = React.useState([]);
   const [openReports, setOpenReports] = React.useState({});
   const [errors, setErrors] = React.useState({});
@@ -233,6 +233,16 @@ function CutThroughPage({ connected }) {
                 <input className="settings-input ct-num" inputMode="numeric" placeholder={String(day?.frames || '')} value={planForm.end}
                   onChange={(e) => setPlanForm({ ...planForm, end: e.target.value.replace(/\D/g, '') })} />
               </label>
+              {solo && (
+                <label className="ct-inline">
+                  <span className="settings-label">Delivery</span>
+                  <select className="settings-input" value={planForm.delivery} onChange={(e) => setPlanForm({ ...planForm, delivery: e.target.value })}>
+                    <option value="scripted">Scripted</option>
+                    <option value="free">Free talk</option>
+                    <option value="stage">Stage</option>
+                  </select>
+                </label>
+              )}
               {solo && punchChoices.length > 0 && (
                 <label className="ct-inline">
                   <span className="settings-label">Punch-in</span>
