@@ -90,11 +90,18 @@ def mix_level(project: Any, mp: Any, mc: Any, frame: int, tag: str):
     project.SetCurrentTimeline(tl)
     its = _safe(lambda: mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": frame,
                                                "endFrame": frame + LENGTH, "mediaType": 2}]), []) or []
-    lufs = None
+    lufs, raw = None, None
     if its:
         modes = [m for m in (tl.GetNormalizeAudioModes() or []) if "Peak" not in m]
-        lv = _safe(lambda: its[0].AnalyzeAudioLevels(modes[0]), {}) or {}
-        lufs = lv.get("Integrated")
+        for _ in range(3):                                 # fresh items sometimes need a moment
+            raw = _safe(lambda: its[0].AnalyzeAudioLevels(modes[0]))
+            lufs = (raw or {}).get("Integrated") if isinstance(raw, dict) else None
+            if lufs is not None:
+                break
+            time.sleep(2)
+        if lufs is None:
+            say(f"   (measure {tag}: AnalyzeAudioLevels returned {raw!r}; item type "
+                f"{_safe(lambda: its[0].GetType())}, modes {modes[:2]})")
     return tl, lufs, len(its)
 
 
@@ -116,10 +123,10 @@ def main() -> None:
     say(f"Multicam under test: {name} [{orig.GetUniqueId()[:8]}] in "
         f"'{_safe(lambda: orig.GetParentFolder().GetName(), '?')}'")
     frame = sorted(plan["mics"][next(iter(plan["mics"]))])[0][0] + 24   # inside the first talking stretch
-    trash = []
+    trash_tl, trash_mc = [], []
 
     tl, lufs, n = mix_level(project, mp, orig, frame, "orig")
-    trash.append(tl)
+    trash_tl.append(tl)
     say(f"Control — ATEM mix through the ORIGINAL: {lufs} LUFS ({n} audio item(s))")
 
     # fresh export of the multicam's description
@@ -129,7 +136,7 @@ def main() -> None:
     for p in (mcdef, mcdef + "d"):
         shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else (os.path.exists(p) and os.remove(p))
     tmp.Export(mcdef, r.EXPORT_FCPXML_1_10)
-    trash.append(tmp)
+    trash_tl.append(tmp)
     src = bundle_xml(mcdef)
     if not src:
         raise RuntimeError("export failed")
@@ -157,9 +164,9 @@ def main() -> None:
         if not tlv or not copy:
             say(f"{variant}: ✗ import {'failed' if not tlv else 'made no copy'}")
             continue
-        trash.append(tlv)
+        trash_tl.append(tlv)
         mtl, lufs, n = mix_level(project, mp, copy, frame, variant)
-        trash.append(mtl)
+        trash_tl.append(mtl)
         props = _safe(lambda: copy.GetClipProperty(), {}) or {}
         diff = {k: (base_props.get(k), props.get(k)) for k in sorted(set(base_props) | set(props))
                 if base_props.get(k) != props.get(k) and k not in ("Clip Name", "Date Added", "Date Modified")}
@@ -167,7 +174,7 @@ def main() -> None:
         say(f"{variant}: ATEM mix through the copy: {lufs} LUFS {verdict} ({n} audio item(s), {time.time() - t1:.1f}s)")
         say(f"   properties that differ from the original: {diff or 'none'}")
         if not KEEP:
-            trash.append(copy)
+            trash_mc.append(copy)
         else:
             _safe(lambda: copy.SetName(f"{name} AB {variant}"))
 
@@ -175,8 +182,7 @@ def main() -> None:
     other = next((t for n_, t in timelines(project).items() if not n_.startswith("__SPIKE_")), None)
     if other:
         project.SetCurrentTimeline(other)
-    tls = [t for t in trash if hasattr(t, "GetTrackCount")]
-    clips = [c for c in trash if not hasattr(c, "GetTrackCount")]
+    tls, clips = trash_tl, trash_mc
     gone_t = _safe(lambda: mp.DeleteTimelines(tls), False)
     gone_c = _safe(lambda: mp.DeleteClips(clips), False) if clips else True
     say(f"\nCleaned up: {len(tls)} test timeline(s) {'✓' if gone_t else '✗'}, "
