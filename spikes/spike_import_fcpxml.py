@@ -73,6 +73,67 @@ def clip_label(item: Any) -> str:
     return a if a != "?" else str(_safe(lambda: item.GetName(), "?"))
 
 
+def _norm(p: str) -> str:
+    return str(p or "").replace("/", "\\").lower()
+
+
+def xml_sources(path: str) -> dict:
+    """{file name: {normalized path}} for every media file the FCPXML references."""
+    import re
+    import xml.etree.ElementTree as ET
+    from urllib.parse import unquote
+    txt = open(path, encoding="utf-8").read()
+    res = ET.fromstring(re.search(r"<resources>.*?</resources>", txt, re.S).group(0))
+    out = {}
+    for a in res.iter("asset"):
+        rep = a.find("media-rep")
+        if rep is not None:
+            out.setdefault(a.get("name"), set()).add(_norm(unquote(rep.get("src", "")).replace("file://localhost/", "")))
+    return out
+
+
+def source_bins(mp: Any, wanted: dict):
+    """Only the bins holding the EXACT files the FCPXML names. Resolve matches source clips by
+    NAME, and the mixer names every recording 01MIC1.WAV, 02MIC2.WAV…: searching every bin let it
+    pick another recording's 01MIC1.WAV (Convo2, 2026-11-05). Returns (bins, notes)."""
+    def walk_all(folder, path=""):
+        here = f"{path} / {folder.GetName()}" if path else folder.GetName()
+        yield here, folder
+        for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
+            yield from walk_all(sub, here)
+    good, decoy, notes = {}, {}, []
+    for here, f in walk_all(mp.GetRootFolder()):
+        for c in _safe(lambda: f.GetClipList(), []) or []:
+            n = _safe(lambda: c.GetName())
+            if n not in wanted:
+                continue
+            fp = _norm(_safe(lambda: c.GetClipProperty("File Path"), ""))
+            (good if fp in wanted[n] else decoy).setdefault(here, (f, []))[1].append(n)
+    for n in wanted:
+        if not any(n in names for _, names in good.values()):
+            notes.append(f"✗ no media pool clip for {n} at the path the multicam uses")
+    clash = sorted(set(good) & set(decoy))
+    for here in clash:
+        notes.append(f"✗ bin '{here}' holds the right AND another file with the same name "
+                     f"({sorted(set(decoy[here][1]))}) — Resolve may pick the wrong one")
+    others = sum(len(v[1]) for k, v in decoy.items() if k not in good)
+    if others:
+        notes.append(f"left out {others} same-named clip(s) from other recordings/files")
+    return [f for f, _ in good.values()], notes
+
+
+def wrong_sources(tl: Any, wanted: dict) -> list:
+    """Audio items whose media pool clip isn't the file the FCPXML asked for."""
+    bad = []
+    for k in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
+        for it in _safe(lambda: tl.GetItemListInTrack("audio", k), []) or []:
+            mpi = _safe(lambda: it.GetMediaPoolItem())
+            n = _safe(lambda: mpi.GetName()) if mpi else None
+            if n in wanted and _norm(_safe(lambda: mpi.GetClipProperty("File Path"), "")) not in wanted[n]:
+                bad.append((k, n, _safe(lambda: mpi.GetClipProperty("File Path"))))
+    return bad
+
+
 def all_folders(folder: Any) -> list:
     out = [folder]
     for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
@@ -245,9 +306,15 @@ def main() -> None:
     if not os.path.exists(path):
         raise RuntimeError(f"{path} not found.")
     names_before = {project.GetTimelineByIndex(i).GetName() for i in range(1, int(project.GetTimelineCount()) + 1)}
-    # Search EVERY bin for the source clips: with only the multicam's bin, Resolve couldn't find
-    # the camera files or mic WAVs and rebuilt the copy with angles offline (2026-11-05).
-    folders = all_folders(mp.GetRootFolder())
+    # Source clips: only the bins that hold the exact files (by path). With only the multicam's
+    # bin the angles came in offline; with EVERY bin Resolve matched another recording's
+    # same-named mic WAV (2026-11-05).
+    wanted = xml_sources(path)
+    folders, notes = source_bins(mp, wanted)
+    for n_ in notes:
+        say("    " + n_)
+    if any(n_.startswith("✗") for n_ in notes):
+        globals()["CHECK_OK"] = False
     opts = {"importSourceClips": False, "sourceClipsFolders": folders}
     if not BATCH:
         opts["timelineName"] = f"__SPIKE_xml_{LABEL}_{int(time.time()) % 100000}"
@@ -289,7 +356,10 @@ def main() -> None:
                 f"A{k} " + str({a: sum(1 for x in t.GetItemListInTrack('audio', k) if clip_label(x) == a)
                                 for a in {clip_label(x) for x in t.GetItemListInTrack('audio', k)}})
                 for k in range(1, int(t.GetTrackCount("audio") or 0) + 1))))
-        good = self_check(project, t)
+        wrong = wrong_sources(t, wanted)
+        say(f"    check source files: " + ("✓ every audio clip uses the file the multicam uses" if not wrong else
+            f"✗ {len(wrong)} audio clip(s) use another file, e.g. A{wrong[0][0]} {wrong[0][1]} → {wrong[0][2]}"))
+        good = self_check(project, t) and not wrong
         globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and good
     copy = next((c for _, c in after if c.GetUniqueId() not in {b.GetUniqueId() for _, b in before}), None)
     if copy and plan.get("mics"):
