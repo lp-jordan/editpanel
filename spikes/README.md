@@ -126,3 +126,16 @@ instead of Resolve's. Needs `Desktop\Z8_whisperx_export.json` (client transcript
 out of git) and `Desktop\Z8_whisperx_plan.json`. Removal cuts never land inside a word.
 Builds `__SPIKE_auto_Z8_whisperx_<n>` with 2-frame audio crossfades at removals, 8-frame
 audio fades, and 8-frame picture Cross Dissolves at head and tail.
+
+## All-in-one test on a fresh project: `spike_day_prep.py` → `transcribe_day.py`
+
+1. **Resolve console** (project open): `LABEL="Convo2"; exec(open(r"C:\lp-app-ecosystem\editpanel\spikes\spike_day_prep.py", encoding="utf-8").read())`
+   exports the day multicam (throwaway timeline, deleted again) and writes `Desktop\day_<LABEL>.json`:
+   fps, length, angles, and each audio-only clip (the person mic WAVs) with its angle, file path and
+   where the file's 0:00 sits in the multicam. Changes nothing.
+2. **LP1 Command Prompt** (the `C:\wxbench` venv from `bench_whisper.py`):
+   `C:\wxbench\Scripts\python C:\lp-app-ecosystem\editpanel\spikes\transcribe_day.py Convo2` (add `minutes=3` for a quick test).
+   faster-whisper large-v3 on the GPU per mic, words on the multicam frame grid, each word owned by
+   the mic where it's loudest (after per-mic gain). Writes `words_<LABEL>.json`,
+   `transcript_<LABEL>.txt`, `transcribe_<LABEL>.txt` to the Desktop (client words: never into git).
+3. Claude writes `plans/<LABEL>_plan.json` from those; then the usual `spike_cut_through_batch.py` run.
