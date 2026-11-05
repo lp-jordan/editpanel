@@ -127,6 +127,9 @@ args = [a for a in sys.argv[1:] if "=" not in a]
 opts = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
 label, desk = args[0], opts["dir"]
 slow = os.environ.get("CT_FAKE_SLOW") == "1"
+if os.environ.get("CT_FAKE_FAIL") == "1":
+    print("Reading 2 audio file(s)…", flush=True)
+    raise ModuleNotFoundError("No module named 'av'")
 day = json.load(open(os.path.join(desk, f"day_{label}.json"), encoding="utf-8"))
 print(f"Reading {len(day['mics'])} mic file(s)…", flush=True)
 print("Loading the model on cuda…", flush=True)
@@ -338,6 +341,19 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(snap.steps.transcribe.status, 'canceled');
   delete process.env.CT_FAKE_SLOW;
 
+  // a failing run: its own output (traceback) is the report, not an older file
+  fs.writeFileSync(path.join(DESKTOP, 'transcribe_E2E_test.txt'), 'OLD REPORT\n');
+  process.env.CT_FAKE_FAIL = '1';
+  snap = await c.runTranscribe({});
+  delete process.env.CT_FAKE_FAIL;
+  const bad = snap.steps.transcribe;
+  assert.strictEqual(bad.status, 'failed');
+  assert.ok(/exited with code 1: ModuleNotFoundError: No module named 'av'/.test(bad.error), bad.error);
+  assert.ok(bad.report.some((l) => l.startsWith('Traceback')) && !bad.report.includes('OLD REPORT'), bad.report.join('\n'));
+  assert.strictEqual(bad.reportFile, path.join(DESKTOP, 'transcribe_E2E_test_log.txt'));
+  assert.ok(/ModuleNotFoundError/.test(fs.readFileSync(bad.reportFile, 'utf8')));
+  assert.strictEqual(snap.steps.prep.reportFile, path.join(DESKTOP, 'day_prep_E2E_test.txt'));
+
   // transcribe for real (fake engine)
   snap = await c.runTranscribe({ minutes: '1' });
   const tr = snap.steps.transcribe;
@@ -345,6 +361,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(tr.progress.overall, 100);
   assert.strictEqual(tr.progress.mic, 2);
   assert.ok(tr.report[0].startsWith('Transcribe E2E_test'));
+  assert.strictEqual(tr.reportFile, path.join(DESKTOP, 'transcribe_E2E_test.txt'));
   assert.ok(!tr.log.some((l) => /\[#+/.test(l)), 'progress lines leaked into the log');
 
   // plan with the real plan_convo.py

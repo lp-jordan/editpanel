@@ -85,7 +85,7 @@ function defaultSpikesDir({ isPackaged, appDir }) {
 }
 
 function emptyStep() {
-  return { status: 'pending', startedAt: null, finishedAt: null, earlier: false, error: null, log: [], report: [], progress: null, traceId: null, data: null };
+  return { status: 'pending', startedAt: null, finishedAt: null, earlier: false, error: null, log: [], report: [], reportFile: null, progress: null, traceId: null, data: null };
 }
 
 function readJson(p) {
@@ -190,18 +190,32 @@ function createCutThrough(opts) {
     return s.steps[step];
   }
 
-  function finish(step, { error = null, report = null, data = undefined } = {}) {
+  function finish(step, { error = null, report = null, reportFile = null, data = undefined } = {}) {
     const st = s.steps[step];
     st.finishedAt = Date.now();
     st.status = canceled && step === 'transcribe' ? 'canceled' : error ? 'failed' : 'done';
     st.error = error;
     if (report) st.report = report;
+    st.reportFile = reportFile && fs.existsSync(reportFile) ? reportFile : null;
     if (data !== undefined) st.data = data;
     st.progress = st.status === 'done' && st.progress ? { ...st.progress, pct: 100, overall: 100 } : st.progress;
     s.busy = null;
     child = null;
     refreshFiles();
     emit();
+  }
+
+  /** A child process's full output (stdout + stderr, so tracebacks too) as a
+   *  Desktop file the step's Open report button can open. */
+  function saveLog(step) {
+    const p = path.join(desktopDir, `${step}_${s.label}_log.txt`);
+    try { fs.writeFileSync(p, s.steps[step].log.join('\n') + '\n', 'utf8'); return p; } catch (_) { return null; }
+  }
+
+  /** "exited with code 1" + the last line that says why (a traceback's last line). */
+  function exitError(step, script, code) {
+    const last = [...s.steps[step].log].reverse().find((l) => l.trim() && !/^\s*\^+\s*$/.test(l));
+    return `${script} exited with code ${code}${last ? `: ${last.trim()}` : ''}`;
   }
 
   /** Re-read what's on disk for the label: day file, plan file. */
@@ -250,7 +264,8 @@ function createCutThrough(opts) {
       if (!t) { s.steps[key] = emptyStep(); continue; }
       const report = rep ? readLines(rep) || [] : [];
       const failed = key === 'build' && report.some((l) => l.trim().startsWith('✗ STOPPED'));
-      s.steps[key] = { ...emptyStep(), status: failed ? 'failed' : 'done', earlier: true, finishedAt: t, report };
+      const reportFile = [rep, out].find((p) => p && fs.existsSync(p)) || null;
+      s.steps[key] = { ...emptyStep(), status: failed ? 'failed' : 'done', earlier: true, finishedAt: t, report, reportFile };
     }
   }
 
@@ -322,7 +337,7 @@ function createCutThrough(opts) {
     const f = files();
     if (!error && !(mtime(f.day) >= started - 2000)) error = `day_${s.label}.json was not written`;
     const day = readJson(f.day);
-    finish('prep', { error, report: out.lines, data: day && !error ? prepData(day) : null });
+    finish('prep', { error, report: out.lines, reportFile: f.prepReport, data: day && !error ? prepData(day) : null });
     return snapshot();
   }
 
@@ -331,7 +346,7 @@ function createCutThrough(opts) {
     if (!fs.existsSync(files().plan)) throw new Error('No plan for this label yet');
     const bin = settings().seqBin;
     const out = await runSpike('build', 'spike_cut_through_batch.py', { LABEL: s.label, ...(bin ? { SEQ_BIN: bin } : {}) });
-    finish('build', { error: out.error, report: out.lines });
+    finish('build', { error: out.error, report: out.lines, reportFile: files().buildReport });
     return snapshot();
   }
 
@@ -420,10 +435,16 @@ function createCutThrough(opts) {
       }
     });
     let error = res.error;
-    if (!error && res.code !== 0 && !canceled) error = `transcribe_day.py exited with code ${res.code}`;
+    if (!error && res.code !== 0 && !canceled) error = exitError('transcribe', 'transcribe_day.py', res.code);
     const f = files();
     if (!error && !canceled && !(mtime(f.words) >= started - 2000)) error = `words_${s.label}.json was not written`;
-    finish('transcribe', { error: canceled ? null : error, report: canceled ? st.log.slice() : (readLines(f.transcribeReport) || st.log.slice()) });
+    // Success: the script's own report. Failure/cancel: this run's output (an
+    // older transcribe_<LABEL>.txt would hide the traceback).
+    if (error || canceled) {
+      finish('transcribe', { error: canceled ? null : error, report: st.log.slice(), reportFile: saveLog('transcribe') });
+    } else {
+      finish('transcribe', { report: readLines(f.transcribeReport) || st.log.slice(), reportFile: f.transcribeReport });
+    }
     return snapshot();
   }
 
@@ -464,10 +485,10 @@ function createCutThrough(opts) {
     const started = Date.now();
     const res = await planner({ files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, cuts: cutList });
     let error = res.error;
-    if (!error && res.code !== 0) error = `plan_convo.py exited with code ${res.code}`;
+    if (!error && res.code !== 0) error = exitError('plan', 'plan_convo.py', res.code);
     if (!error && !(mtime(f.plan) >= started - 2000)) error = `${s.label}_plan.json was not written`;
     const st = s.steps.plan;
-    finish('plan', { error, report: st.log.slice(), data: error ? null : planSummary(readJson(f.plan)) });
+    finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : f.plan, data: error ? null : planSummary(readJson(f.plan)) });
     return snapshot();
   }
 
@@ -479,7 +500,7 @@ function createCutThrough(opts) {
     if (!plan) throw new Error(`No readable ${s.label}_plan.json in spikes/plans`);
     const t = mtime(f.plan);
     s.steps.plan = { ...emptyStep(), status: 'done', earlier: true, startedAt: null, finishedAt: t,
-      report: [`Using ${f.plan}`], data: planSummary(plan) };
+      report: [`Using ${f.plan}`], reportFile: f.plan, data: planSummary(plan) };
     refreshFiles();
     emit();
     return snapshot();

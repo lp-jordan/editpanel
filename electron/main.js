@@ -3446,6 +3446,12 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:plan', ctCall((a) => cutThrough.runPlan(a)));
   ipcMain.handle('cut-through:use-plan', ctCall(() => cutThrough.useExistingPlan()));
   ipcMain.handle('cut-through:build', ctCall((a) => cutThrough.runBuild(a)));
+  ipcMain.handle('cut-through:open-file', async (_e, p) => {
+    if (typeof p !== 'string' || !p) return { ok: false, error: 'No report file' };
+    if (!fs.existsSync(p)) return { ok: false, error: `Not found: ${p}` };
+    const err = await shell.openPath(p);   // '' on success
+    return err ? { ok: false, error: err } : { ok: true };
+  });
   ipcMain.handle('cut-through:open-path', async (_e, p) => {
     if (typeof p !== 'string' || !p) return { ok: false, error: 'no path' };
     if (!fs.existsSync(p)) return { ok: false, error: 'Not found' };

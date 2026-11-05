@@ -354,7 +354,6 @@ function CutThroughPage({ connected }) {
         const st = steps[step.key];
         const lines = reportLines(st);
         const showReport = st.status === 'running' || st.status === 'failed' || openReports[step.key];
-        const outFile = ct.files && { prep: ct.files.day, transcribe: ct.files.transcript, plan: ct.files.plan, build: ct.files.buildReport }[step.key];
         return (
           <section key={step.key} className={`panel ct-step is-${st.status}`}>
             <div className="ct-step-head">
@@ -369,8 +368,9 @@ function CutThroughPage({ connected }) {
                     {openReports[step.key] ? 'Hide report' : 'Report'}
                   </button>
                 )}
-                {outFile && (st.status === 'done' || st.status === 'failed') && (
-                  <button type="button" className="btn small ghost" onClick={() => api.showInFolder(outFile)}>Show file</button>
+                {st.reportFile && st.status !== 'running' && (
+                  <button type="button" className="btn small ghost"
+                    onClick={() => call(step.key, () => api.openFile(st.reportFile).then((r) => (r && r.ok === false ? r : { ok: true })))}>Open report</button>
                 )}
                 {renderActions(step.key)}
               </div>

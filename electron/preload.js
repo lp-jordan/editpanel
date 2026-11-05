@@ -212,6 +212,7 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   useExistingPlan: () => ipcRenderer.invoke('cut-through:use-plan'),
   runBuild: (payload) => ipcRenderer.invoke('cut-through:build', payload),
   showInFolder: (p) => ipcRenderer.invoke('cut-through:open-path', p),
+  openFile: (p) => ipcRenderer.invoke('cut-through:open-file', p),
   onUpdate(callback) {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('cut-through:update', handler);
