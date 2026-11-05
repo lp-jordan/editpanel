@@ -134,10 +134,11 @@ def main() -> None:
     if not ok or not src:
         raise RuntimeError(f"FCPXML {version} export failed")
     xml = open(src, encoding="utf-8").read()
-    angles = re.findall(r'<mc-angle name="([^"]+)" angleID="([^"]+)"', xml)
+    angles = [re.search(r'name="([^"]+)"', a).group(1) for a in re.findall(r"<mc-angle ([^>]*)>", xml)]
+    offered = sorted(a for a in dir(r) if "FCPXML" in a)
     say(f"1. Exported {name} as FCPXML {version} in {time.time() - t1:.1f}s "
         f"({os.path.relpath(src, DESKTOP)}, {os.path.getsize(src) // 1024} KB, {len(re.findall(r'<asset ', xml))} source file(s), "
-        f"angles {[a for a, _ in angles]}); throwaway timeline deleted: {gone}")
+        f"angles {angles}); throwaway timeline deleted: {gone}; export types offered: {offered or '(not listed)'}")
 
     # 2. the joined timeline, built on that description
     t1 = time.time()
@@ -148,7 +149,8 @@ def main() -> None:
     plan_arg = os.path.join(SPIKES, "plans", f"{LABEL}_plan.json") + f":{base}"
     args = [src, out, *(f"{k}={v}" for k, v in MICS.items()), f"split={SPLIT}", f"joined={joined}", plan_arg]
     ranges = mk.main(args)
-    say(f"2. Built {os.path.basename(out)}: {len(ranges)} video(s) in one timeline ({time.time() - t1:.1f}s)")
+    say(f"2. Built {os.path.basename(out)} (written as FCPXML 1.14): {len(ranges)} video(s) in one timeline "
+        f"({time.time() - t1:.1f}s)")
 
     # 3. import → one copy (primary); original archived
     t1 = time.time()

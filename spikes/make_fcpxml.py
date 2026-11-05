@@ -146,8 +146,10 @@ def main(argv=None) -> list:
                 "                    <spine>", *body, "                    </spine>",
                 "                </sequence>", "            </project>"]
 
-    version = re.search(r'<fcpxml version="([^"]+)"', xml).group(1)   # write what Resolve exported
-    out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE fcpxml>", f'<fcpxml version="{version}">',
+    # Always 1.14: Resolve 21's scripted export is 1.10, and importing a 1.10 file rebuilt the
+    # multicam wrong (original nested on angle 1, other angles offline, no mic WAVs — 2026-11-05),
+    # while the same description labelled 1.14 imports correctly.
+    out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE fcpxml>", '<fcpxml version="1.14">',
            "    " + resources, "    <library>", '        <event name="__SPIKE_xml batch">']
     if joined:
         # every video back to back in ONE timeline (one import = one multicam copy); the
