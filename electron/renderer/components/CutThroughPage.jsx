@@ -137,9 +137,13 @@ function CutThroughPage({ connected }) {
   const mcKnown = !ct.mc || mcOptions.some((m) => m.name === ct.mc);
   const dupe = mcOptions.find((m) => m.name === ct.mc && m.duplicate);
   const solo = ct.planKind === 'solo';
-  const punchChoices = (day?.angles || []).filter((a) => a !== 'Camera 1');
-  const punch = planForm.punch || (punchChoices.includes('Camera 2') ? 'Camera 2' : punchChoices[0] || '');
-  const extraChoices = (day?.angles || []).filter((a) => a !== 'Camera 1' &&
+  // the wide = Camera 1, else the lowest-numbered angle ("Angle 1"); same rule as plan_solo.py
+  const angleNo = (a) => Number((/(\d+)\s*$/.exec(a) || [])[1] || 999);
+  const sortedAngles = [...(day?.angles || [])].sort((x, y) => angleNo(x) - angleNo(y));
+  const wide = sortedAngles.includes('Camera 1') ? 'Camera 1' : sortedAngles[0];
+  const punchChoices = sortedAngles.filter((a) => a !== wide);
+  const punch = planForm.punch || (punchChoices.includes('Camera 2') ? 'Camera 2' : punchChoices[0] || '');   // next-lowest after the wide
+  const extraChoices = sortedAngles.filter((a) => a !== wide &&
     (solo ? a !== punch : !(day?.micAngles || []).includes(a)));
   const seqBin = ct.settings.seqBin;
   const binChoices = bins.includes(seqBin) || !seqBin ? bins : [seqBin, ...bins];

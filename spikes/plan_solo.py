@@ -66,8 +66,9 @@ def main(argv) -> None:
     fps = data["fps"]
     frame_sec = day["frame_sec"][0] / day["frame_sec"][1]
     total = int(day["length_sec"] / frame_sec)
-    angles = day.get("angles") or []
-    wide = o.get("wide") or ("Camera 1" if "Camera 1" in angles else angles[0])
+    # Resolve exports angles in its own order (e.g. 3, 2, 4, 1): sort by the number in the name
+    angles = sorted(day.get("angles") or [], key=lambda a: int((re.findall(r"(\d+)\s*$", a) or [999])[0]))
+    wide = o.get("wide") or ("Camera 1" if "Camera 1" in angles else angles[0])          # Camera 1 / "Angle 1"
     punch = o.get("punch") or next((a for a in ("Camera 2", *angles) if a in angles and a != wide), wide)
     extra = [v for k, v in opts if k == "extra" and v and v not in (wide, punch)]
     cuts = [tuple(map(int, v.split("-"))) for k, v in opts if k == "cut"]
