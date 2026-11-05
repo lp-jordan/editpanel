@@ -29,6 +29,28 @@ def cuda_dlls() -> None:
         os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
 
 
+def read_wav(path: str, start: float, length: float):
+    """16 kHz mono float32 slice of a PCM WAV without PyAV (newer PyAV dropped an option
+    faster-whisper's decode_audio still passes)."""
+    import wave
+    import numpy as np
+    with wave.open(path, "rb") as w:
+        rate, ch, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        w.setpos(min(int(start * 60 * rate), w.getnframes()))
+        raw = w.readframes(int(length * 60 * rate))
+    if width == 3:                                        # 24-bit → int32
+        b = np.frombuffer(raw, np.uint8).reshape(-1, 3)
+        x = (b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) | (b[:, 2].astype(np.int32) << 16))
+        x = np.where(x >= 1 << 23, x - (1 << 24), x).astype(np.float32) / (1 << 23)
+    else:
+        dt = {1: np.uint8, 2: np.int16, 4: np.int32}[width]
+        x = np.frombuffer(raw, dt).astype(np.float32)
+        x = (x - 128) / 128 if width == 1 else x / float(1 << (8 * width - 1))
+    x = x.reshape(-1, ch).mean(axis=1)
+    n = int(len(x) * 16000 / rate)
+    return np.interp(np.linspace(0, len(x) - 1, n), np.arange(len(x)), x).astype(np.float32)
+
+
 def main() -> None:
     args = [a for a in sys.argv[1:] if "=" not in a]
     opts = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
@@ -41,10 +63,16 @@ def main() -> None:
     lines = [f"{host} — {platform.system()} {platform.machine()}, {os.cpu_count()} CPU threads; "
              f"ctranslate2 {ctranslate2.__version__}"]
     t0 = time.time()
-    audio = decode_audio(args[0], sampling_rate=16000)
-    clip = audio[int(start * 60 * 16000):int((start + length) * 60 * 16000)]
+    try:
+        audio = decode_audio(args[0], sampling_rate=16000)
+        clip = audio[int(start * 60 * 16000):int((start + length) * 60 * 16000)]
+    except TypeError:                                      # PyAV too new for this faster-whisper
+        clip = read_wav(args[0], start, length)
+    peak = float(abs(clip).max()) or 1.0
+    clip = (clip * (0.9 / peak)).astype("float32")      # the mic WAVs are recorded low (peaks ~-24 dB)
     secs = len(clip) / 16000
-    lines.append(f"Audio: {secs / 60:.1f} min from minute {start:g} (decoded in {time.time() - t0:.1f}s)")
+    lines.append(f"Audio: {secs / 60:.1f} min from minute {start:g}, raised {20 * __import__('math').log10(0.9 / peak):.0f} dB "
+                 f"(decoded in {time.time() - t0:.1f}s)")
 
     runs = [("cpu", "int8")]
     if _gpus(ctranslate2):
