@@ -85,6 +85,14 @@ def tc(frames: int) -> str:
     return f"{frames // 86400:02d}:{frames // 1440 % 60:02d}:{frames // 24 % 60:02d}:{frames % 24:02d}"
 
 
+def tc_frames(t: str):
+    try:
+        h, m, sec, f = map(int, t.replace(";", ":").split(":"))
+        return ((h * 60 + m) * 60 + sec) * 24 + f
+    except Exception:
+        return None
+
+
 def wav_timecodes(xml: str, mc_name: str) -> dict:
     """Where Jordan placed each extra-track clip (the mic WAVs) inside the multicam, as the start
     timecode that file needs so Resolve's timecode placement lands it there:
@@ -138,6 +146,12 @@ def stamp_wavs(mp: Any, found: dict) -> None:
         old = str(_safe(lambda: c.GetClipProperty("Start TC"), "?"))
         if old == want:
             say(f"   {name} ({angle}): already {want} ✓")
+            continue
+        if old not in ("00:00:00:00", "?"):
+            # Changing a WAV that's already placed in a multicam knocks it offline there (the
+            # multicam refers to it by timecode — found 2026-11-05), so only stamp untouched ones.
+            say(f"   {name} ({angle}): has {old}, placement says {want} — left alone "
+                f"({'✗ off by ' + str(frames - tc_frames(old)) + ' fr' if tc_frames(old) is not None else 'unreadable'})")
             continue
         backup.setdefault(c.GetUniqueId(), {"name": name, "start_tc": old})   # keep the FIRST original
         ok = _safe(lambda: c.SetClipProperty("Start TC", want), False)
