@@ -148,20 +148,23 @@ if opts.get("levels_only") == "1":
     day = json.load(open(os.path.join(desk, f"day_{label}.json"), encoding="utf-8"))
     data = json.load(open(os.path.join(desk, f"words_{label}.json"), encoding="utf-8"))
     n = int(day["length_sec"] / fs) + 1
-    db = [-60] * n
-    ws = sorted(data["words"], key=lambda w: w["s"])
-    for k, w in enumerate(ws):
-        hi = math.ceil(w["e"]) + 4
-        if k + 1 < len(ws):
-            hi = min(hi, int(ws[k + 1]["s"]) - 1)
-        for f in range(int(w["s"]), max(hi, int(w["s"]) + 1)):
-            db[f] = -20
-    for u in data.get("unheard") or []:
-        for f in range(int(u["s"]), math.ceil(u["e"])):
-            db[f] = -22
+    tracks = {}
+    for mic in data["mics"]:
+        db = [-60] * n
+        ws = sorted((w for w in data["words"] if w["mic"] == mic and w.get("own", True)), key=lambda w: w["s"])
+        for k, w in enumerate(ws):
+            hi = math.ceil(w["e"]) + 4
+            if k + 1 < len(ws):
+                hi = min(hi, int(ws[k + 1]["s"]) - 1)
+            for f in range(int(w["s"]), min(n, max(hi, int(w["s"]) + 1))):
+                db[f] = -20
+        for u in data.get("unheard") or []:
+            if u.get("mic") == mic:
+                for f in range(int(u["s"]), min(n, math.ceil(u["e"]))):
+                    db[f] = -22
+        tracks[mic] = {"start": 0, "db": db}
     print(f"\r  reading 1/1 CAM1.mov 100%  9 MB", flush=True)
-    json.dump({"label": label, "frame_sec": fs, "mics": {data["mics"][0]: {"start": 0, "db": db}}},
-              open(os.path.join(desk, f"levels_{label}.json"), "w"))
+    json.dump({"label": label, "frame_sec": fs, "mics": tracks}, open(os.path.join(desk, f"levels_{label}.json"), "w"))
     sys.exit(0)
 if os.environ.get("CT_FAKE_FAIL") == "1":
     print("Reading 2 audio file(s)…", flush=True)
@@ -205,7 +208,7 @@ fs.writeFileSync(path.join(TMP, 'fake_resolve.py'), FAKE_RESOLVE);
 fs.writeFileSync(path.join(FAKE_SPIKES, 'transcribe_day.py'), FAKE_TRANSCRIBE);
 for (const f of ['spike_day_prep.py', 'plan_convo.py', 'plan_solo.py']) fs.copyFileSync(path.join(SPIKES, f), path.join(FAKE_SPIKES, f));
 fs.mkdirSync(path.join(FAKE_SPIKES, 'prompts'));
-fs.copyFileSync(path.join(SPIKES, 'prompts', 'solo_editor.md'), path.join(FAKE_SPIKES, 'prompts', 'solo_editor.md'));
+for (const f of ['solo_editor.md', 'convo_editor.md']) fs.copyFileSync(path.join(SPIKES, 'prompts', f), path.join(FAKE_SPIKES, 'prompts', f));
 
 /** A scripted solo take: count retake, repeat retake, stutter, long pause, a callback that stays. */
 function scriptedTake() {
@@ -498,13 +501,27 @@ sys.stdout.write(json.dumps(res))`;
   let prefs = {};
   const updates = [];
   const w = fakeWorker();
+  // a stand-in Claude for the conversation: cuts to whoever's line it is (the wide first), removes nothing
+  const convoRequests = [];
+  const convoClaude = { beta: { messages: { stream: (params) => {
+    convoRequests.push(params);
+    const shots = [];
+    for (const line of params.messages[0].content.split('\n')) {
+      const m = /^\[\d+:\d+\] (Camera \d+): (\d+) /.exec(line);
+      if (m) shots.push({ from: Number(m[2]), angle: shots.length ? m[1] : 'Camera 1', why: shots.length ? `${m[1]} talks` : 'open wide' });
+    }
+    const body = JSON.stringify({ removals: [], shots, notes: [] });
+    return { on: () => {}, finalMessage: async () => ({ model: params.model, stop_reason: 'end_turn', content: [{ type: 'text', text: body }],
+      usage: { input_tokens: 1000, output_tokens: 200 } }) };
+  } } } };
   const make = () => ct.createCutThrough({
     sendWorkerRequest: w.send,
     broadcast: (ch, data) => updates.push(data),
     getPrefs: () => prefs,
     setPrefs: (patch) => { prefs = { ...prefs, ...patch }; },
     pythonCmd: PY,
-    desktopDir: DESKTOP
+    desktopDir: DESKTOP,
+    claudeClient: convoClaude
   });
   prefs = { cutThrough: { spikesDir: FAKE_SPIKES, wxPython: PY } };
   const c = make();
@@ -560,11 +577,23 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(tr.reportFile, path.join(DESKTOP, 'transcribe_E2E_test.txt'));
   assert.ok(!tr.log.some((l) => /\[#+/.test(l)), 'progress lines leaked into the log');
 
-  // plan with the real plan_convo.py
+  // a conversation: Claude edits it too (convo brief, speaker-labelled transcript), plan_solo.py places + gates mics
   snap = await c.runPlan({ start: '', end: '', extra: '', cuts: '' });
   const pl = snap.steps.plan;
   assert.strictEqual(pl.status, 'done', `${pl.error}\n${pl.log.join('\n')}`);
-  assert.ok(pl.data.pieces > 0 && pl.data.angles['Camera 1'] >= 1, JSON.stringify(pl.data));
+  assert.ok(pl.data.pieces > 0 && pl.data.angles['Camera 1'] >= 1 && pl.data.angles['Camera 2'] >= 1 && pl.data.angles['Camera 3'] >= 1, JSON.stringify(pl.data));
+  const creq = convoRequests[convoRequests.length - 1];
+  assert.ok(creq.system.includes('Angle = person') && /Delivery: A recorded conversation/.test(creq.messages[0].content) &&
+    /2 people, each on their own mic \(Camera 2, Camera 3\)/.test(creq.messages[0].content) &&
+    /Camera 2 = close-up of the person speaking on the Camera 2 mic/.test(creq.messages[0].content), creq.messages[0].content.slice(0, 500));
+  const convoPlan = JSON.parse(fs.readFileSync(path.join(FAKE_SPIKES, 'plans', 'E2E_test_plan.json'), 'utf8'));
+  assert.deepStrictEqual(Object.keys(convoPlan.mics).sort(), ['Camera 2', 'Camera 3']);
+  assert.deepStrictEqual(convoPlan.mic_angles, { 'Camera 2': 'Camera 2', 'Camera 3': 'Camera 3' });
+  // each mic opens around its owner's turns only: Camera 2 talks first (0.5–~9 s), Camera 3 from ~11.5 s
+  const opens2 = convoPlan.mics['Camera 2'];
+  const opens3 = convoPlan.mics['Camera 3'];
+  assert.ok(opens2[0][0] < 24 && opens3[0][0] > 250, JSON.stringify({ opens2: opens2.slice(0, 2), opens3: opens3.slice(0, 2) }));
+  assert.ok(convoPlan.video.every((x, k) => !k || x.angle !== convoPlan.video[k - 1].angle));
   assert.ok(snap.planExists);
   await assert.rejects(c.runPlan({ cuts: 'junk' }), /must be/);
 
@@ -597,7 +626,10 @@ sys.stdout.write(json.dumps(res))`;
   assert.throws(() => c2.useExistingPlan(), /No readable/);
   const savedKey = process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
-  await assert.rejects(c2.runPlan({}), /Add a Claude API key/);
+  const noKey = ct.createCutThrough({ sendWorkerRequest: w.send, broadcast: () => {}, getPrefs: () => prefs,
+    setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP });
+  noKey.select({ mc: 'mc_test', label: 'Solo1' });
+  await assert.rejects(noKey.runPlan({}), /Add a Claude API key/);
   if (savedKey) process.env.ANTHROPIC_API_KEY = savedKey;
   fs.copyFileSync(path.join(FAKE_SPIKES, 'plans', 'E2E_test_plan.json'), path.join(FAKE_SPIKES, 'plans', 'Solo1_plan.json'));
   assert.strictEqual(c2.useExistingPlan().steps.plan.status, 'done');
@@ -718,7 +750,7 @@ sys.stdout.write(json.dumps(res))`;
   // stage: the lighter brief + looser pause rule reach Claude and the planner
   const stage = (await c3.runPlan({ delivery: 'stage' })).steps.plan;
   assert.strictEqual(stage.status, 'done', stage.error);
-  assert.ok(/Delivery: Live stage talk/.test(requests[requests.length - 1].messages[0].content));
+  assert.ok(/Delivery: Live on stage/.test(requests[requests.length - 1].messages[0].content));
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(DESKTOP, 'removals_Solo2.json'), 'utf8')).pauses, { max: 36, left: 18 });
   assert.ok(stage.log.some((l) => /pauses > 36 fr → 18 fr/.test(l)), stage.log.join('\n'));
   // a declined / broken answer fails the step with the reason, and keeps the log

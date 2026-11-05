@@ -74,9 +74,13 @@ def main(argv) -> None:
     extra = [v for k, v in opts if k == "extra" and v and v not in (wide, punch)]
     cuts = [tuple(map(int, v.split("-"))) for k, v in opts if k == "cut"]
 
-    talker = (data.get("mics") or [None])[0]
-    W = sorted((w for w in data["words"] if w.get("own", True) and (talker is None or w["mic"] == talker)),
-               key=lambda w: w["s"])
+    # one talker (solo), or — with Claude's edit — a conversation: every mic is a person (angle N =
+    # the person on camera N, Jordan's rule) and everyone's words count
+    people = list(data.get("mics") or [])
+    multi = bool(o.get("removals")) and len(people) > 1
+    talker = people[0] if people else None
+    W = sorted((w for w in data["words"] if w.get("own", True) and
+                (talker is None or w["mic"] == talker or (multi and w["mic"] in people))), key=lambda w: w["s"])
     lo_req, hi_req = int(o.get("start", 0)), int(o.get("end", total))
     W = [w for w in W if lo_req <= w["s"] < hi_req]
     if not W:
@@ -112,8 +116,16 @@ def main(argv) -> None:
     LV = None
     if o.get("levels"):
         lvj = json.load(open(o["levels"], encoding="utf-8"))
-        tr = lvj["mics"].get(talker) or next(iter(lvj["mics"].values()))
-        LV = (int(tr["start"]), tr["db"])
+        tracks = [lvj["mics"][p] for p in (people if multi else [talker]) if p in lvj["mics"]] or list(lvj["mics"].values())[:1]
+        f0 = min(int(t["start"]) for t in tracks)
+        f1 = max(int(t["start"]) + len(t["db"]) for t in tracks)
+        comb = [-100] * (f1 - f0)                            # a conversation: the loudest mic per frame
+        for t in tracks:
+            for i, v in enumerate(t["db"]):
+                j = int(t["start"]) + i - f0
+                if v > comb[j]:
+                    comb[j] = v
+        LV = (f0, comb)
 
     def lvl(f):
         i = int(f) - LV[0]
@@ -251,7 +263,7 @@ def main(argv) -> None:
     pause_max = int(o.get("pause_max", gp.get("max", PAUSE_MAX)))
     pause_left = int(o.get("pause_left", gp.get("left", PAUSE_LEFT)))
     loud = [(int(u["s"]), int(u["e"]) + 1) for u in data.get("unheard") or []
-            if (talker is None or u.get("mic") == talker) and start <= u["s"] < end]
+            if (talker is None or u.get("mic") == talker or (multi and u.get("mic") in people)) and start <= u["s"] < end]
     speech = sorted([(int(w["s"]), int(w["e"]) + 1) for w in W if not removed(int(w["s"]))] +
                     [x for x in loud if not removed(x[0])])
     last = None
@@ -413,10 +425,44 @@ def main(argv) -> None:
     # 6. audio
     camera = day.get("audio_source") == "camera"
     mics = {} if camera else {talker: [[a, b] for a, b in kept]}
+    if multi and not camera:
+        # conversation mic gating (style guide, measured): each mic is open while its owner talks
+        # (5 fr before, 8 after); a short backchannel that steps on the other talker stays closed
+        BACK = {"right", "yeah", "yes", "mm-hmm", "-hmm", "hmm", "mm", "uh-huh", "okay", "sure", "correct",
+                "absolutely", "exactly", "um", "uh", "so", "and", "yep", "wow", "gosh", "agree", "i"}
+
+        def stretches(ws):
+            out = []
+            for w in ws:
+                if out and w["s"] - out[-1]["e"] <= 24:
+                    out[-1]["e"] = max(out[-1]["e"], w["e"])
+                    out[-1]["w"].append(w["w"])
+                else:
+                    out.append({"s": w["s"], "e": w["e"], "w": [w["w"]]})
+            return out
+
+        def backchannel(st):
+            toks = [re.sub(r"[^a-z\-']", "", x.lower()) for x in st["w"]]
+            return len(toks) <= 3 and all(t in BACK or not t for t in toks)
+
+        by = {p: stretches([w for w in W if w["mic"] == p]) for p in people}
+        mics = {}
+        for p in people:
+            others = [x for q in people if q != p for x in by[q] if not backchannel(x)]
+            opens = []
+            for st in by[p]:
+                if backchannel(st) and any(x["s"] < st["e"] and st["s"] < x["e"] for x in others):
+                    continue
+                a, b = int(st["s"]) - 5, int(st["e"]) + 8
+                if opens and a <= opens[-1][1] + 12:
+                    opens[-1][1] = max(opens[-1][1], b)
+                else:
+                    opens.append([a, b])
+            mics[p] = opens
     plan = {"label": data["label"], "multicam": data["multicam"], "fps": fps,
             "note": ("Edit by Claude (removals) + plan_solo.py (pauses, picture, audio)." if given else
                      "Draft by plan_solo.py (style-guide solo rules from the words file; no LLM)."),
-            "mic_angles": {} if camera else {talker: talker}, "video": video, "mics": mics,
+            "mic_angles": {} if camera else {p: p for p in mics}, "video": video, "mics": mics,
             "audio": {"source": "camera" if camera else "wav", "angle": talker},
             "removals": [{"from": r["from"], "to": r["to"], "why": r["why"]} for r in merged]}
     json.dump(plan, open(out_p, "w", encoding="utf-8"), indent=1)

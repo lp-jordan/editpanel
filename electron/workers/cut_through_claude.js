@@ -30,10 +30,12 @@ const KINDS = ['retake', 'false_start', 'self_correction', 'flub', 'chatter', 'p
 const DELIVERY = {
   scripted: 'Scripted, with retakes — the talent reads or recites prepared lines and redoes them until they are right.',
   free: 'Free talk — one person speaking unscripted to camera; no planned retakes.',
-  stage: 'Live stage talk with an audience — a real event, one continuous performance, no retakes.'
+  stage: 'Live on stage with an audience — a real event, one continuous performance, no retakes.',
+  convo: 'A recorded conversation (interview / podcast) — unscripted, seated, made for an episode; no planned retakes.'
 };
 // stage talks mostly lose dead air: pauses longer than 1.5 s go down to ~0.75 s (else > 30 fr → 11 fr)
-const PAUSES = { stage: { max: 36, left: 18 } };
+// conversations: pauses are mostly turn-taking — only over 2 s, down to ~0.75 s
+const PAUSES = { stage: { max: 36, left: 18 }, convo: { max: 48, left: 18 } };
 const LINE_GAP_SEC = 0.6;
 const SHOW_PAUSE_SEC = 1.5;
 
@@ -77,18 +79,25 @@ function buildSchema(angles) {
 const SCHEMA = buildSchema(['Camera 1', 'Camera 2']);   // shape reference for tests
 
 /** One talker's words + unheard stretches in [start, end), in time order. */
+/**
+ * Words + unheard stretches in [start, end), in time order. One mic = one talker (solo); several
+ * mics = a conversation: each word is said by the owner of the mic it's loudest on (`own`), and
+ * every token carries who (`who` = that mic's angle).
+ */
 function buildTokens(wordsFile, { start = 0, end = Infinity } = {}) {
-  const talker = (wordsFile.mics || [])[0] || null;
-  const mine = (x) => talker === null || x.mic === talker;
+  const people = wordsFile.mics || [];
+  const talker = people[0] || null;
+  const multi = people.length > 1;
+  const mine = (x) => talker === null || (multi ? people.includes(x.mic) : x.mic === talker);
   const toks = [];
   for (const w of wordsFile.words || []) {
-    if (w.own !== false && mine(w) && w.s >= start && w.s < end) toks.push({ kind: 'w', s: w.s, e: w.e, text: String(w.w).trim() });
+    if (w.own !== false && mine(w) && w.s >= start && w.s < end) toks.push({ kind: 'w', s: w.s, e: w.e, text: String(w.w).trim(), who: w.mic });
   }
   for (const u of wordsFile.unheard || []) {
-    if (mine(u) && u.s >= start && u.s < end) toks.push({ kind: 'u', s: u.s, e: u.e, text: '' });
+    if (mine(u) && u.s >= start && u.s < end) toks.push({ kind: 'u', s: u.s, e: u.e, text: '', who: u.mic });
   }
   toks.sort((a, b) => a.s - b.s);
-  return { talker, tokens: toks };
+  return { talker, people, multi, tokens: toks };
 }
 
 function angleNo(a) {
@@ -102,17 +111,23 @@ function clock(sec) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-/** Numbered transcript: `[12:41] 412 the 413 best … ⟨pause 2.4 s⟩` */
-function renderTranscript(tokens, frameSec) {
+/**
+ * Numbered transcript: `[12:41] 412 the 413 best … ⟨pause 2.4 s⟩`. With `speakers` (a map of
+ * mic angle → label) every line says who's talking and a new line starts when the talker changes:
+ * `[12:41] Camera 2: 412 the …`.
+ */
+function renderTranscript(tokens, frameSec, speakers = null) {
   const lines = [];
   let cur = null;
   let prevEnd = null;
+  let prevWho = null;
   tokens.forEach((t, i) => {
     const gap = prevEnd === null ? 0 : (t.s - prevEnd) * frameSec;
-    if (!cur || gap > LINE_GAP_SEC) {
+    if (!cur || gap > LINE_GAP_SEC || (speakers && t.who !== prevWho)) {
       if (cur) lines.push(cur);
-      cur = `[${clock(t.s * frameSec)}]`;
+      cur = `[${clock(t.s * frameSec)}]${speakers ? ` ${speakers[t.who] || t.who}:` : ''}`;
       if (gap > SHOW_PAUSE_SEC) cur = `⟨pause ${gap.toFixed(1)} s⟩\n${cur}`;
+      prevWho = t.who;
     }
     cur += t.kind === 'u' ? ` ${i} ⟨unheard sound ${((t.e - t.s) * frameSec).toFixed(1)} s⟩` : ` ${i} ${t.text}`;
     prevEnd = Math.max(prevEnd === null ? t.e : prevEnd, t.e);
@@ -277,21 +292,28 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
   const words = JSON.parse(fs.readFileSync(wordsPath, 'utf8'));
   const day = JSON.parse(fs.readFileSync(dayPath, 'utf8'));
   const frameSec = day.frame_sec[0] / day.frame_sec[1];
-  const { talker, tokens } = buildTokens(words, { start, end });
+  const { talker, people, multi, tokens } = buildTokens(words, { start, end });
   if (!tokens.length) throw new Error('No words in that range');
   const s0 = Math.max(start, Math.floor(tokens[0].s) - 18);
   const e0 = Math.min(end, Math.ceil(tokens[tokens.length - 1].e) + 24);
-  const transcript = renderTranscript(tokens, frameSec);
+  // a conversation: angle N is the person on camera N (Jordan's rule), so a mic's angle names its talker
+  const speakers = multi ? Object.fromEntries(people.map((p, k) => [p, `${p}`])) : null;
+  const transcript = renderTranscript(tokens, frameSec, speakers);
   const system = fs.readFileSync(promptPath, 'utf8');
   const nWords = tokens.filter((t) => t.kind === 'w').length;
   const nUnheard = tokens.length - nWords;
   const angles = [...(day.angles || [])].sort((x, y) => angleNo(x) - angleNo(y));
   const wide = roles.wide || (angles.includes('Camera 1') ? 'Camera 1' : angles[0]);
   const punch = roles.punch || angles.find((a) => a !== wide) || wide;
-  const roster = angles.map((a) => `${a} = ${a === wide ? 'the wide' : a === punch ? 'the close-up (punch-in)' :
-    (roles.extra || []).includes(a) ? 'an insert angle (side / slider)' : 'another angle'}`).join('; ');
+  const roster = multi
+    ? angles.map((a) => `${a} = ${a === wide ? 'the wide (everyone in shot)' : people.includes(a) ? `close-up of the person speaking on the ${a} mic` :
+      (roles.extra || []).includes(a) ? 'an extra angle (side / slider)' : 'another angle'}`).join('; ')
+    : angles.map((a) => `${a} = ${a === wide ? 'the wide' : a === punch ? 'the close-up (punch-in)' :
+      (roles.extra || []).includes(a) ? 'an insert angle (side / slider)' : 'another angle'}`).join('; ');
   const meta = [
-    `Recording: ${label}, ${((e0 - s0) * frameSec / 60).toFixed(1)} min, one speaker (audio: ${talker || 'mic'}), ` +
+    `Recording: ${label}, ${((e0 - s0) * frameSec / 60).toFixed(1)} min, ` +
+      (multi ? `${people.length} people, each on their own mic (${people.join(', ')}); a line's label says who is talking, ` :
+        `one speaker (audio: ${talker || 'mic'}), `) +
       `${nWords} words, ${nUnheard} unheard-sound marks${words.unheard ? '' : ' (this transcript predates unheard-sound detection)'}.`,
     `Delivery: ${DELIVERY[delivery] || DELIVERY.scripted}`,
     `Angles: ${roster}.`

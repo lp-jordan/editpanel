@@ -545,11 +545,11 @@ function createCutThrough(opts) {
     if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0 || b <= a) throw new Error('End must be after start');
     const cutList = parseCuts(cuts);
     const st0 = settings();
-    if (kind === 'solo' && !claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
+    if (!claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
     const st = begin('plan');
     const started = Date.now();
     const o = { files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, punch: punch || null, cuts: cutList };
-    if (kind === 'solo') {
+    {   // solo and conversations: Claude edits, plan_solo.py places (Z8)
       // Z8 cuts from the waveform: an older transcription has no per-frame levels yet → one
       // levels-only pass over the audio (no Whisper), which also adds the loud-without-words marks
       if (!fs.existsSync(f.levels)) {
@@ -576,9 +576,9 @@ function createCutThrough(opts) {
       try {
         const out = await claude.planWithClaude({
           label: s.label, wordsPath: f.words, dayPath: f.day, desktopDir,
-          promptPath: path.join(st0.spikesDir, 'prompts', 'solo_editor.md'),
+          promptPath: path.join(st0.spikesDir, 'prompts', kind === 'convo' ? 'convo_editor.md' : 'solo_editor.md'),
           start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort,
-          delivery: claude.DELIVERY[delivery] ? delivery : 'scripted',
+          delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
           roles: { punch: o.punch || undefined, extra: o.extra ? [o.extra] : [] },
           client: claudeClient,
           log: (line) => { pushLog('plan', line); emit(); },
@@ -600,11 +600,11 @@ function createCutThrough(opts) {
       st.progress = { phase: 'Placing the cuts on the waveform', phaseAt: Date.now(), bar: null };
       emit();
     }
-    const res = await runPlanner(kind, o);
+    const res = await runPlanner('solo', o);   // the Claude edit's placer, solo or conversation
     let error = res.error;
-    if (!error && res.code !== 0) error = exitError('plan', PLANNERS[kind].script, res.code);
+    if (!error && res.code !== 0) error = exitError('plan', PLANNERS.solo.script, res.code);
     if (!error && !(mtime(f.plan) >= started - 2000)) error = `${s.label}_plan.json was not written`;
-    finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : (kind === 'solo' ? path.join(desktopDir, `claude_edit_${s.label}.json`) : f.plan),
+    finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : path.join(desktopDir, `claude_edit_${s.label}.json`),
       data: error ? null : planSummary(readJson(f.plan)) });
     return snapshot();
   }

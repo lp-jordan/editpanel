@@ -143,6 +143,7 @@ function CutThroughPage({ connected }) {
   const mcKnown = !ct.mc || mcOptions.some((m) => m.name === ct.mc);
   const dupe = mcOptions.find((m) => m.name === ct.mc && m.duplicate);
   const solo = ct.planKind === 'solo';
+  const delivery = solo ? (planForm.delivery === 'convo' ? 'scripted' : planForm.delivery) : (planForm.delivery === 'stage' ? 'stage' : 'convo');
   // the wide = Camera 1, else the lowest-numbered angle ("Angle 1"); same rule as plan_solo.py
   const angleNo = (a) => Number((/(\d+)\s*$/.exec(a) || [])[1] || 999);
   const sortedAngles = [...(day?.angles || [])].sort((x, y) => angleNo(x) - angleNo(y));
@@ -239,12 +240,13 @@ function CutThroughPage({ connected }) {
                 <input className="settings-input ct-num" inputMode="numeric" placeholder={String(day?.frames || '')} value={planForm.end}
                   onChange={(e) => setPlanForm({ ...planForm, end: e.target.value.replace(/\D/g, '') })} />
               </label>
-              {solo && (
+              {ct.planKind && (
                 <label className="ct-inline">
                   <span className="settings-label">Delivery</span>
-                  <select className="settings-input" value={planForm.delivery} onChange={(e) => setPlanForm({ ...planForm, delivery: e.target.value })}>
-                    <option value="scripted">Scripted</option>
-                    <option value="free">Free talk</option>
+                  <select className="settings-input" value={delivery} onChange={(e) => setPlanForm({ ...planForm, delivery: e.target.value })}>
+                    {solo && <option value="scripted">Scripted</option>}
+                    {solo && <option value="free">Free talk</option>}
+                    {!solo && <option value="convo">Conversation</option>}
                     <option value="stage">Stage</option>
                   </select>
                 </label>
@@ -353,7 +355,7 @@ function CutThroughPage({ connected }) {
           )}
           {ct.planKind && (
             <button type="button" className={btnClass(key)} disabled={busy || steps.transcribe.status !== 'done'}
-              onClick={() => call(key, () => api.runPlan({ ...planForm, punch: solo ? punch : '' }))}>{ct.planExists ? 'Redraft' : 'Draft'}</button>
+              onClick={() => call(key, () => api.runPlan({ ...planForm, delivery, punch: solo ? punch : '' }))}>{ct.planExists ? 'Redraft' : 'Draft'}</button>
           )}
         </>
       );
