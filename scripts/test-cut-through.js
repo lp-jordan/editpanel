@@ -60,6 +60,21 @@ XML = '''<?xml version="1.0" encoding="UTF-8"?>
 <mc-angle name="Camera 3" angleID="3"><asset-clip ref="a1" offset="0s" duration="120120/1000s"/><asset-clip ref="w3" offset="0s" duration="120120/1000s" start="1s"/></mc-angle>
 </multicam></media></resources><library/></fcpxml>'''
 
+XML_CAM = '''<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.10"><resources>
+<format id="r1" frameDuration="1001/24000s" width="1920" height="1080"/>
+<asset id="a1" name="CAM1_01.mov" start="35400s" duration="70s" hasVideo="1" hasAudio="1" audioChannels="2"><media-rep src="file://localhost/x/CAM1_01.mov"/></asset>
+<asset id="a2" name="CAM1_02.mov" start="36000s" duration="60s" hasVideo="1" hasAudio="1" audioChannels="2"><media-rep src="file://localhost/x/CAM1_02.mov"/></asset>
+<asset id="a3" name="CAM2_01.mov" start="35400s" duration="120s" hasVideo="1" hasAudio="1" audioChannels="2"><media-rep src="file://localhost/x/CAM2_01.mov"/></asset>
+<asset id="a4" name="CAM3_01.mov" start="35400s" duration="120s" hasVideo="1" hasAudio="0"><media-rep src="file://localhost/x/CAM3_01.mov"/></asset>
+<media id="m1" name="mc_test"><multicam format="r1" tcStart="35400s">
+<mc-angle name="Camera 1" angleID="1"><asset-clip ref="a1" offset="0s" duration="60s" start="35410s"/><asset-clip ref="a2" offset="60s" duration="60s" start="36000s"/></mc-angle>
+<mc-angle name="Camera 2" angleID="2"><clip offset="0s" duration="120s" start="0s"><video ref="a3" offset="0s" duration="120s" start="35400s"/><audio ref="a3" offset="0s" duration="120s" start="35400s"/></clip></mc-angle>
+<mc-angle name="Camera 3" angleID="3"><asset-clip ref="a4" offset="0s" duration="120s" start="35400s"/></mc-angle>
+</multicam></media></resources><library/></fcpxml>'''
+if os.environ.get("CT_FAKE_XML") == "cam":
+    XML = XML_CAM
+
 class Clip:
     def __init__(self, name, typ): self.name, self.typ = name, typ
     def GetName(self): return self.name
@@ -179,6 +194,76 @@ print(json.dumps({"mcs": mcs, "res": res, "bat": bat, "events": events}))
   assert.deepStrictEqual(day.mics.map((m) => m.angle), ['Camera 2', 'Camera 3']);
   assert.strictEqual(day.mics[1].file_zero_sec, -1);
   console.log('✓ python: multicam list, spike exec + print capture, real day prep on a fake Resolve');
+}
+
+// ── 2b. day with no mic WAVs: camera audio (ATEM mix / in-camera, track 1) ──
+{
+  const out = execFileSync(PY, ['-c', String.raw`
+import json
+from fake_resolve import Resolve
+from helper.commands.cut_through import run_spike
+p = ${JSON.stringify(path.join(FAKE_SPIKES, 'spike_day_prep.py'))}
+a = run_spike(p, {"LABEL": "Cam1", "MC": "mc_test"}, Resolve(), lambda l: None)
+b = run_spike(p, {"LABEL": "Cam2", "MC": "mc_test", "AUDIO_ANGLE": "Camera 2"}, Resolve(), lambda l: None)
+c = run_spike(p, {"LABEL": "Cam3", "MC": "mc_test", "AUDIO_ANGLE": "Camera 3"}, Resolve(), lambda l: None)
+print(json.dumps([a, b, c]))
+`], { env: { ...PY_ENV, CT_FAKE_XML: 'cam' }, encoding: 'utf8' });
+  const [a, b, c] = JSON.parse(out.trim());
+  assert.strictEqual(a.error, null, a.lines.join('\n'));
+  const d1 = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_Cam1.json'), 'utf8'));
+  assert.strictEqual(d1.audio_source, 'camera');
+  assert.strictEqual(d1.wav_mics, 0);
+  assert.deepStrictEqual(d1.camera_audio_angles, ['Camera 1', 'Camera 2']);
+  assert.deepStrictEqual(d1.mics.map((m) => [m.angle, m.file_zero_sec, m.from_sec, m.to_sec]),
+    [['Camera 1', -10, 0, 60], ['Camera 1', 60, 60, 120]]);
+  assert.strictEqual(b.error, null, b.lines.join('\n'));
+  const d2 = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_Cam2.json'), 'utf8'));
+  assert.deepStrictEqual(d2.mics.map((m) => [m.angle, m.file_zero_sec]), [['Camera 2', 0]]);   // <clip> = one source
+  assert.ok(c.error && /no camera audio on Camera 3/.test(c.error), c.error);
+  console.log('✓ python: no mic WAVs → Camera 1 camera audio (TOD timecode), AUDIO_ANGLE pick, angle without audio refused');
+}
+
+// ── 2c. the real transcribe_day.py on that day, Whisper/PyAV stubbed ──
+// Needs numpy: CT_TEST_PYTHON=<python with numpy> (skipped otherwise).
+if (process.env.CT_TEST_PYTHON) {
+  const STUBS = path.join(TMP, 'stubs');
+  fs.mkdirSync(path.join(STUBS, 'faster_whisper'), { recursive: true });
+  fs.writeFileSync(path.join(STUBS, 'ctranslate2.py'), 'def get_cuda_device_count():\n    return 0\n');
+  fs.writeFileSync(path.join(STUBS, 'faster_whisper', 'audio.py'), String.raw`
+import numpy as np
+def decode_audio(path, sampling_rate=16000):
+    # 70 s file: a loud burst at file second 20 (CAM1_01) / 5 (CAM1_02), quiet elsewhere
+    x = np.full(70 * sampling_rate, 0.001, np.float32)
+    at = 20 if "CAM1_01" in path else 5
+    x[at * sampling_rate:(at + 1) * sampling_rate] = 0.1
+    return x
+`);
+  fs.writeFileSync(path.join(STUBS, 'faster_whisper', '__init__.py'), String.raw`
+import numpy as np
+class _W:
+    def __init__(self, s, e, w): self.start, self.end, self.word, self.probability = s, e, w, 0.9
+class _S:
+    def __init__(self, s, e, words): self.start, self.end, self.words = s, e, words
+class WhisperModel:
+    def __init__(self, *a, **k): pass
+    def transcribe(self, clip, **k):
+        # a "word" wherever the clip is loud (seconds from the clip's start)
+        loud = np.flatnonzero(np.abs(clip) > 0.5)
+        secs = sorted({int(i // 16000) for i in loud})
+        return [_S(s, s + 1, [_W(s, s + 0.5, f"w{s}")]) for s in secs], None
+`);
+  const out = execFileSync(process.env.CT_TEST_PYTHON, [path.join(SPIKES, 'transcribe_day.py'), 'Cam1', `dir=${DESKTOP}`],
+    { env: { ...PY_ENV, PYTHONPATH: STUBS }, encoding: 'utf8' });
+  const words = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'words_Cam1.json'), 'utf8'));
+  assert.deepStrictEqual(words.mics, ['Camera 1'], out);
+  // CAM1_01 burst at file 20 s → multicam 10 s; CAM1_02 burst at file 5 s → multicam 65 s
+  const fps = 24000 / 1001;
+  assert.deepStrictEqual(words.words.map((w) => Math.round(w.s / fps)), [10, 65], JSON.stringify(words.words));
+  assert.ok(words.words.every((w) => w.own));
+  assert.ok(/camera audio, 1 track/.test(fs.readFileSync(path.join(DESKTOP, 'transcribe_Cam1.txt'), 'utf8')));
+  console.log('✓ transcribe_day.py: camera clips on one angle → one track on the multicam clock');
+} else {
+  console.log('- transcribe_day.py check skipped (set CT_TEST_PYTHON to a Python with numpy)');
 }
 
 // ── 3. orchestrator end to end ─────────────────────────────────

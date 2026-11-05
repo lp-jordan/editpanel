@@ -17,6 +17,9 @@ Uses the C:\\wxbench environment from bench_whisper.py (already set up on LP1).
 Run (normal Command Prompt):
     C:\\wxbench\\Scripts\\python C:\\lp-app-ecosystem\\editpanel\\spikes\\transcribe_day.py Convo2
 Quick test first (first 3 minutes of each mic): add  minutes=3
+Days without mic WAVs: the day file lists one angle's camera clips instead (ATEM mix or in-camera
+audio); those are decoded with PyAV (first audio track) and every source on one angle becomes one
+track on the multicam clock.
 """
 import glob
 import json
@@ -62,6 +65,18 @@ def read_wav(path: str) -> np.ndarray:
     return x
 
 
+def read_audio(path: str) -> np.ndarray:
+    """Any source → 16 kHz mono float32: PCM WAVs directly, camera files (mov/mp4/mxf…) via PyAV
+    (faster-whisper's decoder; first audio track, channels mixed down)."""
+    if path.lower().endswith(".wav"):
+        try:
+            return read_wav(path)
+        except (wave.Error, KeyError):
+            pass                                         # not plain PCM — let PyAV decode it
+    from faster_whisper.audio import decode_audio
+    return decode_audio(path, sampling_rate=SR).astype(np.float32)
+
+
 def level_db(x: np.ndarray, a: float, b: float) -> float:
     seg = x[max(0, int(a * SR)):max(0, int(b * SR))]
     if len(seg) == 0:
@@ -85,25 +100,34 @@ def main() -> None:
     report = [f"Transcribe {label} — multicam '{day['multicam']}', {day['length_sec'] / 60:.1f} min, "
               f"{len(day['mics'])} mic(s)"]
 
-    # every mic on the multicam's clock (sample 0 = multicam 0:00), raw level kept for ownership
+    # every mic on the multicam's clock (sample 0 = multicam 0:00), raw level kept for ownership;
+    # all sources under one angle (camera clips, split recorder files) share one track
     t0 = time.time()
-    mics = []
-    print(f"Reading {len(day['mics'])} mic file(s)…", flush=True)
+    tracks = {}
+    print(f"Reading {len(day['mics'])} audio file(s)…", flush=True)
     for m in day["mics"]:
-        x = read_wav(m["path"])
+        x = read_audio(m["path"])
         shift = int(round(m["file_zero_sec"] * SR))             # file 0:00 sits here in the multicam
         lo, hi = int(m["from_sec"] * SR), int(m["to_sec"] * SR)
-        mc = np.zeros(int(day["length_sec"] * SR) + SR, np.float32)
+        t = tracks.get(m["angle"])
+        if t is None:
+            t = tracks[m["angle"]] = {**m, "audio": np.zeros(int(day["length_sec"] * SR) + SR, np.float32),
+                                      "lo": lo, "hi": hi}
         src_lo, src_hi = max(0, lo - shift), min(len(x), hi - shift)
         if src_hi > src_lo:
-            mc[src_lo + shift:src_hi + shift] = x[src_lo:src_hi]
-        if limit:
-            hi = min(hi, lo + int(limit))
-        peak = float(np.percentile(np.abs(mc[lo:hi]), 99.99)) or 1.0   # recorded low; ignore single spikes
-        mics.append({**m, "audio": mc, "lo": lo, "hi": hi, "gain": 0.9 / peak})
+            t["audio"][src_lo + shift:src_hi + shift] = x[src_lo:src_hi]
+        t["lo"], t["hi"] = min(t["lo"], lo), max(t["hi"], hi)
         report.append(f"  {m['name']} under {m['angle']}: {len(x) / SR / 60:.1f} min file, "
                       f"multicam {m['from_sec'] / 60:.1f}–{m['to_sec'] / 60:.1f} min")
-    report.append(f"Read audio in {time.time() - t0:.0f}s")
+        del x
+    mics = []
+    for t in tracks.values():
+        if limit:
+            t["hi"] = min(t["hi"], t["lo"] + int(limit))
+        peak = float(np.percentile(np.abs(t["audio"][t["lo"]:t["hi"]]), 99.99)) or 1.0   # recorded low; ignore single spikes
+        mics.append({**t, "gain": 0.9 / peak})
+    report.append(f"Read audio in {time.time() - t0:.0f}s ({day.get('audio_source', 'wav')} audio, "
+                  f"{len(mics)} track(s))")
 
     cuda_dlls()
     import ctranslate2

@@ -143,6 +143,8 @@ function CutThroughPage({ connected }) {
     return st.status === 'running' ? st.log : (st.report && st.report.length ? st.report : st.log);
   }
 
+  const audioChoice = day && day.audioSource === 'camera' ? (day.mics[0] || {}).angle || '' : '';
+
   function renderStepBody(key) {
     const st = steps[key];
     if (key === 'prep') {
@@ -158,12 +160,21 @@ function CutThroughPage({ connected }) {
             {day.angles.map((a) => <span key={a} className={`tag${day.micAngles.includes(a) ? ' info' : ''}`}>{a}</span>)}
           </div>
           <div className="ct-fact-col">
-            <span className="section-label">Mics</span>
-            {day.mics.length === 0 && <span className="error-text">No mic WAVs in the multicam</span>}
+            <div className="ct-fact-row">
+              <span className="section-label">Audio</span>
+              {(day.cameraAudioAngles.length > 0 || day.wavMics > 0) && (
+                <select className="settings-input ct-audio" value={audioChoice} disabled={busy || !connected}
+                  onChange={(e) => call('prep', () => api.runPrep({ audioAngle: e.target.value }))}>
+                  {day.wavMics > 0 && <option value="">Mic WAVs</option>}
+                  {day.cameraAudioAngles.map((a) => <option key={a} value={a}>{a} camera audio</option>)}
+                </select>
+              )}
+            </div>
             {day.mics.map((m, i) => (
               <div key={i} className="ct-mic">
                 <span className="ct-mic-name">{m.name}</span>
                 <span className="tag info">{m.angle}</span>
+                {m.camera && <span className="tag">Camera audio</span>}
                 <span className="dim">{m.fromMin.toFixed(1)}–{m.toMin.toFixed(1)} min</span>
                 {!m.found && <span className="tag danger">File missing</span>}
               </div>
@@ -264,7 +275,7 @@ function CutThroughPage({ connected }) {
     if (key === 'prep') {
       return (
         <button type="button" className={btnClass(key)} disabled={busy || !connected || !ct.mc || !ct.label}
-          onClick={() => call(key, () => api.runPrep())}>{st.status === 'pending' ? 'Run' : 'Run again'}</button>
+          onClick={() => call(key, () => api.runPrep({ audioAngle: audioChoice }))}>{st.status === 'pending' ? 'Run' : 'Run again'}</button>
       );
     }
     if (key === 'transcribe') {

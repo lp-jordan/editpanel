@@ -221,8 +221,13 @@ function createCutThrough(opts) {
       lengthMin: day.length_sec ? day.length_sec / 60 : null,
       frames: dayFrames(day),
       angles: day.angles || [],
+      // 'wav' = person mics placed in the multicam; 'camera' = no WAVs used, one
+      // angle's own audio (ATEM mix or in-camera, track 1) — see spike_day_prep.py
+      audioSource: day.audio_source || 'wav',
+      wavMics: day.wav_mics === undefined ? (day.mics || []).length : day.wav_mics,
+      cameraAudioAngles: day.camera_audio_angles || [],
       mics: (day.mics || []).map((m) => ({
-        name: m.name, angle: m.angle, path: m.path,
+        name: m.name, angle: m.angle, path: m.path, camera: Boolean(m.camera),
         fromMin: m.from_sec / 60, toMin: m.to_sec / 60,
         found: (() => { try { return fs.existsSync(m.path); } catch (_) { return false; } })()
       })),
@@ -308,10 +313,11 @@ function createCutThrough(opts) {
     }
   }
 
-  async function runPrep() {
+  /** audioAngle: use that angle's camera audio instead of the mic WAVs ('' = WAVs, or Camera 1 when there are none). */
+  async function runPrep({ audioAngle } = {}) {
     if (!s.mc) throw new Error('Pick a multicam first');
     const started = Date.now();
-    const out = await runSpike('prep', 'spike_day_prep.py', { LABEL: s.label, MC: s.mc });
+    const out = await runSpike('prep', 'spike_day_prep.py', { LABEL: s.label, MC: s.mc, ...(audioAngle ? { AUDIO_ANGLE: String(audioAngle) } : {}) });
     let error = out.error;
     const f = files();
     if (!error && !(mtime(f.day) >= started - 2000)) error = `day_${s.label}.json was not written`;
@@ -382,10 +388,16 @@ function createCutThrough(opts) {
     const st = begin('transcribe');
     const { spikesDir, wxPython } = settings();
     const mins = Number(minutes) > 0 ? Number(minutes) : 0;
-    // Expected minutes per mic, in run order, so the bar covers the whole run.
-    const plan = (s.day.mics || []).map((m) => {
-      const total = Math.max(0, (m.to_sec - m.from_sec) / 60);
-      return { angle: m.angle, totalMin: mins ? Math.min(total, mins) : total };
+    // Expected minutes per track (all sources on one angle share a track, as in
+    // transcribe_day.py), in run order, so the bar covers the whole run.
+    const spans = new Map();
+    (s.day.mics || []).forEach((m) => {
+      const sp = spans.get(m.angle) || { from: m.from_sec, to: m.to_sec };
+      spans.set(m.angle, { from: Math.min(sp.from, m.from_sec), to: Math.max(sp.to, m.to_sec) });
+    });
+    const plan = [...spans.entries()].map(([angle, sp]) => {
+      const total = Math.max(0, (sp.to - sp.from) / 60);
+      return { angle, totalMin: mins ? Math.min(total, mins) : total };
     });
     const grand = plan.reduce((a, m) => a + m.totalMin, 0) || 1;
     let micIdx = -1;

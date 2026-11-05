@@ -16,6 +16,9 @@ Then transcribe on LP1 with transcribe_day.py (see its docstring).
 HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
     LABEL="Convo2"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_day_prep.py", encoding="utf-8").read())
 Optional: MC="name" when the project has more than one multicam.
+No mic WAVs in the multicam (only the ATEM mix or in-camera audio on track 1): the day's audio is
+that camera audio — Camera 1 by default, AUDIO_ANGLE="Camera 3" to pick another — one angle, so
+one speaker track. audio_source in the day file says which ("wav" / "camera").
 """
 import json
 import os
@@ -28,6 +31,7 @@ from urllib.parse import unquote
 
 LABEL = globals().get("LABEL", "Convo2")
 MC = globals().get("MC")
+AUDIO_ANGLE = globals().get("AUDIO_ANGLE")     # no mic WAVs: whose camera audio (track 1) to use; default Camera 1
 DESKTOP = os.path.expanduser("~/Desktop")
 ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
 _lines: List[str] = []
@@ -88,7 +92,7 @@ def describe(xml: str, mc_name: str = None) -> dict:
         rep = a.find("media-rep") if a is not None else None
         return unquote((rep.get("src") if rep is not None else "").replace("file://localhost/", ""))
 
-    angles, mics, length = [], [], Fraction(0)
+    angles, mics, cams, length = [], [], [], Fraction(0)
 
     def visit(el, angle, pos0, start0):
         for ch in el:
@@ -104,6 +108,15 @@ def describe(xml: str, mc_name: str = None) -> dict:
                              "file_zero_sec": float(pos - start),      # where the file's 0:00 sits
                              "from_sec": float(pos), "to_sec": float(pos + dur),
                              "channels": int(a.get("audioChannels") or 1)})
+            elif a is not None and a.get("hasVideo") == "1" and a.get("hasAudio") == "1":
+                # camera clip with its own audio (ATEM mix or in-camera): fallback when no WAVs.
+                # Its start is in the file's timecode, which begins at the asset's start.
+                start = _s(ch.get("start")) - _s(a.get("start"))
+                item = {"name": a.get("name"), "angle": angle, "path": path(ref),
+                        "file_zero_sec": float(pos - start), "from_sec": float(pos), "to_sec": float(pos + dur),
+                        "channels": int(a.get("audioChannels") or 1), "camera": True}
+                if not any(c["path"] == item["path"] and c["from_sec"] == item["from_sec"] for c in cams):
+                    cams.append(item)      # a <clip> holds the same file as <video> and <audio>
             visit(ch, angle, pos, _s(ch.get("start")))
 
     for ang in mc.findall("mc-angle"):
@@ -114,7 +127,7 @@ def describe(xml: str, mc_name: str = None) -> dict:
                 length = max(length, _s(ch.get("offset")) + _s(ch.get("duration")))
     return {"multicam": media.get("name"), "fps": float(1 / fd), "frame_sec": [fd.numerator, fd.denominator],
             "tc_start_sec": float(_s(mc.get("tcStart"))), "length_sec": float(length),
-            "angles": angles, "mics": mics}
+            "angles": angles, "mics": mics, "camera_audio": cams}
 
 
 def main() -> None:
@@ -154,16 +167,30 @@ def main() -> None:
         raise RuntimeError("FCPXML export failed")
     day = describe(open(src, encoding="utf-8").read(), orig.GetName())
     day.update({"label": LABEL, "project": project.GetName()})
+    cams = day.pop("camera_audio")
+    day["camera_audio_angles"] = sorted({c["angle"] for c in cams}, key=lambda a: (len(a), a))
+    day["audio_source"] = "wav"
+    day["wav_mics"] = len(day["mics"])
+    if not day["mics"] or AUDIO_ANGLE:
+        # No person mics placed (only the ATEM mix or in-camera audio on track 1): transcribe one
+        # angle's camera audio instead. Every clip of that angle is one source on the same track.
+        want = AUDIO_ANGLE or ("Camera 1" if "Camera 1" in day["camera_audio_angles"] else
+                               (day["camera_audio_angles"] or [None])[0])
+        picked = [c for c in cams if c["angle"] == want]
+        if not picked:
+            raise RuntimeError(f"No mic WAVs, and no camera audio on {want or 'any angle'}")
+        day["mics"], day["audio_source"] = picked, "camera"
     out = os.path.join(DESKTOP, f"day_{LABEL}.json")
     json.dump(day, open(out, "w", encoding="utf-8"), indent=1)
     say(f"Multicam '{day['multicam']}': {day['length_sec'] / 60:.1f} min at {day['fps']:.3f} fps; "
         f"angles {day['angles']}; throwaway timeline deleted: {gone}")
     for m in day["mics"]:
         ok_file = os.path.isfile(m["path"])
-        say(f"   audio clip {m['name']} under {m['angle']}: multicam {m['from_sec'] / 60:.1f}–{m['to_sec'] / 60:.1f} min, "
+        say(f"   {'camera clip' if m.get('camera') else 'audio clip'} {m['name']} under {m['angle']}: multicam {m['from_sec'] / 60:.1f}–{m['to_sec'] / 60:.1f} min, "
             f"file 0:00 at {m['file_zero_sec']:+.2f}s; file {'found' if ok_file else 'NOT FOUND'}")
-    if not day["mics"]:
-        say("   ✗ no audio-only clips found in the multicam — where are the person mics?")
+    if day["audio_source"] == "camera":
+        say(f"   no mic WAVs used — camera audio (track 1) of {day['mics'][0]['angle']}, {len(day['mics'])} clip(s); "
+            f"other angles with audio: {[a for a in day['camera_audio_angles'] if a != day['mics'][0]['angle']]}")
     say(f"Saved {out}")
 
 
@@ -177,5 +204,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("LABEL", "MC"):
+    for _k in ("LABEL", "MC", "AUDIO_ANGLE"):
         globals().pop(_k, None)
