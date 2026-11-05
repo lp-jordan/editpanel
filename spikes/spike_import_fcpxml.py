@@ -24,9 +24,12 @@ HOW TO RUN (Windows Resolve machine, project open, FCPXML on the Desktop, after 
 Report saved to Desktop\\import_<LABEL>.txt.
 """
 
+import base64
 import json
 import os
+import struct
 import time
+import zlib
 from typing import Any, List
 
 XML = globals().get("XML", "ConvoTest_xml.fcpxml")
@@ -60,6 +63,76 @@ def walk(folder: Any, skip=SKIP_BINS):
     for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
         if _safe(lambda: sub.GetName()) not in skip:
             yield from walk(sub, skip)
+
+
+def all_folders(folder: Any) -> list:
+    out = [folder]
+    for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
+        out += all_folders(sub)
+    return out
+
+
+def png_mean(data: bytes):
+    """Mean (R, G, B) of an 8-bit RGB/RGBA PNG — enough to spot the red Media Offline frame."""
+    pos, w, h, ctype, idat = 8, 0, 0, 2, b""
+    while pos < len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + n]
+        if kind == b"IHDR":
+            w, h, _, ctype = struct.unpack(">IIBB", body[:10])
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + n
+    bpp = 4 if ctype == 6 else 3
+    raw, stride, prev, tot = zlib.decompress(idat), w * bpp, bytearray(w * bpp), [0, 0, 0]
+    for y in range(h):
+        f, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - bpp] if i >= bpp else 0
+            b, c = prev[i], prev[i - bpp] if i >= bpp else 0
+            if f == 1:
+                line[i] = (line[i] + a) & 255
+            elif f == 2:
+                line[i] = (line[i] + b) & 255
+            elif f == 3:
+                line[i] = (line[i] + (a + b) // 2) & 255
+            elif f == 4:
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        for i in range(0, stride, bpp):
+            tot[0] += line[i]; tot[1] += line[i + 1]; tot[2] += line[i + 2]
+        prev = line
+    return tuple(round(v / (w * h)) for v in tot)
+
+
+def self_check(project: Any, tl: Any) -> bool:
+    """Look inside what the import built: a frame per picture angle (red = Media Offline) and
+    the loudness of each mic track (-100 LUFS = silent). True when nothing looks broken."""
+    project.SetCurrentTimeline(tl)
+    ok, seen = True, {}
+    for it in sorted(_safe(lambda: tl.GetItemListInTrack("video", 1), []) or [], key=lambda x: x.GetStart()):
+        seen.setdefault(angle_of(it), it)
+    for ang, it in sorted(seen.items()):
+        res = _safe(lambda: it.ExportFrame(int((it.GetEnd() - it.GetStart()) // 2),
+                                          {"encodedImageFormat": "png", "maxDimension": 48}), {}) or {}
+        if not res.get("success"):
+            say(f"    check {ang}: frame export failed ({res.get('error')})")
+            continue
+        rgb = _safe(lambda: png_mean(base64.b64decode(res["data"])))
+        offline = bool(rgb) and rgb[0] > 120 and rgb[1] < 60 and rgb[2] < 60
+        ok &= not offline
+        say(f"    check {ang}: frame mean RGB {rgb} {'✗ looks like Media Offline' if offline else '✓'}")
+    modes = [m for m in (_safe(lambda: tl.GetNormalizeAudioModes(), []) or []) if "Peak" not in m]
+    for k in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
+        its = _safe(lambda: tl.GetItemListInTrack("audio", k), []) or []
+        if not its or not modes:
+            continue
+        lv = _safe(lambda: its[0].AnalyzeAudioLevels(modes[0]), {}) or {}
+        lufs = lv.get("Integrated")
+        silent = lufs is not None and lufs <= -90
+        ok &= not silent
+        say(f"    check A{k} ({angle_of(its[0])}): {lufs} LUFS {'✗ silent' if silent else '✓' if lufs is not None else '(not measured)'}")
+    return ok
 
 
 def uses(tl: Any) -> set:
@@ -108,13 +181,17 @@ def main() -> None:
     if not os.path.exists(path):
         raise RuntimeError(f"{path} not found.")
     names_before = {project.GetTimelineByIndex(i).GetName() for i in range(1, int(project.GetTimelineCount()) + 1)}
-    opts = {"importSourceClips": False, "sourceClipsFolders": [orig_folder]}
+    # Search EVERY bin for the source clips: with only the multicam's bin, Resolve couldn't find
+    # the camera files or mic WAVs and rebuilt the copy with angles offline (2026-11-05).
+    folders = all_folders(mp.GetRootFolder())
+    opts = {"importSourceClips": False, "sourceClipsFolders": folders}
     if not BATCH:
         opts["timelineName"] = f"__SPIKE_xml_{LABEL}_{int(time.time()) % 100000}"
     mp.SetCurrentFolder(orig_folder)
     t1 = time.time()
     tl = mp.ImportTimelineFromFile(path, opts)
-    say(f"ImportTimelineFromFile → {'ok' if tl else 'FAILED'} in {time.time() - t1:.1f}s")
+    say(f"ImportTimelineFromFile → {'ok' if tl else 'FAILED'} in {time.time() - t1:.1f}s "
+        f"(source clips searched in {len(folders)} bin(s))")
     new = [project.GetTimelineByIndex(i) for i in range(1, int(project.GetTimelineCount()) + 1)
            if project.GetTimelineByIndex(i).GetName() not in names_before]
     say(f"New timeline(s): {len(new)} — {[x.GetName() for x in new]}")
@@ -140,6 +217,8 @@ def main() -> None:
                 a[angle_of(x)] = a.get(angle_of(x), 0) + 1
             auds.append(f"A{k} {len(its)} {a}")
         say(f"  {t.GetName()}: {len(v1)} picture clip(s) {angs}; multicam(s) used {[k[:8] for k in ids]}; " + "; ".join(auds))
+        good = self_check(project, t)
+        globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and good
     say(f"Multicam copies used across the new timeline(s): {len(copies)}" +
         ("  ✓ one copy for the whole batch" if len(copies) == 1 else ""))
     if len(after) == len(before) and set(copies) <= {orig_id}:
@@ -150,7 +229,9 @@ def main() -> None:
         v1 = sorted(_safe(lambda: new[0].GetItemListInTrack("video", 1), []) or [], key=lambda x: x.GetStart())
         hits = sum(1 for p, it in zip(plan["video"], v1) if angle_of(it) == p["angle"])
         say(f"Picture angles matching the plan: {hits}/{len(plan['video'])}")
-    if ARCHIVE and len(after) > len(before):
+    if not globals().get("CHECK_OK", True):
+        say("✗ SELF-CHECK FAILED — the copy looks broken; original left in place, nothing archived")
+    if ARCHIVE and len(after) > len(before) and globals().get("CHECK_OK", True):
         root = mp.GetRootFolder()
         dest = next((f for f in (root.GetSubFolderList() or []) if f.GetName() == ORIG_BIN), None) \
             or mp.AddSubFolder(root, ORIG_BIN)
@@ -185,5 +266,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW"):    # the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
         globals().pop(_k, None)
