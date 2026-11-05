@@ -591,6 +591,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(cl.log.some((l) => /^Claude \(claude-opus-5-5, effort high\): 3 removals .* \$0\.028/.test(l)), cl.log.join('\n'));
   assert.ok(cl.log.some((l) => l.includes('note: check the callback')));
   assert.strictEqual(cl.reportFile, path.join(DESKTOP, 'claude_edit_Solo2.json'));
+  assert.ok(fs.existsSync(path.join(DESKTOP, 'claude_edit_Solo2_claude-opus-5-5.json')), 'no per-model copy');
   assert.ok(/solo_plan,claude-opus-5-5,high,2400,900,0,0,0\.028,/.test(fs.readFileSync(path.join(DESKTOP, 'cut_through_costs.csv'), 'utf8')));
   assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-'), 'key in the snapshot');
   // a declined / broken answer fails the step with the reason, and keeps the log

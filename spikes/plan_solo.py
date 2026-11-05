@@ -290,9 +290,7 @@ def main(argv) -> None:
     print(f"{len(video)} picture pieces, {len(merged)} removals ({', '.join(f'{k} {v}' for k, v in kinds.items())}), "
           f"kept {kept_f / fps / 60:.1f} of {raw_f / fps / 60:.1f} min, {len(video) / max(kept_f / fps / 60, 1e-9):.1f} cuts/min")
     print("angles:", dict(Counter(v["angle"] for v in video)), f"| audio: {plan['audio']['source']} ({talker})")
-    if camera and talker != "Camera 1":
-        print(f"⚠ audio is {talker}'s camera audio, but the build only carries Camera 1's (the ATEM mix) — "
-              f"rerun Prep with Camera 1 audio, or the cut will be silent")
+
     print("Removed (check these):")
     for r in merged:
         if not r["words"]:

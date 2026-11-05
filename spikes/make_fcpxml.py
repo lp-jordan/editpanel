@@ -179,15 +179,27 @@ def main(argv=None) -> list:
     atem_runs = []
     global LAST_ATEM
     LAST_ATEM = None
+    # which angle's own audio goes on A1: the ATEM mix on Camera 1, or — on a day with no mic WAVs —
+    # the angle Prep picked as the audio (plan audio.angle; angles may be named "Angle 1", not "Camera 1")
+    angle_names = re.findall(r'<mc-angle [^>]*name="([^"]+)"', resources)
+    cam_audio = [(p.get("audio") or {}) for _, p in jobs if (p.get("audio") or {}).get("source") == "camera"]
+    atem_angle = (cam_audio[0].get("angle") if cam_audio else None) or "Camera 1"
+    if cam_audio and atem_angle not in angle_names:
+        raise SystemExit(f"the plan's audio is {atem_angle!r}'s camera audio, but the multicam's angles are "
+                         f"{angle_names} — the cut would be silent (rerun Prep, then Plan)")
     if atem_mode in ("cut", "mc"):
         for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
-            fixed, runs = atem_out(block, strip_audio=atem_mode == "cut")
+            fixed, runs = atem_out(block, atem_angle=atem_angle, strip_audio=atem_mode == "cut")
             resources = resources.replace(block, fixed)
             atem_runs += runs
-        if atem_runs:
-            LAST_ATEM = atem_runs[0][4] if atem_mode == "cut" else "Camera 1"
-            print(f"  ATEM mix (Camera 1 audio) on A1 " + ("as plain clips of " + LAST_ATEM if atem_mode == "cut"
+        # "mc" reads the audio from the multicam itself, so it doesn't need the angle's clips to be
+        # plain asset-clips (an export can wrap them in <clip>) — only the angle has to exist
+        if atem_runs or (atem_mode == "mc" and atem_angle in angle_names):
+            LAST_ATEM = atem_runs[0][4] if atem_mode == "cut" else atem_angle
+            print(f"  {atem_angle} audio on A1 " + ("as plain clips of " + LAST_ATEM if atem_mode == "cut"
                   else "from the multicam (keeps it linked in the copy)") + "; angles in camera order")
+        elif cam_audio:
+            raise SystemExit(f"no audio found on {atem_angle!r} — the cut would be silent")
     # the multicam: its resource id, start timecode and angle IDs by name
     want = {p["multicam"] for _, p in jobs}
     media = next(((attrs(m.group(1)), attrs(m.group(2)))
@@ -227,7 +239,7 @@ def main(argv=None) -> list:
                     else:
                         clips.append([lo, hi, r0, on])
             lanes.append((role, clips))
-        if atem_runs:                                       # A1: the ATEM mix, cut with the picture
+        if LAST_ATEM:                                       # A1: the ATEM mix / camera audio, cut with the picture
             clips = []
             for p, off in zip(pieces, offs):
                 marks = sorted({p["in"], p["out"], *(x for o, d, *_ in atem_runs
@@ -260,7 +272,7 @@ def main(argv=None) -> list:
                             if atem_mode == "mc":
                                 lines.append(f'                                <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
                                              f'duration="{t(e_ - s_)}" offset="{t(r0)}" start="{src_t(s_)}" enabled="{int(on)}">')
-                                lines.append(f'                                    <mc-source srcEnable="audio" angleID="{angles["Camera 1"]}"/>')
+                                lines.append(f'                                    <mc-source srcEnable="audio" angleID="{angles[atem_angle]}"/>')
                                 lines.append("                                </mc-clip>")
                             else:
                                 o, d, st, ref, fname = next((x for x in atem_runs if x[0] <= sec < x[0] + x[1]), atem_runs[0])

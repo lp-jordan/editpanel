@@ -230,6 +230,8 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
     notes: res.parsed.notes || [], problems
   }, null, 1));
   fs.writeFileSync(removalsFile, JSON.stringify({ start: s0, end: e0, removals: spans }, null, 1));
+  // a copy per model, so an Opus and a Sonnet edit of the same day can be compared
+  fs.copyFileSync(claudeFile, path.join(desktopDir, `claude_edit_${label}_${String(res.model).replace(/[^A-Za-z0-9_.-]+/g, '_')}.json`));
   const csv = path.join(desktopDir, 'cut_through_costs.csv');
   const u = res.usage || {};
   if (!fs.existsSync(csv)) fs.writeFileSync(csv, 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds\n');
