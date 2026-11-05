@@ -154,20 +154,39 @@ def main() -> None:
     say(f"Source multicam: {name} [{orig.GetUniqueId()[:8]}] in '{where}'"
         + ("" if "MC ORIGINAL" in where else " (no copy in MC ORIGINAL — using this one)"))
 
-    tmp = mp.CreateTimelineFromClips(f"__SPIKE_c1_mcdef", [orig])
+    stale = timelines(project).get("__SPIKE_c1_mcdef")
+    if stale:
+        mp.DeleteTimelines([stale])
+    tmp = mp.CreateTimelineFromClips("__SPIKE_c1_mcdef", [orig]) \
+        or mp.CreateTimelineFromClips("__SPIKE_c1_mcdef", [{"mediaPoolItem": orig}])
+    if not tmp:
+        raise RuntimeError("couldn't make the throwaway timeline from the multicam")
+    project.SetCurrentTimeline(tmp)
     mcdef = os.path.join(DESKTOP, "mcdef_cam1.fcpxml")
     for p in (mcdef, mcdef + "d"):
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
         elif os.path.isfile(p):
             os.remove(p)
-    ok = _safe(lambda: tmp.Export(mcdef, r.EXPORT_FCPXML_1_10), False)
+    tried = []
+    for v in ("1_10", "1_9", "1_8"):
+        etype = _safe(lambda: getattr(r, f"EXPORT_FCPXML_{v}"))
+        if etype is None:
+            continue
+        ok = _safe(lambda: tmp.Export(mcdef, etype), False) or \
+            _safe(lambda: tmp.Export(mcdef, etype, r.EXPORT_NONE), False)
+        tried.append(f"{v}: {ok}")
+        if ok:
+            break
     other = next((t for n, t in timelines(project).items() if not n.startswith("__SPIKE_")), None)
     if other:
         project.SetCurrentTimeline(other)
     _safe(lambda: mp.DeleteTimelines([tmp]))
-    inner = os.path.join(mcdef + "d", "Info.fcpxml") if os.path.isdir(mcdef + "d") else mcdef
-    if not ok or not os.path.isfile(inner):
+    inner = next((p for p in (os.path.join(mcdef + "d", "Info.fcpxml"), mcdef) if os.path.isfile(p)), None)
+    if not inner and os.path.isdir(mcdef + "d"):
+        inner = next((os.path.join(mcdef + "d", f) for f in os.listdir(mcdef + "d") if f.lower().endswith(".fcpxml")), None)
+    say(f"Export: {', '.join(tried) or 'no FCPXML export type offered'} → {inner or 'no file written'}")
+    if not inner:
         raise RuntimeError("export failed")
 
     mk = load("make_fcpxml")
