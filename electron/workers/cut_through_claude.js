@@ -213,7 +213,7 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
   const nUnheard = tokens.length - nWords;
   const meta = `Recording: ${label}, ${((e0 - s0) * frameSec / 60).toFixed(1)} min, one speaker (${talker || 'mic'}), ` +
     `${nWords} words, ${nUnheard} unheard-speech marks${words.unheard ? '' : ' (this transcript predates unheard-speech detection)'}.`;
-  log(`Asking ${model || DEFAULT_MODEL} to edit ${nWords} words (${((e0 - s0) * frameSec / 60).toFixed(1)} min)…`);
+  log(`Asking ${model || DEFAULT_MODEL} to edit the ${((e0 - s0) * frameSec / 60).toFixed(1)}-minute recording (${nWords} words)…`);
   const t0 = Date.now();
   const res = await askClaude({ apiKey, model, effort, system, transcript, meta, client, onEvent });
   const seconds = Math.round((Date.now() - t0) / 1000);
