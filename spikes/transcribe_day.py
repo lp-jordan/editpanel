@@ -88,6 +88,7 @@ def main() -> None:
     # every mic on the multicam's clock (sample 0 = multicam 0:00), raw level kept for ownership
     t0 = time.time()
     mics = []
+    print(f"Reading {len(day['mics'])} mic file(s)…", flush=True)
     for m in day["mics"]:
         x = read_wav(m["path"])
         shift = int(round(m["file_zero_sec"] * SR))             # file 0:00 sits here in the multicam
@@ -108,6 +109,7 @@ def main() -> None:
     import ctranslate2
     from faster_whisper import WhisperModel
     device = "cuda" if ctranslate2.get_cuda_device_count() else "cpu"
+    print(f"Loading the model on {device}…", flush=True)
     t0 = time.time()
     model = WhisperModel("large-v3", device=device, compute_type="float16" if device == "cuda" else "int8")
     report.append(f"Model on {device} loaded in {time.time() - t0:.0f}s")
@@ -120,7 +122,12 @@ def main() -> None:
         segs, _ = model.transcribe(clip, language="en", beam_size=5, word_timestamps=True, vad_filter=True,
                                    condition_on_previous_text=False)
         n = 0
+        total = (m["hi"] - m["lo"]) / SR
         for s in segs:
+            pct = min(100, int(100 * s.end / total)) if total else 100
+            bar = "#" * (pct // 4) + "-" * (25 - pct // 4)
+            print(f"\r  {m['angle']} [{bar}] {pct:3d}%  {s.end / 60:.1f}/{total / 60:.1f} min  "
+                  f"{time.time() - t0:.0f}s", end="", flush=True)
             for w in s.words or []:
                 a, b = w.start + m["lo"] / SR, w.end + m["lo"] / SR
                 # levels after each mic's own gain, so a quieter-recorded mic isn't always the loser
@@ -131,6 +138,7 @@ def main() -> None:
                               "p": round(w.probability, 2), "db": round(mine, 1), "other_db": round(other, 1),
                               "own": mine > other, "clear": mine >= other + OWN_MARGIN_DB})
                 n += 1
+        print(flush=True)
         secs = (m["hi"] - m["lo"]) / SR
         took = time.time() - t0
         report.append(f"  {m['angle']}: {n} words, {secs / 60:.1f} min in {took:.0f}s = {secs / took:.1f}x real time "
