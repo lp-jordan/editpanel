@@ -55,38 +55,29 @@ def fmt_s(v: Fraction) -> str:
     return f"{v.numerator}/{v.denominator}s" if v else "0/1s"
 
 
-def stack_angle_tracks(media_xml: str):
-    """Resolve exports an angle's extra tracks (e.g. the mic WAV under a camera) as a second run
-    in the same list, restarting at offset 0 — and its importer drops them, so the copy's angles
-    came in with no mic audio (2026-11-05). Rewrite each later run as connected clips (lane -1,
-    -2…) hung on the first-run clip they start under, the standard FCPXML way to stack tracks."""
+def split_off_angle_tracks(media_xml: str):
+    """Resolve exports an angle's extra tracks (the mic WAV Jordan placed under a camera) as a
+    second run in the same list, restarting at offset 0. On import Resolve places those clips by
+    TIMECODE, and the recorder's WAVs start at 00:00:00:00, so they land hours before the video
+    (stamping timecode instead knocks them offline in the original multicam — 2026-11-05).
+    So: take them out of the copy's angles and return where each sat, to cut the mics as plain
+    WAV clips. Returns (media xml, {angle: (asset ref, file name, angle offset s, in-point s)})."""
     root = ET.fromstring(media_xml)
-    moved = 0
+    wavs = {}
     for ang in root.iter("mc-angle"):
-        runs, end = [[]], Fraction(0)
+        run, end = 0, Fraction(0)
         for el in list(ang):
             if "offset" not in el.attrib:
-                runs[-1].append(el)
                 continue
             o = secs(el.get("offset"))
-            if runs[-1] and o < end:
-                runs.append([])
-            runs[-1].append(el)
+            if o < end:
+                run += 1
             end = o + secs(el.get("duration", "0s"))
-        hosts = [e for e in runs[0] if e.tag != "gap" and "offset" in e.attrib]
-        for lane, run in enumerate(runs[1:], 1):
-            for el in run:
+            if run:
                 ang.remove(el)
-                if el.tag == "gap" or not hosts:
-                    continue
-                o = secs(el.get("offset"))
-                host = next((h for h in hosts if secs(h.get("offset")) <= o < secs(h.get("offset")) + secs(h.get("duration"))),
-                            hosts[0])
-                el.set("offset", fmt_s(secs(host.get("start", "0s")) + o - secs(host.get("offset"))))
-                el.set("lane", str(-lane))
-                host.append(el)
-                moved += 1
-    return ET.tostring(root, encoding="unicode"), moved
+                if el.tag == "asset-clip" and ang.get("name") not in wavs:
+                    wavs[ang.get("name")] = (el.get("ref"), el.get("name"), o, secs(el.get("start", "0s")))
+    return ET.tostring(root, encoding="unicode"), wavs
 
 
 def split_plan(plan: dict, n: int) -> list:
@@ -124,11 +115,14 @@ def main(argv=None) -> list:
         jobs += [(f"{name}_{k}" if len(parts) > 1 else name, p) for k, p in enumerate(parts, 1)
                  if not part or k == part]
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
+    angle_wavs = {}
     for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
-        fixed, moved = stack_angle_tracks(block)
-        if moved:
+        fixed, found = split_off_angle_tracks(block)
+        if found:
             resources = resources.replace(block, fixed)
-            print(f"  multicam angles: {moved} extra-track clip(s) restacked as connected clips")
+            angle_wavs.update(found)
+            print("  mic WAVs placed in the multicam (cut as plain clips): " +
+                  ", ".join(f"{n} under {a} at +{float(o):.3f}s" for a, (_, n, o, _) in sorted(angle_wavs.items())))
     # the multicam: its resource id, start timecode and angle IDs by name
     want = {p["multicam"] for _, p in jobs}
     media = next(((attrs(m.group(1)), attrs(m.group(2)))
@@ -176,16 +170,23 @@ def main(argv=None) -> list:
                     angle = mic_angle.get(role)
                     if not angle:
                         raise SystemExit(f"no mic angle given for {role!r} (add {role}=\"Camera N\")")
+                    wav = angle_wavs.get(angle)              # Jordan's mic WAV under that angle
                     lines.append(f'                            <spine lane="{-lane}" offset="{src_t(first["in"])}">')
                     pos = 0
                     for s, e, r0 in clips:
                         if r0 > pos:
                             lines.append(f'                                <gap name="Gap" duration="{t(r0 - pos)}" '
                                          f'offset="{t(pos)}" start="3600/1s"/>')
-                        lines.append(f'                                <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
-                                     f'duration="{t(e - s)}" offset="{t(r0)}" start="{src_t(s)}">')
-                        lines.append(f'                                    <mc-source srcEnable="audio" angleID="{angles[angle]}"/>')
-                        lines.append("                                </mc-clip>")
+                        if wav:                                  # multicam frame s → WAV time
+                            ref, fname, o, inp = wav
+                            lines.append(f'                                <asset-clip ref="{ref}" name={quoteattr(fname)} '
+                                         f'duration="{t(e - s)}" offset="{t(r0)}" '
+                                         f'start="{fmt_s(inp + Fraction(s) * FD - o)}" enabled="1"/>')
+                        else:                                    # mic recorded into the camera file
+                            lines.append(f'                                <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
+                                         f'duration="{t(e - s)}" offset="{t(r0)}" start="{src_t(s)}">')
+                            lines.append(f'                                    <mc-source srcEnable="audio" angleID="{angles[angle]}"/>')
+                            lines.append("                                </mc-clip>")
                         pos = r0 + (e - s)
                     lines.append("                            </spine>")
             lines.append("                        </mc-clip>")

@@ -5,8 +5,9 @@ SPIKE — Whole cut-through batch in one run, nothing copied between machines.
 
   1. Resolve exports the day multicam's description: a throwaway timeline holding just the
      multicam is exported as FCPXML (newest version this Resolve offers), then deleted.
-  1b. Each mic WAV gets the start timecode of where it sits in the multicam (Resolve places
-     multicam clips by timecode on import, and the recorder's WAVs start at 00:00:00:00).
+  1b. Finds the mic WAVs Jordan placed in the multicam; the cut uses them as plain clips
+     (Resolve places clips inside an imported multicam by timecode, and the recorder's WAVs
+     start at 00:00:00:00, so they can't ride along in the copy's angles).
   2. make_fcpxml.py builds ONE joined timeline from the cut plan in git (spikes/plans/) on top
      of that description, plus its ranges file.
   3. spike_import_fcpxml.py imports it (one multicam copy → primary in the MC bin; the original
@@ -81,18 +82,6 @@ def _s(v: str) -> Fraction:
     return Fraction(*map(int, v.split("/"))) if "/" in v else Fraction(v)
 
 
-def tc(frames: int) -> str:
-    return f"{frames // 86400:02d}:{frames // 1440 % 60:02d}:{frames // 24 % 60:02d}:{frames % 24:02d}"
-
-
-def tc_frames(t: str):
-    try:
-        h, m, sec, f = map(int, t.replace(";", ":").split(":"))
-        return ((h * 60 + m) * 60 + sec) * 24 + f
-    except Exception:
-        return None
-
-
 def wav_timecodes(xml: str, mc_name: str) -> dict:
     """Where Jordan placed each extra-track clip (the mic WAVs) inside the multicam, as the start
     timecode that file needs so Resolve's timecode placement lands it there:
@@ -122,44 +111,6 @@ def wav_timecodes(xml: str, mc_name: str) -> dict:
                     frames = round((start + o - _s(el.get("start", "0s"))) / FD)
                     out.setdefault(el.get("name"), (frames, ang.get("name"), paths.get(el.get("ref"), "")))
     return out
-
-
-def stamp_wavs(mp: Any, found: dict) -> None:
-    """Give each mic WAV the start timecode that lines it up (old values saved for undo)."""
-    if not found:
-        say("   No extra-track clips (mic WAVs) in the multicam — nothing to stamp")
-        return
-    clips = {}
-    for _, c in walk(mp.GetRootFolder()):
-        clips.setdefault(_safe(lambda: c.GetName()), []).append(c)
-    backup_path = os.path.join(DESKTOP, f"wav_timecode_backup_{LABEL}.json")
-    backup = json.load(open(backup_path, encoding="utf-8")) if os.path.exists(backup_path) else {}
-    for name, (frames, angle, path) in sorted(found.items()):
-        cands = clips.get(name, [])
-        if len(cands) > 1:                                 # same file name twice: match the path
-            cands = [c for c in cands if os.path.normcase(str(_safe(lambda: c.GetClipProperty("File Path"), "")))
-                     .endswith(os.path.normcase(os.path.basename(path)))] or cands[:1]
-        if not cands:
-            say(f"   {name} ({angle}): ✗ not found in the media pool")
-            continue
-        c, want = cands[0], tc(frames)
-        old = str(_safe(lambda: c.GetClipProperty("Start TC"), "?"))
-        if old == want:
-            say(f"   {name} ({angle}): already {want} ✓")
-            continue
-        if old not in ("00:00:00:00", "?"):
-            # Changing a WAV that's already placed in a multicam knocks it offline there (the
-            # multicam refers to it by timecode — found 2026-11-05), so only stamp untouched ones.
-            say(f"   {name} ({angle}): has {old}, placement says {want} — left alone "
-                f"({'✗ off by ' + str(frames - tc_frames(old)) + ' fr' if tc_frames(old) is not None else 'unreadable'})")
-            continue
-        backup.setdefault(c.GetUniqueId(), {"name": name, "start_tc": old})   # keep the FIRST original
-        ok = _safe(lambda: c.SetClipProperty("Start TC", want), False)
-        now = str(_safe(lambda: c.GetClipProperty("Start TC"), "?"))
-        say(f"   {name} ({angle}): {old} → {now} {'✓' if now == want else '✗ (wanted ' + want + ', set returned ' + str(ok) + ')'}")
-    with open(backup_path, "w", encoding="utf-8") as fh:
-        json.dump(backup, fh, indent=1)
-    say(f"   Old timecodes saved in {os.path.basename(backup_path)} (to undo)")
 
 
 def bundle_xml(path: str):
@@ -234,9 +185,11 @@ def main() -> None:
         f"({os.path.relpath(src, DESKTOP)}, {os.path.getsize(src) // 1024} KB, {len(re.findall(r'<asset ', xml))} source file(s), "
         f"angles {angles}); throwaway timeline deleted: {gone}")
 
-    # 1b. stamp the mic WAVs with the timecode of where they sit in the multicam
-    say("1b. Mic WAV timecodes (Resolve places multicam clips by timecode on import):")
-    stamp_wavs(mp, wav_timecodes(xml, name))
+    # 1b. which mic WAV Jordan placed under which angle (the cut uses them as plain clips;
+    # their timecode is never changed — stamping it knocked them offline in the original)
+    wavs = wav_timecodes(xml, name)
+    say("1b. Mic WAVs in the multicam: " + (", ".join(f"{n} under {a}" for n, (_, a, _) in sorted(wavs.items()))
+                                           or "none (mics are in the camera files)"))
 
     # 2. the joined timeline, built on that description
     t1 = time.time()
@@ -253,7 +206,8 @@ def main() -> None:
     # 3. import → one copy (primary); original archived
     t1 = time.time()
     g = run_script("spike_import_fcpxml.py", {"XML": os.path.basename(out), "LABEL": LABEL, "BATCH": True,
-                                          "ARCHIVE": True, "RAW": RAW, "MICS": MICS}, r)
+                                          "ARCHIVE": True, "RAW": RAW, "MICS": MICS,
+                                              "MIC_FILES": {n: a for n, (_, a, _) in wavs.items()}}, r)
     say(f"3. Import done ({time.time() - t1:.1f}s)")
     if not g.get("CHECK_OK", True):
         raise RuntimeError("the imported multicam copy failed its self-check — not splitting "

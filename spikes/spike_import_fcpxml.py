@@ -38,7 +38,8 @@ BATCH = bool(globals().get("BATCH"))                   # the file holds several 
 ARCHIVE = bool(globals().get("ARCHIVE") or globals().get("QUARANTINE"))  # original multicam → its own bin
 ORIG_BIN = globals().get("ORIG_BIN", "MC ORIGINAL")
 RAW = globals().get("RAW")
-MICS = globals().get("MICS") or {}                     # role → mic angle; puts each person's clips on their track                             # "*" or [names]: timelines on the original to move with it
+MICS = globals().get("MICS") or {}                     # role → mic angle; puts each person's clips on their track
+MIC_FILES = globals().get("MIC_FILES") or {}           # mic WAV file → the angle it sits under                             # "*" or [names]: timelines on the original to move with it
 SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}                # the original is out of play in these
 REPO = r"C:\lp-app-ecosystem\editpanel"
 DESKTOP = os.path.expanduser("~/Desktop")
@@ -64,6 +65,12 @@ def walk(folder: Any, skip=SKIP_BINS):
     for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
         if _safe(lambda: sub.GetName()) not in skip:
             yield from walk(sub, skip)
+
+
+def clip_label(item: Any) -> str:
+    """The angle for multicam clips, the file name for plain clips (the mic WAVs)."""
+    a = angle_of(item)
+    return a if a != "?" else str(_safe(lambda: item.GetName(), "?"))
 
 
 def all_folders(folder: Any) -> list:
@@ -113,7 +120,7 @@ def fix_mic_tracks(project: Any, tl: Any, want: dict) -> None:
     moved = failed = 0
     for k in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
         for it in list(_safe(lambda: tl.GetItemListInTrack("audio", k), []) or []):
-            dest = want.get(angle_of(it))
+            dest = want.get(angle_of(it)) or want.get(_safe(lambda: it.GetName()))
             if dest and dest != k:
                 if _safe(lambda: it.SetPosition({"trackIndex": dest}, False), False):
                     moved += 1
@@ -149,7 +156,7 @@ def self_check(project: Any, tl: Any) -> bool:
         lufs = lv.get("Integrated")
         silent = lufs is not None and lufs <= -90
         ok &= not silent
-        say(f"    check A{k} ({angle_of(its[0])}): {lufs} LUFS {'✗ silent' if silent else '✓' if lufs is not None else '(not measured)'}")
+        say(f"    check A{k} ({clip_label(its[0])}): {lufs} LUFS {'✗ silent' if silent else '✓' if lufs is not None else '(not measured)'}")
     return ok
 
 
@@ -255,14 +262,16 @@ def main() -> None:
             its = _safe(lambda: t.GetItemListInTrack("audio", k), []) or []
             a = {}
             for x in its:
-                a[angle_of(x)] = a.get(angle_of(x), 0) + 1
+                a[clip_label(x)] = a.get(clip_label(x), 0) + 1
             auds.append(f"A{k} {len(its)} {a}")
         say(f"  {t.GetName()}: {len(v1)} picture clip(s) {angs}; multicam(s) used {[k[:8] for k in ids]}; " + "; ".join(auds))
         if MICS:
-            fix_mic_tracks(project, t, {MICS[role]: k for k, role in enumerate(plan["mics"], 1) if role in MICS})
+            want = {MICS[role]: k for k, role in enumerate(plan["mics"], 1) if role in MICS}
+            want.update({f: want[a] for f, a in MIC_FILES.items() if a in want})
+            fix_mic_tracks(project, t, want)
             _safe(lambda: say("    after: " + "; ".join(
-                f"A{k} " + str({a: sum(1 for x in t.GetItemListInTrack('audio', k) if angle_of(x) == a)
-                                for a in {angle_of(x) for x in t.GetItemListInTrack('audio', k)}})
+                f"A{k} " + str({a: sum(1 for x in t.GetItemListInTrack('audio', k) if clip_label(x) == a)
+                                for a in {clip_label(x) for x in t.GetItemListInTrack('audio', k)}})
                 for k in range(1, int(t.GetTrackCount("audio") or 0) + 1))))
         good = self_check(project, t)
         globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and good
@@ -322,5 +331,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
         globals().pop(_k, None)
