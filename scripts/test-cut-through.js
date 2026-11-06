@@ -1015,6 +1015,12 @@ sys.stdout.write(json.dumps(res))`;
   fakeClaude.beta.messages.stream = () => ({ on: () => {}, finalMessage: async () => ({ stop_reason: 'refusal', stop_details: { category: 'test' }, content: [], usage: {} }) });
   const declined = (await c3.runPlan({})).steps.plan;
   assert.ok(declined.status === "failed" && /Claude: Claude declined \(test\)/.test(declined.error), declined.error);
+  // an answer that ran out of room is still billed: its cost goes in the csv and the error (2026-11-06)
+  fakeClaude.beta.messages.stream = () => ({ on: () => {}, finalMessage: async () => ({ model: 'claude-opus-5-5', stop_reason: 'max_tokens', content: [],
+    usage: { input_tokens: 100000, output_tokens: 128000 } }) });
+  const long = (await c3.runPlan({})).steps.plan;
+  assert.ok(long.status === 'failed' && /billed \$2\.96/.test(long.error), long.error);
+  assert.ok(/solo_plan_failed,claude-opus-5-5,high,100000,128000,0,0,2\.96,/.test(fs.readFileSync(path.join(FILES, 'cut_through_costs.csv'), 'utf8')));
   // key setting: saved on this machine, shown masked
   c3.updateSettings({ anthropicKey: 'sk-ant-test-1234' });
   assert.strictEqual(c3.snapshot().settings.claudeKey, 'saved …1234');

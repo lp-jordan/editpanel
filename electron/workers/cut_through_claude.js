@@ -40,6 +40,7 @@ const DELIVERY = {
 // scripted: gaps over ~0.8 s go down to ~0.45 s (Elevate, Jordan 2026-11-06: 19–26 fr gaps after a line read long)
 const PAUSES = { scripted: { max: 20, left: 11, min_save: 0 }, stage: { max: 36, left: 18, min_save: 36 }, convo: { max: 48, left: 18, min_save: 24 } };
 const LINE_GAP_SEC = 0.6;
+const MAX_WORDS = 15000;           // ≈ 2.4 h of talk ≈ $1.75 on Opus: the most one Claude pass may take
 const SHOW_PAUSE_SEC = 1.5;
 
 function buildSchema(angles) {
@@ -252,7 +253,8 @@ function costOf(model, usage) {
  * returns the final message parsed against SCHEMA.
  */
 async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', system, transcript, meta, angles = ['Camera 1', 'Camera 2'], client = null, onEvent = () => {} }) {
-  const anthropic = client || new Anthropic(apiKey ? { apiKey } : {});
+  // maxRetries 0: an automatic retry re-runs (and re-bills) a whole long edit
+  const anthropic = client || new Anthropic({ ...(apiKey ? { apiKey } : {}), maxRetries: 0 });
   const params = {
     model,
     // a shot list for a long talk is a few hundred entries on top of the removals and thinking
@@ -280,17 +282,19 @@ async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', syste
     if (err instanceof Anthropic.BadRequestError && /fallback/i.test(err.message || '')) msg = await run(false);
     else throw err;
   }
+  // a failed answer is still billed: the error carries its usage so the cost gets logged
+  const paid = (e) => Object.assign(e, { usage: msg.usage, model: msg.model || model });
   if (msg.stop_reason === 'refusal') {
     const d = msg.stop_details || {};
-    throw new Error(`Claude declined (${d.category || 'refusal'}): ${d.explanation || ''}`.trim());
+    throw paid(new Error(`Claude declined (${d.category || 'refusal'}): ${d.explanation || ''}`.trim()));
   }
-  if (msg.stop_reason === 'max_tokens') throw new Error('Claude ran out of output room (max_tokens) — try a shorter Start/End range');
+  if (msg.stop_reason === 'max_tokens') throw paid(new Error('Claude ran out of output room (max_tokens) — try a shorter Start/End range'));
   const text = (msg.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
   let parsed;
   try {
     parsed = JSON.parse(text);
   } catch (_) {
-    throw new Error(`Claude's answer wasn't valid JSON (stop: ${msg.stop_reason})`);
+    throw paid(new Error(`Claude's answer wasn't valid JSON (stop: ${msg.stop_reason})`));
   }
   return { parsed, usage: msg.usage, model: msg.model || model, stopReason: msg.stop_reason };
 }
@@ -336,8 +340,32 @@ async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, pro
       String(direction).trim()] : [])
   ].join('\n');
   log(`Asking ${model || DEFAULT_MODEL} to edit the ${((e0 - s0) * frameSec / 60).toFixed(1)}-minute recording (${nWords} words)…`);
+  // one pass over a whole day can run out of output room and is billed anyway (2026-11-06):
+  // refuse a section that long before sending it (~6,200 words per raw hour)
+  if (nWords > MAX_WORDS) {
+    throw new Error(`Too long for one Claude pass: ${nWords} words (about ${(nWords / 6200).toFixed(1)} h). ` +
+      `Pick a From/To of about ${Math.floor(MAX_WORDS / 6200 * 4) * 15} minutes or less.`);
+  }
   const t0 = Date.now();
-  const res = await askClaude({ apiKey, model, effort, system, transcript, meta, angles, client, onEvent });
+  const logCost = (m, usage, status) => {
+    fs.mkdirSync(costsDir || outDir, { recursive: true });
+    const csv = path.join(costsDir || outDir, 'cut_through_costs.csv');
+    const u = usage || {};
+    if (!fs.existsSync(csv)) fs.writeFileSync(csv, 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds\n');
+    fs.appendFileSync(csv, `${new Date().toISOString()},${label},${status},${m},${effort},${u.input_tokens || 0},${u.output_tokens || 0},` +
+      `${u.cache_read_input_tokens || 0},${u.cache_creation_input_tokens || 0},${costOf(m, usage)},${Math.round((Date.now() - t0) / 1000)}\n`);
+  };
+  let res;
+  try {
+    res = await askClaude({ apiKey, model, effort, system, transcript, meta, angles, client, onEvent });
+  } catch (err) {
+    if (err.usage) {
+      const m = err.model || model || DEFAULT_MODEL;
+      logCost(m, err.usage, 'solo_plan_failed');
+      err.message += ` (billed $${costOf(m, err.usage)})`;
+    }
+    throw err;
+  }
   const seconds = Math.round((Date.now() - t0) / 1000);
   const { ok, problems } = validateRemovals(res.parsed.removals, tokens.length);
   const spans = toFrameSpans(tokens, ok, { start: s0, end: e0 });
@@ -363,19 +391,14 @@ async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, pro
     pauses: PAUSES[delivery] || null }, null, 1));
   // a copy per model, so an Opus and a Sonnet edit of the same day can be compared
   fs.copyFileSync(claudeFile, path.join(outDir, `claude_edit_${label}_${String(res.model).replace(/[^A-Za-z0-9_.-]+/g, '_')}.json`));
-  fs.mkdirSync(costsDir || outDir, { recursive: true });
-  const csv = path.join(costsDir || outDir, 'cut_through_costs.csv');
-  const u = res.usage || {};
-  if (!fs.existsSync(csv)) fs.writeFileSync(csv, 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds\n');
-  fs.appendFileSync(csv, `${new Date().toISOString()},${label},solo_plan,${res.model},${effort},${u.input_tokens || 0},${u.output_tokens || 0},` +
-    `${u.cache_read_input_tokens || 0},${u.cache_creation_input_tokens || 0},${cost},${seconds}\n`);
+  logCost(res.model, res.usage, 'solo_plan');
 
   const byKind = {};
   ok.forEach((r) => { byKind[r.kind] = (byKind[r.kind] || 0) + 1; });
   const removedSec = spans.reduce((a, x) => a + (x.to - x.from), 0) * frameSec;
   const lines = [
     `Claude (${res.model}, effort ${effort}, ${delivery}): ${ok.length} removals (${Object.entries(byKind).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}), ` +
-      `${removedSec.toFixed(0)} s removed, ${sv.ok.length} shots — ${seconds}s, $${cost.toFixed(3)} (${u.input_tokens || 0} in / ${u.output_tokens || 0} out tokens)`,
+      `${removedSec.toFixed(0)} s removed, ${sv.ok.length} shots — ${seconds}s, $${cost.toFixed(3)} (${(res.usage || {}).input_tokens || 0} in / ${(res.usage || {}).output_tokens || 0} out tokens)`,
     ...ok.map((r) => `  ${r.from}–${r.to} [${clock(tokens[r.from].s * frameSec)}] ${r.kind}: ${r.reason}`),
     ...notes.map((n) => `  check${Number.isInteger(n.at) && tokens[n.at] ? ` [${clock(tokens[n.at].s * frameSec)}]` : ''}: ${n.note}`),
     ...problems.map((p) => `  ⚠ ${p}`)
