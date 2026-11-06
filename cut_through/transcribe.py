@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-SPIKE — Step 2 of the all-in-one test: transcribe the day's person mics on LP1's GPU.
+Cut-through step 2 (Transcribe): transcribe the day's mics on LP1's GPU.
 
-Reads Desktop\\day_<LABEL>.json (written by spike_day_prep.py in Resolve), transcribes every mic
+Reads Desktop\\day_<LABEL>.json (written by prepare_multicam.py in Resolve), transcribes every mic
 WAV over the stretch it covers in the multicam with faster-whisper large-v3 (WhisperX's engine)
 on the NVIDIA GPU, puts every word on the multicam's frame grid, and decides who said it: each
 mic hears the other person faintly, so a word belongs to the mic where it's loudest.
@@ -15,7 +15,7 @@ Send all three (plus day_<LABEL>.json) back to the Mac.
 
 Uses the C:\\wxbench environment from bench_whisper.py (already set up on LP1).
 Run (normal Command Prompt):
-    C:\\wxbench\\Scripts\\python C:\\lp-app-ecosystem\\editpanel\\spikes\\transcribe_day.py Convo2
+    C:\\wxbench\\Scripts\\python C:\\lp-app-ecosystem\\editpanel\\cut_through\\transcribe.py Convo2
 Quick test first (first 3 minutes of each mic): add  minutes=3
 Second, verbatim pass (restarts, "uh"s, cut-off words; ~2× the GPU time): add  verbatim=1
 Already transcribed, just measure the audio (levels + loud-without-words marks, no Whisper): add  levels_only=1

@@ -4,13 +4,13 @@
  *   node scripts/test-cut-through.js
  *
  * 1. Pure helpers (progress-line parsing, labels, cuts, planner choice).
- * 2. helper/commands/cut_through.py: multicam listing + spike exec with print
- *    capture, against a fake Resolve. The REAL spikes/spike_day_prep.py runs
+ * 2. helper/commands/cut_through.py: multicam listing + step exec with print
+ *    capture, against a fake Resolve. The REAL cut_through/prepare_multicam.py runs
  *    on it (the fake exports a small synthetic FCPXML).
  * 3. electron/workers/cut_through.js end to end in a temp folder:
- *    prep (fake worker → real day prep) → transcribe (fake transcribe_day.py
+ *    prep (fake worker → real day prep) → transcribe (fake transcribe.py
  *    printing the real progress-bar format) → cancel → plan (REAL
- *    plan_convo.py) → build (fake worker reply; the batch needs Resolve).
+ *    place_cuts.py) → build (fake worker reply; the batch needs Resolve).
  * Nothing touches the real Desktop: HOME points at the temp folder.
  */
 const assert = require('assert');
@@ -21,14 +21,14 @@ const { spawn, execFileSync } = require('child_process');
 const ct = require('../electron/workers/cut_through');
 
 const REPO = path.join(__dirname, '..');
-const SPIKES = path.join(REPO, 'spikes');
+const PIPELINE = path.join(REPO, 'cut_through');
 const PY = process.platform === 'win32' ? 'python' : 'python3';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-test-'));
 const HOME = path.join(TMP, 'home');
 const DESKTOP = path.join(HOME, 'Desktop');
-const FAKE_SPIKES = path.join(TMP, 'spikes');
+const FAKE_PIPELINE = path.join(TMP, 'cut_through');
 fs.mkdirSync(DESKTOP, { recursive: true });
-fs.mkdirSync(FAKE_SPIKES, { recursive: true });
+fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
 
 // ── 1. pure helpers ────────────────────────────────────────────
 {
@@ -135,7 +135,7 @@ class Resolve:
     def GetVersionString(self): return "fake 21"
 `;
 
-// Prints exactly what transcribe_day.py prints, writes plausible outputs.
+// Prints exactly what transcribe.py prints, writes plausible outputs.
 const FAKE_TRANSCRIBE = String.raw`
 import json, os, sys, time
 args = [a for a in sys.argv[1:] if "=" not in a]
@@ -205,10 +205,10 @@ print(f"{len(words)} words")
 `;
 
 fs.writeFileSync(path.join(TMP, 'fake_resolve.py'), FAKE_RESOLVE);
-fs.writeFileSync(path.join(FAKE_SPIKES, 'transcribe_day.py'), FAKE_TRANSCRIBE);
-for (const f of ['spike_day_prep.py', 'plan_convo.py', 'plan_solo.py']) fs.copyFileSync(path.join(SPIKES, f), path.join(FAKE_SPIKES, f));
-fs.mkdirSync(path.join(FAKE_SPIKES, 'prompts'));
-for (const f of ['solo_editor.md', 'convo_editor.md']) fs.copyFileSync(path.join(SPIKES, 'prompts', f), path.join(FAKE_SPIKES, 'prompts', f));
+fs.writeFileSync(path.join(FAKE_PIPELINE, 'transcribe.py'), FAKE_TRANSCRIBE);
+for (const f of ['prepare_multicam.py', 'place_cuts.py']) fs.copyFileSync(path.join(PIPELINE, f), path.join(FAKE_PIPELINE, f));
+fs.mkdirSync(path.join(FAKE_PIPELINE, 'editor_briefs'));
+for (const f of ['solo.md', 'conversation.md']) fs.copyFileSync(path.join(PIPELINE, 'editor_briefs', f), path.join(FAKE_PIPELINE, 'editor_briefs', f));
 
 /** A scripted solo take: count retake, repeat retake, stutter, long pause, a callback that stays. */
 function scriptedTake() {
@@ -239,7 +239,7 @@ const CLEAN = 'Leadership starts with listening to your team every single day. T
 
 // The batch needs Resolve for real; the worker side is faked below, so a
 // placeholder is enough for the allow-list path check.
-fs.writeFileSync(path.join(FAKE_SPIKES, 'spike_cut_through_batch.py'), 'REPO = r"C:\\lp-app-ecosystem\\editpanel"\n_lines = []\nprint("repo", REPO)\n_lines.append("✗ STOPPED after 0.1s: fake")\n');
+fs.writeFileSync(path.join(FAKE_PIPELINE, 'build_rough_cut.py'), 'REPO = r"C:\\lp-app-ecosystem\\editpanel"\n_lines = []\nprint("repo", REPO)\n_lines.append("✗ STOPPED after 0.1s: fake")\n');
 
 const PY_ENV = { ...process.env, HOME, USERPROFILE: HOME, PYTHONPATH: `${REPO}${path.delimiter}${TMP}`, PYTHONIOENCODING: 'utf-8' };
 
@@ -248,29 +248,29 @@ const PY_ENV = { ...process.env, HOME, USERPROFILE: HOME, PYTHONPATH: `${REPO}${
   const out = execFileSync(PY, ['-c', String.raw`
 import json, builtins
 from fake_resolve import Resolve
-from helper.commands.cut_through import list_multicams, run_spike
+from helper.commands.cut_through import list_multicams, run_step
 r = Resolve()
 mcs = list_multicams(r.GetProjectManager().GetCurrentProject().GetMediaPool().GetRootFolder())
 events = []
 real_print = builtins.print
-res = run_spike(${JSON.stringify(path.join(FAKE_SPIKES, 'spike_day_prep.py'))}, {"LABEL": "PyT", "MC": "mc_test"}, r, events.append)
+res = run_step(${JSON.stringify(path.join(FAKE_PIPELINE, 'prepare_multicam.py'))}, {"LABEL": "PyT", "MC": "mc_test"}, r, events.append)
 assert builtins.print is real_print
-bat = run_spike(${JSON.stringify(path.join(FAKE_SPIKES, 'spike_cut_through_batch.py'))}, {"LABEL": "PyT"}, r, events.append, repo_dir="/some/repo")
+bat = run_step(${JSON.stringify(path.join(FAKE_PIPELINE, 'build_rough_cut.py'))}, {"LABEL": "PyT"}, r, events.append, repo_dir="/some/repo")
 print(json.dumps({"mcs": mcs, "res": res, "bat": bat, "events": events}))
 `], { env: PY_ENV, encoding: 'utf8' });
   const lines = out.trim().split('\n');
-  assert.strictEqual(lines.length, 1, `spike prints leaked to stdout:\n${out}`);
+  assert.strictEqual(lines.length, 1, `step prints leaked to stdout:\n${out}`);
   const r = JSON.parse(lines[0]);
   assert.deepStrictEqual(r.mcs, [{ name: 'mc_test', bin: 'MC', duplicate: false }]);
   assert.strictEqual(r.res.error, null, r.res.lines.join('\n'));
   assert.ok(r.res.lines.some((l) => l.includes("Multicam 'mc_test'")), r.res.lines.join('\n'));
   assert.ok(r.events.some((l) => l.includes('audio clip 02MIC2.WAV under Camera 2')));
-  assert.ok(r.events.includes('repo /some/repo'), 'REPO line not pointed at the spikes checkout');
+  assert.ok(r.events.includes('repo /some/repo'), 'REPO line not pointed at the pipeline checkout');
   assert.ok(r.bat.stopped && r.bat.error.startsWith('✗ STOPPED'));
   const day = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_PyT.json'), 'utf8'));
   assert.deepStrictEqual(day.mics.map((m) => m.angle), ['Camera 2', 'Camera 3']);
   assert.strictEqual(day.mics[1].file_zero_sec, -1);
-  console.log('✓ python: multicam list, spike exec + print capture, real day prep on a fake Resolve');
+  console.log('✓ python: multicam list, step exec + print capture, real day prep on a fake Resolve');
 }
 
 // ── 2b. day with no mic WAVs: camera audio (ATEM mix / in-camera, track 1) ──
@@ -278,11 +278,11 @@ print(json.dumps({"mcs": mcs, "res": res, "bat": bat, "events": events}))
   const out = execFileSync(PY, ['-c', String.raw`
 import json
 from fake_resolve import Resolve
-from helper.commands.cut_through import run_spike
-p = ${JSON.stringify(path.join(FAKE_SPIKES, 'spike_day_prep.py'))}
-a = run_spike(p, {"LABEL": "Cam1", "MC": "mc_test"}, Resolve(), lambda l: None)
-b = run_spike(p, {"LABEL": "Cam2", "MC": "mc_test", "AUDIO_ANGLE": "Camera 2"}, Resolve(), lambda l: None)
-c = run_spike(p, {"LABEL": "Cam3", "MC": "mc_test", "AUDIO_ANGLE": "Camera 3"}, Resolve(), lambda l: None)
+from helper.commands.cut_through import run_step
+p = ${JSON.stringify(path.join(FAKE_PIPELINE, 'prepare_multicam.py'))}
+a = run_step(p, {"LABEL": "Cam1", "MC": "mc_test"}, Resolve(), lambda l: None)
+b = run_step(p, {"LABEL": "Cam2", "MC": "mc_test", "AUDIO_ANGLE": "Camera 2"}, Resolve(), lambda l: None)
+c = run_step(p, {"LABEL": "Cam3", "MC": "mc_test", "AUDIO_ANGLE": "Camera 3"}, Resolve(), lambda l: None)
 print(json.dumps([a, b, c]))
 `], { env: { ...PY_ENV, CT_FAKE_XML: 'cam' }, encoding: 'utf8' });
   const [a, b, c] = JSON.parse(out.trim());
@@ -300,7 +300,7 @@ print(json.dumps([a, b, c]))
   console.log('✓ python: no mic WAVs → Camera 1 camera audio (TOD timecode), AUDIO_ANGLE pick, angle without audio refused');
 }
 
-// ── 2c. the real transcribe_day.py on that day, Whisper/PyAV stubbed ──
+// ── 2c. the real transcribe.py on that day, Whisper/PyAV stubbed ──
 // Needs numpy: CT_TEST_PYTHON=<python with numpy> (skipped otherwise).
 if (process.env.CT_TEST_PYTHON) {
   const STUBS = path.join(TMP, 'stubs');
@@ -354,7 +354,7 @@ class WhisperModel:
             return [_S(s, s + 1, [_W(s, s + 0.5, f"w{s}"), _W(s + 0.6, s + 0.8, "uh")]) for s in secs], None
         return [_S(s, s + 1, [_W(s, s + 0.5, f"w{s}")]) for s in secs], None
 `);
-  const out = execFileSync(process.env.CT_TEST_PYTHON, [path.join(SPIKES, 'transcribe_day.py'), 'Cam1', `dir=${DESKTOP}`],
+  const out = execFileSync(process.env.CT_TEST_PYTHON, [path.join(PIPELINE, 'transcribe.py'), 'Cam1', `dir=${DESKTOP}`],
     { env: { ...PY_ENV, PYTHONPATH: STUBS }, encoding: 'utf8' });
   const words = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'words_Cam1.json'), 'utf8'));
   assert.deepStrictEqual(words.mics, ['Camera 1'], out);
@@ -366,7 +366,7 @@ class WhisperModel:
   assert.ok(/reading 1\/2 CAM1_01\.mov 100%/.test(out) && /Finding speech in Camera 1 \(2\.0 min\)…/.test(out), out);
   assert.ok(fs.existsSync(path.join(DESKTOP, 'levels_Cam1.json')), 'no levels file');
   // verbatim=1: the second pass adds only what the clean pass missed (the "uh"s), marked v
-  const vout = execFileSync(process.env.CT_TEST_PYTHON, [path.join(SPIKES, 'transcribe_day.py'), 'Cam1', `dir=${DESKTOP}`, 'verbatim=1'],
+  const vout = execFileSync(process.env.CT_TEST_PYTHON, [path.join(PIPELINE, 'transcribe.py'), 'Cam1', `dir=${DESKTOP}`, 'verbatim=1'],
     { env: { ...PY_ENV, PYTHONPATH: STUBS }, encoding: 'utf8' });
   const vw = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'words_Cam1.json'), 'utf8')).words;
   assert.deepStrictEqual(vw.map((w) => `${w.w}${w.v ? '*' : ''}`), ['w10', 'uh*', 'w65', 'uh*'], vout);
@@ -374,13 +374,13 @@ class WhisperModel:
   // quick test (minutes=0.5 → first 30 s of the multicam): stops reading CAM1_01 early, skips CAM1_02
   const q = execFileSync(process.env.CT_TEST_PYTHON, ['-c', [
     'import sys, runpy, av',
-    `sys.argv = ["transcribe_day.py", "Cam1", ${JSON.stringify('dir=' + DESKTOP)}, "minutes=0.5"]`,
-    `runpy.run_path(${JSON.stringify(path.join(SPIKES, 'transcribe_day.py'))}, run_name="__main__")`,
+    `sys.argv = ["transcribe.py", "Cam1", ${JSON.stringify('dir=' + DESKTOP)}, "minutes=0.5"]`,
+    `runpy.run_path(${JSON.stringify(path.join(PIPELINE, 'transcribe.py'))}, run_name="__main__")`,
     'print("DECODED", max(t for p, t in av.DECODED if "CAM1_01" in p), sum(1 for p, t in av.DECODED if "CAM1_02" in p))'
   ].join('\n')], { env: { ...PY_ENV, PYTHONPATH: STUBS }, encoding: 'utf8' });
   const dec = /DECODED (\d+) (\d+)/.exec(q);
   assert.ok(dec && Number(dec[1]) <= 42 && Number(dec[2]) === 0, q);   // file 10 s + 30 s window + 1 s margin
-  console.log('✓ transcribe_day.py: camera clips on one angle → one track on the multicam clock');
+  console.log('✓ transcribe.py: camera clips on one angle → one track on the multicam clock');
   // ffmpeg fallback on a real file (needs an ffmpeg binary; EditPanel passes its bundled one)
   let ffmpeg = null;
   try { ffmpeg = require('ffmpeg-static'); } catch (_) {}
@@ -389,14 +389,14 @@ class WhisperModel:
     execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2:sample_rate=48000',
       '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=2', '-shortest', '-ac', '2', mov]);
     const n = execFileSync(process.env.CT_TEST_PYTHON, ['-c',
-      `import sys; sys.path.insert(0, ${JSON.stringify(SPIKES)}); import transcribe_day as t; x = t.decode_ffmpeg(${JSON.stringify(mov)}); print(len(x), round(float(abs(x).max()), 2))`],
+      `import sys; sys.path.insert(0, ${JSON.stringify(PIPELINE)}); import transcribe as t; x = t.decode_ffmpeg(${JSON.stringify(mov)}); print(len(x), round(float(abs(x).max()), 2))`],
       { env: { ...PY_ENV, FFMPEG_PATH: ffmpeg }, encoding: 'utf8' }).trim().split(' ');
     assert.ok(Math.abs(Number(n[0]) - 32000) < 400 && Number(n[1]) > 0.05, n.join(' '));
-    console.log('✓ transcribe_day.py: ffmpeg fallback decodes a real camera-style file (first track, 16 kHz mono)');
+    console.log('✓ transcribe.py: ffmpeg fallback decodes a real camera-style file (first track, 16 kHz mono)');
   }
   // loud stretches with no words (dropped flubs) — what Claude sees as ⟨unheard speech⟩
   const uh = execFileSync(process.env.CT_TEST_PYTHON, ['-c', [
-    'import sys, math, numpy as np', `sys.path.insert(0, ${JSON.stringify(SPIKES)})`, 'import transcribe_day as t',
+    'import sys, math, numpy as np', `sys.path.insert(0, ${JSON.stringify(PIPELINE)})`, 'import transcribe as t',
     'SR = 16000; fs = 1001 / 24000; rng = np.random.default_rng(1)',
     'x = (rng.standard_normal(10 * SR) * 0.001).astype(np.float32)',
     'x[1 * SR:3 * SR] = rng.standard_normal(2 * SR) * 0.1',
@@ -410,10 +410,10 @@ class WhisperModel:
     'print(" ".join(f"{v[\'s\'] * fs:.2f}-{v[\'e\'] * fs:.2f}" for v in u))'
   ].join('\n')], { encoding: 'utf8' }).trim();
   assert.strictEqual(uh, '5.00-5.80', uh);
-  console.log('✓ transcribe_day.py: finds a 0.8 s mutter with no words, ignores a 150 ms click');
+  console.log('✓ transcribe.py: finds a 0.8 s mutter with no words, ignores a 150 ms click');
   // a word Whisper stretched over a dropped stumble is clipped where the audio goes quiet (Z8)
   const sw = execFileSync(process.env.CT_TEST_PYTHON, ['-c', [
-    'import sys, numpy as np', `sys.path.insert(0, ${JSON.stringify(SPIKES)})`, 'import transcribe_day as t',
+    'import sys, numpy as np', `sys.path.insert(0, ${JSON.stringify(PIPELINE)})`, 'import transcribe as t',
     'SR = 16000; fs = 1001 / 24000; rng = np.random.default_rng(2)',
     'x = (rng.standard_normal(8 * SR) * 0.001).astype(np.float32)',
     'x[int(1.0 * SR):int(1.4 * SR)] = rng.standard_normal(int(0.4 * SR)) * 0.1',
@@ -427,19 +427,19 @@ class WhisperModel:
     'print(n, f"{words[0][\'e\'] * fs:.2f}", " ".join(f"{v[\'s\'] * fs:.2f}-{v[\'e\'] * fs:.2f}" for v in u))'
   ].join('\n')], { encoding: 'utf8' }).trim().split(' ');
   assert.ok(sw[0] === '1' && Number(sw[1]) > 1.35 && Number(sw[1]) < 1.55 && sw[2] === '2.20-2.80', sw.join(' '));
-  console.log('✓ transcribe_day.py: verbatim pass adds only the missed words; a stretched word is clipped and the stumble it hid surfaces');
+  console.log('✓ transcribe.py: verbatim pass adds only the missed words; a stretched word is clipped and the stumble it hid surfaces');
 } else {
-  console.log('- transcribe_day.py check skipped (set CT_TEST_PYTHON to a Python with numpy)');
+  console.log('- transcribe.py check skipped (set CT_TEST_PYTHON to a Python with numpy)');
 }
 
-// ── 2d. plan_solo.py on a scripted take: count retake, repeat retake, stutter, long pause ──
+// ── 2d. place_cuts.py on a scripted take: count retake, repeat retake, stutter, long pause ──
 {
   const { words, fps, seconds: t } = scriptedTake();
   const angles = ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4'];
   const wp = path.join(TMP, 'solo_words.json'), dp = path.join(TMP, 'solo_day.json'), pp = path.join(TMP, 'solo_plan.json');
   fs.writeFileSync(wp, JSON.stringify({ label: 'SoloT', multicam: 'mc_x', fps, frame_sec: [1001, 24000], angles, mics: ['Camera 1'], words }));
   fs.writeFileSync(dp, JSON.stringify({ multicam: 'mc_x', fps, frame_sec: [1001, 24000], length_sec: t + 5, angles, audio_source: 'camera', mics: [{ angle: 'Camera 1' }] }));
-  const out = execFileSync(PY, [path.join(SPIKES, 'plan_solo.py'), wp, dp, pp, 'extra=Camera 4'], { encoding: 'utf8' });
+  const out = execFileSync(PY, [path.join(PIPELINE, 'place_cuts.py'), wp, dp, pp, 'extra=Camera 4'], { encoding: 'utf8' });
   const plan = JSON.parse(fs.readFileSync(pp, 'utf8'));
   const cut = (f) => plan.removals.some((r) => r.from <= f && f < r.to);
   const kept = words.filter((w) => !cut(w.s)).map((w) => w.w).join(' ');
@@ -457,7 +457,7 @@ class WhisperModel:
 import json, re, sys, io, contextlib
 sys.path.insert(0, sys.argv[1])
 with contextlib.redirect_stdout(io.StringIO()):
-    import make_fcpxml as m
+    import write_timeline_xml as m
 res = '''<resources><media name="mc" id="r5"><multicam tcStart="0/1s"><mc-angle name="Angle 1" angleID="a1">
 <clip offset="0/1s" duration="10/1s" start="100/1s"><video offset="100/1s" duration="10/1s" start="100/1s" ref="r2"/></clip>
 <clip offset="0/1s" duration="10/1s" start="100/1s"><audio offset="100/1s" duration="10/1s" start="100/1s" ref="r4"/></clip>
@@ -468,13 +468,13 @@ refs = m.camera_audio_refs(res)
 blk = re.findall(r"<media [^>]*>\s*<multicam .*?</media>", res, re.S)[0]
 fixed, wavs = m.split_off_angle_tracks(blk, keep_refs=refs)
 print(json.dumps({"refs": sorted(refs), "kept": 'ref="r4"' in fixed, "wavs": len(wavs)}))
-`, SPIKES], { encoding: 'utf8' }));
+`, PIPELINE], { encoding: 'utf8' }));
   assert.deepStrictEqual(sep, { refs: ['r4'], kept: true, wavs: 0 });
   // Claude's shots across removals: no ping-pong (a short other-angle shot, the splice, straight back)
   const fit = JSON.parse(execFileSync(PY, ['-c', String.raw`
 import json, sys
 sys.path.insert(0, sys.argv[1])
-import plan_solo as p
+import place_cuts as p
 P = lambda f, t, a, j=False: {"from": f, "to": t, "angle": a, "kind": "claude", "join": j}
 out = {
   "across": p.fit_angles([P(0, 300, "A"), P(300, 348, "B"), P(348, 396, "B", True), P(396, 700, "A")], ["A", "B"]),
@@ -482,12 +482,12 @@ out = {
   "pick": p.fit_angles([P(0, 300, "A"), P(300, 600, "B"), P(600, 900, "B", True), P(900, 1200, "A")], ["A", "B", "C"]),
 }
 print(json.dumps({k: [[x["from"], x["to"], x["angle"]] for x in v] for k, v in out.items()}))
-`, SPIKES], { encoding: 'utf8' }));
+`, PIPELINE], { encoding: 'utf8' }));
   // B straddled the removal: rather than A | B 2 s ‖ A 2 s | B … the cut moves onto the join
   assert.ok(fit.across.every((x, k) => !k || x[2] !== fit.across[k - 1][2]) && fit.across.length <= 3, JSON.stringify(fit.across));
   assert.deepStrictEqual(fit.flip.map((x) => x[2]), ['A', 'B']);   // the opening stays; the shot after the removal changes
   assert.ok(fit.pick.every((x) => x[2] !== 'C'), JSON.stringify(fit.pick));
-  console.log('✓ plan_solo.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio, no ping-pong at removals');
+  console.log('✓ place_cuts.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio, no ping-pong at removals');
 }
 
 // ── 3. orchestrator end to end ─────────────────────────────────
@@ -498,15 +498,15 @@ function fakeWorker() {
     if (payload.cmd === 'ct_list_multicams') {
       return Promise.resolve({ data: { project: 'Fake Project', multicams: [{ name: 'mc_test', bin: 'MC', duplicate: false }] } });
     }
-    if (payload.cmd === 'ct_run_spike' && payload.script === 'spike_day_prep.py') {
+    if (payload.cmd === 'ct_run_step' && payload.script === 'prepare_multicam.py') {
       // Run the real handler code path (minus the worker loop) on the fake Resolve.
       return new Promise((resolve, reject) => {
         const code = String.raw`
 import json, sys
 from fake_resolve import Resolve
-from helper.commands.cut_through import run_spike
+from helper.commands.cut_through import run_step
 p = json.loads(sys.stdin.read())
-res = run_spike(p["spikes_dir"] + "/" + p["script"], p["settings"], Resolve(), lambda l: None)
+res = run_step(p["pipeline_dir"] + "/" + p["script"], p["settings"], Resolve(), lambda l: None)
 sys.stdout.write(json.dumps(res))`;
         const proc = spawn(PY, ['-c', code], { env: PY_ENV });
         let out = '';
@@ -517,14 +517,14 @@ sys.stdout.write(json.dumps(res))`;
       });
     }
     if (payload.cmd === 'ct_read_timeline') {
-      const plan = JSON.parse(fs.readFileSync(path.join(FAKE_SPIKES, 'plans', `${payload.name.replace(/^Jordan_/, '')}_plan.json`), 'utf8'));
+      const plan = JSON.parse(fs.readFileSync(path.join(FAKE_PIPELINE, 'plans', `${payload.name.replace(/^Jordan_/, '')}_plan.json`), 'utf8'));
       // "Jordan's edit": our pieces, but he also removed the first 2 s of the longest one
       const longest = plan.video.reduce((b, v, k) => (v.out - v.in > plan.video[b].out - plan.video[b].in ? k : b), 0);
       const pieces = plan.video.map((v, k) => ({ mc: plan.multicam, angle: v.angle, start: 0, end: 0,
         src_in: k === longest ? v.in + 48 : v.in, src_out: v.out }));
       return Promise.resolve({ data: { name: payload.name, fps: plan.fps, track: 1, pieces } });
     }
-    if (payload.cmd === 'ct_run_spike' && payload.script === 'spike_cut_through_batch.py') {
+    if (payload.cmd === 'ct_run_step' && payload.script === 'build_rough_cut.py') {
       return Promise.resolve({ data: { lines: ['1. Exported', '4. Split done (2.0s)', '', 'Total time: 16.0s'], error: null, stopped: null } });
     }
     return Promise.reject(new Error(`unexpected ${payload.cmd}`));
@@ -558,7 +558,7 @@ sys.stdout.write(json.dumps(res))`;
     desktopDir: DESKTOP,
     claudeClient: convoClaude
   });
-  prefs = { cutThrough: { spikesDir: FAKE_SPIKES, wxPython: PY } };
+  prefs = { cutThrough: { pipelineDir: FAKE_PIPELINE, wxPython: PY } };
   const c = make();
 
   let snap = await c.listMulticams();
@@ -612,7 +612,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(tr.reportFile, path.join(DESKTOP, 'transcribe_E2E_test.txt'));
   assert.ok(!tr.log.some((l) => /\[#+/.test(l)), 'progress lines leaked into the log');
 
-  // a conversation: Claude edits it too (convo brief, speaker-labelled transcript), plan_solo.py places + gates mics
+  // a conversation: Claude edits it too (convo brief, speaker-labelled transcript), place_cuts.py places + gates mics
   snap = await c.runPlan({ start: '', end: '', extra: '', cuts: '' });
   const pl = snap.steps.plan;
   assert.strictEqual(pl.status, 'done', `${pl.error}\n${pl.log.join('\n')}`);
@@ -621,7 +621,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(creq.system.includes('Angle = person') && /Delivery: A recorded conversation/.test(creq.messages[0].content) &&
     /2 people, each on their own mic \(Camera 2, Camera 3\)/.test(creq.messages[0].content) &&
     /Camera 2 = close-up of the person speaking on the Camera 2 mic/.test(creq.messages[0].content), creq.messages[0].content.slice(0, 500));
-  const convoPlan = JSON.parse(fs.readFileSync(path.join(FAKE_SPIKES, 'plans', 'E2E_test_plan.json'), 'utf8'));
+  const convoPlan = JSON.parse(fs.readFileSync(path.join(FAKE_PIPELINE, 'plans', 'E2E_test_plan.json'), 'utf8'));
   assert.deepStrictEqual(Object.keys(convoPlan.mics).sort(), ['Camera 2', 'Camera 3']);
   assert.deepStrictEqual(convoPlan.mic_angles, { 'Camera 2': 'Camera 2', 'Camera 3': 'Camera 3' });
   // each mic opens around its owner's turns only: Camera 2 talks first (0.5–~9 s), Camera 3 from ~11.5 s
@@ -634,7 +634,7 @@ sys.stdout.write(json.dumps(res))`;
 
   snap = await c.runBuild({ seqBin: 'MASTER / SEQUENCES' });
   assert.strictEqual(snap.steps.build.status, 'done');
-  const call = w.calls.filter((x) => x.cmd === 'ct_run_spike').pop();
+  const call = w.calls.filter((x) => x.cmd === 'ct_run_step').pop();
   assert.deepStrictEqual(call.settings, { LABEL: 'E2E_test', SEQ_BIN: 'MASTER / SEQUENCES' });
   assert.ok(call.trace_id);
 
@@ -666,7 +666,7 @@ sys.stdout.write(json.dumps(res))`;
   noKey.select({ mc: 'mc_test', label: 'Solo1' });
   await assert.rejects(noKey.runPlan({}), /Add a Claude API key/);
   if (savedKey) process.env.ANTHROPIC_API_KEY = savedKey;
-  fs.copyFileSync(path.join(FAKE_SPIKES, 'plans', 'E2E_test_plan.json'), path.join(FAKE_SPIKES, 'plans', 'Solo1_plan.json'));
+  fs.copyFileSync(path.join(FAKE_PIPELINE, 'plans', 'E2E_test_plan.json'), path.join(FAKE_PIPELINE, 'plans', 'Solo1_plan.json'));
   assert.strictEqual(c2.useExistingPlan().steps.plan.status, 'done');
 
   // ── Claude as the solo editor (a stand-in client; the real API isn't called) ──
@@ -733,7 +733,7 @@ sys.stdout.write(json.dumps(res))`;
     /Angles: Camera 1 = the wide; Camera 2 = the close-up \(punch-in\); Camera 3 = another angle; Camera 4 = an insert angle/.test(req.messages[0].content),
     req.messages[0].content.slice(0, 400));
   assert.ok(/⟨pause 3\.\d s⟩/.test(req.messages[0].content) && /\[0:02\] 0 Leadership/.test(req.messages[0].content), req.messages[0].content.slice(0, 300));
-  const soloPlan = JSON.parse(fs.readFileSync(path.join(FAKE_SPIKES, 'plans', 'Solo2_plan.json'), 'utf8'));
+  const soloPlan = JSON.parse(fs.readFileSync(path.join(FAKE_PIPELINE, 'plans', 'Solo2_plan.json'), 'utf8'));
   const gone = (f) => soloPlan.removals.some((r) => r.from <= f && f < r.to);
   assert.strictEqual(take.words.filter((x) => !gone(x.s)).map((x) => x.w).join(' '), CLEAN);
   assert.ok(gone(unheardAt + 7), 'the unheard mutter stayed');

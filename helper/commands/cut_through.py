@@ -1,21 +1,20 @@
 """Cut-through (beta) — Resolve-side steps for the Cut-through page.
 
-The pipeline logic still lives in the console spikes (`editpanel/spikes/`);
-these handlers run them inside the Resolve worker instead of Resolve's Py3
-console, so the spikes stay the single source of truth while the UI is built
-around them.
+The pipeline lives in `editpanel/cut_through/` (plain Python scripts, so a
+git pull updates them without an EditPanel rebuild); these handlers run its
+Resolve-side steps inside the Resolve worker instead of Resolve's Py3 console.
 
   ct_list_multicams  {}  → {"multicams": [{name, bin, duplicate}]}
       Every multicam clip in the open project outside the archive bins
-      (MC ORIGINAL / MC QUARANTINE), same walk as the spikes use.
+      (MC ORIGINAL / MC QUARANTINE), same walk as the pipeline uses.
 
-  ct_run_spike  {spikes_dir, script, settings}  → {lines, stopped, error, seconds}
-      Exec one allow-listed spike with `settings` as its run-line globals
+  ct_run_step  {pipeline_dir, script, settings}  → {lines, stopped, error, seconds}
+      Exec one allow-listed step script with `settings` as its run-line globals
       (LABEL, MC, SEQ_BIN, …) and the worker's Resolve handle, exactly as the
-      console run line does. Every print() from the spike (and the spikes it
+      console run line does. Every print() from the script (and the scripts it
       runs) is streamed back as a log event carrying the request's trace_id.
 
-stdout is the worker's JSON channel, so a spike's prints must never reach it
+stdout is the worker's JSON channel, so a step's prints must never reach it
 raw: builtins.print is swapped for the run, and only calls made on this
 thread are captured (the session-monitor thread keeps writing status events
 through sys.stdout, untouched).
@@ -32,8 +31,8 @@ import time
 from typing import Any, Dict, List
 
 ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
-ALLOWED_SPIKES = {"spike_day_prep.py", "spike_cut_through_batch.py"}
-# The batch spike hard-codes the LP1 checkout; point it at the spikes folder
+ALLOWED_STEPS = {"prepare_multicam.py", "build_rough_cut.py"}
+# The build script hard-codes the LP1 checkout; point it at the pipeline folder
 # the page uses so a different checkout location still works.
 _REPO_LINE = re.compile(r'^REPO\s*=\s*r?["\'][^"\'\n]*["\']\s*$', re.M)
 _run_lock = threading.Lock()
@@ -82,7 +81,7 @@ def handle_ct_list_multicams(_payload: Dict[str, Any], log_func=None) -> Dict[st
 
 
 class _PrintCapture:
-    """Replacement for builtins.print while a spike runs. Calls from the
+    """Replacement for builtins.print while a step runs. Calls from the
     owning thread become log events; any other thread prints as normal."""
 
     def __init__(self, emit):
@@ -105,8 +104,8 @@ class _PrintCapture:
         self.buf = ""
 
 
-def run_spike(path: str, settings: Dict[str, Any], resolve: Any, emit, repo_dir: str = None) -> Dict[str, Any]:
-    """Exec a spike file the way its console run line does and return its report."""
+def run_step(path: str, settings: Dict[str, Any], resolve: Any, emit, repo_dir: str = None) -> Dict[str, Any]:
+    """Exec a step script the way its console run line does and return its report."""
     src = open(path, encoding="utf-8").read()
     if repo_dir:
         src = _REPO_LINE.sub(lambda _m: f"REPO = {repo_dir!r}", src, count=1)
@@ -117,7 +116,7 @@ def run_spike(path: str, settings: Dict[str, Any], resolve: Any, emit, repo_dir:
     builtins.print = capture
     try:
         exec(compile(src, path, "exec"), g)
-    except (Exception, SystemExit) as exc:          # the spikes catch their own; this is a backstop
+    except (Exception, SystemExit) as exc:          # the scripts catch their own; this is a backstop
         error = f"{type(exc).__name__}: {exc}"
         capture.emit(f"✗ {error}")
     finally:
@@ -129,16 +128,16 @@ def run_spike(path: str, settings: Dict[str, Any], resolve: Any, emit, repo_dir:
             "seconds": round(time.time() - t0, 1)}
 
 
-def handle_ct_run_spike(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
+def handle_ct_run_step(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
     from .. import resolve_helper as rh
 
     script = os.path.basename(str(payload.get("script") or ""))
-    if script not in ALLOWED_SPIKES:
-        raise RuntimeError(f"Not a cut-through spike: {script!r}")
-    spikes_dir = str(payload.get("spikes_dir") or "")
-    path = os.path.join(spikes_dir, script)
+    if script not in ALLOWED_STEPS:
+        raise RuntimeError(f"Not a cut-through step: {script!r}")
+    pipeline_dir = str(payload.get("pipeline_dir") or "")
+    path = os.path.join(pipeline_dir, script)
     if not os.path.isfile(path):
-        raise RuntimeError(f"Spike not found: {path}")
+        raise RuntimeError(f"Step not found: {path} (git pull on this machine?)")
     if not rh.resolve or not rh.project:
         raise RuntimeError("Resolve not connected or no project open")
     settings = payload.get("settings") or {}
@@ -154,7 +153,7 @@ def handle_ct_run_spike(payload: Dict[str, Any], log_func=None) -> Dict[str, Any
     if not _run_lock.acquire(blocking=False):
         raise RuntimeError("A cut-through step is already running")
     try:
-        return run_spike(path, settings, rh.resolve, emit, repo_dir=os.path.dirname(os.path.normpath(os.path.abspath(spikes_dir))))
+        return run_step(path, settings, rh.resolve, emit, repo_dir=os.path.dirname(os.path.normpath(os.path.abspath(pipeline_dir))))
     finally:
         _run_lock.release()
 

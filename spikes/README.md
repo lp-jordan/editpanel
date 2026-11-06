@@ -1,5 +1,13 @@
 # Spikes
 
+> The cut-through pipeline (prep, transcribe, Claude's editor briefs, cut placement, build) moved
+> to `../cut_through/` on 2026-11-05 with plain names (`spike_day_prep.py` → `prepare_multicam.py`,
+> `transcribe_day.py` → `transcribe.py`, `plan_solo.py` → `place_cuts.py`, `make_fcpxml.py` →
+> `write_timeline_xml.py`, `spike_cut_through_batch.py` → `build_rough_cut.py`,
+> `spike_import_fcpxml.py` → `import_into_resolve.py`, `spike_split_batch.py` →
+> `split_into_videos.py`, `prompts/` → `editor_briefs/`, `plans/` → `../cut_through/plans/`).
+> Sections below that describe those files are history.
+
 Throwaway feasibility probes. **Not** wired into editpanel's command dispatch
 (`helper/commands/HANDLERS`) — they exist to prove a Resolve API assumption on a
 real project before we build the real feature.

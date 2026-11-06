@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-SPIKE — Draft a ONE-speaker cut plan from the words file (style guide rules, no LLM).
+Cut-through step 3 (Plan, second half): place Claude's edit on exact frames from the waveform
+(without a Claude edit: a rule-based one-speaker draft).
 
-Input: words_<LABEL>.json + day_<LABEL>.json (transcribe_day.py / spike_day_prep.py).
-Output: plans/<LABEL>_plan.json for spike_cut_through_batch.py (same shape as plan_convo.py's).
+Input: words_<LABEL>.json + day_<LABEL>.json (transcribe.py / prepare_multicam.py).
+Output: plans/<LABEL>_plan.json for build_rough_cut.py (same shape as plan_convo.py's).
 The removal list with its words goes to stdout only (client words: never into the plan / git).
 
 Rules (docs/ai-rough-cut-style-guide.md, "One speaker, scripted with retakes" + Bryan Brown):
@@ -26,7 +27,7 @@ NOT handled by the rules alone (Claude's job): producer notes / off-camera chatt
 than repeated, deliberate emphasis repeats ("let me say that again" with no count) — check those.
 
 Usage:
-    python plan_solo.py <words.json> <day.json> <out_plan.json> [start=<frame>] [end=<frame>] [removals=<file>]
+    python place_cuts.py <words.json> <day.json> <out_plan.json> [start=<frame>] [end=<frame>] [removals=<file>]
         [levels=<levels_LABEL.json>] [pause_max=<fr>] [pause_left=<fr>]
         [wide="Camera 1"] [punch="Camera 2"] [extra="Camera 4" ...] [cut=<from>-<to> ...]
 """
@@ -177,7 +178,7 @@ def main(argv) -> None:
         return a, max(a, b)
 
     # Z8: cuts are placed from the waveform, not from Whisper's word times (which run a few frames
-    # early or late). levels=<file> is transcribe_day.py's per-frame level of the talker's track.
+    # early or late). levels=<file> is transcribe.py's per-frame level of the talker's track.
     LV = None
     if o.get("levels"):
         lvj = json.load(open(o["levels"], encoding="utf-8"))
@@ -558,8 +559,8 @@ def main(argv) -> None:
                     opens.append([a, b])
             mics[p] = opens
     plan = {"label": data["label"], "multicam": data["multicam"], "fps": fps,
-            "note": ("Edit by Claude (removals) + plan_solo.py (pauses, picture, audio)." if given else
-                     "Draft by plan_solo.py (style-guide solo rules from the words file; no LLM)."),
+            "note": ("Edit by Claude (removals) + place_cuts.py (pauses, picture, audio)." if given else
+                     "Draft by place_cuts.py (style-guide solo rules from the words file; no LLM)."),
             "mic_angles": {} if camera else {p: p for p in mics}, "video": video, "mics": mics,
             "audio": {"source": "camera" if camera else "wav", "angle": talker},
             "removals": [{"from": r["from"], "to": r["to"], "why": r["why"]} for r in merged]}

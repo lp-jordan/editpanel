@@ -143,7 +143,7 @@ def main() -> None:
     project = r.GetProjectManager().GetCurrentProject()
     mp = project.GetMediaPool()
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — Camera 1 audio fix")
-    plan = json.load(open(os.path.join(SPIKES, "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
+    plan = json.load(open(os.path.join(REPO, "cut_through", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
     name = plan["multicam"]
     cands = [(p, c) for p, f in folders(mp.GetRootFolder()) for c in clips(f)
              if _safe(lambda: c.GetName()) == name and BIN not in p
@@ -187,7 +187,7 @@ def main() -> None:
         f"→ audio is {float(shift):+.4f}s ({float(shift / fd):+.2f} frames) from the picture")
 
     # mini timeline built the usual way (copy keeps Camera 1 as exported), then rewritten
-    spec = importlib.util.spec_from_file_location("make_fcpxml", os.path.join(SPIKES, "make_fcpxml.py"))
+    spec = importlib.util.spec_from_file_location("make_fcpxml", os.path.join(REPO, "cut_through", "write_timeline_xml.py"))
     mk = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mk)
     frame = min(v["in"] for v in plan["video"]) + 240

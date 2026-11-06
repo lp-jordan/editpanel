@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SPIKE — Import a generated FCPXML so its clips use the EXISTING day multicam.
+Cut-through: import a generated FCPXML so its clips use the EXISTING day multicam.
 
 The menu import (File → Import → Timeline) made a second "mc1" in the media pool, which
 breaks the one-multicam-per-day rule (grade lives on one multicam). This imports through
@@ -11,16 +11,16 @@ the multicam (sourceClipsFolders), then checks:
   - whether the new timeline's clips point at the ORIGINAL multicam (unique ID),
   - picture angles vs the plan, and each audio track's angle.
 
-A file whose timeline names come from the file (make_fcpxml.py split/joined): add BATCH=True.
+A file whose timeline names come from the file (write_timeline_xml.py split/joined): add BATCH=True.
 Every import makes a new copy of the multicam (tested 2026-11-04), so a batch is imported as
-one joined timeline and cut up with spike_split_batch.py.
+one joined timeline and cut up with split_into_videos.py.
 ARCHIVE=True (once a copy exists): the original multicam moves to its own root bin
 ORIG_BIN (default "MC ORIGINAL") and stays the source of the raw/prep timelines; the imported
 copy stays in the multicam's bin as the primary. Timelines that use the original are listed;
 RAW="*" (or a list of names) moves those timelines into ORIG_BIN too.
 
 HOW TO RUN (Windows Resolve machine, project open, FCPXML on the Desktop, after `git pull`):
-    XML="ConvoTest_xml.fcpxml"; LABEL="ConvoTest"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_import_fcpxml.py", encoding="utf-8").read())
+    XML="ConvoTest_xml.fcpxml"; LABEL="ConvoTest"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\import_into_resolve.py", encoding="utf-8").read())
 Report saved to Desktop\\import_<LABEL>.txt.
 """
 
@@ -249,7 +249,7 @@ def reference_levels(project: Any, mc_id: str, skip: set, angles: set) -> dict:
 def mix_level(project: Any, mp: Any, mc: Any, frame: int, tag: str):
     """Loudness of a multicam's own audio (the ATEM mix on Camera 1) over 10 s from `frame`,
     via a throwaway timeline (deleted again)."""
-    tl = mp.CreateEmptyTimeline(f"__SPIKE_mixcheck_{tag}_{int(time.time()) % 100000}")
+    tl = mp.CreateEmptyTimeline(f"Cut-through temp mix check {tag} {int(time.time()) % 100000}")
     if not tl:
         return None
     project.SetCurrentTimeline(tl)
@@ -291,7 +291,7 @@ def main() -> None:
         r = dvr.scriptapp("Resolve")
     project = r.GetProjectManager().GetCurrentProject()
     mp = project.GetMediaPool()
-    plan = json.load(open(os.path.join(REPO, "spikes", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
+    plan = json.load(open(os.path.join(REPO, "cut_through", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
     name = plan["multicam"]
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — import {XML}")
 
@@ -318,7 +318,7 @@ def main() -> None:
         globals()["CHECK_OK"] = False
     opts = {"importSourceClips": False, "sourceClipsFolders": folders}
     if not BATCH:
-        opts["timelineName"] = f"__SPIKE_xml_{LABEL}_{int(time.time()) % 100000}"
+        opts["timelineName"] = f"Cut-through temp {LABEL} {int(time.time()) % 100000}"
     mp.SetCurrentFolder(orig_folder)
     t1 = time.time()
     tl = mp.ImportTimelineFromFile(path, opts)

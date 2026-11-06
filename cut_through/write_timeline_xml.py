@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SPIKE — Write a cut plan as an FCPXML timeline that picks multicam angles itself.
+Cut-through: write a cut plan as an FCPXML timeline that picks multicam angles itself.
 
 Instead of forcing each clip's angle in Resolve (SmartSwitch, ~5 frames/s), the plan is
 written as FCPXML 1.14 the way Resolve exports a multicam edit:
@@ -14,13 +14,13 @@ that Resolve exported from the same project, so the multicam definition matches 
 Several plans (or one plan split=N ways) can go into one file as separate timelines.
 
 Usage (any machine with Python 3):
-    python3 make_fcpxml.py <resolve_export.fcpxml> <out.fcpxml> [role="Camera N" ...] [split=N [part=K]] <plan.json[:name]> ...
+    python3 write_timeline_xml.py <resolve_export.fcpxml> <out.fcpxml> [role="Camera N" ...] [split=N [part=K]] <plan.json[:name]> ...
 Resolve's ImportTimelineFromFile only takes the FIRST timeline in a file, and every import
 makes a new copy of the multicam. joined=NAME writes all videos back to back in ONE timeline
-(one import, one copy) plus <out>_ranges.json; spike_split_batch.py then cuts it into one
+(one import, one copy) plus <out>_ranges.json; split_into_videos.py then cuts it into one
 timeline per video inside Resolve.
-e.g. python3 make_fcpxml.py Info.fcpxml ConvoTest_xml.fcpxml host="Camera 2" guest="Camera 3" \
-         plans/ConvoTest_plan.json:__SPIKE_xml_ConvoTest
+e.g. python3 write_timeline_xml.py Info.fcpxml ConvoTest_xml.fcpxml host="Camera 2" guest="Camera 3" \
+         "plans/ConvoTest_plan.json:ConvoTest rough cut"
 The output names the client's media, so keep it out of git.
 """
 import json
@@ -176,9 +176,9 @@ def main(argv=None) -> list:
         path, _, name = a.partition(".json:")
         path = path if path.endswith(".json") else path + ".json"
         plan = json.load(open(path, encoding="utf-8"))
-        name = name or f"__SPIKE_xml_{plan.get('label', 'cut')}"
+        name = name or f"{plan.get('label', 'cut')} rough cut"
         parts = split_plan(plan, split) if split > 1 else [plan]
-        jobs += [(f"{name}_{k}" if len(parts) > 1 else name, p) for k, p in enumerate(parts, 1)
+        jobs += [(f"{name} {k}" if len(parts) > 1 else name, p) for k, p in enumerate(parts, 1)
                  if not part or k == part]
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
     angle_wavs = {}
@@ -338,10 +338,10 @@ def main(argv=None) -> list:
     # multicam wrong (original nested on angle 1, other angles offline, no mic WAVs — 2026-11-05),
     # while the same description labelled 1.14 imports correctly.
     out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE fcpxml>", '<fcpxml version="1.14">',
-           "    " + resources, "    <library>", '        <event name="__SPIKE_xml batch">']
+           "    " + resources, "    <library>", '        <event name="Cut-through">']
     if joined:
         # every video back to back in ONE timeline (one import = one multicam copy); the
-        # ranges file tells spike_split_batch.py where each video starts and ends
+        # ranges file tells split_into_videos.py where each video starts and ends
         body, ranges, base = [], [], 0
         for name, plan in jobs:
             lines, total, summary = spine(plan, base)

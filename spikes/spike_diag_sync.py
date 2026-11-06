@@ -60,7 +60,7 @@ def main() -> None:
         r = dvr.scriptapp("Resolve")
     project = r.GetProjectManager().GetCurrentProject()
     mp = project.GetMediaPool()
-    plan = json.load(open(os.path.join(REPO, "spikes", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
+    plan = json.load(open(os.path.join(REPO, "cut_through", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
     day = json.load(open(os.path.join(DESKTOP, f"day_{LABEL}.json"), encoding="utf-8"))
     zero = {m["angle"]: m["file_zero_sec"] for m in day["mics"]}
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — sync diagnostic {TL}")

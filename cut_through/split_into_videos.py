@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SPIKE — Cut one imported "joined" timeline into one timeline per video.
+Cut-through: cut one imported "joined" timeline into one timeline per video.
 
 Every FCPXML import makes a new copy of the multicam, so all videos of a batch are imported as
-ONE timeline (make_fcpxml.py joined=NAME → one copy). This script then, for each video in the
-<out>_ranges.json file make_fcpxml.py wrote:
+ONE timeline (write_timeline_xml.py joined=NAME → one copy). This script then, for each video in the
+<out>_ranges.json file write_timeline_xml.py wrote:
   - duplicates the joined timeline under the video's name,
   - deletes every clip after the video, then ripple-deletes every clip before it,
   - checks every track moved by the same amount (picture and mics still in sync) and that
@@ -14,8 +14,8 @@ ONE timeline (make_fcpxml.py joined=NAME → one copy). This script then, for ea
   - deletes the joined timeline once every video split cleanly (KEEP_JOINED=True keeps it).
 
 HOW TO RUN (Windows Resolve machine, project open, ranges JSON on the Desktop, after `git pull`,
-after importing the joined FCPXML with spike_import_fcpxml.py):
-    RANGES="ConvoTest_joined_ranges.json"; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_split_batch.py", encoding="utf-8").read())
+after importing the joined FCPXML with import_into_resolve.py):
+    RANGES="ConvoTest_joined_ranges.json"; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\split_into_videos.py", encoding="utf-8").read())
 Report saved to Desktop\\split_<timeline>.txt.
 """
 

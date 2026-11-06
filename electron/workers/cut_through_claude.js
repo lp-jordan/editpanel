@@ -3,16 +3,16 @@
  * Cut-through (beta): Claude as the solo editor — the Z8 method, in the app.
  *
  *   words_<LABEL>.json (+ unheard stretches) → numbered transcript
- *   → Claude (spikes/prompts/solo_editor.md) edits it like Z8: every removal AND every
+ *   → Claude (cut_through/editor_briefs/solo.md) edits it like Z8: every removal AND every
  *     shot (which angle, where the cut lands), by token number, per the delivery type
  *     (scripted with retakes / free talk / live stage)
  *   → token anchors in frames (word edges around each removal and shot)
- *   → plan_solo.py removals=<file> levels=<file> places every cut from the waveform
+ *   → place_cuts.py removals=<file> levels=<file> places every cut from the waveform
  *     (Z8: 3 fr clear of sound), trims pauses, keeps the hard rules (angle change at
  *     every removal, no blink shots) and builds the audio.
  *
  * Client words go to Claude and to Desktop files only, never into git. The
- * prompt lives in the spikes folder so it can be tuned with a git pull.
+ * brief lives in cut_through/editor_briefs/ so it can be tuned with a git pull.
  */
 const fs = require('fs');
 const path = require('path');
@@ -192,7 +192,7 @@ function validateShots(shots, removals, nTokens, angles) {
   return { ok: dedup, problems };
 }
 
-/** Shots → frames, with the word anchors plan_solo.py snaps from (the quiet before the word). */
+/** Shots → frames, with the word anchors place_cuts.py snaps from (the quiet before the word). */
 function toFrameShots(tokens, shots, removals) {
   const isCut = (i) => removals.some((r) => r.from <= i && i <= r.to);
   return shots.map((x) => {
@@ -207,7 +207,7 @@ function toFrameShots(tokens, shots, removals) {
 /**
  * Token ranges → frame spans, keeping ~6 fr of air after the kept token before
  * and ~5 fr before the kept token after (≈11 fr across the join), tighter when
- * the tokens themselves sit closer. Same rule as plan_solo.py's cut_span.
+ * the tokens themselves sit closer. Same rule as place_cuts.py's cut_span.
  */
 function toFrameSpans(tokens, removals, { start, end }) {
   return removals.map((r) => {
@@ -218,7 +218,7 @@ function toFrameSpans(tokens, removals, { start, end }) {
     let b = next ? Math.min(Math.ceil(next.s - Math.min(5, Math.max(0, next.s - tokens[r.to].e))), Math.floor(next.s)) : end;
     a = Math.max(start, a);
     b = Math.min(end, b);
-    // anchors for plan_solo.py's waveform placement (Z8): the kept word before, the cut's first
+    // anchors for place_cuts.py's waveform placement (Z8): the kept word before, the cut's first
     // and last token, the kept word after
     return { from: a, to: Math.max(a, b), why: r.kind, prev_end: prev ? prev.e : null, cut_start: first.s,
       cut_end: tokens[r.to].e, next_start: next ? next.s : null };
@@ -284,7 +284,7 @@ async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', syste
 /**
  * The whole Claude planning step. Writes Desktop/claude_edit_<LABEL>.json
  * (token ranges + reasons, client words) and Desktop/removals_<LABEL>.json
- * (frame spans for plan_solo.py), appends Desktop/cut_through_costs.csv.
+ * (frame spans for place_cuts.py), appends Desktop/cut_through_costs.csv.
  * Returns { removalsFile, lines, cost, problems }.
  */
 async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPath, start, end, apiKey, model, effort, client,

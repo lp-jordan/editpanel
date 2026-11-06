@@ -2,16 +2,16 @@
 /**
  * Cut-through (beta) — main-process orchestration for the Cut-through page.
  *
- * Runs the existing console spikes (editpanel/spikes/) from one place on LP1:
+ * Runs the cut-through pipeline (editpanel/cut_through/) from one place on LP1:
  *
- *   prep        spike_day_prep.py           Resolve worker (ct_run_spike)
- *   transcribe  transcribe_day.py <LABEL>   child process (C:\wxbench venv, GPU)
- *   plan        plan_convo.py / plan_solo.py child process (app Python) — 2+ mic
- *               angles = conversation, else one speaker (PLANNERS; the LLM pass plugs in there)
- *   build       spike_cut_through_batch.py  Resolve worker (ct_run_spike)
+ *   prep        prepare_multicam.py         Resolve worker (ct_run_step)
+ *   transcribe  transcribe.py <LABEL>       child process (C:\wxbench venv, GPU)
+ *   plan        Claude (editor_briefs/) + place_cuts.py (app Python) — 2+ mic angles =
+ *               conversation, else one speaker
+ *   build       build_rough_cut.py          Resolve worker (ct_run_step)
  *
- * Outputs stay where the spikes put them: the Windows Desktop (day_, words_,
- * transcript_, cut_through_ files) and spikes/plans/<LABEL>_plan.json, which
+ * Outputs: the Windows Desktop (day_, words_, levels_, transcript_, claude_edit_,
+ * cut_through_ files) and cut_through/plans/<LABEL>_plan.json, which
  * the batch reads. Client words/media names never leave this machine.
  *
  * State lives here (not in the renderer) so a run keeps going and keeps its
@@ -34,7 +34,7 @@ const MAX_LOG_LINES = 400;
 // `  Camera 2 [######-------------------]  24%  5.4/22.6 min  41s`
 const PROGRESS_RE = /^\s*(.*?)\s*\[([#-]+)\]\s+(\d+)%\s+([\d.]+)\/([\d.]+)\s*min(?:\s+(\d+)s)?/;
 
-// `  reading 1/3 CAM1_01.mov  45%  812 MB` (transcribe_day.py while it reads the audio)
+// `  reading 1/3 CAM1_01.mov  45%  812 MB` (transcribe.py while it reads the audio)
 const READ_RE = /^\s*reading (\d+)\/(\d+) (.*?)\s+(\d+)%\s+([\d.]+) MB/;
 
 function parseRead(line) {
@@ -73,7 +73,7 @@ function planKind(day) {
   return micAngles(day).length >= 2 ? 'convo' : 'solo';
 }
 
-/** Day length in multicam frames (the unit plan_convo's start=/end= take). */
+/** Day length in multicam frames (the unit place_cuts.py's start=/end= take). */
 function dayFrames(day) {
   if (!day || !day.length_sec) return 0;
   const fs_ = Array.isArray(day.frame_sec) && day.frame_sec[1] ? day.frame_sec[0] / day.frame_sec[1] : 1 / (day.fps || 24);
@@ -90,9 +90,16 @@ function parseCuts(text) {
   });
 }
 
-function defaultSpikesDir({ isPackaged, appDir }) {
-  if (!isPackaged) return path.join(appDir, 'spikes');
-  return process.platform === 'win32' ? 'C:\\lp-app-ecosystem\\editpanel\\spikes' : path.join(os.homedir(), 'lp-app-ecosystem', 'editpanel', 'spikes');
+function defaultPipelineDir({ isPackaged, appDir }) {
+  if (!isPackaged) return path.join(appDir, 'cut_through');
+  return process.platform === 'win32' ? 'C:\\lp-app-ecosystem\\editpanel\\cut_through' : path.join(os.homedir(), 'lp-app-ecosystem', 'editpanel', 'cut_through');
+}
+
+/** A folder saved before the rename (…\\editpanel\\spikes) → its cut_through sibling. */
+function pipelineDirFrom(saved, fallback) {
+  if (!saved) return fallback;
+  const p = saved.includes('\\') ? path.win32 : path.posix;
+  return /[\\/]spikes[\\/]?$/.test(saved) ? p.join(p.dirname(saved.replace(/[\\/]+$/, '')), 'cut_through') : saved;
 }
 
 function emptyStep() {
@@ -126,8 +133,8 @@ function createCutThrough(opts) {
     broadcast,                     // (channel, payload) => void
     getPrefs = () => ({}),
     setPrefs = () => {},
-    pythonCmd = 'python3',         // the app's own Python (plan_convo is stdlib only)
-    ffmpegPath = '',               // bundled ffmpeg: transcribe_day.py's decode fallback
+    pythonCmd = 'python3',         // the app's own Python (place_cuts.py is stdlib only)
+    ffmpegPath = '',               // bundled ffmpeg: transcribe.py's decode fallback
     claudeClient = null,           // tests: a stand-in for the Anthropic client
     isPackaged = false,
     appDir = path.join(__dirname, '..', '..'),
@@ -153,7 +160,7 @@ function createCutThrough(opts) {
   function settings() {
     const p = (getPrefs() || {}).cutThrough || {};
     return {
-      spikesDir: p.spikesDir || defaultSpikesDir({ isPackaged, appDir }),
+      pipelineDir: pipelineDirFrom(p.pipelineDir || p.spikesDir, defaultPipelineDir({ isPackaged, appDir })),
       wxPython: p.wxPython || (process.platform === 'win32' ? DEFAULT_WX_PYTHON : 'python3'),
       seqBin: p.seqBin === undefined ? DEFAULT_SEQ_BIN : p.seqBin,
       claudeModel: p.claudeModel || claude.DEFAULT_MODEL,
@@ -179,7 +186,7 @@ function createCutThrough(opts) {
       levels: path.join(desktopDir, `levels_${label}.json`),
       transcript: path.join(desktopDir, `transcript_${label}.txt`),
       transcribeReport: path.join(desktopDir, `transcribe_${label}.txt`),
-      plan: path.join(st.spikesDir, 'plans', `${label}_plan.json`),
+      plan: path.join(st.pipelineDir, 'plans', `${label}_plan.json`),
       buildReport: path.join(desktopDir, `cut_through_${label}.txt`),
       scoreReport: path.join(desktopDir, `score_${label}.txt`)
     };
@@ -267,7 +274,7 @@ function createCutThrough(opts) {
       frames: dayFrames(day),
       angles: day.angles || [],
       // 'wav' = person mics placed in the multicam; 'camera' = no WAVs used, one
-      // angle's own audio (ATEM mix or in-camera, track 1) — see spike_day_prep.py
+      // angle's own audio (ATEM mix or in-camera, track 1) — see prepare_multicam.py
       audioSource: day.audio_source || 'wav',
       wavMics: day.wav_mics === undefined ? (day.mics || []).length : day.wav_mics,
       cameraAudioAngles: day.camera_audio_angles || [],
@@ -336,7 +343,7 @@ function createCutThrough(opts) {
   function updateSettings(patch = {}) {
     const p = (getPrefs() || {}).cutThrough || {};
     const next = { ...p };
-    for (const k of ['spikesDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort']) {
+    for (const k of ['pipelineDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort']) {
       if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
     }
     setPrefs({ cutThrough: next });
@@ -346,13 +353,13 @@ function createCutThrough(opts) {
   }
 
   // ── Resolve steps ─────────────────────────────────────────────
-  async function runSpike(step, script, spikeSettings) {
+  async function runStep(step, script, stepSettings) {
     const st = begin(step);
     st.traceId = randomUUID();
     emit();
-    const { spikesDir } = settings();
+    const { pipelineDir } = settings();
     try {
-      const res = await sendWorkerRequest({ cmd: 'ct_run_spike', spikes_dir: spikesDir, script, settings: spikeSettings, trace_id: st.traceId }, 'resolve');
+      const res = await sendWorkerRequest({ cmd: 'ct_run_step', pipeline_dir: pipelineDir, script, settings: stepSettings, trace_id: st.traceId }, 'resolve');
       const data = res?.data || {};
       return { lines: data.lines || [], error: data.error || null, seconds: data.seconds };
     } catch (err) {
@@ -364,7 +371,7 @@ function createCutThrough(opts) {
   async function runPrep({ audioAngle } = {}) {
     if (!s.mc) throw new Error('Pick a multicam first');
     const started = Date.now();
-    const out = await runSpike('prep', 'spike_day_prep.py', { LABEL: s.label, MC: s.mc, ...(audioAngle ? { AUDIO_ANGLE: String(audioAngle) } : {}) });
+    const out = await runStep('prep', 'prepare_multicam.py', { LABEL: s.label, MC: s.mc, ...(audioAngle ? { AUDIO_ANGLE: String(audioAngle) } : {}) });
     let error = out.error;
     const f = files();
     if (!error && !(mtime(f.day) >= started - 2000)) error = `day_${s.label}.json was not written`;
@@ -377,7 +384,7 @@ function createCutThrough(opts) {
     if (seqBin !== undefined) updateSettings({ seqBin });
     if (!fs.existsSync(files().plan)) throw new Error('No plan for this label yet');
     const bin = settings().seqBin;
-    const out = await runSpike('build', 'spike_cut_through_batch.py', { LABEL: s.label, ...(bin ? { SEQ_BIN: bin } : {}) });
+    const out = await runStep('build', 'build_rough_cut.py', { LABEL: s.label, ...(bin ? { SEQ_BIN: bin } : {}) });
     finish('build', { error: out.error, report: out.lines, reportFile: files().buildReport });
     return snapshot();
   }
@@ -421,7 +428,7 @@ function createCutThrough(opts) {
       let proc;
       try {
         proc = spawn(command, args, {
-          cwd: settings().spikesDir,
+          cwd: settings().pipelineDir,
           windowsHide: true,
           env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {}) }
         });
@@ -457,10 +464,10 @@ function createCutThrough(opts) {
   async function runTranscribe({ minutes } = {}) {
     if (!s.day) throw new Error('Run Prep first');
     const st = begin('transcribe');
-    const { spikesDir, wxPython } = settings();
+    const { pipelineDir, wxPython } = settings();
     const mins = Number(minutes) > 0 ? Number(minutes) : 0;
     // Expected minutes per track (all sources on one angle share a track, as in
-    // transcribe_day.py), in run order, so the bar covers the whole run.
+    // transcribe.py), in run order, so the bar covers the whole run.
     const spans = new Map();
     (s.day.mics || []).forEach((m) => {
       const sp = spans.get(m.angle) || { from: m.from_sec, to: m.to_sec };
@@ -478,7 +485,7 @@ function createCutThrough(opts) {
     let lastAngle = null;
     st.progress = { angle: null, pct: 0, doneMin: 0, totalMin: 0, mic: 0, mics: plan.length, overall: 0, phase: 'Starting' };
     const started = Date.now();
-    const args = [path.join(spikesDir, 'transcribe_day.py'), s.label, `dir=${desktopDir}`, ...(mins ? [`minutes=${mins}`] : []),
+    const args = [path.join(pipelineDir, 'transcribe.py'), s.label, `dir=${desktopDir}`, ...(mins ? [`minutes=${mins}`] : []),
       ...(verbatim ? ['verbatim=1'] : [])];
     const res = await runChild('transcribe', wxPython, args, {
       onLine: (line) => {
@@ -504,7 +511,7 @@ function createCutThrough(opts) {
       }
     });
     let error = res.error;
-    if (!error && res.code !== 0 && !canceled) error = exitError('transcribe', 'transcribe_day.py', res.code);
+    if (!error && res.code !== 0 && !canceled) error = exitError('transcribe', 'transcribe.py', res.code);
     const f = files();
     if (!error && !canceled && !(mtime(f.words) >= started - 2000)) error = `words_${s.label}.json was not written`;
     // Success: the script's own report. Failure/cancel: this run's output (an
@@ -524,19 +531,17 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
-  // Planners: each takes the day + words files and writes
-  // spikes/plans/<LABEL>_plan.json (the batch's input). Both are rule-based
-  // spikes from the style guide (no LLM); an LLM pass plugs in here later.
+  // The placer: takes the day + words files (+ Claude's edit and the levels) and writes
+  // cut_through/plans/<LABEL>_plan.json (the build's input).
   const PLANNERS = {
-    convo: { script: 'plan_convo.py', args: ({ extra }) => (extra ? [`extra=${extra}`] : []) },
-    solo: { script: 'plan_solo.py', args: ({ extra, punch, removalsFile, levelsFile }) => [...(punch ? [`punch=${punch}`] : []), ...(extra ? [`extra=${extra}`] : []),
+    solo: { script: 'place_cuts.py', args: ({ extra, punch, removalsFile, levelsFile }) => [...(punch ? [`punch=${punch}`] : []), ...(extra ? [`extra=${extra}`] : []),
       ...(removalsFile ? [`removals=${removalsFile}`] : []), ...(levelsFile ? [`levels=${levelsFile}`] : [])] }
   };
   function runPlanner(kind, o) {
     const { script, args } = PLANNERS[kind];
     const f = o.files;
     fs.mkdirSync(path.dirname(f.plan), { recursive: true });
-    return runChild('plan', pythonCmd, [path.join(settings().spikesDir, script), f.words, f.day, f.plan,
+    return runChild('plan', pythonCmd, [path.join(settings().pipelineDir, script), f.words, f.day, f.plan,
       `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`)]);
   }
 
@@ -559,13 +564,13 @@ function createCutThrough(opts) {
     const st = begin('plan');
     const started = Date.now();
     const o = { files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, punch: punch || null, cuts: cutList };
-    {   // solo and conversations: Claude edits, plan_solo.py places (Z8)
+    {   // solo and conversations: Claude edits, place_cuts.py places (Z8)
       // Z8 cuts from the waveform: an older transcription has no per-frame levels yet → one
       // levels-only pass over the audio (no Whisper), which also adds the loud-without-words marks
       if (!fs.existsSync(f.levels)) {
         st.progress = { phase: 'Measuring the audio (levels for cut placement)', phaseAt: Date.now(), bar: null };
         emit();
-        const lv = await runChild('plan', st0.wxPython, [path.join(st0.spikesDir, 'transcribe_day.py'), s.label, `dir=${desktopDir}`, 'levels_only=1'], {
+        const lv = await runChild('plan', st0.wxPython, [path.join(st0.pipelineDir, 'transcribe.py'), s.label, `dir=${desktopDir}`, 'levels_only=1'], {
           onLine: (line) => {
             const r = parseRead(line);
             if (!r) return false;
@@ -574,19 +579,19 @@ function createCutThrough(opts) {
           }
         });
         if (lv.error || lv.code !== 0 || !fs.existsSync(f.levels)) {
-          const why = lv.error || exitError('plan', 'transcribe_day.py levels_only', lv.code);
+          const why = lv.error || exitError('plan', 'transcribe.py levels_only', lv.code);
           finish('plan', { error: why, report: st.log.slice(), reportFile: saveLog('plan') });
           return snapshot();
         }
       }
       o.levelsFile = f.levels;
-      // Claude edits like Z8 — every removal and every shot; plan_solo.py places the cuts
+      // Claude edits like Z8 — every removal and every shot; place_cuts.py places the cuts
       st.progress = { phase: 'Claude is reading the transcript', phaseAt: Date.now(), bar: null };
       emit();
       try {
         const out = await claude.planWithClaude({
           label: s.label, wordsPath: f.words, dayPath: f.day, desktopDir,
-          promptPath: path.join(st0.spikesDir, 'prompts', kind === 'convo' ? 'convo_editor.md' : 'solo_editor.md'),
+          promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
           start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort,
           delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
           roles: { punch: o.punch || undefined, extra: o.extra ? [o.extra] : [] },
@@ -620,12 +625,12 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
-  /** Accept spikes/plans/<LABEL>_plan.json as-is (solo days, hand-made plans). */
+  /** Accept cut_through/plans/<LABEL>_plan.json as-is (solo days, hand-made plans). */
   function useExistingPlan() {
     if (s.busy) throw new Error(`${s.busy} is still running`);
     const f = files();
     const plan = readJson(f.plan);
-    if (!plan) throw new Error(`No readable ${s.label}_plan.json in spikes/plans`);
+    if (!plan) throw new Error(`No readable ${s.label}_plan.json in cut_through/plans`);
     const t = mtime(f.plan);
     s.steps.plan = { ...emptyStep(), status: 'done', earlier: true, startedAt: null, finishedAt: t,
       report: [`Using ${f.plan}`], reportFile: f.plan, data: planSummary(plan) };
@@ -694,6 +699,6 @@ module.exports = {
   planKind,
   dayFrames,
   parseCuts,
-  defaultSpikesDir,
+  defaultPipelineDir,
   DEFAULT_SEQ_BIN
 };

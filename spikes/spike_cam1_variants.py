@@ -80,7 +80,11 @@ def timelines(project: Any) -> dict:
 
 
 def load(name: str):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(SPIKES, f"{name}.py"))
+    here = os.path.join(SPIKES, f"{name}.py")
+    moved = {"make_fcpxml": "write_timeline_xml"}            # the pipeline now lives in cut_through/
+    if name in moved:
+        here = os.path.join(os.path.dirname(SPIKES), "cut_through", f"{moved[name]}.py")
+    spec = importlib.util.spec_from_file_location(name, here)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -148,7 +152,7 @@ def main() -> None:
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — Camera 1 variants")
     if CLEAN:
         return clean(project, mp)
-    plan = json.load(open(os.path.join(SPIKES, "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
+    plan = json.load(open(os.path.join(REPO, "cut_through", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
     name = plan["multicam"]
     cands = [(p, c) for p, f in folders(mp.GetRootFolder()) for c in clips(f)
              if _safe(lambda: c.GetName()) == name and "multicam" in str(_safe(lambda: c.GetClipProperty("Type"), "")).lower()

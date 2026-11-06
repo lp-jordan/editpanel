@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SPIKE — Whole cut-through batch in one run, nothing copied between machines.
+Cut-through step 4 (Build): the whole build in one run, nothing copied between machines.
 
   1. Resolve exports the day multicam's description: a throwaway timeline holding just the
      multicam is exported as FCPXML (newest version this Resolve offers), then deleted.
   1b. Finds the mic WAVs Jordan placed in the multicam; the cut uses them as plain clips
      (Resolve places clips inside an imported multicam by timecode, and the recorder's WAVs
      start at 00:00:00:00, so they can't ride along in the copy's angles).
-  2. make_fcpxml.py builds ONE joined timeline from the cut plan in git (spikes/plans/) on top
+  2. write_timeline_xml.py builds ONE joined timeline from the cut plan in git (cut_through/plans/) on top
      of that description, plus its ranges file.
-  3. spike_import_fcpxml.py imports it (one multicam copy → primary in the MC bin; the original
+  3. import_into_resolve.py imports it (one multicam copy → primary in the MC bin; the original
      goes to "MC ORIGINAL").
-  4. spike_split_batch.py cuts it into one timeline per video in SEQ_BIN.
+  4. split_into_videos.py cuts it into one timeline per video in SEQ_BIN.
 Generated files go to the Desktop (they name client media — never into git).
 
 HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
-    LABEL="ConvoTest"; MICS={"host": "Camera 2", "guest": "Camera 3"}; SPLIT=3; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_cut_through_batch.py", encoding="utf-8").read())
+    LABEL="ConvoTest"; MICS={"host": "Camera 2", "guest": "Camera 3"}; SPLIT=3; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\build_rough_cut.py", encoding="utf-8").read())
 Plans from plan_convo.py carry their mic angles, so MICS can be left out:
-    LABEL="Convo2"; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_cut_through_batch.py", encoding="utf-8").read())
+    LABEL="Convo2"; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\build_rough_cut.py", encoding="utf-8").read())
 Optional: RAW="*" (or names) moves the original's timelines into "MC ORIGINAL" too.
 Report saved to Desktop\\cut_through_<LABEL>.txt (includes the import and split reports).
 """
@@ -40,7 +40,7 @@ SPLIT = int(globals().get("SPLIT", 1))                 # one plan cut into N vid
 SEQ_BIN = globals().get("SEQ_BIN")
 RAW = globals().get("RAW")
 REPO = r"C:\lp-app-ecosystem\editpanel"
-SPIKES = os.path.join(REPO, "spikes")
+PIPELINE = os.path.join(REPO, "cut_through")
 DESKTOP = os.path.expanduser("~/Desktop")
 ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
 _lines: List[str] = []
@@ -130,7 +130,7 @@ def bundle_xml(path: str):
 def run_script(name: str, settings: dict, r: Any) -> dict:
     """Run a sibling spike in its own namespace and fold its report into this one."""
     g = {"__name__": "__main__", "resolve": r, **settings}
-    exec(open(os.path.join(SPIKES, name), encoding="utf-8").read(), g)
+    exec(open(os.path.join(PIPELINE, name), encoding="utf-8").read(), g)
     _lines.extend("    " + x for x in g.get("_lines", []))
     return g
 
@@ -142,7 +142,7 @@ def main() -> None:
         r = dvr.scriptapp("Resolve")
     project = r.GetProjectManager().GetCurrentProject()
     mp = project.GetMediaPool()
-    plan = json.load(open(os.path.join(SPIKES, "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
+    plan = json.load(open(os.path.join(PIPELINE, "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
     name = plan["multicam"]
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — cut-through {LABEL}")
     global MICS
@@ -150,7 +150,7 @@ def main() -> None:
     missing = [role for role in plan["mics"] if role not in MICS]
     if missing:
         raise RuntimeError(f"MICS needs an angle for {missing}")
-    joined, base = f"__SPIKE_joined_{LABEL}", f"__SPIKE_split_{LABEL}"
+    joined, base = f"Cut-through temp {LABEL}", f"{LABEL} rough cut"
     existing = {project.GetTimelineByIndex(i).GetName() for i in range(1, int(project.GetTimelineCount()) + 1)}
     stale = sorted(n for n in existing if n == joined or n.startswith(base))
     if stale:
@@ -165,7 +165,7 @@ def main() -> None:
     # 1. the multicam's description, straight from Resolve
     t1 = time.time()
     version, etype = export_type(r)
-    tmp = mp.CreateTimelineFromClips(f"__SPIKE_mcdef_{LABEL}", [orig])
+    tmp = mp.CreateTimelineFromClips(f"Cut-through temp {LABEL} layout", [orig])
     if not tmp:
         raise RuntimeError("Couldn't make the throwaway multicam timeline")
     mcdef = os.path.join(DESKTOP, f"mcdef_{LABEL}.fcpxml")
@@ -197,11 +197,11 @@ def main() -> None:
 
     # 2. the joined timeline, built on that description
     t1 = time.time()
-    spec = importlib.util.spec_from_file_location("make_fcpxml", os.path.join(SPIKES, "make_fcpxml.py"))
+    spec = importlib.util.spec_from_file_location("write_timeline_xml", os.path.join(PIPELINE, "write_timeline_xml.py"))
     mk = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mk)
     out = os.path.join(DESKTOP, f"{LABEL}_joined.fcpxml")
-    plan_arg = os.path.join(SPIKES, "plans", f"{LABEL}_plan.json") + f":{base}"
+    plan_arg = os.path.join(PIPELINE, "plans", f"{LABEL}_plan.json") + f":{base}"
     args = [src, out, *(f"{k}={v}" for k, v in MICS.items()), f"split={SPLIT}", f"joined={joined}", plan_arg]
     ranges = mk.main(args)
     say(f"2. Built {os.path.basename(out)} (written as FCPXML 1.14): {len(ranges)} video(s) in one timeline "
@@ -209,7 +209,7 @@ def main() -> None:
 
     # 3. import → one copy (primary); original archived
     t1 = time.time()
-    g = run_script("spike_import_fcpxml.py", {"XML": os.path.basename(out), "LABEL": LABEL, "BATCH": True,
+    g = run_script("import_into_resolve.py", {"XML": os.path.basename(out), "LABEL": LABEL, "BATCH": True,
                                           "ARCHIVE": True, "RAW": RAW, "MICS": MICS,
                                               "MIC_FILES": {n: a for n, (_, a, _) in wavs.items()},
                                               "ATEM_FILE": getattr(mk, "LAST_ATEM", None)}, r)
@@ -220,7 +220,7 @@ def main() -> None:
 
     # 4. split into one timeline per video
     t1 = time.time()
-    run_script("spike_split_batch.py", {"RANGES": os.path.basename(out).rsplit(".", 1)[0] + "_ranges.json",
+    run_script("split_into_videos.py", {"RANGES": os.path.basename(out).rsplit(".", 1)[0] + "_ranges.json",
                                         "SEQ_BIN": SEQ_BIN}, r)
     say(f"4. Split done ({time.time() - t1:.1f}s)")
 
@@ -228,7 +228,7 @@ def main() -> None:
 try:
     main()
     say(f"\nTotal time: {time.time() - _T0:.1f}s")
-except (Exception, SystemExit) as exc:                # make_fcpxml stops with SystemExit
+except (Exception, SystemExit) as exc:                # write_timeline_xml stops with SystemExit
     say(f"\n✗ STOPPED after {time.time() - _T0:.1f}s: {exc}")
 finally:
     try:

@@ -342,7 +342,7 @@ function handleWorkerLine(state, line) {
         message: eventMessage,
         metrics: normalized.envelope.metrics
       };
-      // Cut-through steps run spikes in this worker; their prints arrive as
+      // Cut-through steps run pipeline scripts in this worker; their prints arrive as
       // log events tagged with the step's trace id.
       if (cutThrough) cutThrough.onWorkerLog(normalized.envelope.trace_id, eventMessage);
       BrowserWindow.getAllWindows().forEach(w => {

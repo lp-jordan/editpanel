@@ -1,7 +1,7 @@
 /**
  * CutThroughPage — Cut-through (beta): a day multicam → AI rough cuts.
  *
- * Front end for electron/workers/cut_through.js, which runs the spikes/
+ * Front end for electron/workers/cut_through.js, which runs the cut_through/
  * pipeline (prep → transcribe → plan → build). All run state lives in the
  * main process and arrives on cutThroughAPI.onUpdate, so leaving the page
  * never stops a run. Copy stays minimal: labels, empty states, errors.
@@ -66,7 +66,7 @@ function CutThroughPage({ connected }) {
   const [openReports, setOpenReports] = React.useState({});
   const [errors, setErrors] = React.useState({});
   const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [settingsDraft, setSettingsDraft] = React.useState({ spikesDir: '', wxPython: '' });
+  const [settingsDraft, setSettingsDraft] = React.useState({ pipelineDir: '', wxPython: '' });
   const [keyDraft, setKeyDraft] = React.useState('');
   const [directionDraft, setDirectionDraft] = React.useState('');
   const ctLabel = ct && ct.label;
@@ -85,7 +85,7 @@ function CutThroughPage({ connected }) {
       if (res?.data) {
         setCt(res.data);
         setLabelDraft(res.data.label || '');
-        setSettingsDraft({ spikesDir: res.data.settings.spikesDir, wxPython: res.data.settings.wxPython });
+        setSettingsDraft({ pipelineDir: res.data.settings.pipelineDir, wxPython: res.data.settings.wxPython });
       }
     });
     return api.onUpdate((data) => setCt(data));
@@ -99,7 +99,7 @@ function CutThroughPage({ connected }) {
       .then((res) => setBins(Array.isArray(res?.data?.bins) ? res.data.bins : []))
       .catch(() => setBins([]));
     window.leaderpassAPI.call('list_timelines')
-      .then((res) => setTimelines((res?.data?.timelines || []).map((t) => t.name).filter((n) => n && !n.startsWith('__SPIKE_'))))
+      .then((res) => setTimelines((res?.data?.timelines || []).map((t) => t.name).filter((n) => n && !n.startsWith('__SPIKE_') && !n.startsWith('Cut-through temp'))))
       .catch(() => setTimelines([]));
   }, [connected]);
 
@@ -461,10 +461,10 @@ function CutThroughPage({ connected }) {
         {settingsOpen && (
           <div className="ct-facts">
             <label className="ct-inline ct-grow">
-              <span className="settings-label">Spikes folder</span>
-              <input className="settings-input" value={settingsDraft.spikesDir}
-                onChange={(e) => setSettingsDraft({ ...settingsDraft, spikesDir: e.target.value })}
-                onBlur={() => call('settings', () => api.updateSettings({ spikesDir: settingsDraft.spikesDir }))} />
+              <span className="settings-label">Cut-through folder</span>
+              <input className="settings-input" value={settingsDraft.pipelineDir}
+                onChange={(e) => setSettingsDraft({ ...settingsDraft, pipelineDir: e.target.value })}
+                onBlur={() => call('settings', () => api.updateSettings({ pipelineDir: settingsDraft.pipelineDir }))} />
             </label>
             <label className="ct-inline ct-grow">
               <span className="settings-label">Whisper Python</span>

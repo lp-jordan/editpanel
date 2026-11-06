@@ -112,7 +112,7 @@ def main() -> None:
         r = dvr.scriptapp("Resolve")
     project = r.GetProjectManager().GetCurrentProject()
     mp = project.GetMediaPool()
-    plan = json.load(open(os.path.join(SPIKES, "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
+    plan = json.load(open(os.path.join(REPO, "cut_through", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
     name = plan["multicam"]
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — ATEM mix A/B")
     live = multicams(mp, name, ARCHIVE_BINS)
@@ -141,7 +141,7 @@ def main() -> None:
     if not src:
         raise RuntimeError("export failed")
 
-    spec = importlib.util.spec_from_file_location("make_fcpxml", os.path.join(SPIKES, "make_fcpxml.py"))
+    spec = importlib.util.spec_from_file_location("make_fcpxml", os.path.join(REPO, "cut_through", "write_timeline_xml.py"))
     mk = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mk)
     mini = {**plan, "video": [{"in": frame, "out": frame + LENGTH, "angle": "Camera 1"}], "mics": {}}

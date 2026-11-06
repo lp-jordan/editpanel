@@ -199,7 +199,7 @@ contextBridge.exposeInMainWorld('lposAPI', {
   },
 });
 
-// Cut-through (beta): drives editpanel/spikes/ pipeline steps (main: workers/cut_through.js).
+// Cut-through (beta): drives the editpanel/cut_through/ pipeline (main: workers/cut_through.js).
 contextBridge.exposeInMainWorld('cutThroughAPI', {
   getState: () => ipcRenderer.invoke('cut-through:state'),
   listMulticams: () => ipcRenderer.invoke('cut-through:list-multicams'),
