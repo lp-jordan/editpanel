@@ -72,6 +72,17 @@ function CtLive({ p, now }) {
   );
 }
 
+/** One labelled row of a step's facts / options: label on the left, the content beside it.
+ *  Top level (not inside the page) so typing in a row's input never remounts it. */
+function CtRow({ label, children }) {
+  return (
+    <>
+      <div className="ct-grid-label">{label}</div>
+      <div className="ct-grid-value">{children}</div>
+    </>
+  );
+}
+
 function CutThroughPage({ connected }) {
   const api = window.cutThroughAPI;
   const [ct, setCt] = React.useState(null);
@@ -194,164 +205,153 @@ function CutThroughPage({ connected }) {
     if (key === 'prep') {
       if (!day) return null;
       return (
-        <div className="ct-facts">
-          <div className="ct-fact-row">
-            <span className="dim">{day.multicam}</span>
-            {day.lengthMin != null && <span className="dim">{day.lengthMin.toFixed(1)} min · {day.fps?.toFixed(3)} fps · {day.frames} fr</span>}
-          </div>
-          <div className="ct-fact-row">
-            <span className="section-label">Angles</span>
+        <div className="ct-grid">
+          {day.multicam !== ct.mc && <CtRow label="Multicam"><span className="dim">{day.multicam}</span></CtRow>}
+          {day.lengthMin != null && (
+            <CtRow label="Length"><span>{day.lengthMin.toFixed(1)} min</span><span className="dim">{day.fps?.toFixed(3)} fps · {day.frames} fr</span></CtRow>
+          )}
+          <CtRow label="Angles">
             {day.angles.map((a) => <span key={a} className={`tag${day.micAngles.includes(a) ? ' info' : ''}`}>{a}</span>)}
-          </div>
-          <div className="ct-fact-col">
-            <div className="ct-fact-row">
-              <span className="section-label">Audio</span>
-              {(day.cameraAudioAngles.length > 0 || day.wavMics > 0) && (
-                <select className="settings-input ct-audio" value={audioChoice} disabled={busy || !connected}
-                  onChange={(e) => call('prep', () => api.runPrep({ audioAngle: e.target.value }))}>
-                  {day.wavMics > 0 && <option value="">Mic WAVs</option>}
-                  {day.cameraAudioAngles.map((a) => <option key={a} value={a}>{a} camera audio</option>)}
-                </select>
-              )}
+          </CtRow>
+          <CtRow label="Audio">
+            {(day.cameraAudioAngles.length > 0 || day.wavMics > 0) && (
+              <select className="settings-input ct-audio" value={audioChoice} disabled={busy || !connected}
+                onChange={(e) => call('prep', () => api.runPrep({ audioAngle: e.target.value }))}>
+                {day.wavMics > 0 && <option value="">Mic WAVs</option>}
+                {day.cameraAudioAngles.map((a) => <option key={a} value={a}>{a} camera audio</option>)}
+              </select>
+            )}
+            <div className="ct-mics">
+              {day.mics.map((m, i) => (
+                <div key={i} className="ct-mic">
+                  <span className="ct-mic-name" title={m.name}>{m.name}</span>
+                  <span className="dim ct-mic-range">{m.fromMin.toFixed(1)}–{m.toMin.toFixed(1)} min</span>
+                  <span className="tag info">{m.angle}</span>
+                  {m.camera && day.audioSource !== 'camera' && <span className="tag">Camera audio</span>}
+                  {!m.found && <span className="tag danger">File missing</span>}
+                </div>
+              ))}
             </div>
-            {day.mics.map((m, i) => (
-              <div key={i} className="ct-mic">
-                <span className="ct-mic-name">{m.name}</span>
-                <span className="tag info">{m.angle}</span>
-                {m.camera && <span className="tag">Camera audio</span>}
-                <span className="dim">{m.fromMin.toFixed(1)}–{m.toMin.toFixed(1)} min</span>
-                {!m.found && <span className="tag danger">File missing</span>}
-              </div>
-            ))}
-          </div>
+          </CtRow>
         </div>
       );
     }
     if (key === 'transcribe') {
+      if (st.status === 'running') return null;
       return (
-        <div className="ct-facts">
-          {st.status !== 'running' && (
-            <label className="ct-inline">
-              <span className="settings-label">Minutes</span>
-              <input className="settings-input ct-num" inputMode="numeric" placeholder="All" value={minutes}
-                onChange={(e) => setMinutes(e.target.value.replace(/[^\d.]/g, ''))} />
-            </label>
-          )}
+        <div className="ct-grid">
+          <CtRow label="Minutes">
+            <input className="settings-input ct-num" inputMode="numeric" placeholder="All" value={minutes}
+              onChange={(e) => setMinutes(e.target.value.replace(/[^\d.]/g, ''))} />
+          </CtRow>
         </div>
       );
     }
     if (key === 'plan') {
       const summary = st.data;
+      const editing = ct.planKind && st.status !== 'running';
+      if (!editing && !summary) return null;
       return (
-        <div className="ct-facts">
-          {ct.planKind && st.status !== 'running' && (
-            <div className="ct-form-row">
-              <label className="ct-inline ct-check">
-                <input type="checkbox" checked={planForm.useMarks} disabled={!connected}
-                  onChange={(e) => {
-                    setPlanForm({ ...planForm, useMarks: e.target.checked });
-                    if (e.target.checked) call('plan', () => api.readMarks());
-                  }} />
-                <span className="settings-label">In/Out from Resolve</span>
-              </label>
-              <label className="ct-inline">
-                <span className="settings-label">From</span>
-                <input className="settings-input ct-tc" disabled={planForm.useMarks}
-                  placeholder={day?.startTc || ''} value={planForm.useMarks ? (ct.marks?.fromTc || '') : planForm.start}
+        <div className="ct-grid">
+          {editing && (
+            <>
+              <CtRow label="Section">
+                <label className="ct-check">
+                  <input type="checkbox" checked={planForm.useMarks} disabled={!connected}
+                    onChange={(e) => {
+                      setPlanForm({ ...planForm, useMarks: e.target.checked });
+                      if (e.target.checked) call('plan', () => api.readMarks());
+                    }} />
+                  <span>Resolve In/Out</span>
+                </label>
+                <input className="settings-input ct-tc" disabled={planForm.useMarks} aria-label="From"
+                  placeholder={day?.startTc || 'From'} value={planForm.useMarks ? (ct.marks?.fromTc || '') : planForm.start}
                   onChange={(e) => setPlanForm({ ...planForm, start: e.target.value })} />
-              </label>
-              <label className="ct-inline">
-                <span className="settings-label">To</span>
-                <input className="settings-input ct-tc" disabled={planForm.useMarks}
-                  placeholder={day?.endTc || ''} value={planForm.useMarks ? (ct.marks?.toTc || '') : planForm.end}
+                <span className="dim">→</span>
+                <input className="settings-input ct-tc" disabled={planForm.useMarks} aria-label="To"
+                  placeholder={day?.endTc || 'To'} value={planForm.useMarks ? (ct.marks?.toTc || '') : planForm.end}
                   onChange={(e) => setPlanForm({ ...planForm, end: e.target.value })} />
-              </label>
-              {planForm.useMarks && ct.marks && <span className="dim ct-marks-len">{ct.marks.minutes.toFixed(1)} min</span>}
-              {ct.planKind && (
-                <label className="ct-inline">
-                  <span className="settings-label">Delivery</span>
-                  <select className="settings-input" value={delivery} onChange={(e) => setPlanForm({ ...planForm, delivery: e.target.value })}>
-                    {solo && <option value="scripted">Scripted</option>}
-                    {solo && <option value="free">Free talk</option>}
-                    {!solo && <option value="convo">Conversation</option>}
-                    <option value="stage">Stage</option>
-                  </select>
-                </label>
+                {planForm.useMarks && ct.marks && <span className="dim ct-num-text">{ct.marks.minutes.toFixed(1)} min</span>}
+              </CtRow>
+              <CtRow label="Delivery">
+                <select className="settings-input ct-select" value={delivery} onChange={(e) => setPlanForm({ ...planForm, delivery: e.target.value })}>
+                  {solo && <option value="scripted">Scripted</option>}
+                  {solo && <option value="free">Free talk</option>}
+                  {!solo && <option value="convo">Conversation</option>}
+                  <option value="stage">Stage</option>
+                </select>
+              </CtRow>
+              {((solo && punchChoices.length > 0) || extraChoices.length > 0) && (
+                <CtRow label="Angles">
+                  {solo && punchChoices.length > 0 && (
+                    <label className="ct-pair">
+                      <span>Punch-in</span>
+                      <select className="settings-input ct-select" value={punch} onChange={(e) => setPlanForm({ ...planForm, punch: e.target.value, extra: planForm.extra === e.target.value ? '' : planForm.extra })}>
+                        {punchChoices.map((a) => <option key={a} value={a}>{a}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  {extraChoices.length > 0 && (
+                    <label className="ct-pair">
+                      <span>Extra</span>
+                      <select className="settings-input ct-select" value={planForm.extra} onChange={(e) => setPlanForm({ ...planForm, extra: e.target.value })}>
+                        <option value="">None</option>
+                        {extraChoices.map((a) => <option key={a} value={a}>{a}</option>)}
+                      </select>
+                    </label>
+                  )}
+                </CtRow>
               )}
-              {solo && punchChoices.length > 0 && (
-                <label className="ct-inline">
-                  <span className="settings-label">Punch-in</span>
-                  <select className="settings-input" value={punch} onChange={(e) => setPlanForm({ ...planForm, punch: e.target.value, extra: planForm.extra === e.target.value ? '' : planForm.extra })}>
-                    {punchChoices.map((a) => <option key={a} value={a}>{a}</option>)}
-                  </select>
-                </label>
-              )}
-              {extraChoices.length > 0 && (
-                <label className="ct-inline">
-                  <span className="settings-label">Extra angle</span>
-                  <select className="settings-input" value={planForm.extra} onChange={(e) => setPlanForm({ ...planForm, extra: e.target.value })}>
-                    <option value="">None</option>
-                    {extraChoices.map((a) => <option key={a} value={a}>{a}</option>)}
-                  </select>
-                </label>
-              )}
-            </div>
-          )}
-          {ct.planKind && st.status !== 'running' && (
-            <label className="ct-direction">
-              <span className="settings-label">Direction for Claude</span>
-              <textarea className="settings-input" rows={3} value={directionDraft}
-                onChange={(e) => setDirectionDraft(e.target.value)} />
-            </label>
+              <CtRow label="Direction">
+                <textarea className="settings-input ct-direction" rows={3} value={directionDraft} aria-label="Direction for Claude"
+                  onChange={(e) => setDirectionDraft(e.target.value)} />
+              </CtRow>
+            </>
           )}
           {summary && (
-            <div className="ct-fact-row">
-              <span className="dim">{summary.pieces} pieces · {summary.removals} removals{summary.keptMin != null ? ` · ${summary.keptMin.toFixed(1)} min kept` : ''}</span>
+            <CtRow label="Result">
+              <span>{summary.pieces} pieces · {summary.removals} removals{summary.keptMin != null ? ` · ${summary.keptMin.toFixed(1)} min kept` : ''}</span>
               {Object.entries(summary.angles).map(([a, n]) => <span key={a} className="tag">{a} × {n}</span>)}
-            </div>
-          )}
-          {summary && ct.mc && summary.multicam && summary.multicam !== ct.mc && (
-            <div className="notice warning">Plan is for {summary.multicam}</div>
+              {ct.mc && summary.multicam && summary.multicam !== ct.mc && <span className="tag warning">Plan is for {summary.multicam}</span>}
+            </CtRow>
           )}
         </div>
       );
     }
     if (key === 'score') {
       const d = st.data;
+      if (st.status === 'running' && !d) return null;
       return (
-        <div className="ct-facts">
+        <div className="ct-grid">
           {st.status !== 'running' && (
-            <label className="ct-inline ct-grow">
-              <span className="settings-label">Finished edit</span>
-              <select className="settings-input" value={scoreTimeline} onFocus={loadTimelines} onChange={(e) => setScoreTimeline(e.target.value)}>
+            <CtRow label="Finished edit">
+              <select className="settings-input ct-grow-input" value={scoreTimeline} onFocus={loadTimelines} onChange={(e) => setScoreTimeline(e.target.value)}>
                 <option value="">{timelines.length ? 'Choose…' : 'No timelines'}</option>
                 {timelines.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
-            </label>
+            </CtRow>
           )}
           {d && (
-            <div className="ct-fact-row">
+            <CtRow label="Result">
               {d.removal_coverage_pct !== null && <span className="tag">{d.removal_coverage_pct}% of removals matched</span>}
               <span className="tag">{d.cuts.ours_within_1s}/{d.cuts.ours} cuts within 1 s</span>
               {d.same_angle_pct !== null && <span className="tag">{d.same_angle_pct}% same angle</span>}
-            </div>
+            </CtRow>
           )}
         </div>
       );
     }
     if (key === 'build') {
+      if (st.status === 'running') return null;
       return (
-        <div className="ct-facts">
-          {st.status !== 'running' && (
-            <label className="ct-inline">
-              <span className="settings-label">Sequence bin</span>
-              <select className="settings-input" value={seqBin || ''}
-                onChange={(e) => call('build', () => api.updateSettings({ seqBin: e.target.value }))}>
-                <option value="">Leave in place</option>
-                {binChoices.map((b) => <option key={b} value={b}>{b}</option>)}
-              </select>
-            </label>
-          )}
+        <div className="ct-grid">
+          <CtRow label="Sequence bin">
+            <select className="settings-input ct-select" value={seqBin || ''}
+              onChange={(e) => call('build', () => api.updateSettings({ seqBin: e.target.value }))}>
+              <option value="">Leave in place</option>
+              {binChoices.map((b) => <option key={b} value={b}>{b}</option>)}
+            </select>
+          </CtRow>
         </div>
       );
     }
@@ -360,6 +360,7 @@ function CutThroughPage({ connected }) {
 
   function renderActions(key) {
     const st = steps[key];
+    if (st.status === 'running' && key !== 'transcribe') return null;   // only Transcribe can be canceled
     if (key === 'prep') {
       return (
         <button type="button" className={btnClass(key)} disabled={busy || !connected || !ct.mc || !ct.label}
@@ -431,7 +432,7 @@ function CutThroughPage({ connected }) {
               onChange={(e) => setLabelDraft(e.target.value)} onBlur={commitLabel}
               onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
           </label>
-          <button type="button" className="btn small ghost" disabled={!connected || busy || ct.multicamsLoading}
+          <button type="button" className="btn ghost ct-refresh" disabled={!connected || busy || ct.multicamsLoading}
             onClick={() => call('multicams', () => api.listMulticams())}>Refresh</button>
         </div>
         {ct.multicamsError && <div className="notice error">{ct.multicamsError}</div>}
@@ -443,84 +444,92 @@ function CutThroughPage({ connected }) {
       {CT_STEPS.map((step, i) => {
         const st = steps[step.key];
         const lines = reportLines(st);
-        const showReport = st.status === 'running' || st.status === 'failed' || openReports[step.key];
+        const hasLines = lines && lines.length > 0;
+        const autoReport = st.status === 'running' || st.status === 'failed';
+        const showReport = hasLines && (autoReport || openReports[step.key]);
+        const bodyEl = renderStepBody(step.key);
+        const errs = [st.error, errors[step.key]].filter(Boolean);
+        const hasBody = (st.status === 'running' && st.progress) || bodyEl || errs.length > 0 || showReport;
         return (
           <section key={step.key} className={`panel ct-step is-${st.status}`}>
             <div className="ct-step-head">
-              <span className={`status-dot ${CT_DOT[st.status] || 'is-pending'}`} />
-              <span className="ct-step-num">{i + 1}</span>
-              <h3 className="ct-step-title">{step.title}</h3>
-              <span className="ct-step-status dim">{ctStatusText(st, now)}</span>
+              <span className={`ct-step-badge is-${st.status}`}>{i + 1}</span>
+              <div className="ct-step-titles">
+                <h3 className="ct-step-title">{step.title}</h3>
+                <span className="ct-step-status">{ctStatusText(st, now)}</span>
+              </div>
               <div className="ct-step-actions">
-                {lines && lines.length > 0 && st.status !== 'running' && st.status !== 'failed' && (
-                  <button type="button" className="btn small ghost"
-                    onClick={() => setOpenReports({ ...openReports, [step.key]: !openReports[step.key] })}>
-                    {openReports[step.key] ? 'Hide report' : 'Report'}
-                  </button>
-                )}
-                {st.reportFile && st.status !== 'running' && (
-                  <button type="button" className="btn small ghost"
-                    onClick={() => call(step.key, () => api.openFile(st.reportFile).then((r) => (r && r.ok === false ? r : { ok: true })))}>Open report</button>
+                {hasLines && !autoReport && (
+                  <button type="button" className={`btn small ghost${openReports[step.key] ? ' is-active' : ''}`} aria-pressed={!!openReports[step.key]}
+                    onClick={() => setOpenReports({ ...openReports, [step.key]: !openReports[step.key] })}>Report</button>
                 )}
                 {renderActions(step.key)}
               </div>
             </div>
-            {st.status === 'running' && st.progress && <CtLive p={st.progress} now={now} />}
-            {renderStepBody(step.key)}
-            {st.error && <div className="notice error">{st.error}</div>}
-            {errors[step.key] && <div className="notice error">{errors[step.key]}</div>}
-            {showReport && <CtReport lines={lines} live={st.status === 'running'} />}
+            {hasBody && (
+              <div className="ct-step-body">
+                {st.status === 'running' && st.progress && <CtLive p={st.progress} now={now} />}
+                {bodyEl}
+                {errs.map((e, k) => <div key={k} className="notice error">{e}</div>)}
+                {showReport && (
+                  <div className="ct-report-wrap">
+                    <CtReport lines={lines} live={st.status === 'running'} />
+                    {st.reportFile && st.status !== 'running' && (
+                      <button type="button" className="btn small ghost ct-report-open"
+                        onClick={() => call(step.key, () => api.openFile(st.reportFile).then((r) => (r && r.ok === false ? r : { ok: true })))}>Open file</button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         );
       })}
 
-      <section className="panel ct-panel">
-        <button type="button" className="btn small ghost ct-settings-toggle" onClick={() => setSettingsOpen(!settingsOpen)}>
-          {settingsOpen ? 'Hide settings' : 'Settings'}
-        </button>
+      <section className="panel ct-step ct-settings">
+        <div className="ct-step-head">
+          <h3 className="ct-step-title">Settings</h3>
+          <div className="ct-step-actions">
+            <button type="button" className={`btn small ghost${settingsOpen ? ' is-active' : ''}`} aria-pressed={settingsOpen}
+              onClick={() => setSettingsOpen(!settingsOpen)}>{settingsOpen ? 'Hide' : 'Show'}</button>
+          </div>
+        </div>
         {settingsOpen && (
-          <div className="ct-facts">
-            <label className="ct-inline ct-grow">
-              <span className="settings-label">Cut-through folder</span>
-              <input className="settings-input" value={settingsDraft.pipelineDir}
-                onChange={(e) => setSettingsDraft({ ...settingsDraft, pipelineDir: e.target.value })}
-                onBlur={() => call('settings', () => api.updateSettings({ pipelineDir: settingsDraft.pipelineDir }))} />
-            </label>
-            <label className="ct-inline ct-grow">
-              <span className="settings-label">Whisper Python</span>
-              <input className="settings-input" value={settingsDraft.wxPython}
-                onChange={(e) => setSettingsDraft({ ...settingsDraft, wxPython: e.target.value })}
-                onBlur={() => call('settings', () => api.updateSettings({ wxPython: settingsDraft.wxPython }))} />
-            </label>
-            <label className="ct-inline ct-grow">
-              <span className="settings-label">Run files</span>
-              <input className="settings-input" value={settingsDraft.filesDir}
+          <div className="ct-grid">
+            <CtRow label="Claude model">
+              <select className="settings-input ct-select" value={ct.settings.claudeModel}
+                onChange={(e) => call('settings', () => api.updateSettings({ claudeModel: e.target.value }))}>
+                <option value="claude-opus-5-5">Opus 5.5</option>
+                <option value="claude-sonnet-5-5">Sonnet 5.5</option>
+              </select>
+            </CtRow>
+            <CtRow label="Claude API key">
+              <input className="settings-input ct-grow-input" type="password" autoComplete="off" value={keyDraft}
+                placeholder={ct.settings.claudeKey || 'Not set'}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                onBlur={() => {
+                  if (!keyDraft.trim()) return;
+                  call('settings', () => api.updateSettings({ anthropicKey: keyDraft.trim() })).then(() => setKeyDraft(''));
+                }} />
+            </CtRow>
+            <CtRow label="Run files">
+              <input className="settings-input ct-grow-input" value={settingsDraft.filesDir}
                 onChange={(e) => setSettingsDraft({ ...settingsDraft, filesDir: e.target.value })}
                 onBlur={() => call('settings', () => api.updateSettings({ filesDir: settingsDraft.filesDir }))} />
-            </label>
-            <div className="ct-form-row">
-              <label className="ct-inline ct-grow">
-                <span className="settings-label">Claude API key</span>
-                <input className="settings-input" type="password" autoComplete="off" value={keyDraft}
-                  placeholder={ct.settings.claudeKey || 'Not set'}
-                  onChange={(e) => setKeyDraft(e.target.value)}
-                  onBlur={() => {
-                    if (!keyDraft.trim()) return;
-                    call('settings', () => api.updateSettings({ anthropicKey: keyDraft.trim() })).then(() => setKeyDraft(''));
-                  }} />
-              </label>
-              <label className="ct-inline">
-                <span className="settings-label">Claude model</span>
-                <select className="settings-input" value={ct.settings.claudeModel}
-                  onChange={(e) => call('settings', () => api.updateSettings({ claudeModel: e.target.value }))}>
-                  <option value="claude-opus-5-5">Opus 5.5</option>
-                  <option value="claude-sonnet-5-5">Sonnet 5.5</option>
-                </select>
-              </label>
-            </div>
-            {errors.settings && <div className="notice error">{errors.settings}</div>}
+            </CtRow>
+            <CtRow label="Cut-through folder">
+              <input className="settings-input ct-grow-input" value={settingsDraft.pipelineDir}
+                onChange={(e) => setSettingsDraft({ ...settingsDraft, pipelineDir: e.target.value })}
+                onBlur={() => call('settings', () => api.updateSettings({ pipelineDir: settingsDraft.pipelineDir }))} />
+            </CtRow>
+            <CtRow label="Whisper Python">
+              <input className="settings-input ct-grow-input" value={settingsDraft.wxPython}
+                onChange={(e) => setSettingsDraft({ ...settingsDraft, wxPython: e.target.value })}
+                onBlur={() => call('settings', () => api.updateSettings({ wxPython: settingsDraft.wxPython }))} />
+            </CtRow>
           </div>
         )}
+        {errors.settings && <div className="notice error">{errors.settings}</div>}
       </section>
     </div>
   );
