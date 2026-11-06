@@ -105,13 +105,15 @@ LAST_ATEM = None                       # file name of the ATEM mix clip in the l
 
 def camera_audio_refs(resources: str) -> dict:
     """Audio-only assets that are a CAMERA file's own sound (same file as a picture asset) →
-    that picture asset's id. Resolve exports an angle that way when the camera's audio sits on its
-    own track under the picture (Bill Smith mc_1, 2026-11-05) — camera audio, not a mic WAV."""
+    the ids of every picture asset of that file. Resolve exports an angle that way when the
+    camera's audio sits on its own track under the picture (Bill Smith mc_1, 2026-11-05) — camera
+    audio, not a mic WAV. One file can be the picture of two angles (the punch-in cut from the 4K
+    wide: Elevate CAM 1 = Camera 1 and Camera 2, 2026-11-06), so it's a set, matched per angle."""
     pics, auds = {}, {}
     for m in re.finditer(r"<asset ([^>]*)>\s*<media-rep [^>]*src=\"([^\"]+)\"", resources):
         a = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
         if a.get("hasVideo") == "1":
-            pics[m.group(2)] = a.get("id")
+            pics.setdefault(m.group(2), set()).add(a.get("id"))
         elif a.get("hasAudio") == "1":
             auds[a.get("id")] = m.group(2)
     return {ref: pics[src] for ref, src in auds.items() if src in pics}
@@ -131,11 +133,11 @@ def fold_camera_audio(media_xml: str, cam_refs: dict):
         kids = [el for el in ang if "offset" in el.attrib]
         for el in kids:
             aud = next((x for x in el.iter("audio") if x.get("ref") in cam_refs), None)
-            if aud is None or el.find("video") is not None or el.get("ref") in cam_refs.values():
+            if aud is None or el.find("video") is not None or any(el.get("ref") in v for v in cam_refs.values()):
                 continue
-            pic_ref = cam_refs[aud.get("ref")]
+            pic_refs = cam_refs[aud.get("ref")]
             pic = next((p for p in kids if p is not el and p.find("video") is not None
-                        and p.find("video").get("ref") == pic_ref
+                        and p.find("video").get("ref") in pic_refs
                         and abs(secs(p.get("offset")) - secs(el.get("offset"))) < FD
                         and abs(secs(p.get("duration")) - secs(el.get("duration"))) < FD), None)
             if pic is None:
@@ -144,7 +146,7 @@ def fold_camera_audio(media_xml: str, cam_refs: dict):
             if any(x.tag == "audio" for x in vid):
                 continue
             attrs_ = {k: vid.get(k) for k in ("offset", "duration", "start")}
-            ET.SubElement(vid, "audio", {"lane": "-1", "srcCh": aud.get("srcCh") or "1", **attrs_, "ref": pic_ref})
+            ET.SubElement(vid, "audio", {"lane": "-1", "srcCh": aud.get("srcCh") or "1", **attrs_, "ref": vid.get("ref")})
             # the audio's own run (a gap up to it, then the clip) goes; the picture's run stays
             run = list(ang)
             k = run.index(el)

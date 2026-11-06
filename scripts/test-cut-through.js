@@ -487,19 +487,24 @@ with contextlib.redirect_stdout(io.StringIO()):
 res = '''<resources><media name="mc" id="r5"><multicam tcStart="0/1s"><mc-angle name="Angle 1" angleID="a1">
 <clip offset="0/1s" duration="10/1s" start="100/1s"><video offset="100/1s" duration="10/1s" start="100/1s" ref="r2"/></clip>
 <clip offset="0/1s" duration="10/1s" start="100/1s"><audio offset="100/1s" duration="10/1s" start="100/1s" ref="r4"/></clip>
+</mc-angle><mc-angle name="Angle 2" angleID="a2">
+<clip offset="0/1s" duration="10/1s" start="100/1s"><video offset="100/1s" duration="10/1s" start="100/1s" ref="r6"/></clip>
 </mc-angle></multicam></media>
 <asset hasVideo="1" hasAudio="1" id="r2" start="100/1s"><media-rep src="file://localhost/N:/cam.MXF" kind="original-media"/></asset>
-<asset hasAudio="1" id="r4" start="100/1s"><media-rep src="file://localhost/N:/cam.MXF" kind="original-media"/></asset></resources>'''
+<asset hasAudio="1" id="r4" start="100/1s"><media-rep src="file://localhost/N:/cam.MXF" kind="original-media"/></asset>
+<asset hasVideo="1" hasAudio="1" id="r6" start="100/1s"><media-rep src="file://localhost/N:/cam.MXF" kind="original-media"/></asset></resources>'''
 refs = m.camera_audio_refs(res)
 blk = re.findall(r"<media [^>]*>\s*<multicam .*?</media>", res, re.S)[0]
 folded_xml, folded = m.fold_camera_audio(blk, refs)
 fixed, wavs = m.split_off_angle_tracks(folded_xml, keep_refs=set(refs))
 inside = re.search(r'<video [^>]*ref="r2"[^>]*>\s*<audio [^>]*ref="r2"', fixed) is not None
-print(json.dumps({"refs": refs, "folded": sorted(folded), "inside": inside, "r4_left": 'ref="r4"' in fixed, "wavs": len(wavs)}))
+print(json.dumps({"refs": {k: sorted(v) for k, v in refs.items()}, "folded": sorted(folded), "inside": inside, "r4_left": 'ref="r4"' in fixed, "wavs": len(wavs)}))
 `, PIPELINE], { encoding: 'utf8' }));
   // folded back inside the picture clip (a separate clip of the audio-only asset imported as an
   // EMPTY compound clip → silent A1, Bill Smith mc_1 twice)
-  assert.deepStrictEqual(sep, { refs: { r4: 'r2' }, folded: ['r4'], inside: true, r4_left: false, wavs: 0 });
+  // the same file is also Angle 2's picture (a punch-in cut from the 4K wide — Elevate, 2026-11-06):
+  // the audio still folds into ITS angle's picture clip
+  assert.deepStrictEqual(sep, { refs: { r4: ['r2', 'r6'] }, folded: ['r4'], inside: true, r4_left: false, wavs: 0 });
   // the timeline writer: review markers land on record frames (inside a removal → the splice), a
   // quieter backchannel gets adjust-volume; the split step places markers + crossfades the duck
   const wt = path.join(TMP, 'writer');
