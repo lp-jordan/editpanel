@@ -14,7 +14,8 @@ rebuilding EditPanel.
 | Build | `write_timeline_xml.py` | Writes the plan as one timeline file that Resolve can import. |
 | Build | `import_into_resolve.py` | Imports that timeline and checks picture and sound. The original multicam goes to `MC ORIGINAL`, renamed `<name>_original`. |
 | Build | `split_into_videos.py` | Cuts the result into one timeline per video, named `<LABEL> rough cut`, in the chosen bin. |
-| Check | `electron/workers/cut_through_check.js` | Reads each `<LABEL> rough cut` back from Resolve as it is now and marks what's left to fix, against the aligned words: red = word cut off, ends mid-sentence, redo cue kept; yellow = joins mid-sentence, gaps and pauses, repeats, sound with no words, flash shots. Free (no Claude). A re-run replaces only its own markers. Writes `check_<LABEL>.txt` / `.json`. |
+| Plan | `electron/workers/cut_through_check.js` (second pass) | After the cuts are placed, Check runs on the plan and `place_cuts.py` runs once more with `trim=` (silences: gaps at joins, long pauses, head/tail air, wordless slivers) and `keep=` (the rest of a word a cut went through). Before any build, no Claude. |
+| Check | `electron/workers/cut_through_check.js` | Reads each `<LABEL> rough cut` back from Resolve as it is now and marks what's left to fix, against the aligned words: red = word cut off, ends mid-sentence, redo cue kept; yellow = joins mid-sentence, gaps and pauses, repeats, sound with no words, flash shots. Free (no Claude). A re-run replaces only its own markers. Runs automatically after Build. Writes `check_<LABEL>.txt` / `.json`. |
 
 Every file a run writes goes in one folder: `Documents\Cut-through\<Resolve project>\<label>\` on LP1 (changeable in the page's Settings → Run files). Run by hand in Resolve's console, the scripts still write to the Desktop.
 

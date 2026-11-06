@@ -25,7 +25,7 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { randomUUID } = require('crypto');
 const claude = require('./cut_through_claude');
-const { checkTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
+const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 
 const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check'];
 const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
@@ -522,6 +522,8 @@ function createCutThrough(opts) {
     const bin = settings().seqBin;
     const out = await runStep('build', 'build_rough_cut.py', { LABEL: s.label, OUT_DIR: runDir(), PLAN_FILE: files().plan, ...(bin ? { SEQ_BIN: bin } : {}) });
     finish('build', { error: out.error, report: out.lines, reportFile: files().buildReport });
+    // mark what's left on the new rough cuts straight away (Jordan looks once, after this)
+    if (!out.error && fs.existsSync(files().words)) await runCheck({});
     return snapshot();
   }
 
@@ -581,11 +583,12 @@ function createCutThrough(opts) {
       if (!words.aligned) report.push('Words NOT aligned to the audio — "Word cut off" is approximate. Re-run Plan to align them.');
       const multicam = (readJson(f.plan) || {}).multicam || s.mc || words.multicam || null;
       const kind = s.day ? planKind(s.day) : 'solo';
+      const pauses = (readJson(path.join(f.dir, `removals_${s.label}.json`)) || {}).pauses || null;
       for (const [k, name] of names.entries()) {
         st.progress = { phase: `Checking ${name}`, phaseAt: Date.now(), bar: names.length > 1 ? Math.round((k / names.length) * 100) : null };
         emit();
         const tl = (await sendWorkerRequest({ cmd: 'ct_read_timeline', name, trace_id: st.traceId }, 'resolve')).data;
-        const out = checkTimeline({ timeline: tl, words, kind, multicam });
+        const out = checkTimeline({ timeline: tl, words, kind, multicam, pauses });
         const placed = (await sendWorkerRequest({ cmd: 'ct_set_markers', name, tag: CHECK_TAG,
           markers: out.markers.map(({ frame, color, name: n, note }) => ({ frame, color, name: n, note })), trace_id: st.traceId }, 'resolve')).data || {};
         report.push(...out.lines);
@@ -743,7 +746,8 @@ function createCutThrough(opts) {
     const f = o.files;
     fs.mkdirSync(path.dirname(f.plan), { recursive: true });
     return runChild('plan', pythonCmd, [path.join(settings().pipelineDir, script), f.words, f.day, f.plan,
-      `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`)]);
+      `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`),
+      ...(o.trims || []).map(([a, b]) => `trim=${a}-${b}`), ...(o.keeps || []).map(([a, b]) => `keep=${a}-${b}`)]);
   }
 
   async function runPlan({ start, end, extra, punch, delivery, direction: note, useMarks = false } = {}) {
@@ -859,9 +863,41 @@ function createCutThrough(opts) {
     let error = res.error;
     if (!error && res.code !== 0) error = exitError('plan', PLANNERS.solo.script, res.code);
     if (!error && !(mtime(f.plan) >= started - 2000)) error = `${s.label}_plan.json was not written`;
+    if (!error) error = await secondPass(o, kind);
     finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : f.claudeEdit,
       data: error ? null : planSummary(readJson(f.plan)) });
     return snapshot();
+  }
+
+  /** Second pass (Jordan 2026-11-06): Check the plan before anything is built and fix the easy,
+   *  mechanical things — gaps left at joins, pauses over the rule, dead air at the head/tail,
+   *  wordless slivers, words a cut went through — by placing the cuts once more with those
+   *  trims/keeps. One build afterwards, so no extra timelines or multicam copies. No Claude. */
+  async function secondPass(o, kind) {
+    const f = o.files;
+    const words = readJson(f.words);
+    const plan = readJson(f.plan);
+    if (!words || !plan) return null;
+    const pauses = (readJson(o.removalsFile) || {}).pauses || null;
+    const first = checkTimeline({ timeline: planTimeline(plan), words, kind, multicam: plan.multicam, pauses });
+    const { trims, keeps, fixed } = first.fixes;
+    if (!trims.length && !keeps.length) {
+      pushLog('plan', 'Second pass: nothing to fix');
+      return null;
+    }
+    st0Progress('Second pass: fixing gaps, pauses and cut words');
+    const res = await runPlanner('solo', { ...o, trims, keeps });
+    if (res.error || res.code !== 0) return res.error || exitError('plan', `${PLANNERS.solo.script} (second pass)`, res.code);
+    const after = checkTimeline({ timeline: planTimeline(readJson(f.plan) || plan), words, kind, multicam: plan.multicam, pauses });
+    const what = Object.entries(fixed).map(([k, n]) => `${k.toLowerCase()} × ${n}`).join(', ');
+    pushLog('plan', `Second pass fixed ${what}; left for you: ${after.data.red} red, ${after.data.yellow} yellow (marked after Build)`);
+    return null;
+  }
+
+  function st0Progress(phase) {
+    const st = s.steps.plan;
+    st.progress = { phase, phaseAt: Date.now(), bar: null };
+    emit();
   }
 
   /** Accept <run folder>/<LABEL>_plan.json as-is (solo days, hand-made plans). */

@@ -30,6 +30,11 @@ Usage:
     python place_cuts.py <words.json> <day.json> <out_plan.json> [start=<frame>] [end=<frame>] [removals=<file>]
         [levels=<levels_LABEL.json>] [pause_max=<fr>] [pause_left=<fr>]
         [wide="Camera 1"] [punch="Camera 2"] [extra="Camera 4" ...] [cut=<from>-<to> ...]
+        [trim=<from>-<to> ...] [keep=<from>-<to> ...]
+  trim / keep: the second pass (EditPanel's Check on this plan, cut_through_check.js): trim = a
+  silence to take out (a gap left at a join, a pause over the rule, dead air at the head/tail, a
+  wordless sliver) — optional like a pause trim, so it never forces a blink shot; keep = the rest of
+  a word a cut went through, given back after every removal is placed.
 """
 import json
 import os
@@ -142,6 +147,8 @@ def main(argv) -> None:
     punch = o.get("punch") or next((a for a in ("Camera 2", *angles) if a in angles and a != wide), wide)
     extra = [v for k, v in opts if k == "extra" and v and v not in (wide, punch)]
     cuts = [tuple(map(int, v.split("-"))) for k, v in opts if k == "cut"]
+    trims = [tuple(map(int, v.split("-"))) for k, v in opts if k == "trim"]
+    keeps = [tuple(map(int, v.split("-"))) for k, v in opts if k == "keep"]
 
     # one talker (solo), or — with Claude's edit — a conversation: every mic is a person (angle N =
     # the person on camera N, Jordan's rule) and everyone's words count
@@ -337,6 +344,7 @@ def main(argv) -> None:
         if b > a:
             spans.append({"from": a, "to": b, "why": why, "words": (i, j)})
     spans += [{"from": a, "to": b, "why": "editorial (listed)", "words": None} for a, b in cuts]
+    spans += [{"from": a, "to": b, "why": "pause (second pass)", "words": None} for a, b in trims if b > a]
     if given:
         for r in given["removals"]:
             a, b = snap_removal(r)
@@ -389,6 +397,18 @@ def main(argv) -> None:
                 merged.append({"from": a, "to": b, "why": f"pause {s - last} fr → {pause_left}", "words": None})
         last = e if last is None else max(last, e)
     merged.sort(key=lambda r: r["from"])
+    # second pass: give back the rest of a word a cut went through
+    for ka, kb in keeps:
+        out = []
+        for r in merged:
+            if r["to"] <= ka or r["from"] >= kb:
+                out.append(r)
+                continue
+            if r["from"] < ka:
+                out.append({**r, "to": ka})
+            if r["to"] > kb:
+                out.append({**r, "from": kb})
+        merged = sorted((r for r in out if r["to"] > r["from"]), key=lambda r: r["from"])
 
     def kept_of(rs):
         out, pos = [], start

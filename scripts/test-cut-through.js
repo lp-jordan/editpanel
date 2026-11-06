@@ -684,6 +684,21 @@ print(json.dumps({k: [[x["from"], x["to"], x["angle"]] for x in v] for k, v in o
   assert.ok(!notes.some((m) => /fr of quiet/.test(m.note)), 'old "fr of quiet" wording');
   assert.ok(!plan.removals.some((r) => r.from <= 146 && 147 <= r.to && r.why.includes('stutter')));   // Whisper's doubled "show" is not a stutter
   console.log('✓ place_cuts.py: joins on aligned words keep the tail, drop an unwritten "uh", flag a word cut in half in plain words');
+  // second pass: Check on the plan → trims/keeps → placed once more; the cut-in-half "the" is fixed
+  const { checkTimeline, planTimeline } = require('../electron/workers/cut_through_check');
+  const wf = JSON.parse(fs.readFileSync(wp, 'utf8'));
+  const c1 = checkTimeline({ timeline: planTimeline(plan), words: wf, multicam: 'mc_j' });
+  assert.ok(c1.markers.some((m) => m.name.includes('Word cut off')) && c1.fixes.fixed['Word cut off'] === 1, JSON.stringify(c1.fixes));
+  execFileSync(PY, [path.join(PIPELINE, 'place_cuts.py'), wp, dp, pp, `removals=${rp}`, `levels=${lp}`, 'start=0', 'end=260',
+    ...c1.fixes.trims.map(([x, y]) => `trim=${x}-${y}`), ...c1.fixes.keeps.map(([x, y]) => `keep=${x}-${y}`)], { encoding: 'utf8' });
+  const c2 = checkTimeline({ timeline: planTimeline(JSON.parse(fs.readFileSync(pp, 'utf8'))), words: wf, multicam: 'mc_j' });
+  assert.ok(!c2.markers.some((m) => m.name.includes('Word cut off')), JSON.stringify(c2.markers));
+  // keep= gives a word back out of a removal; trim= takes silence out
+  execFileSync(PY, [path.join(PIPELINE, 'place_cuts.py'), wp, dp, pp, `removals=${rp}`, `levels=${lp}`, 'start=0', 'end=260', 'keep=112-122', 'trim=241-260'], { encoding: 'utf8' });
+  const kp = JSON.parse(fs.readFileSync(pp, 'utf8'));
+  assert.ok(!kp.removals.some((r) => r.from < 122 && r.to > 112), JSON.stringify(kp.removals));
+  assert.ok(kp.video[kp.video.length - 1].out <= 241, JSON.stringify(kp));
+  console.log('✓ second pass: Check on the plan → trim/keep → a word cut in half is fixed before the build');
 }
 
 // ── 3. orchestrator end to end ─────────────────────────────────
@@ -1026,6 +1041,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(!JSON.stringify(soloPlan).includes('managers'), 'client words in the plan');
   assert.ok(cl.log.some((l) => /^Claude \(claude-opus-5-5, effort high, scripted\): 3 removals .*, 6 shots .* \$0\.028/.test(l)), cl.log.join('\n'));
   assert.ok(cl.log.some((l) => /skipped shot/.test(l)), 'bad shot not reported');
+  assert.ok(cl.log.some((l) => /^Second pass/.test(l)), `no second pass line\n${cl.log.join('\n')}`);
   assert.ok(cl.log.some((l) => /shots: Claude; .*cuts placed from the waveform/.test(l)), cl.log.join('\n'));
   assert.ok(cl.log.some((l) => /check \[\d+:\d+\]: check the callback/.test(l)), cl.log.join('\n'));
   assert.strictEqual(cl.reportFile, RUN('Solo2', 'claude_edit_Solo2.json'));

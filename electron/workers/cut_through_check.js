@@ -19,6 +19,8 @@
  */
 
 const TAG = 'cut-through-check';
+const HEAD = 18;                       // frames kept before the first / after the last word (place_cuts.py)
+const TAIL = 24;
 const FILLERS = new Set(['um', 'uh', 'uhm', 'umm', 'ah', 'er', 'erm', 'hmm', 'mm', 'mhm']);
 const CUES = [
   /\bsay (that|it) again\b/,
@@ -63,9 +65,14 @@ const quote = (ws) => ws.map((w) => String(w.w).trim()).join(' ');
  *   start_frame, start_tc})
  * words: the words file ({words, unheard, aligned, multicam})
  * kind: 'solo' | 'convo' (conversations keep longer pauses)
- * Returns {markers [{frame, color, name, note, tc}], lines, data}.
+ * pauses: the delivery's pause rule {max, left} (stage keeps longer pauses); a pause is flagged
+ *   over the larger of it and 1 s (solo) / 2 s (convo), and fixed down to `left` frames
+ * Returns {markers [{frame, color, name, note, tc}], lines, data, fixes}. `fixes` are the easy,
+ * mechanical ones the second pass applies (multicam source frames): trims [from, to) to remove
+ * (silence only — never over a word or a loud stretch with no words) and keeps [from, to) to give
+ * back (the rest of a word a cut went through).
  */
-function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = null }) {
+function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = null, pauses = null }) {
   const fps = timeline.fps || wordsFile.fps || 24;
   const sec = (fr) => (fr / fps).toFixed(1);
   let pieces = (timeline.pieces || []).filter((p) => p.src_out > p.src_in && p.end > p.start);
@@ -99,10 +106,18 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
   };
   for (const g of segs) g.words = keptIn(g);
 
-  const pauseMax = Math.round((kind === 'convo' ? 2.0 : 1.0) * fps);
+  const pauseMax = Math.max(Math.round((kind === 'convo' ? 2.0 : 1.0) * fps), (pauses && pauses.max) || 0);
+  const left = (pauses && pauses.left) || 11;              // air left across a trimmed pause / join
+  const airAfter = Math.floor(left / 2);
+  const airBefore = left - airAfter;
   const edgeMax = Math.round(1.5 * fps);
   const found = [];
-  const add = (frame, color, name, note) => found.push({ frame: Math.max(0, Math.round(frame)), color, name, note });
+  const add = (frame, color, name, note, fix = null) => found.push({ frame: Math.max(0, Math.round(frame)), color, name, note, fix });
+  // a trim may only take silence: no word and no loud stretch inside it
+  const loud = (wordsFile.unheard || []).map((u) => [u.s, u.e]);
+  const silent = (a, b) => b - a >= 2 && !loud.some(([x, y]) => x < b && y > a)
+    && !all.some((w) => w.s < b && w.e > a);
+  const trim = (a, b) => (silent(Math.ceil(a), Math.floor(b)) ? { trim: [Math.ceil(a), Math.floor(b)] } : null);
 
   // ── word cut off at any cut ──
   for (const g of segs) {
@@ -111,8 +126,20 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
         const w = all[i];
         if (!(w.s < b - 1 && w.e > b + 1)) continue;
         const missing = side === 'in' ? b - w.s : w.e - b;
+        // mostly kept → give the rest back (3 fr of air); mostly removed → take the scrap out
+        const mid = (w.s + w.e) / 2;
+        const prev = all[i - 1];
+        const next = all[i + 1];
+        let fix = null;
+        if (side === 'out') {
+          fix = mid < b ? { keep: [b, Math.min(Math.ceil(w.e) + 3, next ? Math.floor(next.s) : Infinity)] }
+            : { trim: [Math.max(Math.floor(w.s) - 2, prev ? Math.ceil(prev.e) + 1 : -Infinity), b] };
+        } else {
+          fix = mid >= b ? { keep: [Math.max(Math.floor(w.s) - 3, prev ? Math.ceil(prev.e) : -Infinity), b] }
+            : { trim: [b, Math.min(Math.ceil(w.e) + 2, next ? Math.floor(next.s) - 1 : Infinity)] };
+        }
         add(rec(g, b), isFiller(w) ? 'Yellow' : 'Red', 'Word cut off',
-          `"${String(w.w).trim()}" — ${side === 'in' ? 'start' : 'end'} cut by ${Math.round(missing)} fr`);
+          `"${String(w.w).trim()}" — ${side === 'in' ? 'start' : 'end'} cut by ${Math.round(missing)} fr`, fix);
       }
     }
   }
@@ -141,7 +168,13 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
         }
       }
       const gap = (a.src_out - left.e) + (right.s - b.src_in);
-      if (gap > pauseMax) add(at, 'Yellow', 'Gap at the cut', `${sec(gap)} s with no words across the cut`);
+      if (gap > pauseMax) {
+        // close it from both sides down to the pause rule's air
+        const t1 = a.src_out - left.e > airAfter + 1 ? trim(left.e + airAfter, a.src_out) : null;
+        const t2 = right.s - b.src_in > airBefore + 1 ? trim(b.src_in, right.s - airBefore) : null;
+        const fix = t1 || t2 ? { trims: [t1, t2].filter(Boolean).map((t) => t.trim) } : null;
+        add(at, 'Yellow', 'Gap at the cut', `${sec(gap)} s with no words across the cut`, fix);
+      }
     }
   }
 
@@ -152,7 +185,7 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
       const p = ws[i - 1];
       const w = ws[i];
       const gap = w.s - p.e;
-      if (gap > pauseMax) add(rec(g, p.e), 'Yellow', 'Pause kept', `${sec(gap)} s after "${String(p.w).trim()}"`);
+      if (gap > pauseMax) add(rec(g, p.e), 'Yellow', 'Pause kept', `${sec(gap)} s after "${String(p.w).trim()}"`, trim(p.e + airAfter, w.s - airBefore));
       // one marker per run ("go go go go" is one thing to look at)
       if (norm(p.w) && norm(p.w) === norm(w.w) && !isFiller(w) && gap < fps * 0.6 && !(i >= 2 && norm(ws[i - 2].w) === norm(p.w))) {
         let n = i + 1;
@@ -190,7 +223,7 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
   if (firstSeg) {
     const w = firstSeg.words[0];
     const lead = rec(firstSeg, w.s);
-    if (lead > edgeMax) add(0, 'Yellow', 'Silence at the head', `${sec(lead)} s before the first word`);
+    if (lead > edgeMax) add(0, 'Yellow', 'Silence at the head', `${sec(lead)} s before the first word`, firstSeg === segs[0] ? trim(firstSeg.src_in, w.s - HEAD) : null);
     const prev = all[all.indexOf(w) - 1];
     if (prev && !endsSentence(prev) && startsLower(w)) add(rec(firstSeg, w.s), 'Yellow', 'Starts mid-sentence', `opens on "${quote(firstSeg.words.slice(0, 6))}…"`);
   }
@@ -198,13 +231,16 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
     const w = lastSeg.words[lastSeg.words.length - 1];
     const end = Math.max(...pieces.map((p) => p.end)) - t0;
     const tail = end - rec(lastSeg, w.e);
-    if (tail > edgeMax) add(rec(lastSeg, w.e), 'Yellow', 'Silence at the tail', `${sec(tail)} s after the last word`);
+    if (tail > edgeMax) add(rec(lastSeg, w.e), 'Yellow', 'Silence at the tail', `${sec(tail)} s after the last word`, lastSeg === segs[segs.length - 1] ? trim(w.e + TAIL, lastSeg.src_out) : null);
     if (!endsSentence(w)) add(rec(lastSeg, w.s), 'Red', 'Ends mid-sentence', `ends on "…${quote(lastSeg.words.slice(-6))}"`);
   }
 
-  // ── flash shots ──
+  // ── flash shots ── (a sliver of source with no words between two cuts: take it out)
   for (const p of pieces) {
-    if (p.end - p.start < Math.round(fps / 2)) add(p.start - t0, 'Yellow', 'Flash shot', `${p.angle} for ${p.end - p.start} fr`);
+    if (p.end - p.start >= Math.round(fps / 2)) continue;
+    const g = segs.find((x) => x.src_in <= p.src_in && p.src_out <= x.src_out);
+    const sliver = g && !g.words.length && g.src_out - g.src_in < Math.round(fps / 2);
+    add(p.start - t0, 'Yellow', 'Flash shot', `${p.angle} for ${p.end - p.start} fr`, sliver ? trim(g.src_in, g.src_out) : null);
   }
 
   // one marker per frame: merge, red wins
@@ -228,7 +264,28 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
     `${timeline.name}: ${red} red, ${data.yellow} yellow · ${data.joins} joins · ${data.minutes} min`,
     ...markers.map((m) => `  ${m.tc}  ${m.color === 'Red' ? 'RED   ' : 'yellow'}  ${m.name} — ${m.note.replace(/\n/g, ' / ')}`)
   ];
-  return { markers, lines, data };
+  const fixes = { trims: [], keeps: [], fixed: {} };
+  for (const f of found) {
+    if (!f.fix) continue;
+    const t = [...(f.fix.trims || []), ...(f.fix.trim ? [f.fix.trim] : [])].filter(([x, y]) => y - x >= 2);
+    const k = f.fix.keep && f.fix.keep[1] - f.fix.keep[0] >= 1 ? [f.fix.keep] : [];
+    if (!t.length && !k.length) continue;
+    fixes.trims.push(...t);
+    fixes.keeps.push(...k);
+    fixes.fixed[f.name] = (fixes.fixed[f.name] || 0) + 1;
+  }
+  return { markers, lines, data, fixes };
 }
 
-module.exports = { checkTimeline, tcPlus, TAG };
+/** The plan as the build will lay it out: its pieces back to back from frame 0. */
+function planTimeline(plan, name = 'plan') {
+  let t = 0;
+  const pieces = (plan.video || []).map((v) => {
+    const p = { mc: plan.multicam, angle: v.angle, src_in: v.in, src_out: v.out, start: t, end: t + v.out - v.in };
+    t = p.end;
+    return p;
+  });
+  return { name, fps: plan.fps, pieces, start_frame: 0, start_tc: '00:00:00:00' };
+}
+
+module.exports = { checkTimeline, planTimeline, tcPlus, TAG };
