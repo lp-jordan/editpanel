@@ -27,6 +27,8 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-test-'));
 const HOME = path.join(TMP, 'home');
 const DESKTOP = path.join(HOME, 'Desktop');
 const FAKE_PIPELINE = path.join(TMP, 'cut_through');
+const FILES = path.join(HOME, 'Documents', 'Cut-through');          // run files root (never the real one)
+const RUN = (label, name) => path.join(FILES, 'Fake Project', label, name);
 fs.mkdirSync(DESKTOP, { recursive: true });
 fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
 
@@ -637,7 +639,7 @@ sys.stdout.write(json.dumps(res))`;
     }
     if (payload.cmd === 'ct_mark_in_out') return Promise.resolve({ data: globalThis.FAKE_MARKS || { in: null, out: null, bin: null, multicams: 1 } });
     if (payload.cmd === 'ct_read_timeline') {
-      const plan = JSON.parse(fs.readFileSync(path.join(FAKE_PIPELINE, 'plans', `${payload.name.replace(/^Jordan_/, '')}_plan.json`), 'utf8'));
+      const plan = JSON.parse(fs.readFileSync((() => { const l = payload.name.replace(/^Jordan_/, ''); return RUN(l, `${l}_plan.json`); })(), 'utf8'));
       // "Jordan's edit": our pieces, but he also removed the first 2 s of the longest one
       const longest = plan.video.reduce((b, v, k) => (v.out - v.in > plan.video[b].out - plan.video[b].in ? k : b), 0);
       const pieces = plan.video.map((v, k) => ({ mc: plan.multicam, angle: v.angle, start: 0, end: 0,
@@ -675,7 +677,7 @@ sys.stdout.write(json.dumps(res))`;
     getPrefs: () => prefs,
     setPrefs: (patch) => { prefs = { ...prefs, ...patch }; },
     pythonCmd: PY,
-    desktopDir: DESKTOP,
+    desktopDir: DESKTOP, filesDir: FILES,
     claudeClient: convoClaude
   });
   prefs = { cutThrough: { pipelineDir: FAKE_PIPELINE, wxPython: PY } };
@@ -710,7 +712,7 @@ sys.stdout.write(json.dumps(res))`;
   delete process.env.CT_FAKE_SLOW;
 
   // a failing run: its own output (traceback) is the report, not an older file
-  fs.writeFileSync(path.join(DESKTOP, 'transcribe_E2E_test.txt'), 'OLD REPORT\n');
+  fs.writeFileSync(RUN('E2E_test', 'transcribe_E2E_test.txt'), 'OLD REPORT\n');
   process.env.CT_FAKE_FAIL = '1';
   snap = await c.runTranscribe({});
   delete process.env.CT_FAKE_FAIL;
@@ -718,9 +720,9 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(bad.status, 'failed');
   assert.ok(/exited with code 1: ModuleNotFoundError: No module named 'av'/.test(bad.error), bad.error);
   assert.ok(bad.report.some((l) => l.startsWith('Traceback')) && !bad.report.includes('OLD REPORT'), bad.report.join('\n'));
-  assert.strictEqual(bad.reportFile, path.join(DESKTOP, 'transcribe_E2E_test_log.txt'));
+  assert.strictEqual(bad.reportFile, RUN('E2E_test', 'transcribe_E2E_test_log.txt'));
   assert.ok(/ModuleNotFoundError/.test(fs.readFileSync(bad.reportFile, 'utf8')));
-  assert.strictEqual(snap.steps.prep.reportFile, path.join(DESKTOP, 'day_prep_E2E_test.txt'));
+  assert.strictEqual(snap.steps.prep.reportFile, RUN('E2E_test', 'day_prep_E2E_test.txt'));
 
   // transcribe for real (fake engine)
   snap = await c.runTranscribe({ minutes: '1' });
@@ -729,7 +731,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(tr.progress.overall, 100);
   assert.strictEqual(tr.progress.mic, 2);
   assert.ok(tr.report[0].startsWith('Transcribe E2E_test'));
-  assert.strictEqual(tr.reportFile, path.join(DESKTOP, 'transcribe_E2E_test.txt'));
+  assert.strictEqual(tr.reportFile, RUN('E2E_test', 'transcribe_E2E_test.txt'));
   assert.ok(!tr.log.some((l) => /\[#+/.test(l)), 'progress lines leaked into the log');
 
   // a conversation: Claude edits it too (convo brief, speaker-labelled transcript), place_cuts.py places + gates mics
@@ -741,7 +743,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(creq.system.includes('Angle = person') && /Delivery: A recorded conversation/.test(creq.messages[0].content) &&
     /2 people, each on their own mic \(Camera 2, Camera 3\)/.test(creq.messages[0].content) &&
     /Camera 2 = close-up of the person speaking on the Camera 2 mic/.test(creq.messages[0].content), creq.messages[0].content.slice(0, 500));
-  const convoPlan = JSON.parse(fs.readFileSync(path.join(FAKE_PIPELINE, 'plans', 'E2E_test_plan.json'), 'utf8'));
+  const convoPlan = JSON.parse(fs.readFileSync(RUN('E2E_test', 'E2E_test_plan.json'), 'utf8'));
   assert.deepStrictEqual(Object.keys(convoPlan.mics).sort(), ['Camera 2', 'Camera 3']);
   assert.deepStrictEqual(convoPlan.mic_angles, { 'Camera 2': 'Camera 2', 'Camera 3': 'Camera 3' });
   // each mic opens around its owner's turns only: Camera 2 talks first (0.5–~9 s), Camera 3 from ~11.5 s
@@ -766,7 +768,7 @@ sys.stdout.write(json.dumps(res))`;
   snap = await c.runBuild({ seqBin: 'MASTER / SEQUENCES' });
   assert.strictEqual(snap.steps.build.status, 'done');
   const call = w.calls.filter((x) => x.cmd === 'ct_run_step').pop();
-  assert.deepStrictEqual(call.settings, { LABEL: 'E2E_test', SEQ_BIN: 'MASTER / SEQUENCES' });
+  assert.deepStrictEqual(call.settings, { LABEL: 'E2E_test', OUT_DIR: RUN('E2E_test', ''), PLAN_FILE: RUN('E2E_test', 'E2E_test_plan.json'), SEQ_BIN: 'MASTER / SEQUENCES' });
   assert.ok(call.trace_id);
 
   // live worker log lines land on the running step only
@@ -789,7 +791,7 @@ sys.stdout.write(json.dumps(res))`;
     const send2 = (pl) => pl.cmd === 'ct_list_multicams'
       ? Promise.resolve({ data: { project: cur, multicams: [{ name: 'E2E test', bin: 'MC', duplicate: false }] } }) : w.send(pl);
     const cp = ct.createCutThrough({ sendWorkerRequest: send2, broadcast: () => {}, getPrefs: () => prefs,
-      setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP });
+      setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP, filesDir: FILES });
     assert.strictEqual(cp.snapshot().label, 'E2E_test', 'restored before the project is known');
     let sp = await cp.listMulticams();
     assert.strictEqual(sp.project, 'Other Project');
@@ -803,7 +805,7 @@ sys.stdout.write(json.dumps(res))`;
     sp = cp.snapshot();
     assert.strictEqual(sp.label, 'E2E_test');
     assert.strictEqual(sp.steps.prep.status, 'done', 'earlier work gone after switching back');
-    assert.ok(fs.existsSync(path.join(DESKTOP, 'day_E2E_test.json')));
+    assert.ok(fs.existsSync(RUN('E2E_test', 'day_E2E_test.json')));
     cur = 'Other Project';
     cp.onProject('Other Project');
     await new Promise((r) => setImmediate(r));
@@ -813,21 +815,21 @@ sys.stdout.write(json.dumps(res))`;
   }
 
   // solo day: Claude edits it (needs a key); an existing plan is accepted too
-  const day = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_E2E_test.json'), 'utf8'));
+  const day = JSON.parse(fs.readFileSync(RUN('E2E_test', 'day_E2E_test.json'), 'utf8'));
   day.mics = day.mics.slice(0, 1);
   fs.writeFileSync(path.join(DESKTOP, 'day_Solo1.json'), JSON.stringify(day));
-  fs.copyFileSync(path.join(DESKTOP, 'words_E2E_test.json'), path.join(DESKTOP, 'words_Solo1.json'));
+  fs.copyFileSync(RUN('E2E_test', 'words_E2E_test.json'), path.join(DESKTOP, 'words_Solo1.json'));
   c2.select({ mc: 'mc_test', label: 'Solo1' });
   assert.strictEqual(c2.snapshot().planKind, 'solo');
   assert.throws(() => c2.useExistingPlan(), /No readable/);
   const savedKey = process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
   const noKey = ct.createCutThrough({ sendWorkerRequest: w.send, broadcast: () => {}, getPrefs: () => prefs,
-    setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP });
+    setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP, filesDir: FILES });
   noKey.select({ mc: 'mc_test', label: 'Solo1' });
   await assert.rejects(noKey.runPlan({}), /Add a Claude API key/);
   if (savedKey) process.env.ANTHROPIC_API_KEY = savedKey;
-  fs.copyFileSync(path.join(FAKE_PIPELINE, 'plans', 'E2E_test_plan.json'), path.join(FAKE_PIPELINE, 'plans', 'Solo1_plan.json'));
+  fs.copyFileSync(RUN('E2E_test', 'E2E_test_plan.json'), RUN('Solo1', 'Solo1_plan.json'));
   assert.strictEqual(c2.useExistingPlan().steps.plan.status, 'done');
 
   // ── Claude as the solo editor (a stand-in client; the real API isn't called) ──
@@ -870,14 +872,17 @@ sys.stdout.write(json.dumps(res))`;
     };
   } } } };
   const c3 = ct.createCutThrough({ sendWorkerRequest: w.send, broadcast: () => {}, getPrefs: () => prefs,
-    setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP, claudeClient: fakeClaude });
+    setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP, filesDir: FILES, claudeClient: fakeClaude });
   c3.select({ mc: 'mc_test', label: 'Solo2' });
   assert.strictEqual(c3.snapshot().planKind, 'solo');
-  assert.ok(!fs.existsSync(path.join(DESKTOP, 'levels_Solo2.json')));
+  // a run from before 1.2.94 left its files on the Desktop: opening the label moves them into the run folder
+  assert.ok(!fs.existsSync(path.join(DESKTOP, 'day_Solo2.json')) && fs.existsSync(RUN('Solo2', 'day_Solo2.json')), 'Desktop files not moved');
+  assert.ok(!fs.existsSync(path.join(DESKTOP, 'words_Solo2.json')) && fs.existsSync(RUN('Solo2', 'words_Solo2.json')));
+  assert.ok(!fs.existsSync(RUN('Solo2', 'levels_Solo2.json')));
   const cl = (await c3.runPlan({ extra: 'Camera 4', delivery: 'scripted', direction: 'Use the wide only to hide cuts.' })).steps.plan;
   assert.strictEqual(c3.snapshot().direction, 'Use the wide only to hide cuts.');
   assert.strictEqual(cl.status, 'done', `${cl.error}\n${cl.log.join('\n')}`);
-  assert.ok(fs.existsSync(path.join(DESKTOP, 'levels_Solo2.json')), 'no levels-only pass');
+  assert.ok(fs.existsSync(RUN('Solo2', 'levels_Solo2.json')), 'no levels-only pass');
   const req = requests[0];
   assert.strictEqual(req.model, 'claude-opus-5-5');
   assert.deepStrictEqual(req.thinking, { type: 'adaptive' });
@@ -894,7 +899,7 @@ sys.stdout.write(json.dumps(res))`;
     /Angles: Camera 1 = the wide; Camera 2 = the close-up \(punch-in\); Camera 3 = another angle; Camera 4 = an insert angle/.test(req.messages[0].content),
     req.messages[0].content.slice(0, 400));
   assert.ok(/⟨pause 3\.\d s⟩/.test(req.messages[0].content) && /\[0:02\] 0 Leadership/.test(req.messages[0].content), req.messages[0].content.slice(0, 300));
-  const soloPlan = JSON.parse(fs.readFileSync(path.join(FAKE_PIPELINE, 'plans', 'Solo2_plan.json'), 'utf8'));
+  const soloPlan = JSON.parse(fs.readFileSync(RUN('Solo2', 'Solo2_plan.json'), 'utf8'));
   const gone = (f) => soloPlan.removals.some((r) => r.from <= f && f < r.to);
   assert.strictEqual(take.words.filter((x) => !gone(x.s)).map((x) => x.w).join(' '), CLEAN);
   assert.ok(gone(unheardAt + 7), 'the unheard mutter stayed');
@@ -913,7 +918,7 @@ sys.stdout.write(json.dumps(res))`;
     JSON.stringify(vv.map((x) => x.angle)));
   assert.ok(vv.some((x) => x.angle === 'Camera 4') && vv.some((x) => x.why === 'claude shot'), 'Claude shots not used');
   // Z8 placement: every cut sits on the waveform, not on Whisper's (early) word ends
-  const lv = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'levels_Solo2.json'), 'utf8')).mics['Camera 1'].db;
+  const lv = JSON.parse(fs.readFileSync(RUN('Solo2', 'levels_Solo2.json'), 'utf8')).mics['Camera 1'].db;
   const loud = (f) => lv[f] > -40;
   for (const r of soloPlan.removals) {
     const quietBefore = [1, 2, 3].every((k) => !loud(r.from - k));
@@ -943,14 +948,14 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(cl.log.some((l) => /skipped shot/.test(l)), 'bad shot not reported');
   assert.ok(cl.log.some((l) => /shots: Claude; .*cuts placed from the waveform/.test(l)), cl.log.join('\n'));
   assert.ok(cl.log.some((l) => /check \[\d+:\d+\]: check the callback/.test(l)), cl.log.join('\n'));
-  assert.strictEqual(cl.reportFile, path.join(DESKTOP, 'claude_edit_Solo2.json'));
-  assert.ok(fs.existsSync(path.join(DESKTOP, 'claude_edit_Solo2_claude-opus-5-5.json')), 'no per-model copy');
-  assert.ok(/solo_plan,claude-opus-5-5,high,2400,900,0,0,0\.028,/.test(fs.readFileSync(path.join(DESKTOP, 'cut_through_costs.csv'), 'utf8')));
+  assert.strictEqual(cl.reportFile, RUN('Solo2', 'claude_edit_Solo2.json'));
+  assert.ok(fs.existsSync(RUN('Solo2', 'claude_edit_Solo2_claude-opus-5-5.json')), 'no per-model copy');
+  assert.ok(/solo_plan,claude-opus-5-5,high,2400,900,0,0,0\.028,/.test(fs.readFileSync(path.join(FILES, 'cut_through_costs.csv'), 'utf8')));
   assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-'), 'key in the snapshot');
   // Score against "Jordan's edit" (the fake worker's copy of this plan minus 2 s he cut)
   const sc = (await c3.runScore({ timeline: 'Jordan_Solo2' })).steps.score;
   assert.strictEqual(sc.status, 'done', sc.error);
-  assert.ok(fs.existsSync(path.join(DESKTOP, 'score_Solo2.txt')) && fs.existsSync(path.join(DESKTOP, 'score_Solo2.json')));
+  assert.ok(fs.existsSync(RUN('Solo2', 'score_Solo2.txt')) && fs.existsSync(RUN('Solo2', 'score_Solo2.json')));
   assert.strictEqual(sc.data.removed_s.ours_only, 0);
   assert.ok(sc.data.missed.length === 1 && sc.data.missed[0].seconds === 2 && sc.data.same_angle_pct === 100, JSON.stringify(sc.data));
   assert.ok(sc.report.some((l) => /^Jordan removed, we kept/.test(l)), sc.report.join('\n'));
@@ -958,7 +963,7 @@ sys.stdout.write(json.dumps(res))`;
   const stage = (await c3.runPlan({ delivery: 'stage' })).steps.plan;
   assert.strictEqual(stage.status, 'done', stage.error);
   assert.ok(/Delivery: Live on stage/.test(requests[requests.length - 1].messages[0].content));
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(DESKTOP, 'removals_Solo2.json'), 'utf8')).pauses, { max: 36, left: 18, min_save: 36 });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(RUN('Solo2', 'removals_Solo2.json'), 'utf8')).pauses, { max: 36, left: 18, min_save: 36 });
   assert.ok(stage.log.some((l) => /pauses > 36 fr → 18 fr/.test(l)), stage.log.join('\n'));
   // a declined / broken answer fails the step with the reason, and keeps the log
   fakeClaude.beta.messages.stream = () => ({ on: () => {}, finalMessage: async () => ({ stop_reason: 'refusal', stop_details: { category: 'test' }, content: [], usage: {} }) });

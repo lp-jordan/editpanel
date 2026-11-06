@@ -30,7 +30,8 @@ KEEP_JOINED = bool(globals().get("KEEP_JOINED"))
 FINISH = globals().get("FINISH", True)                 # crossfades + head/tail fades (style guide)
 FADE_FRAMES = 8
 CROSSFADE = {"type": "Cross Fade 0 dB", "category": "audio", "position": "end", "alignment": "center", "duration": 2}
-DESKTOP = os.path.expanduser("~/Desktop")
+OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
+os.makedirs(OUT_DIR, exist_ok=True)
 _lines: List[str] = []
 _T0 = time.time()
 _report = "split_report.txt"
@@ -166,7 +167,7 @@ def main() -> None:
     seq = find_folder(mp.GetRootFolder(), SEQ_BIN) if SEQ_BIN else None
     if SEQ_BIN and not seq:
         raise RuntimeError(f"No bin {SEQ_BIN!r}")
-    spec = json.load(open(os.path.join(DESKTOP, RANGES), encoding="utf-8"))
+    spec = json.load(open(os.path.join(OUT_DIR, RANGES), encoding="utf-8"))
     _report = f"split_{spec['timeline']}.txt"
     timelines = {project.GetTimelineByIndex(i).GetName(): project.GetTimelineByIndex(i)
                  for i in range(1, int(project.GetTimelineCount()) + 1)}
@@ -260,9 +261,9 @@ except Exception as exc:
     say(f"\n✗ STOPPED after {time.time() - _T0:.1f}s: {exc}")
 finally:
     try:
-        with open(os.path.join(DESKTOP, _report), "w", encoding="utf-8") as fh:
+        with open(os.path.join(OUT_DIR, _report), "w", encoding="utf-8") as fh:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("RANGES", "SEQ_BIN", "KEEP_JOINED", "FINISH"):       # the console keeps run-line settings between runs
+    for _k in ("RANGES", "SEQ_BIN", "KEEP_JOINED", "FINISH", "OUT_DIR"):       # the console keeps run-line settings between runs
         globals().pop(_k, None)

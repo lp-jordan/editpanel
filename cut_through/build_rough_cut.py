@@ -8,12 +8,12 @@ Cut-through step 4 (Build): the whole build in one run, nothing copied between m
   1b. Finds the mic WAVs Jordan placed in the multicam; the cut uses them as plain clips
      (Resolve places clips inside an imported multicam by timecode, and the recorder's WAVs
      start at 00:00:00:00, so they can't ride along in the copy's angles).
-  2. write_timeline_xml.py builds ONE joined timeline from the cut plan in git (cut_through/plans/) on top
+  2. write_timeline_xml.py builds ONE joined timeline from the cut plan (PLAN_FILE; EditPanel keeps it in the run folder) on top
      of that description, plus its ranges file.
   3. import_into_resolve.py imports it (one multicam copy → primary in the MC bin; the original
      goes to "MC ORIGINAL").
   4. split_into_videos.py cuts it into one timeline per video in SEQ_BIN.
-Generated files go to the Desktop (they name client media — never into git).
+Generated files go to OUT_DIR (EditPanel: the run folder; by hand: the Desktop) (they name client media — never into git).
 
 HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
     LABEL="ConvoTest"; MICS={"host": "Camera 2", "guest": "Camera 3"}; SPLIT=3; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\build_rough_cut.py", encoding="utf-8").read())
@@ -41,7 +41,9 @@ SEQ_BIN = globals().get("SEQ_BIN")
 RAW = globals().get("RAW")
 REPO = r"C:\lp-app-ecosystem\editpanel"
 PIPELINE = os.path.join(REPO, "cut_through")
-DESKTOP = os.path.expanduser("~/Desktop")
+PLAN_FILE = globals().get("PLAN_FILE") or os.path.join(PIPELINE, "plans", f"{LABEL}_plan.json")
+OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
+os.makedirs(OUT_DIR, exist_ok=True)
 ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
 _lines: List[str] = []
 _T0 = time.time()
@@ -147,7 +149,7 @@ def main() -> None:
         r = dvr.scriptapp("Resolve")
     project = r.GetProjectManager().GetCurrentProject()
     mp = project.GetMediaPool()
-    plan = json.load(open(os.path.join(PIPELINE, "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
+    plan = json.load(open(PLAN_FILE, encoding="utf-8"))
     name = plan["multicam"]
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — cut-through {LABEL}")
     global MICS
@@ -187,7 +189,7 @@ def main() -> None:
     tmp = mp.CreateTimelineFromClips(f"Cut-through temp {LABEL} layout", [orig])
     if not tmp:
         raise RuntimeError("Couldn't make the throwaway multicam timeline")
-    mcdef = os.path.join(DESKTOP, f"mcdef_{LABEL}.fcpxml")
+    mcdef = os.path.join(OUT_DIR, f"mcdef_{LABEL}.fcpxml")
     for p in (mcdef, mcdef + "d"):                      # leftovers from an earlier run
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
@@ -205,7 +207,7 @@ def main() -> None:
     xml = open(src, encoding="utf-8").read()
     angles = [re.search(r'name="([^"]+)"', a).group(1) for a in re.findall(r"<mc-angle ([^>]*)>", xml)]
     say(f"1. Exported {name} as FCPXML {version} in {time.time() - t1:.1f}s "
-        f"({os.path.relpath(src, DESKTOP)}, {os.path.getsize(src) // 1024} KB, {len(re.findall(r'<asset ', xml))} source file(s), "
+        f"({os.path.relpath(src, OUT_DIR)}, {os.path.getsize(src) // 1024} KB, {len(re.findall(r'<asset ', xml))} source file(s), "
         f"angles {angles}); throwaway timeline deleted: {gone}")
 
     # 1b. which mic WAV Jordan placed under which angle (the cut uses them as plain clips;
@@ -220,8 +222,8 @@ def main() -> None:
     spec = importlib.util.spec_from_file_location("write_timeline_xml", os.path.join(PIPELINE, "write_timeline_xml.py"))
     mk = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mk)
-    out = os.path.join(DESKTOP, f"{LABEL}_joined.fcpxml")
-    plan_arg = os.path.join(PIPELINE, "plans", f"{LABEL}_plan.json") + f":{base}"
+    out = os.path.join(OUT_DIR, f"{LABEL}_joined.fcpxml")
+    plan_arg = PLAN_FILE + f":{base}"
     args = [src, out, *(f"{k}={v}" for k, v in MICS.items()), f"split={SPLIT}", f"joined={joined}", plan_arg]
     ranges = mk.main(args)
     say(f"2. Built {os.path.basename(out)} (written as FCPXML 1.14): {len(ranges)} video(s) in one timeline "
@@ -230,8 +232,8 @@ def main() -> None:
     # 3. import → one copy (primary); original archived
     phase("Importing into Resolve")
     t1 = time.time()
-    g = run_script("import_into_resolve.py", {"XML": os.path.basename(out), "LABEL": LABEL, "BATCH": True,
-                                          "ARCHIVE": True, "RAW": RAW, "MICS": MICS,
+    g = run_script("import_into_resolve.py", {"XML": os.path.basename(out), "LABEL": LABEL, "BATCH": True, "OUT_DIR": OUT_DIR,
+                                          "ARCHIVE": True, "RAW": RAW, "MICS": MICS, "PLAN_FILE": PLAN_FILE,
                                               "MIC_FILES": {n: a for n, (_, a, _) in wavs.items()},
                                               "ATEM_FILE": getattr(mk, "LAST_ATEM", None)}, r)
     say(f"3. Import done ({time.time() - t1:.1f}s)")
@@ -243,7 +245,7 @@ def main() -> None:
     phase("Cutting into one timeline per video")
     t1 = time.time()
     run_script("split_into_videos.py", {"RANGES": os.path.basename(out).rsplit(".", 1)[0] + "_ranges.json",
-                                        "SEQ_BIN": SEQ_BIN}, r)
+                                        "SEQ_BIN": SEQ_BIN, "OUT_DIR": OUT_DIR}, r)
     say(f"4. Split done ({time.time() - t1:.1f}s)")
 
 
@@ -254,9 +256,9 @@ except (Exception, SystemExit) as exc:                # write_timeline_xml stops
     say(f"\n✗ STOPPED after {time.time() - _T0:.1f}s: {exc}")
 finally:
     try:
-        with open(os.path.join(DESKTOP, f"cut_through_{LABEL}.txt"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(OUT_DIR, f"cut_through_{LABEL}.txt"), "w", encoding="utf-8") as fh:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("LABEL", "MICS", "SPLIT", "SEQ_BIN", "RAW"):   # the console keeps run-line settings between runs
+    for _k in ("LABEL", "MICS", "SPLIT", "SEQ_BIN", "RAW", "OUT_DIR", "PLAN_FILE"):   # the console keeps run-line settings between runs
         globals().pop(_k, None)

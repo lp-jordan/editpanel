@@ -10,9 +10,10 @@
  *               conversation, else one speaker
  *   build       build_rough_cut.py          Resolve worker (ct_run_step)
  *
- * Outputs: the Windows Desktop (day_, words_, levels_, transcript_, claude_edit_,
- * cut_through_ files) and cut_through/plans/<LABEL>_plan.json, which
- * the batch reads. Client words/media names never leave this machine.
+ * Outputs: one folder per run, <files folder>\<Resolve project>\<label>\ (default
+ * Documents\Cut-through): day_, words_, levels_, transcript_, claude_edit_, the plan, reports.
+ * Client words/media names never leave this machine. Runs from before 1.2.94 left their files on
+ * the Desktop (plan in cut_through/plans); they move into the run folder when the label is opened.
  *
  * State lives here (not in the renderer) so a run keeps going and keeps its
  * status when the page is closed. Every change is pushed to the renderer on
@@ -176,7 +177,8 @@ function createCutThrough(opts) {
     claudeClient = null,           // tests: a stand-in for the Anthropic client
     isPackaged = false,
     appDir = path.join(__dirname, '..', '..'),
-    desktopDir = path.join(os.homedir(), 'Desktop')   // = Python's expanduser("~/Desktop")
+    desktopDir = path.join(os.homedir(), 'Desktop'),  // where runs before 1.2.94 left their files
+    filesDir = path.join(os.homedir(), 'Documents', 'Cut-through')   // default home of run files
   } = opts;
 
   const s = {
@@ -204,9 +206,9 @@ function createCutThrough(opts) {
       seqBin: p.seqBin === undefined ? DEFAULT_SEQ_BIN : p.seqBin,
       claudeModel: p.claudeModel || claude.DEFAULT_MODEL,
       claudeEffort: p.claudeEffort || 'high',
+      filesDir: p.filesDir || filesDir,
       // the key itself never goes to the renderer
-      claudeKey: claudeKey() ? (p.anthropicKey ? `saved …${p.anthropicKey.slice(-4)}` : 'from ANTHROPIC_API_KEY') : null,
-      desktopDir
+      claudeKey: claudeKey() ? (p.anthropicKey ? `saved …${p.anthropicKey.slice(-4)}` : 'from ANTHROPIC_API_KEY') : null
     };
   }
 
@@ -216,18 +218,30 @@ function createCutThrough(opts) {
     return p.anthropicKey || process.env.ANTHROPIC_API_KEY || null;
   }
 
+  /** Windows-safe folder name for a Resolve project. */
+  function folderName(name) {
+    return String(name || 'No project').replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '_').replace(/[. ]+$/g, '').trim() || 'No project';
+  }
+
+  /** Every file of one run: <files folder>\<Resolve project>\<label>\ (Jordan 2026-11-06: off the Desktop). */
+  function runDir(label = s.label) {
+    return path.join(settings().filesDir, folderName(s.project), label);
+  }
+
   function files(label = s.label) {
-    const st = settings();
+    const dir = runDir(label);
     return {
-      day: path.join(desktopDir, `day_${label}.json`),
-      prepReport: path.join(desktopDir, `day_prep_${label}.txt`),
-      words: path.join(desktopDir, `words_${label}.json`),
-      levels: path.join(desktopDir, `levels_${label}.json`),
-      transcript: path.join(desktopDir, `transcript_${label}.txt`),
-      transcribeReport: path.join(desktopDir, `transcribe_${label}.txt`),
-      plan: path.join(st.pipelineDir, 'plans', `${label}_plan.json`),
-      buildReport: path.join(desktopDir, `cut_through_${label}.txt`),
-      scoreReport: path.join(desktopDir, `score_${label}.txt`)
+      dir,
+      claudeEdit: path.join(dir, `claude_edit_${label}.json`),
+      day: path.join(dir, `day_${label}.json`),
+      prepReport: path.join(dir, `day_prep_${label}.txt`),
+      words: path.join(dir, `words_${label}.json`),
+      levels: path.join(dir, `levels_${label}.json`),
+      transcript: path.join(dir, `transcript_${label}.txt`),
+      transcribeReport: path.join(dir, `transcribe_${label}.txt`),
+      plan: path.join(dir, `${label}_plan.json`),
+      buildReport: path.join(dir, `cut_through_${label}.txt`),
+      scoreReport: path.join(dir, `score_${label}.txt`)
     };
   }
 
@@ -262,6 +276,7 @@ function createCutThrough(opts) {
     if (!s.label) throw new Error('Pick a multicam and label first');
     s.busy = step;
     canceled = false;
+    fs.mkdirSync(files().dir, { recursive: true });
     s.steps[step] = { ...emptyStep(), status: 'running', startedAt: Date.now() };
     emit();
     return s.steps[step];
@@ -284,9 +299,9 @@ function createCutThrough(opts) {
   }
 
   /** A child process's full output (stdout + stderr, so tracebacks too) as a
-   *  Desktop file the step's Open report button can open. */
+   *  file in the run folder that the step's Open report button can open. */
   function saveLog(step) {
-    const p = path.join(desktopDir, `${step}_${s.label}_log.txt`);
+    const p = path.join(files().dir, `${step}_${s.label}_log.txt`);
     try { fs.writeFileSync(p, s.steps[step].log.join('\n') + '\n', 'utf8'); return p; } catch (_) { return null; }
   }
 
@@ -378,10 +393,46 @@ function createCutThrough(opts) {
     return sanitizeLabel(`${base}_${s.project}`);
   }
 
+  /** Runs from before 1.2.94 left their files on the Desktop (plan in cut_through/plans): move
+   *  them into this project's run folder — only when the label isn't another project's. */
+  function adoptLegacyFiles(label) {
+    if (!label || !s.project) return;
+    const owner = (((getPrefs() || {}).cutThrough || {}).labelProjects || {})[label];
+    if (owner && owner !== s.project) return;
+    const dir = runDir(label);
+    const fixed = [`day_${label}.json`, `day_prep_${label}.txt`, `words_${label}.json`, `levels_${label}.json`,
+      `transcript_${label}.txt`, `transcribe_${label}.txt`, `cut_through_${label}.txt`, `score_${label}.txt`, `score_${label}.json`,
+      `removals_${label}.json`, `review_${label}.json`, `mcdef_${label}.fcpxml`, `mcdef_${label}.fcpxmld`, `${label}_joined.fcpxml`,
+      `${label}_joined_ranges.json`, `import_${label}.txt`, ...STEP_KEYS.map((k) => `${k}_${label}_log.txt`)];
+    let names = [];
+    try { names = fs.readdirSync(desktopDir); } catch (_) { return; }
+    const ours = names.filter((n) => fixed.includes(n) || (n.startsWith(`claude_edit_${label}`) && n.endsWith('.json')
+      && /^(|_[A-Za-z0-9_.-]+)$/.test(n.slice(`claude_edit_${label}`.length, -5))));
+    const moves = ours.map((n) => [path.join(desktopDir, n), path.join(dir, n)]);
+    const oldPlan = path.join(settings().pipelineDir, 'plans', `${label}_plan.json`);
+    if (fs.existsSync(oldPlan)) moves.push([oldPlan, path.join(dir, `${label}_plan.json`)]);
+    if (!moves.length) return;
+    fs.mkdirSync(dir, { recursive: true });
+    for (const [from, to] of moves) {
+      if (fs.existsSync(to)) continue;               // never overwrite a newer run's file
+      try { fs.renameSync(from, to); } catch (_) {
+        try { fs.cpSync(from, to, { recursive: true }); fs.rmSync(from, { recursive: true, force: true }); } catch (__) { /* leave it */ }
+      }
+    }
+    // the plan points at its review markers by full path
+    const planPath = path.join(dir, `${label}_plan.json`);
+    const plan = readJson(planPath);
+    const review = path.join(dir, `review_${label}.json`);
+    if (plan && plan.review_file && plan.review_file !== review && fs.existsSync(review)) {
+      try { fs.writeFileSync(planPath, JSON.stringify({ ...plan, review_file: review }, null, 1), 'utf8'); } catch (_) { /* keep */ }
+    }
+  }
+
   function show(mc, label) {
     s.mc = mc || null;
     s.marks = null;
     s.label = sanitizeLabel(label || '');
+    adoptLegacyFiles(s.label);
     if (s.label) inspectEarlier();
     else s.steps = Object.fromEntries(STEP_KEYS.map((k) => [k, emptyStep()]));
     refreshFiles();
@@ -392,7 +443,7 @@ function createCutThrough(opts) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
     show(mc, label === undefined || label === null ? defaultLabel(mc) : label || (mc ? defaultLabel(mc) : ''));
     const p = (getPrefs() || {}).cutThrough || {};
-    const next = { ...p, lastMc: s.mc, lastLabel: s.label };
+    const next = { ...p, lastMc: s.mc, lastLabel: s.label, lastProject: s.project };
     if (s.project) {
       next.byProject = { ...(p.byProject || {}), [s.project]: { mc: s.mc, label: s.label } };
       if (s.label) next.labelProjects = { ...(p.labelProjects || {}), [s.label]: s.project };
@@ -426,7 +477,7 @@ function createCutThrough(opts) {
   function updateSettings(patch = {}) {
     const p = (getPrefs() || {}).cutThrough || {};
     const next = { ...p };
-    for (const k of ['pipelineDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort']) {
+    for (const k of ['pipelineDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort', 'filesDir']) {
       if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
     }
     setPrefs({ cutThrough: next });
@@ -455,7 +506,7 @@ function createCutThrough(opts) {
   async function runPrep({ audioAngle } = {}) {
     if (!s.mc) throw new Error('Pick a multicam first');
     const started = Date.now();
-    const out = await runStep('prep', 'prepare_multicam.py', { LABEL: s.label, MC: s.mc, ...(audioAngle ? { AUDIO_ANGLE: String(audioAngle) } : {}) });
+    const out = await runStep('prep', 'prepare_multicam.py', { LABEL: s.label, MC: s.mc, OUT_DIR: runDir(), ...(audioAngle ? { AUDIO_ANGLE: String(audioAngle) } : {}) });
     let error = out.error;
     const f = files();
     if (!error && !(mtime(f.day) >= started - 2000)) error = `day_${s.label}.json was not written`;
@@ -468,7 +519,7 @@ function createCutThrough(opts) {
     if (seqBin !== undefined) updateSettings({ seqBin });
     if (!fs.existsSync(files().plan)) throw new Error('No plan for this label yet');
     const bin = settings().seqBin;
-    const out = await runStep('build', 'build_rough_cut.py', { LABEL: s.label, ...(bin ? { SEQ_BIN: bin } : {}) });
+    const out = await runStep('build', 'build_rough_cut.py', { LABEL: s.label, OUT_DIR: runDir(), PLAN_FILE: files().plan, ...(bin ? { SEQ_BIN: bin } : {}) });
     finish('build', { error: out.error, report: out.lines, reportFile: files().buildReport });
     return snapshot();
   }
@@ -606,7 +657,7 @@ function createCutThrough(opts) {
     let lastAngle = null;
     st.progress = { angle: null, pct: 0, doneMin: 0, totalMin: 0, mic: 0, mics: plan.length, overall: 0, phase: 'Starting' };
     const started = Date.now();
-    const args = [path.join(pipelineDir, 'transcribe.py'), s.label, `dir=${desktopDir}`, ...(mins ? [`minutes=${mins}`] : []),
+    const args = [path.join(pipelineDir, 'transcribe.py'), s.label, `dir=${runDir()}`, ...(mins ? [`minutes=${mins}`] : []),
       ...(verbatim ? ['verbatim=1'] : [])];
     const res = await runChild('transcribe', wxPython, args, {
       onLine: (line) => {
@@ -653,7 +704,7 @@ function createCutThrough(opts) {
   }
 
   // The placer: takes the day + words files (+ Claude's edit and the levels) and writes
-  // cut_through/plans/<LABEL>_plan.json (the build's input).
+  // <run folder>/<LABEL>_plan.json (the build's input).
   const PLANNERS = {
     solo: { script: 'place_cuts.py', args: ({ extra, punch, removalsFile, levelsFile }) => [...(punch ? [`punch=${punch}`] : []), ...(extra ? [`extra=${extra}`] : []),
       ...(removalsFile ? [`removals=${removalsFile}`] : []), ...(levelsFile ? [`levels=${levelsFile}`] : [])] }
@@ -697,7 +748,7 @@ function createCutThrough(opts) {
       if (!fs.existsSync(f.levels)) {
         st.progress = { phase: 'Measuring the audio (levels for cut placement)', phaseAt: Date.now(), bar: null };
         emit();
-        const lv = await runChild('plan', st0.wxPython, [path.join(st0.pipelineDir, 'transcribe.py'), s.label, `dir=${desktopDir}`, 'levels_only=1'], {
+        const lv = await runChild('plan', st0.wxPython, [path.join(st0.pipelineDir, 'transcribe.py'), s.label, `dir=${runDir()}`, 'levels_only=1'], {
           onLine: (line) => {
             const r = parseRead(line);
             if (!r) return false;
@@ -717,7 +768,7 @@ function createCutThrough(opts) {
       emit();
       try {
         const out = await claude.planWithClaude({
-          label: s.label, wordsPath: f.words, dayPath: f.day, desktopDir,
+          label: s.label, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: settings().filesDir,
           promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
           start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort,
           delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
@@ -747,17 +798,17 @@ function createCutThrough(opts) {
     let error = res.error;
     if (!error && res.code !== 0) error = exitError('plan', PLANNERS.solo.script, res.code);
     if (!error && !(mtime(f.plan) >= started - 2000)) error = `${s.label}_plan.json was not written`;
-    finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : path.join(desktopDir, `claude_edit_${s.label}.json`),
+    finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : f.claudeEdit,
       data: error ? null : planSummary(readJson(f.plan)) });
     return snapshot();
   }
 
-  /** Accept cut_through/plans/<LABEL>_plan.json as-is (solo days, hand-made plans). */
+  /** Accept <run folder>/<LABEL>_plan.json as-is (solo days, hand-made plans). */
   function useExistingPlan() {
     if (s.busy) throw new Error(`${s.busy} is still running`);
     const f = files();
     const plan = readJson(f.plan);
-    if (!plan) throw new Error(`No readable ${s.label}_plan.json in cut_through/plans`);
+    if (!plan) throw new Error(`No readable ${s.label}_plan.json in ${f.dir}`);
     const t = mtime(f.plan);
     s.steps.plan = { ...emptyStep(), status: 'done', earlier: true, startedAt: null, finishedAt: t,
       report: [`Using ${f.plan}`], reportFile: f.plan, data: planSummary(plan) };
@@ -787,10 +838,8 @@ function createCutThrough(opts) {
   // Restore the last selection so a reopened app lands on the same day.
   const last = (getPrefs() || {}).cutThrough || {};
   if (last.lastLabel) {
-    s.mc = last.lastMc || null;
-    s.label = sanitizeLabel(last.lastLabel);
-    inspectEarlier();
-    refreshFiles();
+    s.project = last.lastProject || null;
+    show(last.lastMc, last.lastLabel);
   }
 
   return {

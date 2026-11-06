@@ -32,7 +32,8 @@ from urllib.parse import unquote
 LABEL = globals().get("LABEL", "Convo2")
 MC = globals().get("MC")
 AUDIO_ANGLE = globals().get("AUDIO_ANGLE")     # no mic WAVs: whose camera audio (track 1) to use; default Camera 1
-DESKTOP = os.path.expanduser("~/Desktop")
+OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
+os.makedirs(OUT_DIR, exist_ok=True)
 ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
 _lines: List[str] = []
 
@@ -160,7 +161,7 @@ def main() -> None:
     tmp = mp.CreateTimelineFromClips(f"Cut-through temp {LABEL} layout", [orig])
     if not tmp:
         raise RuntimeError("Couldn't make the throwaway multicam timeline")
-    mcdef = os.path.join(DESKTOP, f"mcdef_{LABEL}.fcpxml")
+    mcdef = os.path.join(OUT_DIR, f"mcdef_{LABEL}.fcpxml")
     for p in (mcdef, mcdef + "d"):
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
@@ -190,7 +191,7 @@ def main() -> None:
         if not picked:
             raise RuntimeError(f"No mic WAVs, and no camera audio on {want or 'any angle'}")
         day["mics"], day["audio_source"] = picked, "camera"
-    out = os.path.join(DESKTOP, f"day_{LABEL}.json")
+    out = os.path.join(OUT_DIR, f"day_{LABEL}.json")
     json.dump(day, open(out, "w", encoding="utf-8"), indent=1)
     say(f"Multicam '{day['multicam']}': {day['length_sec'] / 60:.1f} min at {day['fps']:.3f} fps; "
         f"angles {day['angles']}; throwaway timeline deleted: {gone}")
@@ -210,9 +211,9 @@ except Exception as exc:
     say(f"\n✗ STOPPED: {exc}")
 finally:
     try:
-        with open(os.path.join(DESKTOP, f"day_prep_{LABEL}.txt"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(OUT_DIR, f"day_prep_{LABEL}.txt"), "w", encoding="utf-8") as fh:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("LABEL", "MC", "AUDIO_ANGLE"):
+    for _k in ("LABEL", "MC", "AUDIO_ANGLE", "OUT_DIR"):
         globals().pop(_k, None)

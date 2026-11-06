@@ -85,7 +85,7 @@ function CutThroughPage({ connected }) {
   const [openReports, setOpenReports] = React.useState({});
   const [errors, setErrors] = React.useState({});
   const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [settingsDraft, setSettingsDraft] = React.useState({ pipelineDir: '', wxPython: '' });
+  const [settingsDraft, setSettingsDraft] = React.useState({ pipelineDir: '', wxPython: '', filesDir: '' });
   const [keyDraft, setKeyDraft] = React.useState('');
   const [directionDraft, setDirectionDraft] = React.useState('');
   const ctLabel = ct && ct.label;
@@ -104,7 +104,7 @@ function CutThroughPage({ connected }) {
       if (res?.data) {
         setCt(res.data);
         setLabelDraft(res.data.label || '');
-        setSettingsDraft({ pipelineDir: res.data.settings.pipelineDir, wxPython: res.data.settings.wxPython });
+        setSettingsDraft({ pipelineDir: res.data.settings.pipelineDir, wxPython: res.data.settings.wxPython, filesDir: res.data.settings.filesDir });
       }
     });
     return api.onUpdate((data) => setCt(data));
@@ -492,6 +492,12 @@ function CutThroughPage({ connected }) {
                 onChange={(e) => setSettingsDraft({ ...settingsDraft, wxPython: e.target.value })}
                 onBlur={() => call('settings', () => api.updateSettings({ wxPython: settingsDraft.wxPython }))} />
             </label>
+            <label className="ct-inline ct-grow">
+              <span className="settings-label">Run files</span>
+              <input className="settings-input" value={settingsDraft.filesDir}
+                onChange={(e) => setSettingsDraft({ ...settingsDraft, filesDir: e.target.value })}
+                onBlur={() => call('settings', () => api.updateSettings({ filesDir: settingsDraft.filesDir }))} />
+            </label>
             <div className="ct-form-row">
               <label className="ct-inline ct-grow">
                 <span className="settings-label">Claude API key</span>
@@ -512,7 +518,6 @@ function CutThroughPage({ connected }) {
                 </select>
               </label>
             </div>
-            <span className="hint">Output: {ct.settings.desktopDir}</span>
             {errors.settings && <div className="notice error">{errors.settings}</div>}
           </div>
         )}

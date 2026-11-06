@@ -296,10 +296,10 @@ async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', syste
 /**
  * The whole Claude planning step. Writes Desktop/claude_edit_<LABEL>.json
  * (token ranges + reasons, client words) and Desktop/removals_<LABEL>.json
- * (frame spans for place_cuts.py), appends Desktop/cut_through_costs.csv.
+ * (frame spans for place_cuts.py), appends <files folder>/cut_through_costs.csv.
  * Returns { removalsFile, lines, cost, problems }.
  */
-async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPath, start, end, apiKey, model, effort, client,
+async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, promptPath, start, end, apiKey, model, effort, client,
   delivery = 'scripted', roles = {}, direction = '', log = () => {}, onEvent }) {
   const words = JSON.parse(fs.readFileSync(wordsPath, 'utf8'));
   const day = JSON.parse(fs.readFileSync(dayPath, 'utf8'));
@@ -347,8 +347,8 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
   const review = notes.filter((n) => Number.isInteger(n.at) && tokens[n.at])
     .map((n) => ({ frame: Math.floor(tokens[n.at].s), note: String(n.note || '').slice(0, 300) }));
 
-  const claudeFile = path.join(desktopDir, `claude_edit_${label}.json`);
-  const removalsFile = path.join(desktopDir, `removals_${label}.json`);
+  const claudeFile = path.join(outDir, `claude_edit_${label}.json`);
+  const removalsFile = path.join(outDir, `removals_${label}.json`);
   fs.writeFileSync(claudeFile, JSON.stringify({
     label, model: res.model, effort, delivery, direction: String(direction || '').trim() || undefined, seconds, usage: res.usage, cost_usd: cost, range: [s0, e0],
     shots: sv.ok.map((x) => ({ ...x, at: clock(tokens[x.from].s * frameSec),
@@ -360,8 +360,9 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
   fs.writeFileSync(removalsFile, JSON.stringify({ start: s0, end: e0, delivery, removals: spans, shots, review,
     pauses: PAUSES[delivery] || null }, null, 1));
   // a copy per model, so an Opus and a Sonnet edit of the same day can be compared
-  fs.copyFileSync(claudeFile, path.join(desktopDir, `claude_edit_${label}_${String(res.model).replace(/[^A-Za-z0-9_.-]+/g, '_')}.json`));
-  const csv = path.join(desktopDir, 'cut_through_costs.csv');
+  fs.copyFileSync(claudeFile, path.join(outDir, `claude_edit_${label}_${String(res.model).replace(/[^A-Za-z0-9_.-]+/g, '_')}.json`));
+  fs.mkdirSync(costsDir || outDir, { recursive: true });
+  const csv = path.join(costsDir || outDir, 'cut_through_costs.csv');
   const u = res.usage || {};
   if (!fs.existsSync(csv)) fs.writeFileSync(csv, 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds\n');
   fs.appendFileSync(csv, `${new Date().toISOString()},${label},solo_plan,${res.model},${effort},${u.input_tokens || 0},${u.output_tokens || 0},` +

@@ -43,7 +43,8 @@ ATEM_FILE = globals().get("ATEM_FILE")                 # the ATEM mix clip's fil
 MIC_FILES = globals().get("MIC_FILES") or {}           # mic WAV file → the angle it sits under                             # "*" or [names]: timelines on the original to move with it
 SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}                # the original is out of play in these
 REPO = r"C:\lp-app-ecosystem\editpanel"
-DESKTOP = os.path.expanduser("~/Desktop")
+OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
+os.makedirs(OUT_DIR, exist_ok=True)
 _lines: List[str] = []
 _T0 = time.time()
 
@@ -296,7 +297,7 @@ def main() -> None:
         r = dvr.scriptapp("Resolve")
     project = r.GetProjectManager().GetCurrentProject()
     mp = project.GetMediaPool()
-    plan = json.load(open(os.path.join(REPO, "cut_through", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
+    plan = json.load(open(globals().get("PLAN_FILE") or os.path.join(REPO, "cut_through", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
     name = plan["multicam"]
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — import {XML}")
 
@@ -308,7 +309,7 @@ def main() -> None:
     say(f"Before: {len(before)} multicam(s) named {name!r}: "
         + ", ".join(f"{_safe(lambda: f.GetName())} [{c.GetUniqueId()[:8]}]" for f, c in before))
 
-    path = os.path.join(DESKTOP, XML)
+    path = os.path.join(OUT_DIR, XML)
     if not os.path.exists(path):
         raise RuntimeError(f"{path} not found.")
     names_before = {project.GetTimelineByIndex(i).GetName() for i in range(1, int(project.GetTimelineCount()) + 1)}
@@ -443,9 +444,9 @@ except Exception as exc:
     say(f"\n✗ STOPPED after {time.time() - _T0:.1f}s: {exc}")
 finally:
     try:
-        with open(os.path.join(DESKTOP, f"import_{LABEL}.txt"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(OUT_DIR, f"import_{LABEL}.txt"), "w", encoding="utf-8") as fh:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "ATEM_FILE"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "ATEM_FILE", "OUT_DIR", "PLAN_FILE"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
         globals().pop(_k, None)
