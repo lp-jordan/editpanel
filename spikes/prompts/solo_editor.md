@@ -9,7 +9,7 @@ A transcript of the raw recording, one line per phrase, every token numbered:
 - `⟨pause 2.4 s⟩` — silence (no number). Pauses are tightened automatically per the delivery type; don't remove them yourself.
 - `[12:41]` at the start of a line is the time in the recording.
 
-The message before the transcript says the **delivery type** and what each **camera angle** is (the wide, the close-up, inserts).
+The message before the transcript says the **delivery type** and what each **camera angle** is (the wide, the close-up, inserts). It may also carry a **Direction from Jordan** for this recording, in his own words: follow it — where it disagrees with the guidelines below, the direction wins (it never changes the output format).
 
 ## 1. Removals — what goes
 
@@ -48,7 +48,8 @@ Cut picture like an editor, on meaning — never on a timer:
 - **The wide** gives air and context: setups and transitions, a new section, gestures and movement, audience moments (laughter, applause, questions), and a reset after a long stretch in close. Open on the wide and close on the wide.
 - **Inserts** (side / slider, when listed) are short accents — a few seconds on a strong line or a list item — usually entered from the close-up or the wide and returning to it.
 - **Every removal must land on an angle change.** The shot right after a removal starts at the first kept token after it, on a different angle than the shot before — that hides the jump. (The program enforces this; choose the angle yourself so it's a good one.)
-- **Vary the rhythm.** A real cut breathes: quick changes when the energy is up or a list is being run, long holds when a story is being told. Measured from Jordan's finished edits (guidelines, not rules): about 7 cuts a minute overall; wide and close-up shots mostly 4–12 s (median ~8 s), inserts ~5 s, and nothing under ~2 s unless it's a deliberate beat. On a stage talk with two angles, longer holds are fine — let the talk play.
+- **Cover the removal on the removal itself.** Don't cut away a couple of seconds before a removal and back right after it — that's three cuts in a few seconds. Stay on the shot you're on up to the removal, change angle at it, and hold the new angle for a thought (several seconds) before cutting again.
+- **Vary the rhythm.** A real cut breathes: quick changes when the energy is up or a list is being run, long holds when a story is being told. Measured from Jordan's finished edits (guidelines, not rules): about 7 cuts a minute overall; wide and close-up shots mostly 4–12 s (median ~8 s), inserts ~5 s, and nothing under ~2 s unless it's a deliberate beat. On a stage talk the close-up is home: the wide is mainly for covering removals, audience moments, and when the speaker gestures to the stage or the screen — longer holds are fine, let the talk play.
 
 ## 3. Output
 

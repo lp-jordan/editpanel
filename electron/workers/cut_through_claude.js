@@ -288,7 +288,7 @@ async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', syste
  * Returns { removalsFile, lines, cost, problems }.
  */
 async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPath, start, end, apiKey, model, effort, client,
-  delivery = 'scripted', roles = {}, log = () => {}, onEvent }) {
+  delivery = 'scripted', roles = {}, direction = '', log = () => {}, onEvent }) {
   const words = JSON.parse(fs.readFileSync(wordsPath, 'utf8'));
   const day = JSON.parse(fs.readFileSync(dayPath, 'utf8'));
   const frameSec = day.frame_sec[0] / day.frame_sec[1];
@@ -316,7 +316,10 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
         `one speaker (audio: ${talker || 'mic'}), `) +
       `${nWords} words, ${nUnheard} unheard-sound marks${words.unheard ? '' : ' (this transcript predates unheard-sound detection)'}.`,
     `Delivery: ${DELIVERY[delivery] || DELIVERY.scripted}`,
-    `Angles: ${roster}.`
+    `Angles: ${roster}.`,
+    // Jordan's own words for this recording — they steer the guidelines, not the hard rules
+    ...(String(direction || '').trim() ? ['', `Direction from Jordan for this recording (follow it; where it disagrees with the guidelines in your brief, it wins):`,
+      String(direction).trim()] : [])
   ].join('\n');
   log(`Asking ${model || DEFAULT_MODEL} to edit the ${((e0 - s0) * frameSec / 60).toFixed(1)}-minute recording (${nWords} words)…`);
   const t0 = Date.now();
@@ -332,7 +335,7 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
   const claudeFile = path.join(desktopDir, `claude_edit_${label}.json`);
   const removalsFile = path.join(desktopDir, `removals_${label}.json`);
   fs.writeFileSync(claudeFile, JSON.stringify({
-    label, model: res.model, effort, delivery, seconds, usage: res.usage, cost_usd: cost, range: [s0, e0],
+    label, model: res.model, effort, delivery, direction: String(direction || '').trim() || undefined, seconds, usage: res.usage, cost_usd: cost, range: [s0, e0],
     shots: sv.ok.map((x) => ({ ...x, at: clock(tokens[x.from].s * frameSec),
       words: tokens.slice(x.from, x.from + 6).map((t) => t.text || '⟨sound⟩').join(' ') })),
     removals: ok.map((r) => ({ ...r, words: tokens.slice(r.from, r.to + 1).map((t) => (t.kind === 'u' ? '⟨unheard⟩' : t.text)).join(' '),

@@ -68,6 +68,9 @@ function CutThroughPage({ connected }) {
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [settingsDraft, setSettingsDraft] = React.useState({ spikesDir: '', wxPython: '' });
   const [keyDraft, setKeyDraft] = React.useState('');
+  const [directionDraft, setDirectionDraft] = React.useState('');
+  const ctLabel = ct && ct.label;
+  React.useEffect(() => { setDirectionDraft((ct && ct.direction) || ''); }, [ctLabel]);
 
   const apply = React.useCallback((res, key) => {
     if (res && res.data) setCt(res.data);
@@ -275,6 +278,13 @@ function CutThroughPage({ connected }) {
               </label>
             </div>
           )}
+          {ct.planKind && st.status !== 'running' && (
+            <label className="ct-direction">
+              <span className="settings-label">Direction for Claude</span>
+              <textarea className="settings-input" rows={3} value={directionDraft}
+                onChange={(e) => setDirectionDraft(e.target.value)} />
+            </label>
+          )}
           {summary && (
             <div className="ct-fact-row">
               <span className="dim">{summary.pieces} pieces · {summary.removals} removals{summary.keptMin != null ? ` · ${summary.keptMin.toFixed(1)} min kept` : ''}</span>
@@ -355,7 +365,7 @@ function CutThroughPage({ connected }) {
           )}
           {ct.planKind && (
             <button type="button" className={btnClass(key)} disabled={busy || steps.transcribe.status !== 'done'}
-              onClick={() => call(key, () => api.runPlan({ ...planForm, delivery, punch: solo ? punch : '' }))}>{ct.planExists ? 'Redraft' : 'Draft'}</button>
+              onClick={() => call(key, () => api.runPlan({ ...planForm, delivery, punch: solo ? punch : '', direction: directionDraft }))}>{ct.planExists ? 'Redraft' : 'Draft'}</button>
           )}
         </>
       );

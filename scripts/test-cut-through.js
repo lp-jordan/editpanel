@@ -452,7 +452,24 @@ class WhisperModel:
   assert.deepStrictEqual(plan.audio, { source: 'camera', angle: 'Camera 1' });
   assert.deepStrictEqual(plan.mics, {});
   assert.ok(!JSON.stringify(plan).includes('managers'), 'words leaked into the plan');
-  console.log('✓ plan_solo.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio');
+  // Claude's shots across removals: no ping-pong (a short other-angle shot, the splice, straight back)
+  const fit = JSON.parse(execFileSync(PY, ['-c', String.raw`
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import plan_solo as p
+P = lambda f, t, a, j=False: {"from": f, "to": t, "angle": a, "kind": "claude", "join": j}
+out = {
+  "across": p.fit_angles([P(0, 300, "A"), P(300, 348, "B"), P(348, 396, "B", True), P(396, 700, "A")], ["A", "B"]),
+  "flip": p.fit_angles([P(0, 300, "A"), P(300, 700, "A", True), P(700, 900, "B")], ["A", "B"]),
+  "pick": p.fit_angles([P(0, 300, "A"), P(300, 600, "B"), P(600, 900, "B", True), P(900, 1200, "A")], ["A", "B", "C"]),
+}
+print(json.dumps({k: [[x["from"], x["to"], x["angle"]] for x in v] for k, v in out.items()}))
+`, SPIKES], { encoding: 'utf8' }));
+  // B straddled the removal: rather than A | B 2 s ‖ A 2 s | B … the cut moves onto the join
+  assert.ok(fit.across.every((x, k) => !k || x[2] !== fit.across[k - 1][2]) && fit.across.length <= 3, JSON.stringify(fit.across));
+  assert.deepStrictEqual(fit.flip.map((x) => x[2]), ['A', 'B']);   // the opening stays; the shot after the removal changes
+  assert.ok(fit.pick.every((x) => x[2] !== 'C'), JSON.stringify(fit.pick));
+  console.log('✓ plan_solo.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio, no ping-pong at removals');
 }
 
 // ── 3. orchestrator end to end ─────────────────────────────────
@@ -678,7 +695,8 @@ sys.stdout.write(json.dumps(res))`;
   c3.select({ mc: 'mc_test', label: 'Solo2' });
   assert.strictEqual(c3.snapshot().planKind, 'solo');
   assert.ok(!fs.existsSync(path.join(DESKTOP, 'levels_Solo2.json')));
-  const cl = (await c3.runPlan({ extra: 'Camera 4', delivery: 'scripted' })).steps.plan;
+  const cl = (await c3.runPlan({ extra: 'Camera 4', delivery: 'scripted', direction: 'Use the wide only to hide cuts.' })).steps.plan;
+  assert.strictEqual(c3.snapshot().direction, 'Use the wide only to hide cuts.');
   assert.strictEqual(cl.status, 'done', `${cl.error}\n${cl.log.join('\n')}`);
   assert.ok(fs.existsSync(path.join(DESKTOP, 'levels_Solo2.json')), 'no levels-only pass');
   const req = requests[0];
@@ -688,7 +706,8 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(req.output_config.format.type, 'json_schema');
   assert.strictEqual(req.fallbacks, 'default');
   assert.deepStrictEqual(req.betas, ['server-side-fallback-2026-07-01']);
-  assert.ok(req.system.includes('Keep the last good take') && req.system.includes('Cut on the thought'));
+  assert.ok(req.system.includes('Keep the last good take') && req.system.includes('Cut on the thought') && req.system.includes('Direction from Jordan'));
+  assert.ok(/Direction from Jordan for this recording[^\n]*\nUse the wide only to hide cuts\./.test(req.messages[0].content), req.messages[0].content.slice(0, 600));
   assert.deepStrictEqual(req.output_config.format.schema.properties.shots.items.properties.angle.enum,
     ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4']);
   assert.strictEqual(req.max_tokens, 128000);

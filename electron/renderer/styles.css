@@ -4748,6 +4748,8 @@ button.status-bar-chip-btn:disabled {
 .ct-form-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
 .ct-inline { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ct-grow { flex: 1 1 220px; }
+.ct-direction { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.ct-direction textarea { width: 100%; resize: vertical; font: inherit; }
 .ct-num { width: 96px; }
 .ct-label { width: 160px; }
 .ct-facts { display: flex; flex-direction: column; gap: 10px; }

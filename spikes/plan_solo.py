@@ -54,6 +54,71 @@ CUES = [("sorry",), ("let", "me", "start"), ("start", "over"), ("one", "more", "
         ("one", "two", "three"), ("1", "2", "3"), ("take", "two")]
 
 
+def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24):
+    """Claude's shots → the final angles, all at once (2026-11-05). Hard rule: the angle changes at
+    every removal join. Flipping only the piece after a join made ping-pong — a 2 s shot of the other
+    angle, the splice, straight back: 3–4 cuts in a few seconds. Instead: the cheapest assignment,
+    where cost = frames shown on an angle Claude didn't pick + a penalty per frame a shot runs short
+    of `hold` + a little per cut that isn't at a join. So a short shot next to a removal is usually
+    absorbed (the cut moves onto the join) rather than answered with another cut. `angles` is in order
+    of preference for a stand-in (the wide, the close-up, then the rest); the opening and closing
+    shots count double (Claude opens and closes on purpose)."""
+    INF = float("inf")
+    n = len(pieces)
+    if n < 2:
+        return pieces
+    rank = {g: k for k, g in enumerate(angles)}
+
+    def dev(i, g):
+        if pieces[i]["angle"] == g:
+            return 0
+        w = (2 if i in (0, n - 1) else 1) * (1 + 0.1 * rank[g])
+        return w * (pieces[i]["to"] - pieces[i]["from"])
+
+    def short(r, end):
+        return 0 if r is None else w_short * max(0, hold - (end - r))
+
+    def run_key(r, end):
+        return None if r is None or end - r >= hold else r
+
+    # layer[i]: {(angle, start of the current shot if it is still short): (cost, previous key)}
+    layer = [{} for _ in range(n)]
+    for g in angles:
+        layer[0][(g, run_key(pieces[0]["from"], pieces[0]["to"]))] = (dev(0, g), None)
+    for i in range(1, n):
+        p, prev_to = pieces[i], pieces[i - 1]["to"]
+        for (g, r), (c, _) in layer[i - 1].items():
+            for h in angles:
+                if h == g and p["join"]:
+                    continue                                   # never the same angle across a removal
+                if h == g:
+                    key, cc = (h, run_key(r, p["to"])), c
+                else:
+                    key = (h, run_key(p["from"], p["to"]))
+                    cc = c + short(r, prev_to) + (0 if p["join"] else w_cut)
+                cc += dev(i, h)
+                if cc < layer[i].get(key, (INF,))[0]:
+                    layer[i][key] = (cc, (g, r))
+    key = min(layer[-1], key=lambda k: layer[-1][k][0] + short(k[1], pieces[-1]["to"]))
+    pick = [None] * n
+    for i in range(n - 1, -1, -1):
+        pick[i] = key[0]
+        key = layer[i][key][1]
+    out = []
+    for p, g in zip(pieces, pick):
+        changed = g != p["angle"]
+        if out and not p["join"] and out[-1]["angle"] == g:
+            out[-1]["to"] = p["to"]
+            continue
+        out.append({**p, "angle": g, "kind": "forced" if changed else p["kind"]})
+    return out
+
+
+def cam_no(name: str) -> int:
+    m = re.search(r"(\d+)\s*$", name or "")
+    return int(m.group(1)) if m else 999
+
+
 def norm(w: str) -> str:
     return re.sub(r"[^a-z0-9'\-]", "", w.lower()).strip("-'")
 
@@ -364,10 +429,43 @@ def main(argv) -> None:
                     shots[-1]["to"] = y0                   # same angle again, or a <1.5 s blink: hold
                     continue
                 shots.append({"from": x0, "to": y0, "angle": ang, "kind": "claude", "join": join})
-        for x, y in zip(shots, shots[1:]):                 # a removal must sit on an angle change
-            if y["angle"] == x["angle"] and len(known) > 1:
-                y["angle"] = punch if x["angle"] == wide else wide
-                y["kind"] = "forced"
+        if len(known) > 1:
+            hold = 40 if multi else 72
+            prefer = [wide, punch] + [e for e in extra if e not in (wide, punch)]
+            prefer += [a for a in sorted(known, key=cam_no) if a not in prefer]
+            shots = fit_angles(shots, [a for a in prefer if a in known], hold=hold)
+
+            def cut_between(lo, hi):
+                """A picture cut in (lo, hi): the first breath before a word (≥ 3 fr gap), else any word."""
+                ws = [w for w in W if lo < w["s"] < hi and not removed(int(w["s"]))]
+                prev = {id(w): q["e"] for q, w in zip(W, W[1:])}
+                best = next((w for w in ws if w["s"] - prev.get(id(w), -99) >= 3), ws[0] if ws else None)
+                if not best:
+                    return None
+                pe = prev.get(id(best), best["s"] - 2)
+                return quietest(pe + 1, best["s"]) if LV and best["s"] - pe >= 2 else int(best["s"]) - 1
+
+            # the cover cut goes ON the removal (Jordan, 2026-11-05): X | Y short ‖ X  →  X ‖ Y | X,
+            # and a short cover after a join holds a beat:  X ‖ Y short | X  →  X ‖ Y (≥ hold) | X
+            k = 1
+            while k < len(shots):
+                x, y = shots[k - 1], shots[k]
+                nxt = shots[k + 1] if k + 1 < len(shots) else None
+                ylen = y["to"] - y["from"]
+                if (nxt and nxt["join"] and not y["join"] and ylen < hold and x["angle"] == nxt["angle"]
+                        and nxt["to"] - nxt["from"] >= 2 * hold):
+                    c = cut_between(nxt["from"] + max(ylen, hold), nxt["to"] - hold)
+                    if c is not None:                  # X runs to the join, Y covers it, back to X
+                        x["to"] = y["to"]
+                        y.update({"from": nxt["from"], "to": c, "join": True, "kind": "forced"})
+                        nxt.update({"from": c, "join": False})
+                        shots[k - 1:k + 2] = [x, y, nxt]
+                if (y["join"] and nxt and not nxt["join"] and y["to"] - y["from"] < hold
+                        and nxt["to"] - nxt["from"] >= 2 * hold):
+                    c = cut_between(y["from"] + hold, nxt["to"] - hold)
+                    if c is not None:                  # hold the cover a beat longer
+                        y["to"], nxt["from"] = c, c
+                k += 1
     cycle = ["wide", "punch"] * 2 + (["extra"] if extra else [])
     if not claude_shots:
         pick = {"wide": wide, "punch": punch}
@@ -416,7 +514,7 @@ def main(argv) -> None:
             if y["angle"] == x["angle"] and punch != wide:
                 y["angle"], y["kind"] = (punch, "punch") if x["angle"] == wide else (wide, "wide")
     why = {"wide": "wide", "punch": "punch-in", "extra": "insert", "claude": "claude shot",
-           "forced": "angle change forced at a removal"}
+           "forced": "angle changed around a removal"}
     video = [{"in": s["from"], "out": s["to"], "angle": s["angle"],
               "why": why[s["kind"]] + (" (after a removal)" if s["join"] else "")} for s in shots]
     if not claude_shots:
@@ -476,7 +574,7 @@ def main(argv) -> None:
     lens = sorted((v["out"] - v["in"]) / fps for v in video)
     print(f"shots: {'Claude' if claude_shots else 'rule rhythm'}; median {lens[len(lens) // 2]:.1f} s, "
           f"10–90% {lens[len(lens) // 10]:.1f}–{lens[len(lens) * 9 // 10]:.1f} s"
-          + (f"; {sum(1 for v in video if v['why'].startswith('angle change forced'))} angle(s) forced at removals"
+          + (f"; {sum(1 for v in video if v['why'].startswith('angle changed around'))} shot(s) changed around removals"
              if claude_shots else "") + f"; pauses > {pause_max} fr → {pause_left} fr"
           + ("; cuts placed from the waveform" if LV else "; cuts on word times (no levels file)"))
 

@@ -185,8 +185,14 @@ function createCutThrough(opts) {
     };
   }
 
+  /** Jordan's plain-language direction for Claude, saved per label on this machine. */
+  function direction(label = s.label) {
+    const p = (getPrefs() || {}).cutThrough || {};
+    return (label && (p.directions || {})[label]) || '';
+  }
+
   function snapshot() {
-    return { ...s, settings: settings(), files: s.label ? files() : null, now: Date.now() };
+    return { ...s, direction: direction(), settings: settings(), files: s.label ? files() : null, now: Date.now() };
   }
 
   // Log lines can arrive many per second; coalesce pushes to ~8/s.
@@ -534,7 +540,7 @@ function createCutThrough(opts) {
       `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`)]);
   }
 
-  async function runPlan({ start, end, extra, punch, cuts, delivery } = {}) {
+  async function runPlan({ start, end, extra, punch, cuts, delivery, direction: note } = {}) {
     if (!s.day) throw new Error('Run Prep first');
     const kind = planKind(s.day);
     const f = files();
@@ -546,6 +552,10 @@ function createCutThrough(opts) {
     const cutList = parseCuts(cuts);
     const st0 = settings();
     if (!claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
+    if (note !== undefined) {
+      const p = (getPrefs() || {}).cutThrough || {};
+      setPrefs({ cutThrough: { ...p, directions: { ...(p.directions || {}), [s.label]: String(note).trim().slice(0, 4000) } } });
+    }
     const st = begin('plan');
     const started = Date.now();
     const o = { files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, punch: punch || null, cuts: cutList };
@@ -580,6 +590,7 @@ function createCutThrough(opts) {
           start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort,
           delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
           roles: { punch: o.punch || undefined, extra: o.extra ? [o.extra] : [] },
+          direction: direction(),
           client: claudeClient,
           log: (line) => { pushLog('plan', line); emit(); },
           onEvent: (ev) => {
