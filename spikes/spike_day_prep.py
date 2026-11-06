@@ -93,6 +93,9 @@ def describe(xml: str, mc_name: str = None) -> dict:
         return unquote((rep.get("src") if rep is not None else "").replace("file://localhost/", ""))
 
     angles, mics, cams, length = [], [], [], Fraction(0)
+    # an audio-only asset of a file that is also a picture asset = that camera's own sound on its
+    # own track (Bill Smith mc_1, 2026-11-05): camera audio, not a mic WAV
+    pic_paths = {path(i) for i, a in assets.items() if a.get("hasVideo") == "1"}
 
     def visit(el, angle, pos0, start0):
         for ch in el:
@@ -102,13 +105,14 @@ def describe(xml: str, mc_name: str = None) -> dict:
             dur = _s(ch.get("duration"))
             ref = ch.get("ref")
             a = assets.get(ref)
-            if a is not None and a.get("hasVideo") != "1" and a.get("hasAudio") == "1":
+            cam_track = a is not None and a.get("hasVideo") != "1" and a.get("hasAudio") == "1" and path(ref) in pic_paths
+            if a is not None and a.get("hasVideo") != "1" and a.get("hasAudio") == "1" and not cam_track:
                 start = _s(ch.get("start"))
                 mics.append({"name": a.get("name"), "angle": angle, "path": path(ref),
                              "file_zero_sec": float(pos - start),      # where the file's 0:00 sits
                              "from_sec": float(pos), "to_sec": float(pos + dur),
                              "channels": int(a.get("audioChannels") or 1)})
-            elif a is not None and a.get("hasVideo") == "1" and a.get("hasAudio") == "1":
+            elif a is not None and a.get("hasAudio") == "1" and (a.get("hasVideo") == "1" or cam_track):
                 # camera clip with its own audio (ATEM mix or in-camera): fallback when no WAVs.
                 # Its start is in the file's timecode, which begins at the asset's start.
                 start = _s(ch.get("start")) - _s(a.get("start"))

@@ -102,7 +102,21 @@ def atem_out(media_xml: str, atem_angle: str = "Camera 1", strip_audio: bool = T
 LAST_ATEM = None                       # file name of the ATEM mix clip in the last build (for the import)
 
 
-def split_off_angle_tracks(media_xml: str, remove: bool = True):
+def camera_audio_refs(resources: str) -> set:
+    """Audio-only assets that are a CAMERA file's own sound (same file as a picture asset). Resolve
+    exports an angle that way when the camera's audio sits on its own track under the picture
+    (Bill Smith mc_1, 2026-11-05) — that's the camera audio, not a mic WAV, and must stay in the copy."""
+    pics, auds = set(), {}
+    for m in re.finditer(r"<asset ([^>]*)>\s*<media-rep [^>]*src=\"([^\"]+)\"", resources):
+        a = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+        if a.get("hasVideo") == "1":
+            pics.add(m.group(2))
+        elif a.get("hasAudio") == "1":
+            auds[a.get("id")] = m.group(2)
+    return {ref for ref, src in auds.items() if src in pics}
+
+
+def split_off_angle_tracks(media_xml: str, remove: bool = True, keep_refs: set = frozenset()):
     """Resolve exports an angle's extra tracks (the mic WAV Jordan placed under a camera) as a
     second run in the same list, restarting at offset 0. On import Resolve places those clips by
     TIMECODE, and the recorder's WAVs start at 00:00:00:00, so they land hours before the video
@@ -121,6 +135,9 @@ def split_off_angle_tracks(media_xml: str, remove: bool = True):
                 run += 1
             end = o + secs(el.get("duration", "0s"))
             if run:
+                refs = {x.get("ref") for x in el.iter() if x.get("ref")}
+                if refs & set(keep_refs):
+                    continue                           # the camera's own audio: keep it in the angle
                 if remove:
                     ang.remove(el)
                 if el.tag == "asset-clip" and ang.get("name") not in wavs:
@@ -165,8 +182,11 @@ def main(argv=None) -> list:
                  if not part or k == part]
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
     angle_wavs = {}
+    cam_refs = camera_audio_refs(resources)
+    if cam_refs:
+        print(f"  camera audio on its own track under the picture ({len(cam_refs)} file(s)): kept in the multicam")
     for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
-        fixed, found = split_off_angle_tracks(block, remove=not keep_tracks)
+        fixed, found = split_off_angle_tracks(block, remove=not keep_tracks, keep_refs=cam_refs)
         if found:
             if not keep_tracks:
                 resources = resources.replace(block, fixed)

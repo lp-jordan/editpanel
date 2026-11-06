@@ -452,6 +452,24 @@ class WhisperModel:
   assert.deepStrictEqual(plan.audio, { source: 'camera', angle: 'Camera 1' });
   assert.deepStrictEqual(plan.mics, {});
   assert.ok(!JSON.stringify(plan).includes('managers'), 'words leaked into the plan');
+  // a camera's own audio on its own track under the picture (Bill Smith mc_1): camera audio, kept in the copy
+  const sep = JSON.parse(execFileSync(PY, ['-c', String.raw`
+import json, re, sys, io, contextlib
+sys.path.insert(0, sys.argv[1])
+with contextlib.redirect_stdout(io.StringIO()):
+    import make_fcpxml as m
+res = '''<resources><media name="mc" id="r5"><multicam tcStart="0/1s"><mc-angle name="Angle 1" angleID="a1">
+<clip offset="0/1s" duration="10/1s" start="100/1s"><video offset="100/1s" duration="10/1s" start="100/1s" ref="r2"/></clip>
+<clip offset="0/1s" duration="10/1s" start="100/1s"><audio offset="100/1s" duration="10/1s" start="100/1s" ref="r4"/></clip>
+</mc-angle></multicam></media>
+<asset hasVideo="1" hasAudio="1" id="r2" start="100/1s"><media-rep src="file://localhost/N:/cam.MXF" kind="original-media"/></asset>
+<asset hasAudio="1" id="r4" start="100/1s"><media-rep src="file://localhost/N:/cam.MXF" kind="original-media"/></asset></resources>'''
+refs = m.camera_audio_refs(res)
+blk = re.findall(r"<media [^>]*>\s*<multicam .*?</media>", res, re.S)[0]
+fixed, wavs = m.split_off_angle_tracks(blk, keep_refs=refs)
+print(json.dumps({"refs": sorted(refs), "kept": 'ref="r4"' in fixed, "wavs": len(wavs)}))
+`, SPIKES], { encoding: 'utf8' }));
+  assert.deepStrictEqual(sep, { refs: ['r4'], kept: true, wavs: 0 });
   // Claude's shots across removals: no ping-pong (a short other-angle shot, the splice, straight back)
   const fit = JSON.parse(execFileSync(PY, ['-c', String.raw`
 import json, sys
