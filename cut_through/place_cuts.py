@@ -75,6 +75,8 @@ def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24):
         if pieces[i]["angle"] == g:
             return 0
         w = (2 if i in (0, n - 1) else 1) * (1 + 0.1 * rank[g])
+        if i + 1 < n and pieces[i + 1]["join"] and not pieces[i]["join"]:
+            w *= 1.5                       # change the angle AFTER a removal, not just before it
         return w * (pieces[i]["to"] - pieces[i]["from"])
 
     def short(r, end):
@@ -333,13 +335,16 @@ def main(argv) -> None:
     gp = (given or {}).get("pauses") or {}                # the delivery's pause rule (stage: looser)
     pause_max = int(o.get("pause_max", gp.get("max", PAUSE_MAX)))
     pause_left = int(o.get("pause_left", gp.get("left", PAUSE_LEFT)))
+    min_save = int(o.get("pause_min_save", gp.get("min_save", {"stage": 36, "convo": 24}.get((given or {}).get("delivery"), 0))))
+    shot_starts = [x.get("start") or x.get("at") for x in (given or {}).get("shots") or []]
     loud = [(int(u["s"]), int(u["e"]) + 1) for u in data.get("unheard") or []
             if (talker is None or u.get("mic") == talker or (multi and u.get("mic") in people)) and start <= u["s"] < end]
     speech = sorted([(int(w["s"]), int(w["e"]) + 1) for w in W if not removed(int(w["s"]))] +
                     [x for x in loud if not removed(x[0])])
     last = None
     for s, e in speech:
-        if last is not None and s - last > pause_max:
+        free = any(last is not None and last <= f <= s for f in shot_starts)   # a shot change is here anyway
+        if last is not None and s - last > pause_max and (free or s - last - pause_left >= min_save):
             if LV:                                      # leave pause_left frames of air, split around the join
                 a = after_sound(last, s - 2, pause_left // 2)
                 b = before_sound(s, a + 1, pause_left - pause_left // 2)
@@ -472,6 +477,31 @@ def main(argv) -> None:
                     if c is not None:                  # hold the cover a beat longer
                         y["to"], nxt["from"] = c, c
                 k += 1
+
+            # a cover that runs long (a removal forced the change and Claude's next shot is far off):
+            # hold it a beat, then back to Claude's angle at a breath — the other angle mostly hides
+            # cuts (Bill Smith stage talk, 2026-11-05: 36 s on the wide after a 0.5 s pause trim)
+            out = []
+            for k, sh in enumerate(shots):
+                home = angle_at(sh["from"])
+                nxt = shots[k + 1] if k + 1 < len(shots) else None
+                if sh["kind"] == "forced" and sh["join"] and home != sh["angle"] and sh["to"] - sh["from"] > 3 * hold:
+                    c = cut_between(sh["from"] + hold, sh["from"] + 2 * hold)
+                    if c is not None and sh["to"] - c >= hold:
+                        # after the cover, Claude's own shots again (its marks inside this stretch)
+                        cuts = [c] + [x["at"] for x in marks if c < x["at"] < sh["to"]]
+                        segs = [{"from": f0, "to": f1, "angle": angle_at(f0), "kind": "claude", "join": False}
+                                for f0, f1 in zip(cuts, cuts[1:] + [sh["to"]])]
+                        if not (nxt and nxt["join"] and nxt["angle"] == segs[-1]["angle"]):
+                            out += [{**sh, "to": c}] + segs
+                            continue
+                out.append(sh)
+            shots = []
+            for sh in out:
+                if shots and not sh["join"] and shots[-1]["angle"] == sh["angle"]:
+                    shots[-1]["to"] = sh["to"]
+                else:
+                    shots.append(sh)
     cycle = ["wide", "punch"] * 2 + (["extra"] if extra else [])
     if not claude_shots:
         pick = {"wide": wide, "punch": punch}
@@ -595,9 +625,11 @@ def main(argv) -> None:
                 jump = lv_a[len(lv_a) // 2] - lv_b[len(lv_b) // 2]
                 if abs(jump) >= 8:
                     mark(r["from"], "Yellow", "Level jump", f"speech {'louder' if jump > 0 else 'quieter'} by {abs(jump):.0f} dB across the cut")
+    # a clipped word only matters where a cut follows it (elsewhere the audio plays on untouched)
     for w in W:
-        if "e0" in w and not removed(int(w["s"])) and any(a <= w["s"] < b for a, b in kept):
-            mark(w["e"], "Yellow", "Clipped word", f"\"{w['w'].strip()}\" cut short where it goes quiet")
+        if ("e0" in w and not removed(int(w["s"])) and any(a <= w["s"] < b for a, b in kept)
+                and any(0 <= r["from"] - w["e"] <= 12 for r in merged)):
+            mark(w["e"], "Yellow", "Clipped word", f"\"{w['w'].strip()}\" ends right at a cut, where it went quiet — listen for the tail")
     for x in (given or {}).get("review") or []:
         if start <= x["frame"] < end:
             mark(x["frame"], "Red", "Check", x["note"])

@@ -553,6 +553,37 @@ print(json.dumps({"v": v, "line": line, "marks": tl.m, "tr": [i.tr for i in tl.i
   assert.deepStrictEqual(wr.marks, { 50: 'Red', 200: 'Yellow' });
   assert.deepStrictEqual(wr.tr, [[2], [2], []], wr.line);
   assert.ok(/markers 2\/2 \(red 1, yellow 1\); backchannels opened quieter: 1\/1, 2 crossfade/.test(wr.line), wr.line);
+  // stage (Bill Smith, 2026-11-05): a short pause isn't worth an angle change; a trimmed long one is
+  // covered on the other angle for a beat, then back to Claude's shot (and its later shots kept)
+  const stageDir = path.join(TMP, 'stage');
+  fs.mkdirSync(stageDir, { recursive: true });
+  const stageOut = JSON.parse(execFileSync(PY, ['-c', String.raw`
+import json, os, sys, subprocess
+os.chdir(sys.argv[2])
+fps = 24000 / 1001
+words = []
+def say(t0, t1):
+    t = t0
+    while t < t1:
+        s = t * fps
+        words.append({"mic": "Angle 1", "w": "word", "s": round(s, 1), "e": round(s + 8, 1), "p": 0.9, "own": True, "clear": True})
+        t += 0.5
+say(1, 20); say(22.0, 60); say(64, 120)
+json.dump({"label": "S", "multicam": "mc", "fps": fps, "frame_sec": [1001, 24000], "angles": ["Angle 1", "Angle 2"], "mics": ["Angle 1"], "words": words}, open("words_S.json", "w"))
+json.dump({"multicam": "mc", "fps": fps, "frame_sec": [1001, 24000], "tc_start_sec": 0, "length_sec": 125, "angles": ["Angle 1", "Angle 2"],
+  "mics": [{"name": "c.mxf", "angle": "Angle 1", "path": "x", "file_zero_sec": 0, "from_sec": 0, "to_sec": 125, "channels": 1, "camera": True}],
+  "audio_source": "camera", "label": "S"}, open("day_S.json", "w"))
+st = lambda sec, a: {"at": int(sec * fps), "start": sec * fps, "prev_end": sec * fps - 4, "angle": a}
+json.dump({"start": 0, "end": int(125 * fps), "delivery": "stage", "removals": [], "shots": [{**st(1, "Angle 2"), "prev_end": None}, st(100, "Angle 1")],
+  "review": [], "pauses": {"max": 36, "left": 18, "min_save": 36}}, open("removals_S.json", "w"))
+subprocess.run([sys.executable, os.path.join(sys.argv[1], "place_cuts.py"), "words_S.json", "day_S.json", "S_plan.json", "removals=removals_S.json"],
+               check=True, stdout=subprocess.DEVNULL)
+p = json.load(open("S_plan.json"))
+print(json.dumps({"removals": [r["why"] for r in p["removals"]], "video": [[v["angle"], round((v["out"] - v["in"]) / fps, 1)] for v in p["video"]]}))
+`, PIPELINE, stageDir], { encoding: 'utf8' }));
+  assert.deepStrictEqual(stageOut.removals.length, 1, JSON.stringify(stageOut));          // the 2 s pause stays
+  assert.deepStrictEqual(stageOut.video.map((v) => v[0]), ['Angle 2', 'Angle 1', 'Angle 2', 'Angle 1'], JSON.stringify(stageOut));
+  assert.ok(stageOut.video[1][1] >= 3 && stageOut.video[1][1] <= 6, JSON.stringify(stageOut));   // a beat of cover, not 36 s
   // Claude's shots across removals: no ping-pong (a short other-angle shot, the splice, straight back)
   const fit = JSON.parse(execFileSync(PY, ['-c', String.raw`
 import json, sys
@@ -889,7 +920,7 @@ sys.stdout.write(json.dumps(res))`;
   const stage = (await c3.runPlan({ delivery: 'stage' })).steps.plan;
   assert.strictEqual(stage.status, 'done', stage.error);
   assert.ok(/Delivery: Live on stage/.test(requests[requests.length - 1].messages[0].content));
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(DESKTOP, 'removals_Solo2.json'), 'utf8')).pauses, { max: 36, left: 18 });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(DESKTOP, 'removals_Solo2.json'), 'utf8')).pauses, { max: 36, left: 18, min_save: 36 });
   assert.ok(stage.log.some((l) => /pauses > 36 fr → 18 fr/.test(l)), stage.log.join('\n'));
   // a declined / broken answer fails the step with the reason, and keeps the log
   fakeClaude.beta.messages.stream = () => ({ on: () => {}, finalMessage: async () => ({ stop_reason: 'refusal', stop_details: { category: 'test' }, content: [], usage: {} }) });

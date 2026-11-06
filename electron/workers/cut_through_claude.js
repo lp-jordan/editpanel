@@ -35,7 +35,9 @@ const DELIVERY = {
 };
 // stage talks mostly lose dead air: pauses longer than 1.5 s go down to ~0.75 s (else > 30 fr → 11 fr)
 // conversations: pauses are mostly turn-taking — only over 2 s, down to ~0.75 s
-const PAUSES = { stage: { max: 36, left: 18 }, convo: { max: 48, left: 18 } };
+// min_save: a pause trim costs an angle change, so on stage / in conversation only trim when it saves
+// that much (or a shot change already sits in the pause) — Bill Smith 2026-11-05: 0.5 s trims forced 8 extra cuts
+const PAUSES = { stage: { max: 36, left: 18, min_save: 36 }, convo: { max: 48, left: 18, min_save: 24 } };
 const LINE_GAP_SEC = 0.6;
 const SHOW_PAUSE_SEC = 1.5;
 
