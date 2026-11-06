@@ -197,7 +197,6 @@ function createCutThrough(opts) {
   };
   let child = null;                 // transcribe / plan child process
   let canceled = false;
-  const alignFailed = new Set();                    // words files this session could not align (WhisperX missing)
 
   function settings() {
     const p = (getPrefs() || {}).cutThrough || {};
@@ -749,7 +748,7 @@ function createCutThrough(opts) {
       // levels-only pass over the audio (no Whisper), which also adds the loud-without-words marks
       // a transcript from before WhisperX alignment (2026-11-06): pin its words to the audio
       // once (no Whisper, minutes on the GPU) — Whisper's own word times cut words in half
-      if (!fs.existsSync(f.align) && !alignFailed.has(f.words)) {
+      if (!fs.existsSync(f.align)) {
         st.progress = { phase: 'Aligning words to the audio', phaseAt: Date.now(), bar: null };
         emit();
         const al = await runChild('plan', st0.wxPython, [path.join(st0.pipelineDir, 'transcribe.py'), s.label, `dir=${runDir()}`, 'align_only=1'], {
@@ -771,9 +770,12 @@ function createCutThrough(opts) {
           finish('plan', { error: null, report: st.log.slice(), reportFile: saveLog('plan') });
           return snapshot();
         }
+        // unaligned word times cut words in half (Elevate, 2026-11-06: LP1 had no WhisperX and
+        // Plan carried on quietly) — stop instead, and say why
         if (al.error || al.code !== 0 || !fs.existsSync(f.align)) {
-          alignFailed.add(f.words);                     // don't re-read the whole day on every draft
-          pushLog('plan', 'Words not aligned to the audio — cuts will be less exact (see the lines above)');
+          finish('plan', { error: 'Words not aligned to the audio, so cuts would clip words. WhisperX is missing or failed in the Whisper Python (see report).',
+            report: st.log.slice(), reportFile: saveLog('plan') });
+          return snapshot();
         }
       }
       if (!fs.existsSync(f.levels)) {
