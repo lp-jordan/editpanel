@@ -221,11 +221,23 @@ def self_check(project: Any, tl: Any) -> bool:
         if not its or not modes:
             continue
         its = [x for x in its if _safe(lambda: x.GetClipEnabled(), True)] or its   # an open (enabled) stretch
-        lv = _safe(lambda: its[0].AnalyzeAudioLevels(modes[0]), {}) or {}
-        lufs = lv.get("Integrated")
+        # the longest clips, not the first: integrated loudness needs ≥ 0.4 s of audio, and since
+        # 1.2.95 the first piece can be a short head before a removal — a crumb reads -100 LUFS
+        # (Elevate, 2026-11-06: false "silent"). Silent only when every one measured is silent.
+        longest = sorted(its, key=lambda x: -(_safe(lambda: x.GetDuration(), 0) or 0))[:3]
+        lufs, used = None, longest[0]
+        for it in longest:
+            lv = _safe(lambda: it.AnalyzeAudioLevels(modes[0]), {}) or {}
+            v = lv.get("Integrated")
+            if v is not None:
+                lufs, used = v, it
+                if v > -90:
+                    break
         silent = lufs is not None and lufs <= -90
         ok &= not silent
-        say(f"    check A{k} ({clip_label(its[0])}): {lufs} LUFS {'✗ silent' if silent else '✓' if lufs is not None else '(not measured)'}")
+        secs = (_safe(lambda: used.GetDuration(), 0) or 0) / max(1.0, float(_safe(lambda: tl.GetSetting("timelineFrameRate"), 24) or 24))
+        say(f"    check A{k} ({clip_label(used)}, longest {secs:.1f} s clip): {lufs} LUFS "
+            f"{'✗ silent' if silent else '✓' if lufs is not None else '(not measured)'}")
     return ok
 
 
