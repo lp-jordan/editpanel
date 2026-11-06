@@ -39,8 +39,16 @@ fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
   assert.strictEqual(ct.parseProgress('  reading 1/3 CAM1_01.mov  45%  812 MB'), null);
   assert.strictEqual(ct.parseProgress('  Camera 3 [#########################] 100%  22.6/22.6 min  180s').pct, 100);
   assert.strictEqual(ct.sanitizeLabel(' Frenzy Q4 / mc_2 '), 'Frenzy_Q4_mc_2');
-  assert.deepStrictEqual(ct.parseCuts('100-200, 300-450'), ['100-200', '300-450']);
-  assert.throws(() => ct.parseCuts('300-100'));
+  // Plan's From/To: the multicam's timecode, or time from its start (Bill Smith's mc_1 clock)
+  const billDay = { frame_sec: [1001, 24000], tc_start_sec: 176475299 / 4000, length_sec: 2699.5, fps: 23.976 };
+  assert.strictEqual(ct.frameToTc(0, billDay), '12:14:34:18');
+  assert.strictEqual(ct.parseSection(ct.frameToTc(1000, billDay), billDay), 1000);
+  assert.strictEqual(ct.parseSection('12:20:00:00', billDay), ct.parseSection('12:20:00', billDay));
+  assert.strictEqual(ct.parseSection('12:30', billDay), ct.parseSection('0:12:30', billDay));   // 12 min 30 s in
+  assert.strictEqual(ct.parseSection('5', billDay), Math.round(300 / (1001 / 24000)));        // 5 minutes in
+  assert.strictEqual(ct.parseSection('', billDay), null);
+  assert.throws(() => ct.parseSection('99:00', billDay), /outside the multicam/);
+  assert.throws(() => ct.parseSection('abc', billDay), /isn't a time/);
   assert.strictEqual(ct.planKind({ mics: [{ angle: 'Camera 2' }, { angle: 'Camera 2' }] }), 'solo');
   assert.strictEqual(ct.planKind({ mics: [{ angle: 'Camera 2' }, { angle: 'Camera 3' }] }), 'convo');
   assert.strictEqual(ct.dayFrames({ length_sec: 120.12, frame_sec: [1001, 24000] }), 2880);
@@ -683,7 +691,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(!tr.log.some((l) => /\[#+/.test(l)), 'progress lines leaked into the log');
 
   // a conversation: Claude edits it too (convo brief, speaker-labelled transcript), place_cuts.py places + gates mics
-  snap = await c.runPlan({ start: '', end: '', extra: '', cuts: '' });
+  snap = await c.runPlan({ start: '', end: '', extra: '' });
   const pl = snap.steps.plan;
   assert.strictEqual(pl.status, 'done', `${pl.error}\n${pl.log.join('\n')}`);
   assert.ok(pl.data.pieces > 0 && pl.data.angles['Camera 1'] >= 1 && pl.data.angles['Camera 2'] >= 1 && pl.data.angles['Camera 3'] >= 1, JSON.stringify(pl.data));
@@ -702,7 +710,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(opens2[0][0] < 24 && opens3[0][0] > 250, JSON.stringify({ opens2: opens2.slice(0, 2), opens3: opens3.slice(0, 2) }));
   assert.ok(convoPlan.video.every((x, k) => !k || x.angle !== convoPlan.video[k - 1].angle));
   assert.ok(snap.planExists);
-  await assert.rejects(c.runPlan({ cuts: 'junk' }), /must be/);
+  await assert.rejects(c.runPlan({ start: '0:30', end: '0:10' }), /To must be after From/);
 
   snap = await c.runBuild({ seqBin: 'MASTER / SEQUENCES' });
   assert.strictEqual(snap.steps.build.status, 'done');

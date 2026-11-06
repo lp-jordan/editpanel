@@ -59,7 +59,7 @@ function CutThroughPage({ connected }) {
   const [now, setNow] = React.useState(Date.now());
   const [labelDraft, setLabelDraft] = React.useState('');
   const [minutes, setMinutes] = React.useState('');
-  const [planForm, setPlanForm] = React.useState({ start: '', end: '', extra: '', cuts: '', delivery: 'scripted' });
+  const [planForm, setPlanForm] = React.useState({ start: '', end: '', extra: '', delivery: 'scripted' });
   const [bins, setBins] = React.useState([]);
   const [timelines, setTimelines] = React.useState([]);
   const [scoreTimeline, setScoreTimeline] = React.useState('');
@@ -234,14 +234,14 @@ function CutThroughPage({ connected }) {
           {ct.planKind && st.status !== 'running' && (
             <div className="ct-form-row">
               <label className="ct-inline">
-                <span className="settings-label">Start</span>
-                <input className="settings-input ct-num" inputMode="numeric" placeholder="0" value={planForm.start}
-                  onChange={(e) => setPlanForm({ ...planForm, start: e.target.value.replace(/\D/g, '') })} />
+                <span className="settings-label">From</span>
+                <input className="settings-input ct-tc" placeholder={day?.startTc || ''} value={planForm.start}
+                  onChange={(e) => setPlanForm({ ...planForm, start: e.target.value })} />
               </label>
               <label className="ct-inline">
-                <span className="settings-label">End</span>
-                <input className="settings-input ct-num" inputMode="numeric" placeholder={String(day?.frames || '')} value={planForm.end}
-                  onChange={(e) => setPlanForm({ ...planForm, end: e.target.value.replace(/\D/g, '') })} />
+                <span className="settings-label">To</span>
+                <input className="settings-input ct-tc" placeholder={day?.endTc || ''} value={planForm.end}
+                  onChange={(e) => setPlanForm({ ...planForm, end: e.target.value })} />
               </label>
               {ct.planKind && (
                 <label className="ct-inline">
@@ -271,11 +271,6 @@ function CutThroughPage({ connected }) {
                   </select>
                 </label>
               )}
-              <label className="ct-inline ct-grow">
-                <span className="settings-label">Cuts</span>
-                <input className="settings-input" placeholder="from-to, …" value={planForm.cuts}
-                  onChange={(e) => setPlanForm({ ...planForm, cuts: e.target.value })} />
-              </label>
             </div>
           )}
           {ct.planKind && st.status !== 'running' && (

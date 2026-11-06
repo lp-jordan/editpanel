@@ -80,14 +80,52 @@ function dayFrames(day) {
   return Math.floor(day.length_sec / fs_);
 }
 
-/** "1200-1500, 3000-3100" → ["1200-1500", "3000-3100"]; throws on junk. */
-function parseCuts(text) {
-  const parts = String(text || '').split(/[\s,;]+/).filter(Boolean);
-  return parts.map((p) => {
-    const m = /^(\d+)-(\d+)$/.exec(p);
-    if (!m || Number(m[2]) <= Number(m[1])) throw new Error(`Cut "${p}" must be <from>-<to> frames`);
-    return `${m[1]}-${m[2]}`;
-  });
+/** Frames per timecode second (24 for 23.976) and the multicam's first frame on the TC clock. */
+function tcClock(day) {
+  const fsec = Array.isArray(day.frame_sec) && day.frame_sec[1] ? day.frame_sec[0] / day.frame_sec[1] : 1 / (day.fps || 24);
+  const nominal = Math.round(1 / fsec);
+  return { fsec, nominal, first: Math.round((day.tc_start_sec || 0) / fsec) };
+}
+
+/** Multicam frame → its timecode, as Resolve shows it on the multicam (HH:MM:SS:FF). */
+function frameToTc(frame, day) {
+  const { nominal, first } = tcClock(day);
+  const n = first + Math.max(0, Math.round(frame));
+  const pad = (x) => String(x).padStart(2, '0');
+  const ff = n % nominal;
+  const secs = Math.floor(n / nominal);
+  return `${pad(Math.floor(secs / 3600) % 24)}:${pad(Math.floor(secs / 60) % 60)}:${pad(secs % 60)}:${pad(ff)}`;
+}
+
+/**
+ * A From/To entry → multicam frame. Accepts the multicam's timecode (HH:MM:SS:FF or HH:MM:SS),
+ * or time from the start of the multicam (MM:SS, H:MM:SS, or plain minutes like 12.5) when it
+ * isn't inside the multicam's timecode range. Empty → null. Throws on junk / out of range.
+ */
+function parseSection(text, day) {
+  const t = String(text === undefined || text === null ? '' : text).trim();
+  if (!t) return null;
+  const total = dayFrames(day);
+  const { fsec, nominal, first } = tcClock(day);
+  const inside = (f) => f >= 0 && f <= total;
+  if (/^\d+(\.\d+)?$/.test(t)) {                                   // minutes from the start
+    const f = Math.round(Number(t) * 60 / fsec);
+    if (inside(f)) return f;
+    throw new Error(`${t} min is past the end of the multicam`);
+  }
+  const parts = t.split(/[:;.]/).map(Number);
+  if (parts.length < 2 || parts.length > 4 || parts.some((x) => !Number.isFinite(x) || x < 0)) {
+    throw new Error(`"${t}" isn't a time (use 01:12:30:00, 1:12:30 or 12:30)`);
+  }
+  if (parts.length >= 3) {                                           // timecode on the multicam's clock
+    const [h, m, sec, ff = 0] = parts;
+    const f = ((h * 60 + m) * 60 + sec) * nominal + ff - first;
+    if (inside(f)) return f;
+  }
+  const [h, m, sec] = parts.length === 2 ? [0, ...parts] : parts.slice(0, 3);   // time from the start
+  const f = Math.round(((h * 60 + m) * 60 + sec) / fsec);
+  if (inside(f)) return f;
+  throw new Error(`"${t}" is outside the multicam (${frameToTc(0, day)} – ${frameToTc(total, day)})`);
 }
 
 function defaultPipelineDir({ isPackaged, appDir }) {
@@ -272,6 +310,8 @@ function createCutThrough(opts) {
       fps: day.fps,
       lengthMin: day.length_sec ? day.length_sec / 60 : null,
       frames: dayFrames(day),
+      startTc: frameToTc(0, day),
+      endTc: frameToTc(dayFrames(day), day),
       angles: day.angles || [],
       // 'wav' = person mics placed in the multicam; 'camera' = no WAVs used, one
       // angle's own audio (ATEM mix or in-camera, track 1) — see prepare_multicam.py
@@ -545,16 +585,19 @@ function createCutThrough(opts) {
       `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`)]);
   }
 
-  async function runPlan({ start, end, extra, punch, cuts, delivery, direction: note } = {}) {
+  async function runPlan({ start, end, extra, punch, delivery, direction: note } = {}) {
     if (!s.day) throw new Error('Run Prep first');
     const kind = planKind(s.day);
     const f = files();
     if (!fs.existsSync(f.words)) throw new Error('Run Transcribe first');
     const total = dayFrames(s.day);
-    const a = start === '' || start === undefined || start === null ? 0 : Number(start);
-    const b = end === '' || end === undefined || end === null ? total : Number(end);
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0 || b <= a) throw new Error('End must be after start');
-    const cutList = parseCuts(cuts);
+    // a section of the day (to test on a few minutes instead of the whole recording)
+    const fromF = parseSection(start, s.day);
+    const toF = parseSection(end, s.day);
+    const a = fromF === null ? 0 : fromF;
+    const b = toF === null ? total : toF;
+    if (b <= a) throw new Error('To must be after From');
+    const cutList = [];
     const st0 = settings();
     if (!claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
     if (note !== undefined) {
@@ -698,7 +741,8 @@ module.exports = {
   micAngles,
   planKind,
   dayFrames,
-  parseCuts,
+  parseSection,
+  frameToTc,
   defaultPipelineDir,
   DEFAULT_SEQ_BIN
 };
