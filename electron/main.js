@@ -374,6 +374,7 @@ function handleWorkerLine(state, line) {
         resolveProject = normalized.envelope.data.project || resolveProject;
         resolveTimeline = normalized.envelope.data.timeline || resolveTimeline;
       }
+      if (cutThrough && resolveProject) cutThrough.onProject(resolveProject);
     }
 
     BrowserWindow.getAllWindows().forEach(w => {

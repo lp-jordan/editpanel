@@ -782,6 +782,36 @@ sys.stdout.write(json.dumps(res))`;
     assert.ok(s2.steps[k].earlier, k);
   }
 
+  // switching Resolve projects: each project shows its own last run; nothing is deleted, and a
+  // multicam name another project already used gets the project name in its label
+  {
+    let cur = 'Other Project';
+    const send2 = (pl) => pl.cmd === 'ct_list_multicams'
+      ? Promise.resolve({ data: { project: cur, multicams: [{ name: 'E2E test', bin: 'MC', duplicate: false }] } }) : w.send(pl);
+    const cp = ct.createCutThrough({ sendWorkerRequest: send2, broadcast: () => {}, getPrefs: () => prefs,
+      setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP });
+    assert.strictEqual(cp.snapshot().label, 'E2E_test', 'restored before the project is known');
+    let sp = await cp.listMulticams();
+    assert.strictEqual(sp.project, 'Other Project');
+    assert.strictEqual(sp.label, '', 'another project\'s run still showing');
+    assert.strictEqual(sp.steps.prep.status, 'pending');
+    sp = cp.select({ mc: 'E2E test' });
+    assert.strictEqual(sp.label, 'E2E_test_Other_Project', 'label clashes with Fake Project\'s run');
+    cur = 'Fake Project';
+    cp.onProject('Fake Project');
+    await new Promise((r) => setImmediate(r));
+    sp = cp.snapshot();
+    assert.strictEqual(sp.label, 'E2E_test');
+    assert.strictEqual(sp.steps.prep.status, 'done', 'earlier work gone after switching back');
+    assert.ok(fs.existsSync(path.join(DESKTOP, 'day_E2E_test.json')));
+    cur = 'Other Project';
+    cp.onProject('Other Project');
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(cp.snapshot().label, 'E2E_test_Other_Project');
+    prefs.cutThrough.lastLabel = 'E2E_test';
+    prefs.cutThrough.lastMc = 'mc_test';
+  }
+
   // solo day: Claude edits it (needs a key); an existing plan is accepted too
   const day = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_E2E_test.json'), 'utf8'));
   day.mics = day.mics.slice(0, 1);

@@ -89,7 +89,7 @@ function CutThroughPage({ connected }) {
   const [keyDraft, setKeyDraft] = React.useState('');
   const [directionDraft, setDirectionDraft] = React.useState('');
   const ctLabel = ct && ct.label;
-  React.useEffect(() => { setDirectionDraft((ct && ct.direction) || ''); }, [ctLabel]);
+  React.useEffect(() => { setDirectionDraft((ct && ct.direction) || ''); setLabelDraft(ctLabel || ''); }, [ctLabel]);
 
   const apply = React.useCallback((res, key) => {
     if (res && res.data) setCt(res.data);
@@ -157,9 +157,7 @@ function CutThroughPage({ connected }) {
   }
 
   function pickMulticam(name) {
-    const label = name ? name.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') : '';
-    setLabelDraft(label);
-    call('select', () => api.select({ mc: name || null, label }));
+    call('select', () => api.select({ mc: name || null }));
   }
 
   function commitLabel() {

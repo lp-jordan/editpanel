@@ -279,6 +279,7 @@ function createCutThrough(opts) {
     s.busy = null;
     child = null;
     refreshFiles();
+    if (pendingProject) { const n = pendingProject; pendingProject = null; onProject(n); }
     emit();
   }
 
@@ -357,7 +358,7 @@ function createCutThrough(opts) {
     try {
       const res = await sendWorkerRequest({ cmd: 'ct_list_multicams' }, 'resolve');
       s.multicams = res?.data?.multicams || [];
-      s.project = res?.data?.project || null;
+      applyProject(res?.data?.project || null);
     } catch (err) {
       s.multicams = [];
       s.multicamsError = errMsg(err);
@@ -368,18 +369,58 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
-  function select({ mc, label }) {
-    if (s.busy) throw new Error(`${s.busy} is still running`);
+  /** A new pick's label: the multicam's name, unless another Resolve project's run already
+   *  uses that label (multicams are often all called mc_1) — then the project name is added. */
+  function defaultLabel(mc) {
+    const base = sanitizeLabel(mc || '');
+    const owner = (((getPrefs() || {}).cutThrough || {}).labelProjects || {})[base];
+    if (!base || !s.project || !owner || owner === s.project) return base;
+    return sanitizeLabel(`${base}_${s.project}`);
+  }
+
+  function show(mc, label) {
     s.mc = mc || null;
     s.marks = null;
-    s.label = sanitizeLabel(label || mc || '');
+    s.label = sanitizeLabel(label || '');
     if (s.label) inspectEarlier();
     else s.steps = Object.fromEntries(STEP_KEYS.map((k) => [k, emptyStep()]));
     refreshFiles();
+  }
+
+  /** label omitted = a fresh pick (see defaultLabel); label given = what the editor typed. */
+  function select({ mc, label }) {
+    if (s.busy) throw new Error(`${s.busy} is still running`);
+    show(mc, label === undefined || label === null ? defaultLabel(mc) : label || (mc ? defaultLabel(mc) : ''));
     const p = (getPrefs() || {}).cutThrough || {};
-    setPrefs({ cutThrough: { ...p, lastMc: s.mc, lastLabel: s.label } });
+    const next = { ...p, lastMc: s.mc, lastLabel: s.label };
+    if (s.project) {
+      next.byProject = { ...(p.byProject || {}), [s.project]: { mc: s.mc, label: s.label } };
+      if (s.label) next.labelProjects = { ...(p.labelProjects || {}), [s.label]: s.project };
+    }
+    setPrefs({ cutThrough: next });
     emit();
     return snapshot();
+  }
+
+  /** Resolve's open project changed: show what this page last had for that project (its files
+   *  stay on the Desktop either way — switching never throws work away). Waits out a running step. */
+  let pendingProject = null;
+  function applyProject(name) {
+    if (!name || name === s.project) return;
+    if (s.busy) { pendingProject = name; return; }
+    const first = s.project === null;
+    s.project = name;
+    const p = (getPrefs() || {}).cutThrough || {};
+    const saved = (p.byProject || {})[name];
+    if (saved) show(saved.mc, saved.label);
+    else if (!(first && s.label && (p.labelProjects || {})[s.label] === name)) show(null, '');
+    emit();
+  }
+
+  function onProject(name) {
+    if (!name || name === s.project) return;
+    applyProject(name);
+    if (s.project === name) listMulticams().catch(() => {});
   }
 
   function updateSettings(patch = {}) {
@@ -756,6 +797,7 @@ function createCutThrough(opts) {
     snapshot,
     listMulticams,
     select,
+    onProject,
     updateSettings,
     runPrep,
     runTranscribe,
