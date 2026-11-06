@@ -48,6 +48,7 @@ LEN = {"wide": 228, "punch": 209, "extra": 132}   # 9.5 s / 8.7 s / 5.5 s at 24 
 MIN_SHOT = 60                              # 2.5 s
 OPEN_WIDE = 96                             # the opening wide holds ~4 s
 HEAD, TAIL = 18, 24                        # frames kept before the first / after the last word
+BEAT = 6                                   # extra air after a finished thought (Claude's `beats`; Jordan: 5–6 fr)
 REPEAT_N = 3
 WINDOW_SEC, CUE_WINDOW_SEC = 60, 240
 FILLER = {"uh", "um", "umm", "uhm", "er", "ah", "mm", "hmm", "mhm"}
@@ -274,7 +275,9 @@ def main(argv) -> None:
         return max(b, math.ceil(ce) + 1)
 
     def snap_removal(r):
-        """The removal's two joins from the waveform around the aligned word times."""
+        """The removal's two joins from the waveform around the aligned word times. After a finished
+        thought (a beat) the join keeps BEAT more frames of air: after the word while there's room
+        before the removed words, the rest before the next kept word."""
         if not LV or r.get("prev_end") is None and r.get("next_start") is None:
             return int(r["from"]), int(r["to"])
         a, b = int(r["from"]), int(r["to"])
@@ -282,12 +285,22 @@ def main(argv) -> None:
             a = join_after(r["prev_end"], r.get("cut_start", r["from"]))
         if r.get("next_start") is not None:
             b = join_before(r["next_start"], r.get("cut_end", r["to"]))
+        if b > a and r.get("prev_end") is not None and is_beat(r["prev_end"]):
+            room = max(0, int(r.get("cut_start", r["from"])) - 1 - a)
+            a += min(BEAT, room)
+            if BEAT > room and r.get("next_start") is not None:
+                b = max(math.ceil(r.get("cut_end", r["to"])) + 1, b - (BEAT - room))
         return (a, b) if b > a else (int(r["from"]), int(r["to"]))
 
     removals, floor = [], 0
     # removals=<file>: the edit decisions come from Claude (cut_through_claude.js) as frame
     # spans; the rule-based detection below is skipped and the rest (pauses, picture, audio) runs
     given = json.load(open(o["removals"], encoding="utf-8")) if o.get("removals") else None
+    beat_ends = sorted(float(x) for x in ((given or {}).get("beats") or []))
+
+    def is_beat(word_end):
+        """Claude marked the word ending here as the end of a thought."""
+        return any(abs(word_end - x) < 1.5 for x in beat_ends)
     if given:
         start, end = given["start"], given["end"]
     else:
@@ -386,7 +399,8 @@ def main(argv) -> None:
         free = any(last is not None and last <= f <= s for f in shot_starts)   # a shot change is here anyway
         if last is not None and s - last > pause_max and (free or s - last - pause_left >= min_save):
             if LV:                                      # leave pause_left frames of air, split around the join
-                a = after_sound(last, s - 2, pause_left // 2)
+                beat = BEAT if is_beat(last - 1) else 0  # a finished thought keeps its beat
+                a = after_sound(last, s - 2, pause_left // 2 + beat)
                 b = before_sound(s, a + 1, pause_left - pause_left // 2)
                 if b <= a:
                     last = e if last is None else max(last, e)

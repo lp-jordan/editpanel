@@ -698,7 +698,21 @@ print(json.dumps({k: [[x["from"], x["to"], x["angle"]] for x in v] for k, v in o
   const kp = JSON.parse(fs.readFileSync(pp, 'utf8'));
   assert.ok(!kp.removals.some((r) => r.from < 122 && r.to > 112), JSON.stringify(kp.removals));
   assert.ok(kp.video[kp.video.length - 1].out <= 241, JSON.stringify(kp));
-  console.log('✓ second pass: Check on the plan → trim/keep → a word cut in half is fixed before the build');
+  // a beat after "clock" (end of a thought): the removal after it keeps 6 more frames of air
+  const rj = JSON.parse(fs.readFileSync(rp, 'utf8'));
+  fs.writeFileSync(rp, JSON.stringify({ ...rj, beats: [110] }));
+  execFileSync(PY, [path.join(PIPELINE, 'place_cuts.py'), wp, dp, pp, `removals=${rp}`, `levels=${lp}`, 'start=0', 'end=260'], { encoding: 'utf8' });
+  const bp = JSON.parse(fs.readFileSync(pp, 'utf8'));
+  const rb = bp.removals.find((r) => r.why.includes('flub') && r.from < 150);
+  assert.ok((r1.to - r1.from) - (rb.to - rb.from) === 6 && rb.to >= 120, `beat: ${JSON.stringify(r1)} → ${JSON.stringify(rb)}`);
+  // the second pass keeps that beat when it closes a gap after the thought
+  const cb = checkTimeline({ timeline: { name: 'b', fps: 24, start_frame: 0, start_tc: '01:00:00:00', pieces: [
+    { mc: 'mc_j', angle: 'Camera 1', start: 0, end: 150, src_in: 0, src_out: 150 },
+    { mc: 'mc_j', angle: 'Camera 2', start: 150, end: 250, src_in: 155, src_out: 255 }] },
+    words: { fps: 24, words: [W('So', 20, 30), W('done.', 100, 110), W('Next', 190, 200), W('one.', 210, 220)] }, beats: [110] });
+  assert.ok(cb.fixes.trims.some(([x]) => x === 110 + 5 + 6), JSON.stringify(cb.fixes));
+  fs.writeFileSync(rp, JSON.stringify(rj));
+  console.log('✓ second pass: Check on the plan → trim/keep → a word cut in half is fixed before the build; a finished thought keeps its beat');
 }
 
 // ── 3. orchestrator end to end ─────────────────────────────────
@@ -954,7 +968,7 @@ sys.stdout.write(json.dumps(res))`;
       { from: at('We'), angle: 'Camera 4', why: 'insert' },
       { from: at('That'), angle: 'Camera 1', why: 'close wide' },
       { from: 99999, angle: 'Camera 9', why: 'bad' }
-    ], notes: [{ at: at('That'), note: 'check the callback at the end' }] };
+    ], beats: [at('Leadership'), at('The'), 99999], notes: [{ at: at('That'), note: 'check the callback at the end' }] };
     const handlers = {};
     return {
       on: (ev, fn) => { handlers[ev] = fn; },
@@ -1042,6 +1056,11 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(cl.log.some((l) => /^Claude \(claude-opus-5-5, effort high, scripted\): 3 removals .*, 6 shots .* \$0\.028/.test(l)), cl.log.join('\n'));
   assert.ok(cl.log.some((l) => /skipped shot/.test(l)), 'bad shot not reported');
   assert.ok(cl.log.some((l) => /^Second pass/.test(l)), `no second pass line\n${cl.log.join('\n')}`);
+  // beats: a kept word only (a removed one and a bad index dropped), saved as its end frame
+  const rf = JSON.parse(fs.readFileSync(RUN('Solo2', 'removals_Solo2.json'), 'utf8'));
+  assert.ok(Array.isArray(rf.beats) && rf.beats.length === 1 && Number.isFinite(rf.beats[0]), JSON.stringify(rf.beats));
+  assert.ok(requests[requests.length - 1].output_config.format.schema.required.includes('beats'));
+  assert.ok(cl.log.some((l) => /beats: 1/.test(l)), cl.log.join('\n'));
   assert.ok(cl.log.some((l) => /shots: Claude; .*cuts placed from the waveform/.test(l)), cl.log.join('\n'));
   assert.ok(cl.log.some((l) => /check \[\d+:\d+\]: check the callback/.test(l)), cl.log.join('\n'));
   assert.strictEqual(cl.reportFile, RUN('Solo2', 'claude_edit_Solo2.json'));

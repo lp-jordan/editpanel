@@ -47,7 +47,7 @@ function buildSchema(angles) {
   return {
   type: 'object',
   additionalProperties: false,
-  required: ['removals', 'shots', 'notes'],
+  required: ['removals', 'shots', 'beats', 'notes'],
   properties: {
     shots: {
       type: 'array',
@@ -76,6 +76,8 @@ function buildSchema(angles) {
         }
       }
     },
+    // the last word of a finished thought / topic: the cut or pause after it keeps a beat (Jordan, 2026-11-06)
+    beats: { type: 'array', items: { type: 'integer' } },
     // "check here" spots: each becomes a red marker on the finished timeline
     notes: {
       type: 'array',
@@ -374,6 +376,10 @@ async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, pro
   const shots = toFrameShots(tokens, sv.ok, ok);
   const cost = costOf(res.model, res.usage);
   const notes = (res.parsed.notes || []).map((n) => (typeof n === 'string' ? { at: null, note: n } : n));
+  // beats → the end frame of each thought's last word (words only; a removed word can't end a kept thought)
+  const removedTok = (i) => ok.some((r) => r.from <= i && i <= r.to);
+  const beats = [...new Set((res.parsed.beats || []).filter((i) => Number.isInteger(i) && tokens[i] && tokens[i].kind === 'w' && !removedTok(i)))]
+    .sort((a, b) => a - b);
   const review = notes.filter((n) => Number.isInteger(n.at) && tokens[n.at])
     .map((n) => ({ frame: Math.floor(tokens[n.at].s), note: String(n.note || '').slice(0, 300) }));
 
@@ -385,10 +391,11 @@ async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, pro
       words: tokens.slice(x.from, x.from + 6).map((t) => t.text || '⟨sound⟩').join(' ') })),
     removals: ok.map((r) => ({ ...r, words: tokens.slice(r.from, r.to + 1).map((t) => (t.kind === 'u' ? '⟨unheard⟩' : t.text)).join(' '),
       at: clock(tokens[r.from].s * frameSec) })),
+    beats: beats.map((i) => ({ at: clock(tokens[i].e * frameSec), words: tokens.slice(Math.max(0, i - 5), i + 1).map((t) => t.text || '⟨sound⟩').join(' ') })),
     notes: notes.map((n) => ({ ...n, time: Number.isInteger(n.at) && tokens[n.at] ? clock(tokens[n.at].s * frameSec) : null })), problems
   }, null, 1));
   fs.writeFileSync(removalsFile, JSON.stringify({ start: s0, end: e0, delivery, removals: spans, shots, review,
-    pauses: PAUSES[delivery] || null }, null, 1));
+    pauses: PAUSES[delivery] || null, beats: beats.map((i) => tokens[i].e) }, null, 1));
   // a copy per model, so an Opus and a Sonnet edit of the same day can be compared
   fs.copyFileSync(claudeFile, path.join(outDir, `claude_edit_${label}_${String(res.model).replace(/[^A-Za-z0-9_.-]+/g, '_')}.json`));
   logCost(res.model, res.usage, 'solo_plan');
@@ -400,6 +407,7 @@ async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, pro
     `Claude (${res.model}, effort ${effort}, ${delivery}): ${ok.length} removals (${Object.entries(byKind).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}), ` +
       `${removedSec.toFixed(0)} s removed, ${sv.ok.length} shots — ${seconds}s, $${cost.toFixed(3)} (${(res.usage || {}).input_tokens || 0} in / ${(res.usage || {}).output_tokens || 0} out tokens)`,
     ...ok.map((r) => `  ${r.from}–${r.to} [${clock(tokens[r.from].s * frameSec)}] ${r.kind}: ${r.reason}`),
+    ...(beats.length ? [`  beats: ${beats.length} (a few more frames of air after a finished thought)`] : []),
     ...notes.map((n) => `  check${Number.isInteger(n.at) && tokens[n.at] ? ` [${clock(tokens[n.at].s * frameSec)}]` : ''}: ${n.note}`),
     ...problems.map((p) => `  ⚠ ${p}`)
   ];

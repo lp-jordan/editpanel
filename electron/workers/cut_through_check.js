@@ -21,6 +21,7 @@
 const TAG = 'cut-through-check';
 const HEAD = 18;                       // frames kept before the first / after the last word (place_cuts.py)
 const TAIL = 24;
+const BEAT = 6;                        // extra air after a finished thought (place_cuts.py)
 const FILLERS = new Set(['um', 'uh', 'uhm', 'umm', 'ah', 'er', 'erm', 'hmm', 'mm', 'mhm']);
 const CUES = [
   /\bsay (that|it) again\b/,
@@ -67,12 +68,14 @@ const quote = (ws) => ws.map((w) => String(w.w).trim()).join(' ');
  * kind: 'solo' | 'convo' (conversations keep longer pauses)
  * pauses: the delivery's pause rule {max, left} (stage keeps longer pauses); a pause is flagged
  *   over the larger of it and 1 s (solo) / 2 s (convo), and fixed down to `left` frames
+ * beats: end frames of words Claude marked as the end of a thought (removals file `beats`): a fix
+ *   after one keeps BEAT more frames of air
  * Returns {markers [{frame, color, name, note, tc}], lines, data, fixes}. `fixes` are the easy,
  * mechanical ones the second pass applies (multicam source frames): trims [from, to) to remove
  * (silence only — never over a word or a loud stretch with no words) and keeps [from, to) to give
  * back (the rest of a word a cut went through).
  */
-function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = null, pauses = null }) {
+function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = null, pauses = null, beats = [] }) {
   const fps = timeline.fps || wordsFile.fps || 24;
   const sec = (fr) => (fr / fps).toFixed(1);
   let pieces = (timeline.pieces || []).filter((p) => p.src_out > p.src_in && p.end > p.start);
@@ -117,6 +120,7 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
   const loud = (wordsFile.unheard || []).map((u) => [u.s, u.e]);
   const silent = (a, b) => b - a >= 2 && !loud.some(([x, y]) => x < b && y > a)
     && !all.some((w) => w.s < b && w.e > a);
+  const isBeat = (w) => (beats || []).some((x) => Math.abs(w.e - x) < 1.5);
   const trim = (a, b) => (silent(Math.ceil(a), Math.floor(b)) ? { trim: [Math.ceil(a), Math.floor(b)] } : null);
 
   // ── word cut off at any cut ──
@@ -170,7 +174,8 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
       const gap = (a.src_out - left.e) + (right.s - b.src_in);
       if (gap > pauseMax) {
         // close it from both sides down to the pause rule's air
-        const t1 = a.src_out - left.e > airAfter + 1 ? trim(left.e + airAfter, a.src_out) : null;
+        const after = airAfter + (isBeat(left) ? BEAT : 0);
+        const t1 = a.src_out - left.e > after + 1 ? trim(left.e + after, a.src_out) : null;
         const t2 = right.s - b.src_in > airBefore + 1 ? trim(b.src_in, right.s - airBefore) : null;
         const fix = t1 || t2 ? { trims: [t1, t2].filter(Boolean).map((t) => t.trim) } : null;
         add(at, 'Yellow', 'Gap at the cut', `${sec(gap)} s with no words across the cut`, fix);
@@ -185,7 +190,7 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
       const p = ws[i - 1];
       const w = ws[i];
       const gap = w.s - p.e;
-      if (gap > pauseMax) add(rec(g, p.e), 'Yellow', 'Pause kept', `${sec(gap)} s after "${String(p.w).trim()}"`, trim(p.e + airAfter, w.s - airBefore));
+      if (gap > pauseMax) add(rec(g, p.e), 'Yellow', 'Pause kept', `${sec(gap)} s after "${String(p.w).trim()}"`, trim(p.e + airAfter + (isBeat(p) ? BEAT : 0), w.s - airBefore));
       // one marker per run ("go go go go" is one thing to look at)
       if (norm(p.w) && norm(p.w) === norm(w.w) && !isFiller(w) && gap < fps * 0.6 && !(i >= 2 && norm(ws[i - 2].w) === norm(p.w))) {
         let n = i + 1;

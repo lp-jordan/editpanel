@@ -49,4 +49,5 @@ JSON only, matching the schema:
 
 - `removals`: `{from, to, kind, reason}` — token numbers, inclusive; no overlaps. `kind`: `retake`, `false_start`, `self_correction`, `flub`, `chatter`, `pre_roll`, `post_roll`, `filler`, `interruption`, `other`. `reason`: a short note quoting a few words.
 - `shots`: `{from, angle, why}` in order — `angle` exactly as named in the angle list; `why` in a few words ("Camera 3 answers", "reaction", "both laugh — wide").
+- `beats`: token numbers of the last word of a finished thought or topic — where what comes next starts a new point or section. The cut or pause after it gets a few more frames of breathing room (Jordan's beat); everything inside a thought stays cut tight. Only real ends of a thought, not every full stop. Empty when there are none.
 - `notes`: `{at, note}` — the spots Jordan should check, each pinned to a token number (`at`): a word that seems given to the wrong person, a kept tangent, unclear overlap, a removal you're unsure of. Each becomes a red marker on the timeline, so only real doubts — usually a handful — and one short sentence each. Empty when nothing needs a look.

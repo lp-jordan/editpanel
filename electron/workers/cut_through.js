@@ -583,12 +583,14 @@ function createCutThrough(opts) {
       if (!words.aligned) report.push('Words NOT aligned to the audio — "Word cut off" is approximate. Re-run Plan to align them.');
       const multicam = (readJson(f.plan) || {}).multicam || s.mc || words.multicam || null;
       const kind = s.day ? planKind(s.day) : 'solo';
-      const pauses = (readJson(path.join(f.dir, `removals_${s.label}.json`)) || {}).pauses || null;
+      const given = readJson(path.join(f.dir, `removals_${s.label}.json`)) || {};
+      const pauses = given.pauses || null;
+      const beats = given.beats || [];
       for (const [k, name] of names.entries()) {
         st.progress = { phase: `Checking ${name}`, phaseAt: Date.now(), bar: names.length > 1 ? Math.round((k / names.length) * 100) : null };
         emit();
         const tl = (await sendWorkerRequest({ cmd: 'ct_read_timeline', name, trace_id: st.traceId }, 'resolve')).data;
-        const out = checkTimeline({ timeline: tl, words, kind, multicam, pauses });
+        const out = checkTimeline({ timeline: tl, words, kind, multicam, pauses, beats });
         const placed = (await sendWorkerRequest({ cmd: 'ct_set_markers', name, tag: CHECK_TAG,
           markers: out.markers.map(({ frame, color, name: n, note }) => ({ frame, color, name: n, note })), trace_id: st.traceId }, 'resolve')).data || {};
         report.push(...out.lines);
@@ -878,8 +880,10 @@ function createCutThrough(opts) {
     const words = readJson(f.words);
     const plan = readJson(f.plan);
     if (!words || !plan) return null;
-    const pauses = (readJson(o.removalsFile) || {}).pauses || null;
-    const first = checkTimeline({ timeline: planTimeline(plan), words, kind, multicam: plan.multicam, pauses });
+    const given = readJson(o.removalsFile) || {};
+    const pauses = given.pauses || null;
+    const beats = given.beats || [];
+    const first = checkTimeline({ timeline: planTimeline(plan), words, kind, multicam: plan.multicam, pauses, beats });
     const { trims, keeps, fixed } = first.fixes;
     if (!trims.length && !keeps.length) {
       pushLog('plan', 'Second pass: nothing to fix');
@@ -888,7 +892,7 @@ function createCutThrough(opts) {
     st0Progress('Second pass: fixing gaps, pauses and cut words');
     const res = await runPlanner('solo', { ...o, trims, keeps });
     if (res.error || res.code !== 0) return res.error || exitError('plan', `${PLANNERS.solo.script} (second pass)`, res.code);
-    const after = checkTimeline({ timeline: planTimeline(readJson(f.plan) || plan), words, kind, multicam: plan.multicam, pauses });
+    const after = checkTimeline({ timeline: planTimeline(readJson(f.plan) || plan), words, kind, multicam: plan.multicam, pauses, beats });
     const what = Object.entries(fixed).map(([k, n]) => `${k.toLowerCase()} × ${n}`).join(', ');
     pushLog('plan', `Second pass fixed ${what}; left for you: ${after.data.red} red, ${after.data.yellow} yellow (marked after Build)`);
     return null;
