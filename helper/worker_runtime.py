@@ -14,7 +14,19 @@ def _emit_event(payload: Dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def _utf8_pipes() -> None:
+    """The JSON pipes are UTF-8 whatever the console's code page (Windows defaults to cp1252,
+    which can't write "✓ ✗ —"; one such character in a reply killed the worker). A character
+    that still can't be written is replaced, never fatal."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def run_worker(handlers: Dict[str, Handler]) -> None:
+    _utf8_pipes()
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:

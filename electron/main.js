@@ -569,7 +569,9 @@ function startWorker(state) {
   state.proc = spawn(command, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd,
-    env
+    // UTF-8 pipes: Windows' default (cp1252) can't write "✓ ✗ —", and one such character in a
+    // reply killed the Resolve worker (Cut-through build, 2026-11-05) — main reads lines as UTF-8
+    env: { ...(env || process.env), PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
   });
   state.startedAt = Date.now();
   state.connectedAt = null;

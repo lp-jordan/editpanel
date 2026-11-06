@@ -156,15 +156,28 @@ def main() -> None:
     if missing:
         raise RuntimeError(f"MICS needs an angle for {missing}")
     joined, base = f"Cut-through temp {LABEL}", f"{LABEL} rough cut"
-    existing = {project.GetTimelineByIndex(i).GetName() for i in range(1, int(project.GetTimelineCount()) + 1)}
-    stale = sorted(n for n in existing if n == joined or n.startswith(base))
+    tls = {project.GetTimelineByIndex(i).GetName(): project.GetTimelineByIndex(i)
+           for i in range(1, int(project.GetTimelineCount()) + 1)}
+    if joined in tls:                                   # our own throwaway from a run that stopped
+        cur = _safe(lambda: project.GetCurrentTimeline().GetName())
+        if cur == joined:
+            other = next((t for n, t in tls.items() if n != joined), None)
+            if other:
+                project.SetCurrentTimeline(other)
+        gone = _safe(lambda: mp.DeleteTimelines([tls[joined]]), False)
+        say(f"Deleted {joined!r} left by an earlier run: {gone}")
+        if not gone:
+            raise RuntimeError(f"Delete the timeline {joined!r} left by an earlier run, then build again")
+    stale = sorted(n for n in tls if n.startswith(base))
     if stale:
-        raise RuntimeError(f"Delete these from an earlier run first: {stale}")
+        raise RuntimeError(f"Rename or delete these from an earlier run first: {stale}")
     mcs = [c for _, c in walk(mp.GetRootFolder())
            if _safe(lambda: c.GetName()) == name
            and "multicam" in str(_safe(lambda: c.GetClipProperty("Type"), "")).lower()]
     if len(mcs) != 1:
-        raise RuntimeError(f"Expected one multicam named {name!r} outside the archive bins, found {len(mcs)}")
+        raise RuntimeError(f"Expected one multicam named {name!r} outside the archive bins, found {len(mcs)}"
+                           + (" — a copy from a run that stopped is probably still in the MC bin; delete the newer one"
+                              if len(mcs) > 1 else ""))
     orig = mcs[0]
 
     # 1. the multicam's description, straight from Resolve

@@ -39,6 +39,11 @@ fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
   assert.strictEqual(ct.parseProgress('  reading 1/3 CAM1_01.mov  45%  812 MB'), null);
   assert.strictEqual(ct.parseProgress('  Camera 3 [#########################] 100%  22.6/22.6 min  180s').pct, 100);
   assert.strictEqual(ct.sanitizeLabel(' Frenzy Q4 / mc_2 '), 'Frenzy_Q4_mc_2');
+  // the worker's JSON pipe is UTF-8 even under Windows' cp1252 (a "✗" in a reply killed the Resolve worker)
+  const wout = execFileSync(PY, ['-c', 'import sys; sys.path.insert(0, sys.argv[1]); from helper.worker_runtime import run_worker; ' +
+    'run_worker({"x": lambda r: {"t": "\u2717 stopped \u2014 \u2713"}})', REPO],
+  { input: '{"id": 1, "cmd": "x"}\n', env: { ...process.env, PYTHONIOENCODING: 'cp1252' } });
+  assert.strictEqual(JSON.parse(wout.toString('utf8')).data.t, '✗ stopped — ✓');
   // Plan's From/To: the multicam's timecode, or time from its start (Bill Smith's mc_1 clock)
   const billDay = { frame_sec: [1001, 24000], tc_start_sec: 176475299 / 4000, length_sec: 2699.5, fps: 23.976 };
   assert.strictEqual(ct.frameToTc(0, billDay), '12:14:34:18');
