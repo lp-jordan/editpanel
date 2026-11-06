@@ -4783,3 +4783,4 @@ button.status-bar-chip-btn:disabled {
 .run-progress-track.is-indeterminate .run-progress-fill { width: 30% !important; animation: ct-indeterminate 1.4s ease-in-out infinite; }
 @keyframes ct-indeterminate { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 @media (prefers-reduced-motion: reduce) { .run-progress-track.is-indeterminate .run-progress-fill { animation: none; width: 100% !important; opacity: 0.4; } }
+.ct-marks-len { align-self: flex-end; padding-bottom: 6px; font-variant-numeric: tabular-nums; }

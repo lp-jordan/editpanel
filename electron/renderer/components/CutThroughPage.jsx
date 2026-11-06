@@ -260,11 +260,7 @@ function CutThroughPage({ connected }) {
                   placeholder={day?.endTc || ''} value={planForm.useMarks ? (ct.marks?.toTc || '') : planForm.end}
                   onChange={(e) => setPlanForm({ ...planForm, end: e.target.value })} />
               </label>
-              {planForm.useMarks && ct.marks && (
-                <button className="btn small ghost" onClick={() => call('plan', () => api.readMarks())}>
-                  Re-read · {ct.marks.minutes.toFixed(1)} min
-                </button>
-              )}
+              {planForm.useMarks && ct.marks && <span className="dim ct-marks-len">{ct.marks.minutes.toFixed(1)} min</span>}
               {ct.planKind && (
                 <label className="ct-inline">
                   <span className="settings-label">Delivery</span>
