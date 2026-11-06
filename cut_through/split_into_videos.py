@@ -41,6 +41,11 @@ def say(msg: str = "") -> None:
     _lines.append(msg)
 
 
+def phase(text: str) -> None:
+    """What's happening now, for the Cut-through page's live label (a "▸ " line; not in the report)."""
+    print(f"▸ {text}", flush=True)
+
+
 def _safe(fn, default=None):
     try:
         return fn()
@@ -178,6 +183,7 @@ def main() -> None:
     for v in spec["videos"]:
         t1 = time.time()
         name = v["name"]
+        phase(f"Cutting out {name}")
         if name in timelines:
             say(f"  {name}: already exists — skipped (delete it to rebuild)")
             continue
@@ -223,7 +229,9 @@ def main() -> None:
             f"{'straddling clips: ' + str(straddle) + '; ' if straddle else ''}sync {', '.join(sync)} "
             f"({time.time() - t1:.1f}s)")
         if FINISH:
+            phase(f"Adding fades and crossfades — {name}")
             say(f"    finish: {finish(project, dup)}")
+        phase(f"Adding review markers — {name}")
         rv = review(dup, v)
         if rv:
             say(f"    review: {rv}")

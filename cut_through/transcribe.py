@@ -287,6 +287,7 @@ def main() -> None:
         # cutting from the waveform, plus the loud-without-words marks — and keep the words
         wp = os.path.join(DESKTOP, f"words_{label}.json")
         data = json.load(open(wp, encoding="utf-8"))
+        print("Measuring loudness frame by frame (for cut placement)…", flush=True)
         clipped = sum(clip_stretched(data["words"], m, fs) for m in mics)
         data["unheard"] = [u for m in mics for u in unheard_speech(m, data["words"], fs)]
         json.dump(data, open(wp, "w", encoding="utf-8"))
@@ -351,6 +352,7 @@ def main() -> None:
             report.append(f"  {m['angle']}: verbatim pass added {len(extra)} word(s) the clean pass missed")
 
     words.sort(key=lambda w: (w["s"], w["mic"]))
+    print("Measuring loudness frame by frame (for cut placement)…", flush=True)
     clipped = sum(clip_stretched(words, m, fs) for m in mics)
     report.append(f"{clipped} stretched word(s) clipped where the audio goes quiet")
     unheard = [u for m in mics for u in unheard_speech(m, words, fs)]

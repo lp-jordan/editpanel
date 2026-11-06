@@ -53,6 +53,11 @@ def say(msg: str = "") -> None:
     _lines.append(msg)
 
 
+def phase(text: str) -> None:
+    """What's happening now, for the Cut-through page's live label (a "▸ " line; not in the report)."""
+    print(f"▸ {text}", flush=True)
+
+
 def _safe(fn, default=None):
     try:
         return fn()
@@ -321,6 +326,7 @@ def main() -> None:
         opts["timelineName"] = f"Cut-through temp {LABEL} {int(time.time()) % 100000}"
     mp.SetCurrentFolder(orig_folder)
     t1 = time.time()
+    phase("Importing the timeline (Resolve makes one multicam copy)")
     tl = mp.ImportTimelineFromFile(path, opts)
     say(f"ImportTimelineFromFile → {'ok' if tl else 'FAILED'} in {time.time() - t1:.1f}s "
         f"(source clips searched in {len(folders)} bin(s))")
@@ -363,6 +369,7 @@ def main() -> None:
         wrong = wrong_sources(t, wanted)
         say(f"    check source files: " + ("✓ every audio clip uses the file the multicam uses" if not wrong else
             f"✗ {len(wrong)} audio clip(s) use another file, e.g. A{wrong[0][0]} {wrong[0][1]} → {wrong[0][2]}"))
+        phase("Checking picture and sound on the copy")
         good = self_check(project, t) and not wrong
         globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and good
     copy = next((c for _, c in after if c.GetUniqueId() not in {b.GetUniqueId() for _, b in before}), None)

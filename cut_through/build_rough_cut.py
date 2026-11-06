@@ -52,6 +52,11 @@ def say(msg: str = "") -> None:
     _lines.append(msg)
 
 
+def phase(text: str) -> None:
+    """What's happening now, for the Cut-through page's live label (a "▸ " line; not in the report)."""
+    print(f"▸ {text}", flush=True)
+
+
 def _safe(fn, default=None):
     try:
         return fn()
@@ -163,6 +168,7 @@ def main() -> None:
     orig = mcs[0]
 
     # 1. the multicam's description, straight from Resolve
+    phase("Reading the multicam's layout from Resolve")
     t1 = time.time()
     version, etype = export_type(r)
     tmp = mp.CreateTimelineFromClips(f"Cut-through temp {LABEL} layout", [orig])
@@ -196,6 +202,7 @@ def main() -> None:
                                            or "none (mics are in the camera files)"))
 
     # 2. the joined timeline, built on that description
+    phase("Writing the edit as a timeline file")
     t1 = time.time()
     spec = importlib.util.spec_from_file_location("write_timeline_xml", os.path.join(PIPELINE, "write_timeline_xml.py"))
     mk = importlib.util.module_from_spec(spec)
@@ -208,6 +215,7 @@ def main() -> None:
         f"({time.time() - t1:.1f}s)")
 
     # 3. import → one copy (primary); original archived
+    phase("Importing into Resolve")
     t1 = time.time()
     g = run_script("import_into_resolve.py", {"XML": os.path.basename(out), "LABEL": LABEL, "BATCH": True,
                                           "ARCHIVE": True, "RAW": RAW, "MICS": MICS,
@@ -219,6 +227,7 @@ def main() -> None:
                            "(delete the new copy and the joined timeline before rerunning)")
 
     # 4. split into one timeline per video
+    phase("Cutting into one timeline per video")
     t1 = time.time()
     run_script("split_into_videos.py", {"RANGES": os.path.basename(out).rsplit(".", 1)[0] + "_ranges.json",
                                         "SEQ_BIN": SEQ_BIN}, r)

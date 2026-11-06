@@ -42,6 +42,11 @@ def say(msg: str = "") -> None:
     _lines.append(msg)
 
 
+def phase(text: str) -> None:
+    """What's happening now, for the Cut-through page's live label (a "▸ " line; not in the report)."""
+    print(f"▸ {text}", flush=True)
+
+
 def _safe(fn, default=None):
     try:
         return fn()
@@ -142,6 +147,7 @@ def main() -> None:
     project = r.GetProjectManager().GetCurrentProject()
     mp = project.GetMediaPool()
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — day prep {LABEL}")
+    phase(f"Reading {MC or LABEL}'s layout from Resolve")
     mcs = [c for _, c in walk(mp.GetRootFolder())
            if "multicam" in str(_safe(lambda: c.GetClipProperty("Type"), "")).lower()
            and (MC is None or _safe(lambda: c.GetName()) == MC)]

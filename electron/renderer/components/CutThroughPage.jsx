@@ -53,6 +53,25 @@ function CtReport({ lines, live }) {
   return <pre ref={ref} className={`ct-report${live ? ' live' : ''}`}>{lines.join('\n')}</pre>;
 }
 
+/** What a running step is doing right now: its phase + time in it, and a bar when there is one. */
+function CtLive({ p, now }) {
+  const pct = p.bar != null ? p.bar : p.overall;
+  const text = p.phase
+    ? `${p.phase}${p.phaseAt ? ` · ${ctDuration(now - p.phaseAt)}` : ''}`
+    : `${p.angle} · ${p.mic}/${p.mics} · ${p.doneMin.toFixed(1)}/${p.totalMin.toFixed(1)} min`;
+  return (
+    <div className="ct-progress">
+      <div className="ct-progress-text">
+        <span>{text}</span>
+        {pct != null && <span className="dim">{pct}%</span>}
+      </div>
+      <div className={`run-progress-track${pct == null ? ' is-indeterminate' : ''}`}>
+        <div className="run-progress-fill" style={{ width: `${pct == null ? 100 : pct || 0}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function CutThroughPage({ connected }) {
   const api = window.cutThroughAPI;
   const [ct, setCt] = React.useState(null);
@@ -203,7 +222,6 @@ function CutThroughPage({ connected }) {
       );
     }
     if (key === 'transcribe') {
-      const p = st.progress;
       return (
         <div className="ct-facts">
           {st.status !== 'running' && (
@@ -212,17 +230,6 @@ function CutThroughPage({ connected }) {
               <input className="settings-input ct-num" inputMode="numeric" placeholder="All" value={minutes}
                 onChange={(e) => setMinutes(e.target.value.replace(/[^\d.]/g, ''))} />
             </label>
-          )}
-          {st.status === 'running' && p && (
-            <div className="ct-progress">
-              <div className="ct-progress-text">
-                <span>{p.phase
-                  ? `${p.phase}${p.phaseAt ? ` · ${ctDuration(now - p.phaseAt)}` : ''}`
-                  : `${p.angle} · ${p.mic}/${p.mics} · ${p.doneMin.toFixed(1)}/${p.totalMin.toFixed(1)} min`}</span>
-                <span className="dim">{p.bar != null ? p.bar : p.overall}%</span>
-              </div>
-              <div className="run-progress-track"><div className="run-progress-fill" style={{ width: `${(p.bar != null ? p.bar : p.overall) || 0}%` }} /></div>
-            </div>
           )}
         </div>
       );
@@ -456,6 +463,7 @@ function CutThroughPage({ connected }) {
                 {renderActions(step.key)}
               </div>
             </div>
+            {st.status === 'running' && st.progress && <CtLive p={st.progress} now={now} />}
             {renderStepBody(step.key)}
             {st.error && <div className="notice error">{st.error}</div>}
             {errors[step.key] && <div className="notice error">{errors[step.key]}</div>}

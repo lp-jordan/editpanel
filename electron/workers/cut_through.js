@@ -398,6 +398,7 @@ function createCutThrough(opts) {
   async function runStep(step, script, stepSettings) {
     const st = begin(step);
     st.traceId = randomUUID();
+    st.progress = { phase: 'Waiting for Resolve', phaseAt: Date.now(), bar: null };
     emit();
     const { pipelineDir } = settings();
     try {
@@ -467,10 +468,14 @@ function createCutThrough(opts) {
     if (!plan) throw new Error('No plan for this label yet');
     const st = begin('score');
     st.traceId = randomUUID();
+    st.progress = { phase: `Reading ${timeline} from Resolve`, phaseAt: Date.now(), bar: null };
+    emit();
     let error = null;
     let report = [];
     try {
       const res = await sendWorkerRequest({ cmd: 'ct_read_timeline', name: String(timeline), trace_id: st.traceId }, 'resolve');
+      st.progress = { phase: 'Comparing it with the plan', phaseAt: Date.now(), bar: null };
+      emit();
       const out = scorePlan({ plan, finished: res.data, words: readJson(f.words) });
       report = out.lines;
       fs.writeFileSync(f.scoreReport, report.join('\n') + '\n', 'utf8');
@@ -488,7 +493,12 @@ function createCutThrough(opts) {
     if (!traceId || !s.busy) return;
     const st = s.steps[s.busy];
     if (st.traceId !== traceId) return;
-    pushLog(s.busy, String(message));
+    const text = String(message);
+    if (text.startsWith('▸ ')) {                      // the script saying what it's doing now
+      st.progress = { phase: text.slice(2).trim(), phaseAt: Date.now(), bar: null };
+    } else {
+      pushLog(s.busy, text);
+    }
     emit();
   }
 
@@ -636,6 +646,8 @@ function createCutThrough(opts) {
       setPrefs({ cutThrough: { ...p, directions: { ...(p.directions || {}), [s.label]: String(note).trim().slice(0, 4000) } } });
     }
     const st = begin('plan');
+    st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
+    emit();
     const started = Date.now();
     const o = { files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, punch: punch || null, cuts: cutList };
     {   // solo and conversations: Claude edits, place_cuts.py places (Z8)

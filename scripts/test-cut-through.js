@@ -278,6 +278,7 @@ print(json.dumps({"mcs": mcs, "res": res, "bat": bat, "events": events}))
   assert.ok(r.res.lines.some((l) => l.includes("Multicam 'mc_test'")), r.res.lines.join('\n'));
   assert.ok(r.events.some((l) => l.includes('audio clip 02MIC2.WAV under Camera 2')));
   assert.ok(r.events.includes('repo /some/repo'), 'REPO line not pointed at the pipeline checkout');
+  assert.ok(r.events.some((e) => /^▸ Reading mc_test's layout from Resolve$/.test(e)) && !r.res.lines.some((l) => l.startsWith('▸')), 'phase line missing, or in the report');
   assert.ok(r.bat.stopped && r.bat.error.startsWith('✗ STOPPED'));
   const day = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_PyT.json'), 'utf8'));
   assert.deepStrictEqual(day.mics.map((m) => m.angle), ['Camera 2', 'Camera 3']);
