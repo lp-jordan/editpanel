@@ -24,6 +24,7 @@ e.g. python3 write_timeline_xml.py Info.fcpxml ConvoTest_xml.fcpxml host="Camera
 The output names the client's media, so keep it out of git.
 """
 import json
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -145,6 +146,18 @@ def split_off_angle_tracks(media_xml: str, remove: bool = True, keep_refs: set =
     return ET.tostring(root, encoding="unicode"), wavs
 
 
+def load_review(plan: dict) -> list:
+    """The review markers place_cuts.py left beside the transcript (they quote client words, so
+    they never sit in the plan). Missing file = no markers."""
+    p = plan.get("review_file")
+    if not p:
+        return []
+    for cand in (p, os.path.join(os.path.expanduser("~/Desktop"), os.path.basename(p.replace("\\", "/")))):
+        if os.path.isfile(cand):
+            return json.load(open(cand, encoding="utf-8")).get("markers") or []
+    return []
+
+
 def split_plan(plan: dict, n: int) -> list:
     """Cut one plan into n consecutive timelines (at picture-piece boundaries)."""
     v = plan["video"]
@@ -153,9 +166,10 @@ def split_plan(plan: dict, n: int) -> list:
     for k in range(0, len(v), size):
         pv = v[k:k + size]
         lo, hi = min(p["in"] for p in pv), max(p["out"] for p in pv)
-        mics = {r: [[max(a, lo), min(b, hi)] for a, b in R if min(b, hi) > max(a, lo)]
+        mics = {r: [[max(o[0], lo), min(o[1], hi), *o[2:]] for o in R if min(o[1], hi) > max(o[0], lo)]
                 for r, R in plan["mics"].items()}
-        parts.append({**plan, "video": pv, "mics": mics})
+        marks = [m for m in plan.get("markers") or [] if lo <= m["frame"] < hi]
+        parts.append({**plan, "video": pv, "mics": mics, "markers": marks})
     return parts
 
 
@@ -176,6 +190,7 @@ def main(argv=None) -> list:
         path, _, name = a.partition(".json:")
         path = path if path.endswith(".json") else path + ".json"
         plan = json.load(open(path, encoding="utf-8"))
+        plan["markers"] = load_review(plan)
         name = name or f"{plan.get('label', 'cut')} rough cut"
         parts = split_plan(plan, split) if split > 1 else [plan]
         jobs += [(f"{name} {k}" if len(parts) > 1 else name, p) for k, p in enumerate(parts, 1)
@@ -246,18 +261,20 @@ def main(argv=None) -> list:
         # and where the mic opens/closes; closed = a disabled clip (Jordan's enable/disable gating)
         lanes = []
         for role in plan["mics"]:
-            opens = sorted(plan["mics"][role])
-            clips = []                                      # [src in, src out, record offset, enabled]
+            # an open is [from, to] or [from, to, gain dB] (a backchannel opened quieter)
+            opens = sorted((o[0], o[1], o[2] if len(o) > 2 else None) for o in plan["mics"][role])
+            clips = []                                      # [src in, src out, record offset, enabled, gain dB]
             for p, off in zip(pieces, offs):
-                marks = sorted({p["in"], p["out"], *(x for a, b in opens for x in (a, b) if p["in"] < x < p["out"])})
+                marks = sorted({p["in"], p["out"], *(x for a, b, _ in opens for x in (a, b) if p["in"] < x < p["out"])})
                 for lo, hi in zip(marks, marks[1:]):
-                    on = any(a <= lo and hi <= b for a, b in opens)
+                    hit = next((o for o in opens if o[0] <= lo and hi <= o[1]), None)
+                    on, gain = hit is not None, hit[2] if hit else None
                     r0 = off + (lo - p["in"])
                     last = clips[-1] if clips else None
-                    if last and last[1] == lo and last[2] + (last[1] - last[0]) == r0 and last[3] == on:
+                    if last and last[1] == lo and last[2] + (last[1] - last[0]) == r0 and last[3] == on and last[4] == gain:
                         last[1] = hi                        # angle-only switch: no audio cut
                     else:
-                        clips.append([lo, hi, r0, on])
+                        clips.append([lo, hi, r0, on, gain])
             lanes.append((role, clips))
         if LAST_ATEM:                                       # A1: the ATEM mix / camera audio, cut with the picture
             clips = []
@@ -272,7 +289,7 @@ def main(argv=None) -> list:
                         last[1] = hi
                     else:
                         # a day with no mic WAVs (plan audio = camera): the mix IS the audio → on
-                        clips.append([lo, hi, r0, atem_on or (plan.get("audio") or {}).get("source") == "camera"])
+                        clips.append([lo, hi, r0, atem_on or (plan.get("audio") or {}).get("source") == "camera", None])
             lanes.insert(0, ("ATEM", clips))
         first, lines = pieces[0], []
         for k, (p, off) in enumerate(zip(pieces, offs)):
@@ -284,7 +301,7 @@ def main(argv=None) -> list:
                     if role == "ATEM":
                         lines.append(f'                            <spine lane="{-lane}" offset="{src_t(first["in"])}">')
                         pos = 0
-                        for s_, e_, r0, on in clips:
+                        for s_, e_, r0, on, _g in clips:
                             if r0 > pos:
                                 lines.append(f'                                <gap name="Gap" duration="{t(r0 - pos)}" '
                                              f'offset="{t(pos)}" start="3600/1s"/>')
@@ -308,25 +325,43 @@ def main(argv=None) -> list:
                     wav = angle_wavs.get(angle)              # Jordan's mic WAV under that angle
                     lines.append(f'                            <spine lane="{-lane}" offset="{src_t(first["in"])}">')
                     pos = 0
-                    for s, e, r0, on in clips:
+                    for s, e, r0, on, gain in clips:
                         if r0 > pos:
                             lines.append(f'                                <gap name="Gap" duration="{t(r0 - pos)}" '
                                          f'offset="{t(pos)}" start="3600/1s"/>')
+                        vol = (f'                                    <adjust-volume amount="{gain:+.1f}dB"/>'
+                               if gain is not None else None)
                         if wav:                                  # multicam frame s → WAV time
                             ref, fname, o, inp = wav
-                            lines.append(f'                                <asset-clip ref="{ref}" name={quoteattr(fname)} '
-                                         f'duration="{t(e - s)}" offset="{t(r0)}" '
-                                         f'start="{fmt_s(inp + Fraction(s) * FD - o)}" enabled="{int(on)}"/>')
+                            head = (f'                                <asset-clip ref="{ref}" name={quoteattr(fname)} '
+                                    f'duration="{t(e - s)}" offset="{t(r0)}" '
+                                    f'start="{fmt_s(inp + Fraction(s) * FD - o)}" enabled="{int(on)}"')
+                            lines += [head + ">", vol, "                                </asset-clip>"] if vol else [head + "/>"]
                         else:                                    # mic recorded into the camera file
                             lines.append(f'                                <mc-clip ref="{mc_id}" name={quoteattr(mc_name)} '
                                          f'duration="{t(e - s)}" offset="{t(r0)}" start="{src_t(s)}" enabled="{int(on)}">')
+                            if vol:
+                                lines.append(vol)
                             lines.append(f'                                    <mc-source srcEnable="audio" angleID="{angles[angle]}"/>')
                             lines.append("                                </mc-clip>")
                         pos = r0 + (e - s)
                     lines.append("                            </spine>")
             lines.append("                        </mc-clip>")
         summary = ", ".join(f"{role} {len(c)} audio clip(s) ({sum(1 for x in c if x[3])} open)" for role, c in lanes)
-        return lines, rec, f"{len(pieces)} picture clip(s), {summary}"
+
+        def rec_of(f):                                      # multicam frame → record frame in this video
+            for p, off in zip(pieces, offs):
+                if p["in"] <= f < p["out"]:
+                    return off + f - p["in"]
+                if p["in"] > f:
+                    return off                               # inside a removal: the splice
+            return max(0, rec - 1)
+        extras = {
+            "markers": [{**m, "frame": rec_of(m["frame"])} for m in plan.get("markers") or []],
+            # quieter backchannels: the split step crossfades both ends (2 fr) of these record ranges
+            "ducks": [[x[2], x[2] + x[1] - x[0], x[4]] for _, c in lanes for x in c if x[3] and x[4] is not None]
+        }
+        return lines, rec, f"{len(pieces)} picture clip(s), {summary}", extras
 
     def project(name: str, body: list, total: int) -> list:
         return [f"            <project name={quoteattr(name)}>",
@@ -344,9 +379,9 @@ def main(argv=None) -> list:
         # ranges file tells split_into_videos.py where each video starts and ends
         body, ranges, base = [], [], 0
         for name, plan in jobs:
-            lines, total, summary = spine(plan, base)
+            lines, total, summary, extras = spine(plan, base)
             body += lines
-            ranges.append({"name": name, "start": base, "end": base + total})
+            ranges.append({"name": name, "start": base, "end": base + total, **extras})
             print(f"  {name}: frames {base}-{base + total}, {summary}, {float(total * FD) / 60:.1f} min")
             base += total
         out += project(joined, body, base)
@@ -356,7 +391,7 @@ def main(argv=None) -> list:
     else:
         ranges = []
         for name, plan in jobs:
-            lines, total, summary = spine(plan, 0)
+            lines, total, summary, _extras = spine(plan, 0)
             out += project(name, lines, total)
             print(f"  {name}: {summary}, {float(total * FD) / 60:.1f} min")
     out += ["        </event>", "    </library>", "</fcpxml>", ""]

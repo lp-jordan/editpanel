@@ -72,7 +72,16 @@ function buildSchema(angles) {
         }
       }
     },
-    notes: { type: 'array', items: { type: 'string' } }
+    // "check here" spots: each becomes a red marker on the finished timeline
+    notes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['at', 'note'],
+        properties: { at: { type: 'integer' }, note: { type: 'string' } }
+      }
+    }
   }
   };
 }
@@ -220,8 +229,9 @@ function toFrameSpans(tokens, removals, { start, end }) {
     b = Math.min(end, b);
     // anchors for place_cuts.py's waveform placement (Z8): the kept word before, the cut's first
     // and last token, the kept word after
-    return { from: a, to: Math.max(a, b), why: r.kind, prev_end: prev ? prev.e : null, cut_start: first.s,
-      cut_end: tokens[r.to].e, next_start: next ? next.s : null };
+    const said = tokens.slice(r.from, Math.min(r.to + 1, r.from + 10)).map((t) => (t.kind === 'u' ? '⟨sound⟩' : t.text)).join(' ');
+    return { from: a, to: Math.max(a, b), why: r.kind, reason: r.reason || '', words: said + (r.to - r.from >= 10 ? ' …' : ''),
+      prev_end: prev ? prev.e : null, cut_start: first.s, cut_end: tokens[r.to].e, next_start: next ? next.s : null };
   }).filter((x) => x.to > x.from);
 }
 
@@ -331,6 +341,9 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
   problems.push(...sv.problems);
   const shots = toFrameShots(tokens, sv.ok, ok);
   const cost = costOf(res.model, res.usage);
+  const notes = (res.parsed.notes || []).map((n) => (typeof n === 'string' ? { at: null, note: n } : n));
+  const review = notes.filter((n) => Number.isInteger(n.at) && tokens[n.at])
+    .map((n) => ({ frame: Math.floor(tokens[n.at].s), note: String(n.note || '').slice(0, 300) }));
 
   const claudeFile = path.join(desktopDir, `claude_edit_${label}.json`);
   const removalsFile = path.join(desktopDir, `removals_${label}.json`);
@@ -340,9 +353,9 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
       words: tokens.slice(x.from, x.from + 6).map((t) => t.text || '⟨sound⟩').join(' ') })),
     removals: ok.map((r) => ({ ...r, words: tokens.slice(r.from, r.to + 1).map((t) => (t.kind === 'u' ? '⟨unheard⟩' : t.text)).join(' '),
       at: clock(tokens[r.from].s * frameSec) })),
-    notes: res.parsed.notes || [], problems
+    notes: notes.map((n) => ({ ...n, time: Number.isInteger(n.at) && tokens[n.at] ? clock(tokens[n.at].s * frameSec) : null })), problems
   }, null, 1));
-  fs.writeFileSync(removalsFile, JSON.stringify({ start: s0, end: e0, delivery, removals: spans, shots,
+  fs.writeFileSync(removalsFile, JSON.stringify({ start: s0, end: e0, delivery, removals: spans, shots, review,
     pauses: PAUSES[delivery] || null }, null, 1));
   // a copy per model, so an Opus and a Sonnet edit of the same day can be compared
   fs.copyFileSync(claudeFile, path.join(desktopDir, `claude_edit_${label}_${String(res.model).replace(/[^A-Za-z0-9_.-]+/g, '_')}.json`));
@@ -359,7 +372,7 @@ async function planWithClaude({ label, wordsPath, dayPath, desktopDir, promptPat
     `Claude (${res.model}, effort ${effort}, ${delivery}): ${ok.length} removals (${Object.entries(byKind).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}), ` +
       `${removedSec.toFixed(0)} s removed, ${sv.ok.length} shots — ${seconds}s, $${cost.toFixed(3)} (${u.input_tokens || 0} in / ${u.output_tokens || 0} out tokens)`,
     ...ok.map((r) => `  ${r.from}–${r.to} [${clock(tokens[r.from].s * frameSec)}] ${r.kind}: ${r.reason}`),
-    ...(res.parsed.notes || []).map((n) => `  note: ${n}`),
+    ...notes.map((n) => `  check${Number.isInteger(n.at) && tokens[n.at] ? ` [${clock(tokens[n.at].s * frameSec)}]` : ''}: ${n.note}`),
     ...problems.map((p) => `  ⚠ ${p}`)
   ];
   return { removalsFile, claudeFile, lines, cost, problems };

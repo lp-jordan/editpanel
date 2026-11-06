@@ -57,4 +57,4 @@ JSON only, matching the schema:
 
 - `removals`: `{from, to, kind, reason}` — token numbers, inclusive (to remove only token 57, from = to = 57); no overlaps. `kind`: `retake`, `false_start`, `self_correction`, `flub`, `chatter`, `pre_roll`, `post_roll`, `filler`, `interruption`, `other`. `reason`: a short note quoting a few words.
 - `shots`: `{from, angle, why}` in order — `angle` exactly as named in the angle list; `why` in a few words ("story — hold close", "audience laughs", "new section").
-- `notes`: anything Jordan should check, with token numbers (unsure removals, kept asides, someone other than the speaker talking), or empty.
+- `notes`: `{at, note}` — the spots Jordan should check, each pinned to a token number (`at`): a removal or take choice you're unsure of, a kept aside, someone other than the speaker talking, a shot call you'd want a second opinion on. Each becomes a red marker on the timeline, so only real doubts — usually a handful, never routine choices — and keep each note to one short sentence. Retakes you remove are marked automatically; don't repeat them here. Empty when nothing needs a look.

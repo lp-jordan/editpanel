@@ -32,6 +32,7 @@ Usage:
         [wide="Camera 1"] [punch="Camera 2"] [extra="Camera 4" ...] [cut=<from>-<to> ...]
 """
 import json
+import os
 import math
 import re
 import sys
@@ -306,7 +307,8 @@ def main(argv) -> None:
         for r in given["removals"]:
             a, b = snap_removal(r)
             if b > a:
-                spans.append({"from": a, "to": b, "why": f"claude {r['why']}", "words": None})
+                spans.append({"from": a, "to": b, "why": f"claude {r['why']}", "words": None,
+                              "reason": r.get("reason") or "", "said": r.get("words") or ""})
     spans.sort(key=lambda r: r["from"])
     merged = []
     for r in spans:
@@ -315,6 +317,9 @@ def main(argv) -> None:
             m["to"] = max(m["to"], r["to"])
             if r["why"] not in m["why"]:
                 m["why"] += " + " + r["why"]
+            for k in ("reason", "said"):
+                if r.get(k):
+                    m[k] = (m.get(k) + " / " if m.get(k) else "") + r[k]
             if r["words"] and m["words"]:
                 m["words"] = (min(m["words"][0], r["words"][0]), max(m["words"][1], r["words"][1]))
         else:
@@ -546,19 +551,74 @@ def main(argv) -> None:
 
         by = {p: stretches([w for w in W if w["mic"] == p]) for p in people}
         mics = {}
-        for p in people:
+        DUCK = -2.5                                   # Jordan, 2026-11-05: a "yeah" that steps on the
+        for p in people:                              # talker is opened, 2-fr crossfaded both ends, -2.5 dB
             others = [x for q in people if q != p for x in by[q] if not backchannel(x)]
-            opens = []
+            opens, ducks = [], []
             for st in by[p]:
                 if backchannel(st) and any(x["s"] < st["e"] and st["s"] < x["e"] for x in others):
+                    ducks.append([int(st["s"]) - 3, int(st["e"]) + 4, DUCK])
                     continue
                 a, b = int(st["s"]) - 5, int(st["e"]) + 8
                 if opens and a <= opens[-1][1] + 12:
                     opens[-1][1] = max(opens[-1][1], b)
                 else:
                     opens.append([a, b])
-            mics[p] = opens
-    plan = {"label": data["label"], "multicam": data["multicam"], "fps": fps,
+            # a backchannel already inside (or touching) a full open stays at full level
+            ducks = [d for d in ducks if not any(a - 2 <= d[1] and d[0] <= b + 2 for a, b in opens)]
+            mics[p] = sorted(opens + ducks)
+    # 7. review markers (Jordan, 2026-11-05): red = check this, yellow = worth a look. Waveform ones
+    # cost nothing; retakes come from Claude's removal reasons; "check" spots from Claude's notes.
+    markers = []
+
+    def mark(f, color, name, note):
+        markers.append({"frame": int(f), "color": color, "name": name, "note": note})
+
+    for r in merged:
+        if r["why"].startswith("pause"):
+            continue
+        if "retake" in r["why"]:
+            said = (r.get("said") or "").strip()
+            mark(r["from"], "Yellow", "Retake replaced",
+                 (r.get("reason") or "an earlier take") + (f" — removed: {said[:120]}" if said else ""))
+        if LV:
+            before = next((f for f in range(r["from"] - 1, r["from"] - 25, -1) if sound(f)), None)
+            after = next((f for f in range(r["to"], r["to"] + 25) if sound(f)), None)
+            air_b = r["from"] - 1 - before if before is not None else 99
+            air_a = after - r["to"] if after is not None else 99
+            if min(air_b, air_a) < 3:
+                mark(r["from"], "Red", "Tight splice",
+                     f"{air_b if air_b < 99 else '24+'} fr of quiet before the cut, {air_a if air_a < 99 else '24+'} after — listen for a clipped sound")
+            lv_b = sorted(lvl(f) for f in range(r["from"] - 48, r["from"]) if sound(f))
+            lv_a = sorted(lvl(f) for f in range(r["to"], r["to"] + 48) if sound(f))
+            if len(lv_b) >= 6 and len(lv_a) >= 6:
+                jump = lv_a[len(lv_a) // 2] - lv_b[len(lv_b) // 2]
+                if abs(jump) >= 8:
+                    mark(r["from"], "Yellow", "Level jump", f"speech {'louder' if jump > 0 else 'quieter'} by {abs(jump):.0f} dB across the cut")
+    for w in W:
+        if "e0" in w and not removed(int(w["s"])) and any(a <= w["s"] < b for a, b in kept):
+            mark(w["e"], "Yellow", "Clipped word", f"\"{w['w'].strip()}\" cut short where it goes quiet")
+    for x in (given or {}).get("review") or []:
+        if start <= x["frame"] < end:
+            mark(x["frame"], "Red", "Check", x["note"])
+    markers.sort(key=lambda m: m["frame"])
+    combined = []
+    for m in markers:                                 # one marker per spot: Resolve keeps one per frame
+        c = combined[-1] if combined else None
+        if c and m["frame"] - c["frame"] <= 12:
+            c["color"] = "Red" if "Red" in (c["color"], m["color"]) else c["color"]
+            if m["name"] not in c["name"]:
+                c["name"] += " + " + m["name"]
+            c["note"] += " / " + m["note"]
+        else:
+            combined.append(dict(m))
+    markers = combined
+
+    # the notes quote client words, so they stay on this machine (beside the transcript), never in
+    # the plan (plans can be committed to git)
+    review_p = os.path.join(os.path.dirname(os.path.abspath(words_p)), f"review_{data['label']}.json")
+    json.dump({"label": data["label"], "markers": markers}, open(review_p, "w", encoding="utf-8"), indent=1)
+    plan = {"label": data["label"], "multicam": data["multicam"], "fps": fps, "review_file": review_p,
             "note": ("Edit by Claude (removals) + place_cuts.py (pauses, picture, audio)." if given else
                      "Draft by place_cuts.py (style-guide solo rules from the words file; no LLM)."),
             "mic_angles": {} if camera else {p: p for p in mics}, "video": video, "mics": mics,
@@ -571,6 +631,8 @@ def main(argv) -> None:
     kinds = Counter(r["why"].split(" ")[0] for r in merged)
     print(f"{len(video)} picture pieces, {len(merged)} removals ({', '.join(f'{k} {v}' for k, v in kinds.items())}), "
           f"kept {kept_f / fps / 60:.1f} of {raw_f / fps / 60:.1f} min, {len(video) / max(kept_f / fps / 60, 1e-9):.1f} cuts/min")
+    print(f"review markers: {sum(m['color'] == 'Red' for m in markers)} red, {sum(m['color'] == 'Yellow' for m in markers)} yellow"
+          + (f"; {sum(len([o for o in v if len(o) > 2]) for v in mics.values())} backchannel(s) opened at -2.5 dB" if multi and not camera else ""))
     print("angles:", dict(Counter(v["angle"] for v in video)), f"| audio: {plan['audio']['source']} ({talker})")
     lens = sorted((v["out"] - v["in"]) / fps for v in video)
     print(f"shots: {'Claude' if claude_shots else 'rule rhythm'}; median {lens[len(lens) // 2]:.1f} s, "

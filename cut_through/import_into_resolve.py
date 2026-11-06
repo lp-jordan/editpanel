@@ -367,7 +367,8 @@ def main() -> None:
         globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and good
     copy = next((c for _, c in after if c.GetUniqueId() not in {b.GetUniqueId() for _, b in before}), None)
     if copy and plan.get("mics") and not ATEM_FILE:   # with ATEM_FILE the mix is cut as plain clips (A1 check above)
-        frame = sorted(plan["mics"][next(iter(plan["mics"]))])[0][0] + 24   # inside the first talking stretch
+        opens = sorted(o for o in plan["mics"][next(iter(plan["mics"]))] if len(o) == 2) or [[0, 0]]
+        frame = opens[0][0] + 24                         # inside the first talking stretch (not a quiet "yeah")
         back = new[0] if new else None
         lc, lo = mix_level(project, mp, copy, frame, "copy"), mix_level(project, mp, orig, frame, "orig")
         if back:

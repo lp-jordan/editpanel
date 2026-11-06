@@ -197,6 +197,10 @@ while t < 118:
                       "db": -20, "other_db": -40, "own": True, "clear": True})
     t += 11 if who == 0 else 9
     who = 1 - who
+# the listener says "yeah" over the talker (a backchannel: opened quieter, not closed)
+words.append({"mic": "Camera 3", "w": "yeah", "s": round(4.0 * fps, 1), "e": round(4.0 * fps + 8, 1), "p": 0.9,
+              "db": -20, "other_db": -40, "own": True, "clear": True})
+words.sort(key=lambda w: w["s"])
 json.dump({"label": label, "multicam": day["multicam"], "fps": day["fps"], "frame_sec": day["frame_sec"],
            "angles": day["angles"], "mics": ["Camera 2", "Camera 3"], "words": words},
           open(os.path.join(desk, f"words_{label}.json"), "w", encoding="utf-8"))
@@ -470,6 +474,72 @@ fixed, wavs = m.split_off_angle_tracks(blk, keep_refs=refs)
 print(json.dumps({"refs": sorted(refs), "kept": 'ref="r4"' in fixed, "wavs": len(wavs)}))
 `, PIPELINE], { encoding: 'utf8' }));
   assert.deepStrictEqual(sep, { refs: ['r4'], kept: true, wavs: 0 });
+  // the timeline writer: review markers land on record frames (inside a removal → the splice), a
+  // quieter backchannel gets adjust-volume; the split step places markers + crossfades the duck
+  const wt = path.join(TMP, 'writer');
+  fs.mkdirSync(wt, { recursive: true });
+  fs.writeFileSync(path.join(wt, 'mcdef.fcpxml'), String.raw`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.10">
+    <resources>
+        <format width="1920" frameDuration="1001/24000s" height="1080" name="FFVideoFormat1080p2398" id="r0"/>
+        <media name="mc_t" id="r5">
+            <multicam tcFormat="NDF" format="r0" tcStart="0/1s">
+                <mc-angle angleID="a1" name="Camera 1">
+                    <clip offset="0/1s" duration="100/1s" enabled="1" format="r0" name="c1.mov" start="0/1s">
+                        <video offset="0/1s" duration="100/1s" start="0/1s" ref="r2"><audio lane="-1" srcCh="1" offset="0/1s" duration="100/1s" start="0/1s" ref="r2"/></video>
+                    </clip>
+                </mc-angle>
+                <mc-angle angleID="a2" name="Camera 2">
+                    <clip offset="0/1s" duration="100/1s" enabled="1" format="r0" name="c2.mov" start="0/1s">
+                        <video offset="0/1s" duration="100/1s" start="0/1s" ref="r3"><audio lane="-1" srcCh="1" offset="0/1s" duration="100/1s" start="0/1s" ref="r3"/></video>
+                    </clip>
+                </mc-angle>
+            </multicam>
+        </media>
+        <asset hasVideo="1" hasAudio="1" audioChannels="1" duration="100/1s" format="r0" name="c1.mov" start="0/1s" id="r2"><media-rep src="file://localhost/N:/c1.mov" kind="original-media"/></asset>
+        <asset hasVideo="1" hasAudio="1" audioChannels="1" duration="100/1s" format="r0" name="c2.mov" start="0/1s" id="r3"><media-rep src="file://localhost/N:/c2.mov" kind="original-media"/></asset>
+    </resources>
+    <library><event name="x"><project name="x"><sequence tcFormat="NDF" duration="100/1s" format="r0" tcStart="3600/1s"><spine>
+        <mc-clip offset="3600/1s" duration="100/1s" name="mc_t" start="0/1s" ref="r5"><mc-source srcEnable="all" angleID="a1"/></mc-clip>
+    </spine></sequence></project></event></library>
+</fcpxml>
+`);
+  fs.writeFileSync(path.join(wt, 'review_T.json'), JSON.stringify({ label: 'T', markers: [
+    { frame: 50, color: 'Red', name: 'Check', note: 'a' }, { frame: 250, color: 'Yellow', name: 'Retake replaced', note: 'b' }] }));
+  fs.writeFileSync(path.join(wt, 'T_plan.json'), JSON.stringify({ label: 'T', multicam: 'mc_t', fps: 23.976, review_file: path.join(wt, 'review_T.json'),
+    video: [{ in: 0, out: 200, angle: 'Camera 1' }, { in: 300, out: 600, angle: 'Camera 2' }],
+    mics: { 'Camera 2': [[0, 120], [400, 420, -2.5]] }, mic_angles: { 'Camera 2': 'Camera 2' }, audio: { source: 'wav', angle: 'Camera 2' }, removals: [] }));
+  const wr = JSON.parse(execFileSync(PY, ['-c', String.raw`
+import json, sys, io, contextlib, os
+sys.path.insert(0, sys.argv[1]); os.chdir(sys.argv[2])
+with contextlib.redirect_stdout(io.StringIO()):
+    import write_timeline_xml as m
+    m.main(["mcdef.fcpxml", "out.fcpxml", "Camera 2=Camera 2", "joined=J", "T_plan.json"])
+import split_into_videos as sv
+class It:
+    def __init__(s, a, b): s.a, s.b, s.tr = a, b, []
+    def GetStart(s): return 1000 + s.a
+    def GetEnd(s): return 1000 + s.b
+    def AddTransition(s, o): s.tr.append(o["duration"]); return True
+class TL:
+    def __init__(s): s.m, s.its = {}, [It(0, 300), It(300, 320), It(320, 500)]
+    def GetStartFrame(s): return 1000
+    def AddMarker(s, f, c, n, note, d): s.m[f] = c; return True
+    def GetTrackCount(s, kind): return 1 if kind == "audio" else 0
+    def GetItemListInTrack(s, kind, k): return s.its
+v = json.load(open("out_ranges.json"))["videos"][0]
+tl = TL()
+line = sv.review(tl, v)
+x = open("out.fcpxml").read()
+print(json.dumps({"v": v, "line": line, "marks": tl.m, "tr": [i.tr for i in tl.its], "vol": x.count('<adjust-volume amount="-2.5dB"/>')}))
+`, PIPELINE, wt], { encoding: 'utf8', env: { ...process.env, HOME: wt } }).trim().split('\n').pop());   // its import-time run writes a report to ~/Desktop
+  assert.deepStrictEqual(wr.v.markers.map((m) => m.frame), [50, 200]);
+  assert.deepStrictEqual(wr.v.ducks, [[300, 320, -2.5]]);
+  assert.strictEqual(wr.vol, 1);
+  assert.deepStrictEqual(wr.marks, { 50: 'Red', 200: 'Yellow' });
+  assert.deepStrictEqual(wr.tr, [[2], [2], []], wr.line);
+  assert.ok(/markers 2\/2 \(red 1, yellow 1\); backchannels opened quieter: 1\/1, 2 crossfade/.test(wr.line), wr.line);
   // Claude's shots across removals: no ping-pong (a short other-angle shot, the splice, straight back)
   const fit = JSON.parse(execFileSync(PY, ['-c', String.raw`
 import json, sys
@@ -626,7 +696,9 @@ sys.stdout.write(json.dumps(res))`;
   assert.deepStrictEqual(convoPlan.mic_angles, { 'Camera 2': 'Camera 2', 'Camera 3': 'Camera 3' });
   // each mic opens around its owner's turns only: Camera 2 talks first (0.5–~9 s), Camera 3 from ~11.5 s
   const opens2 = convoPlan.mics['Camera 2'];
-  const opens3 = convoPlan.mics['Camera 3'];
+  const opens3 = convoPlan.mics['Camera 3'].filter((o) => o.length === 2);
+  const duck3 = convoPlan.mics['Camera 3'].filter((o) => o.length === 3);
+  assert.ok(duck3.length === 1 && duck3[0][2] === -2.5 && duck3[0][0] < 96 && duck3[0][1] > 96, JSON.stringify(convoPlan.mics['Camera 3'].slice(0, 3)));
   assert.ok(opens2[0][0] < 24 && opens3[0][0] > 250, JSON.stringify({ opens2: opens2.slice(0, 2), opens3: opens3.slice(0, 2) }));
   assert.ok(convoPlan.video.every((x, k) => !k || x.angle !== convoPlan.video[k - 1].angle));
   assert.ok(snap.planExists);
@@ -696,7 +768,7 @@ sys.stdout.write(json.dumps(res))`;
       { from: at('We'), angle: 'Camera 4', why: 'insert' },
       { from: at('That'), angle: 'Camera 1', why: 'close wide' },
       { from: 99999, angle: 'Camera 9', why: 'bad' }
-    ], notes: ['check the callback at the end'] };
+    ], notes: [{ at: at('That'), note: 'check the callback at the end' }] };
     const handlers = {};
     return {
       on: (ev, fn) => { handlers[ev] = fn; },
@@ -738,6 +810,12 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(take.words.filter((x) => !gone(x.s)).map((x) => x.w).join(' '), CLEAN);
   assert.ok(gone(unheardAt + 7), 'the unheard mutter stayed');
   assert.ok(soloPlan.removals.some((r) => r.why.startsWith('claude retake')) && /Claude/.test(soloPlan.note));
+  // review markers: the retake (yellow, with Claude's reason) and Claude's check spot (red)
+  assert.ok(!soloPlan.markers && soloPlan.review_file, 'markers belong beside the transcript, not in the plan');
+  const mk = JSON.parse(fs.readFileSync(soloPlan.review_file, 'utf8')).markers;
+  assert.ok(mk.some((m) => m.color === 'Yellow' && /Retake replaced/.test(m.name) && /first try/.test(m.note)), JSON.stringify(mk));
+  assert.ok(mk.some((m) => m.color === 'Red' && /Check/.test(m.name) && /callback/.test(m.note)), JSON.stringify(mk));
+  assert.ok(mk.every((m, k) => !k || m.frame - mk[k - 1].frame > 12), 'markers not combined');
   const vv = soloPlan.video;
   assert.ok(vv[0].angle === 'Camera 1' && vv[vv.length - 1].angle === 'Camera 1' && vv.every((x, k) => !k || x.angle !== vv[k - 1].angle),
     JSON.stringify(vv.map((x) => x.angle)));
@@ -772,7 +850,7 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(cl.log.some((l) => /^Claude \(claude-opus-5-5, effort high, scripted\): 3 removals .*, 6 shots .* \$0\.028/.test(l)), cl.log.join('\n'));
   assert.ok(cl.log.some((l) => /skipped shot/.test(l)), 'bad shot not reported');
   assert.ok(cl.log.some((l) => /shots: Claude; .*cuts placed from the waveform/.test(l)), cl.log.join('\n'));
-  assert.ok(cl.log.some((l) => l.includes('note: check the callback')));
+  assert.ok(cl.log.some((l) => /check \[\d+:\d+\]: check the callback/.test(l)), cl.log.join('\n'));
   assert.strictEqual(cl.reportFile, path.join(DESKTOP, 'claude_edit_Solo2.json'));
   assert.ok(fs.existsSync(path.join(DESKTOP, 'claude_edit_Solo2_claude-opus-5-5.json')), 'no per-model copy');
   assert.ok(/solo_plan,claude-opus-5-5,high,2400,900,0,0,0\.028,/.test(fs.readFileSync(path.join(DESKTOP, 'cut_through_costs.csv'), 'utf8')));

@@ -110,6 +110,36 @@ def finish(project: Any, tl: Any) -> str:
     return "; ".join(out)
 
 
+def review(tl: Any, v: dict) -> str:
+    """Review markers (red = check, yellow = worth a look) and the quieter backchannels' 2-frame
+    crossfades at both ends (Jordan's treatment of a "yeah" stepping on the talker)."""
+    s0 = tl.GetStartFrame()
+    marks = v.get("markers") or []
+    placed = {"Red": 0, "Yellow": 0}
+    for m in marks:
+        ok = _safe(lambda: tl.AddMarker(int(m["frame"]), m["color"], m["name"][:60], m["note"][:500], 1))
+        if ok:
+            placed[m["color"]] = placed.get(m["color"], 0) + 1
+    out = [f"markers {sum(placed.values())}/{len(marks)} (red {placed['Red']}, yellow {placed['Yellow']})"] if marks else []
+    ducks = v.get("ducks") or []
+    if ducks:
+        xf, found = 0, 0
+        for name, its in tracks(tl).items():
+            if not name.startswith("A"):
+                continue
+            starts = {int(it.GetStart()) - s0: k for k, it in enumerate(its)}
+            for a, b, _gain in ducks:
+                k = starts.get(int(a))
+                if k is None or int(its[k].GetEnd()) - s0 != int(b):
+                    continue
+                found += 1
+                if k > 0 and int(its[k - 1].GetEnd()) == int(its[k].GetStart()):
+                    xf += bool(_safe(lambda: its[k - 1].AddTransition(CROSSFADE)))
+                xf += bool(_safe(lambda: its[k].AddTransition(CROSSFADE)))
+        out.append(f"backchannels opened quieter: {found}/{len(ducks)}, {xf} crossfade(s)")
+    return "; ".join(out)
+
+
 def tracks(tl: Any) -> Dict[str, List[Any]]:
     """Every track's items in record order, keyed V1, A1, A2…"""
     out = {}
@@ -194,6 +224,9 @@ def main() -> None:
             f"({time.time() - t1:.1f}s)")
         if FINISH:
             say(f"    finish: {finish(project, dup)}")
+        rv = review(dup, v)
+        if rv:
+            say(f"    review: {rv}")
     say(f"Clean splits: {clean}/{len(spec['videos'])}")
     if seq and built:
         items = timeline_items(mp.GetRootFolder(), set(built))
