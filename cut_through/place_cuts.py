@@ -627,10 +627,13 @@ def main(argv) -> None:
                 jump = lv_a[len(lv_a) // 2] - lv_b[len(lv_b) // 2]
                 if abs(jump) >= 8:
                     mark(r["from"], "Yellow", "Level jump", f"speech {'louder' if jump > 0 else 'quieter'} by {abs(jump):.0f} dB across the cut")
-    # a clipped word only matters where a cut follows it (elsewhere the audio plays on untouched)
+    # a clipped word only matters where a removal follows it (elsewhere the audio plays on untouched).
+    # Pause trims are cut in the quiet, so they never clip a word: on Bill's stage talk they made
+    # 37 of 40 markers, all noise (Jordan, 2026-11-05).
+    cuts = [r for r in merged if not r["why"].startswith("pause")]
     for w in W:
         if ("e0" in w and not removed(int(w["s"])) and any(a <= w["s"] < b for a, b in kept)
-                and any(0 <= r["from"] - w["e"] <= 12 for r in merged)):
+                and any(0 <= r["from"] - w["e"] <= 12 for r in cuts)):
             mark(w["e"], "Yellow", "Clipped word", f"\"{w['w'].strip()}\" ends right at a cut, where it went quiet — listen for the tail")
     for x in (given or {}).get("review") or []:
         if start <= x["frame"] < end:

@@ -875,6 +875,9 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(mk.some((m) => m.color === 'Yellow' && /Retake replaced/.test(m.name) && /first try/.test(m.note)), JSON.stringify(mk));
   assert.ok(mk.some((m) => m.color === 'Red' && /Check/.test(m.name) && /callback/.test(m.note)), JSON.stringify(mk));
   assert.ok(mk.every((m, k) => !k || m.frame - mk[k - 1].frame > 12), 'markers not combined');
+  // a pause trim is cut in the quiet, so it never earns a "Clipped word" marker (Bill: 37 false alarms)
+  const realCut = (f) => soloPlan.removals.some((r) => !r.why.startsWith('pause') && r.from - f >= 0 && r.from - f <= 24);
+  assert.ok(mk.filter((m) => /Clipped word/.test(m.name)).every((m) => realCut(m.frame)), JSON.stringify(mk));
   const vv = soloPlan.video;
   assert.ok(vv[0].angle === 'Camera 1' && vv[vv.length - 1].angle === 'Camera 1' && vv.every((x, k) => !k || x.angle !== vv[k - 1].angle),
     JSON.stringify(vv.map((x) => x.angle)));

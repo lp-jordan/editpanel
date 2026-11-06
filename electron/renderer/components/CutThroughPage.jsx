@@ -110,6 +110,12 @@ function CutThroughPage({ connected }) {
     return api.onUpdate((data) => setCt(data));
   }, []);
 
+  function loadTimelines() {
+    window.leaderpassAPI.call('list_timelines')
+      .then((res) => setTimelines((res?.data?.timelines || []).map((t) => t.name).filter((n) => n && !n.startsWith('__SPIKE_') && !n.startsWith('Cut-through temp'))))
+      .catch(() => setTimelines([]));
+  }
+
   // Multicams + bins whenever Resolve (re)connects.
   React.useEffect(() => {
     if (!api || !connected) return;
@@ -117,10 +123,12 @@ function CutThroughPage({ connected }) {
     window.leaderpassAPI.call('list_media_bins')
       .then((res) => setBins(Array.isArray(res?.data?.bins) ? res.data.bins : []))
       .catch(() => setBins([]));
-    window.leaderpassAPI.call('list_timelines')
-      .then((res) => setTimelines((res?.data?.timelines || []).map((t) => t.name).filter((n) => n && !n.startsWith('__SPIKE_') && !n.startsWith('Cut-through temp'))))
-      .catch(() => setTimelines([]));
+    loadTimelines();
   }, [connected]);
+
+  // The build adds timelines after connect, so reload when a build finishes.
+  const buildFinished = ct && ct.steps && ct.steps.build && ct.steps.build.finishedAt;
+  React.useEffect(() => { if (connected && buildFinished) loadTimelines(); }, [buildFinished]);
 
   const running = ct && ct.busy;
   React.useEffect(() => {
@@ -317,7 +325,7 @@ function CutThroughPage({ connected }) {
           {st.status !== 'running' && (
             <label className="ct-inline ct-grow">
               <span className="settings-label">Finished edit</span>
-              <select className="settings-input" value={scoreTimeline} onChange={(e) => setScoreTimeline(e.target.value)}>
+              <select className="settings-input" value={scoreTimeline} onFocus={loadTimelines} onChange={(e) => setScoreTimeline(e.target.value)}>
                 <option value="">{timelines.length ? 'Choose…' : 'No timelines'}</option>
                 {timelines.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
