@@ -418,6 +418,13 @@ def main() -> None:
                     if "timeline" in str(_safe(lambda: c.GetClipProperty("Type"), "")).lower()
                     and _safe(lambda: c.GetName()) in pick]
         _safe(lambda: mp.MoveClips([orig] + tl_items, dest), False)
+        # Jordan (2026-11-05): name it as the original too, so it can't be mistaken for the copy
+        new_name = name if name.endswith("_original") else f"{name}_original"
+        if new_name != name:
+            if not _safe(lambda: orig.SetName(new_name), False):
+                _safe(lambda: orig.SetClipProperty("Clip Name", new_name), False)
+            got = _safe(lambda: orig.GetName(), name)
+            say(f"Original renamed to '{got}' {'✓' if got == new_name else '✗ (rename did not stick)'}")
         where = {c.GetUniqueId(): _safe(lambda: f.GetName()) for f, c in walk(root, set())}
         say(f"Original {name} [{orig_id[:8]}] now in bin '{where.get(orig_id)}' "
             f"{'✓' if where.get(orig_id) == ORIG_BIN else '✗ (move did not stick)'}; "

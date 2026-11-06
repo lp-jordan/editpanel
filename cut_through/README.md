@@ -12,7 +12,7 @@ rebuilding EditPanel.
 | Plan | `place_cuts.py` | Places Claude's decisions on exact frames using the waveform, tightens pauses and sets mic levels. Writes `plans/<LABEL>_plan.json`. |
 | Build | `build_rough_cut.py` | Builds the edit in Resolve and runs the next two files. |
 | Build | `write_timeline_xml.py` | Writes the plan as one timeline file that Resolve can import. |
-| Build | `import_into_resolve.py` | Imports that timeline and checks picture and sound. The original multicam goes to `MC ORIGINAL`. |
+| Build | `import_into_resolve.py` | Imports that timeline and checks picture and sound. The original multicam goes to `MC ORIGINAL`, renamed `<name>_original`. |
 | Build | `split_into_videos.py` | Cuts the result into one timeline per video, named `<LABEL> rough cut`, in the chosen bin. |
 
 Temporary timelines are named `Cut-through temp …` and are deleted when the build finishes.
