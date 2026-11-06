@@ -3451,7 +3451,7 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:use-plan', ctCall(() => cutThrough.useExistingPlan()));
   ipcMain.handle('cut-through:read-marks', ctCall(() => cutThrough.readMarks()));
   ipcMain.handle('cut-through:build', ctCall((a) => cutThrough.runBuild(a)));
-  ipcMain.handle('cut-through:score', ctCall((a) => cutThrough.runScore(a)));
+  ipcMain.handle('cut-through:check', ctCall((a) => cutThrough.runCheck(a)));
   ipcMain.handle('cut-through:open-file', async (_e, p) => {
     if (typeof p !== 'string' || !p) return { ok: false, error: 'No report file' };
     if (!fs.existsSync(p)) return { ok: false, error: `Not found: ${p}` };

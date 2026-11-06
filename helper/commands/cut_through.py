@@ -8,6 +8,10 @@ Resolve-side steps inside the Resolve worker instead of Resolve's Py3 console.
       Every multicam clip in the open project outside the archive bins
       (MC ORIGINAL / MC QUARANTINE), same walk as the pipeline uses.
 
+  ct_read_timeline  {name}  → {name, fps, track, pieces, start_frame, start_tc}
+  ct_set_markers  {name, tag, markers [{frame, color, name, note}]}  → {removed, placed, failed}
+      Cut-through Check: read a built rough cut back; replace its Check markers.
+
   ct_run_step  {pipeline_dir, script, settings}  → {lines, stopped, error, seconds}
       Exec one allow-listed step script with `settings` as its run-line globals
       (LABEL, MC, SEQ_BIN, …) and the worker's Resolve handle, exactly as the
@@ -221,20 +225,61 @@ def read_timeline(tl: Any) -> Dict[str, Any]:
             })
     track = max(by_track, key=lambda k: len(by_track[k])) if by_track else None
     pieces = sorted(by_track.get(track, []), key=lambda p: p["start"])
-    return {"name": _safe(lambda: tl.GetName()), "fps": fps, "track": track, "pieces": pieces}
+    return {"name": _safe(lambda: tl.GetName()), "fps": fps, "track": track, "pieces": pieces,
+            # markers are placed relative to the timeline's first frame; the report quotes its timecode
+            "start_frame": int(_safe(lambda: tl.GetStartFrame(), 0) or 0),
+            "start_tc": _safe(lambda: tl.GetStartTimecode()) or None}
 
 
-def handle_ct_read_timeline(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
+def _timeline_named(name: str):
     from .. import resolve_helper as rh
 
     if not rh.project:
         raise RuntimeError("No project open in Resolve")
-    name = str(payload.get("name") or "")
     for i in range(1, int(rh.project.GetTimelineCount() or 0) + 1):
         tl = rh.project.GetTimelineByIndex(i)
         if _safe(lambda: tl.GetName()) == name:
-            out = read_timeline(tl)
-            if log_func:
-                log_func(f"[cut-through] read {len(out['pieces'])} multicam piece(s) from {name!r}")
-            return out
+            return tl
     raise RuntimeError(f"No timeline named {name!r}")
+
+
+def handle_ct_read_timeline(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
+    name = str(payload.get("name") or "")
+    out = read_timeline(_timeline_named(name))
+    if log_func:
+        log_func(f"[cut-through] read {len(out['pieces'])} multicam piece(s) from {name!r}")
+    return out
+
+
+def set_markers(tl: Any, markers: List[Dict[str, Any]], tag: str) -> Dict[str, Any]:
+    """Replace this tool's markers on a timeline: every marker carrying `tag` as its custom data
+    goes (a re-run never piles up), then the new ones are added. Other markers — the build's
+    review markers, Jordan's own — are left alone; a new marker on a frame that already has one
+    moves a frame or two later."""
+    removed = 0
+    for frame, m in list((_safe(lambda: tl.GetMarkers(), {}) or {}).items()):
+        if (m or {}).get("customData") == tag and _safe(lambda: tl.DeleteMarkerAtFrame(frame)):
+            removed += 1
+    taken = set((_safe(lambda: tl.GetMarkers(), {}) or {}).keys())
+    placed, failed = 0, 0
+    for m in markers:
+        ok = False
+        for nudge in (0, 1, 2, 3):
+            f = int(m["frame"]) + nudge
+            if f in taken:
+                continue
+            if _safe(lambda: tl.AddMarker(f, m["color"], str(m["name"])[:60], str(m.get("note") or "")[:500], 1, tag)):
+                taken.add(f)
+                ok = True
+                break
+        placed += ok
+        failed += not ok
+    return {"removed": removed, "placed": placed, "failed": failed}
+
+
+def handle_ct_set_markers(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
+    name = str(payload.get("name") or "")
+    out = set_markers(_timeline_named(name), list(payload.get("markers") or []), str(payload.get("tag") or "cut-through"))
+    if log_func:
+        log_func(f"[cut-through] markers on {name!r}: {out}")
+    return out

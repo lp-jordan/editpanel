@@ -62,17 +62,46 @@ fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
   console.log('✓ helpers');
 }
 {
-  const { scorePlan } = require('../electron/workers/cut_through_score');
-  const plan = { multicam: 'mc', fps: 24, video: [{ in: 0, out: 100, angle: 'A' }, { in: 200, out: 300, angle: 'B' }, { in: 350, out: 500, angle: 'A' }] };
-  const finished = { name: 'J', fps: 24, pieces: [{ mc: 'mc', angle: 'A', src_in: 0, src_out: 100 }, { mc: 'mc', angle: 'A', src_in: 220, src_out: 500 },
-    { mc: 'other', angle: 'B', src_in: 0, src_out: 999 }] };
-  const { data } = scorePlan({ plan, finished });
-  assert.deepStrictEqual(data.removed_s, { jordan: 5, ours: 6.3, overlap: 4.2, ours_only: 2.1 });   // he cut 100–220; we cut 100–200 + 300–350
-  assert.strictEqual(data.removal_coverage_pct, 83);
-  assert.deepStrictEqual(data.cuts, { ours: 2, jordan: 1, ours_within_1s: 1, jordan_within_1s: 1 });
-  assert.strictEqual(data.same_angle_pct, 76);   // both keep 0–100 + 350–500 on A (250 fr) and 220–300 on B vs A (80 fr): 250/330
-  assert.ok(data.extra.length === 1 && data.extra[0].from === 300 && data.missed.length === 1 && data.missed[0].from === 200);
-  console.log('✓ score: removal overlap, cuts within 1 s, same-angle share, disagreement lists');
+  const { checkTimeline, tcPlus } = require('../electron/workers/cut_through_check');
+  assert.strictEqual(tcPlus('01:00:00:00', 24 * 61 + 5, 23.976), '01:01:01:05');
+  // source frames at 24 fps; words with aligned times
+  const W = (w, s, e) => ({ mic: 'Camera 1', w, s, e, own: true });
+  const words = { fps: 24, aligned: true, unheard: [{ mic: 'Camera 1', s: 470, e: 490 }], words: [
+    W('So', 10, 20), W('today', 22, 40), W('we', 42, 50), W('talk', 52, 70), W('about', 72, 90), W('pools.', 92, 120),
+    W('The', 130, 140), W('the', 142, 150), W('water', 152, 180), W('is', 182, 190), W('warm', 192, 215), W('and', 217, 225),   // removed 130–300 except…
+    W('blue', 227, 250), W('today', 252, 270), W('really.', 272, 300),
+    W('and', 300, 310), W('clean', 312, 340), W('every', 342, 360), W('single', 362, 380), W('day.', 382, 410),
+    W('Say', 440, 450), W('that', 452, 460), W('again.', 462, 468),
+    W('Next', 520, 540), W('we', 542, 550), W('dig', 552, 570), W('deep', 572, 600) ] };
+  const tl = { name: 'T rough cut', fps: 24, start_frame: 1000, start_tc: '01:00:00:00', pieces: [
+    { mc: 'mc', angle: 'Camera 1', start: 1000, end: 1110, src_in: 0, src_out: 110 },
+    { mc: 'mc', angle: 'Camera 2', start: 1110, end: 1135, src_in: 110, src_out: 135 },   // angle change only, not a join; cuts "The" (130–140)
+    { mc: 'mc', angle: 'Camera 1', start: 1135, end: 1140, src_in: 300, src_out: 305 },   // flash shot
+    { mc: 'mc', angle: 'Camera 1', start: 1140, end: 1340, src_in: 305, src_out: 505 },
+    { mc: 'mc', angle: 'Camera 1', start: 1340, end: 1420, src_in: 520, src_out: 600 } ] };
+  const { markers, data } = checkTimeline({ timeline: tl, words, multicam: 'mc' });
+  const at = (name) => markers.filter((m) => m.name.split(' + ').includes(name));
+  assert.ok(at('Word cut off').some((m) => m.color === 'Red' && /"The" — end cut by 5 fr/.test(m.note) && m.frame === 135), JSON.stringify(markers));
+  assert.ok(at('Cue kept').length === 1 && at('Cue kept')[0].color === 'Red', 'cue');
+  assert.ok(at('Sound, no words').length === 1, 'unheard');
+  assert.ok(at('Flash shot').length === 1 && at('Flash shot')[0].frame === 135, 'flash');
+  assert.ok(at('Ends mid-sentence').length === 1, 'ends mid-sentence ("deep")');
+  assert.ok(at('Pause kept').length === 1 && /1\.3 s after "day\."/.test(at('Pause kept')[0].note), JSON.stringify(at('Pause kept')));
+  assert.ok(at('Gap at the cut').length === 1 && /1\.5 s/.test(at('Gap at the cut')[0].note), 'gap at the cut');
+  assert.strictEqual(data.joins, 2);                                                     // angle changes are not joins
+  assert.ok(markers.every((m) => /^01:00:\d\d:\d\d$/.test(m.tc)));
+  assert.strictEqual(new Set(markers.map((m) => m.frame)).size, markers.length, 'one marker per frame');
+  // a mid-sentence join after a real removal, and a repeat across a cut
+  const tl2 = { name: 'T2', fps: 24, start_frame: 0, start_tc: '01:00:00:00', pieces: [
+    { mc: 'mc', angle: 'Camera 1', start: 0, end: 226, src_in: 0, src_out: 226 },          // ends "…warm and"
+    { mc: 'mc', angle: 'Camera 1', start: 226, end: 340, src_in: 311, src_out: 425 } ] };
+  const m2 = checkTimeline({ timeline: tl2, words, multicam: 'mc' }).markers;
+  assert.ok(m2.some((m) => m.name.includes('Joins mid-sentence') && /warm and ‖ clean/.test(m.note)), JSON.stringify(m2));
+  const tl3 = { name: 'T3', fps: 24, start_frame: 0, start_tc: '01:00:00:00', pieces: [
+    { mc: 'mc', angle: 'Camera 1', start: 0, end: 141, src_in: 0, src_out: 141 },
+    { mc: 'mc', angle: 'Camera 1', start: 141, end: 300, src_in: 141, src_out: 300 } ] };
+  assert.ok(checkTimeline({ timeline: tl3, words, multicam: 'mc' }).markers.some((m) => m.name.includes('Repeated word') && /"The the"/.test(m.note)));
+  console.log('✓ check: word cut off, cue kept, sound with no words, flash shot, pauses, mid-sentence join, repeats, one marker per frame');
 }
 
 // ── fakes ──────────────────────────────────────────────────────
@@ -684,13 +713,18 @@ sys.stdout.write(json.dumps(res))`;
       });
     }
     if (payload.cmd === 'ct_mark_in_out') return Promise.resolve({ data: globalThis.FAKE_MARKS || { in: null, out: null, bin: null, multicams: 1 } });
+    if (payload.cmd === 'list_timelines') {
+      return Promise.resolve({ data: { timelines: [{ name: 'Solo2 rough cut' }, { name: 'Solo2 rough cut 2' }, { name: 'Other' }] } });
+    }
     if (payload.cmd === 'ct_read_timeline') {
-      const plan = JSON.parse(fs.readFileSync((() => { const l = payload.name.replace(/^Jordan_/, ''); return RUN(l, `${l}_plan.json`); })(), 'utf8'));
-      // "Jordan's edit": our pieces, but he also removed the first 2 s of the longest one
-      const longest = plan.video.reduce((b, v, k) => (v.out - v.in > plan.video[b].out - plan.video[b].in ? k : b), 0);
-      const pieces = plan.video.map((v, k) => ({ mc: plan.multicam, angle: v.angle, start: 0, end: 0,
-        src_in: k === longest ? v.in + 48 : v.in, src_out: v.out }));
-      return Promise.resolve({ data: { name: payload.name, fps: plan.fps, track: 1, pieces } });
+      // the rough cut as built: the plan's pieces laid end to end from frame 86400
+      const plan = JSON.parse(fs.readFileSync(RUN('Solo2', 'Solo2_plan.json'), 'utf8'));
+      let t = 86400;
+      const pieces = plan.video.map((v) => { const p = { mc: plan.multicam, angle: v.angle, start: t, end: t + v.out - v.in, src_in: v.in, src_out: v.out }; t = p.end; return p; });
+      return Promise.resolve({ data: { name: payload.name, fps: plan.fps, track: 1, pieces, start_frame: 86400, start_tc: '01:00:00:00' } });
+    }
+    if (payload.cmd === 'ct_set_markers') {
+      return Promise.resolve({ data: { removed: 0, placed: payload.markers.length, failed: 0 } });
     }
     if (payload.cmd === 'ct_run_step' && payload.script === 'build_rough_cut.py') {
       return Promise.resolve({ data: { lines: ['1. Exported', '4. Split done (2.0s)', '', 'Total time: 16.0s'], error: null, stopped: null } });
@@ -998,13 +1032,18 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(fs.existsSync(RUN('Solo2', 'claude_edit_Solo2_claude-opus-5-5.json')), 'no per-model copy');
   assert.ok(/solo_plan,claude-opus-5-5,high,2400,900,0,0,0\.028,/.test(fs.readFileSync(path.join(FILES, 'cut_through_costs.csv'), 'utf8')));
   assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-'), 'key in the snapshot');
-  // Score against "Jordan's edit" (the fake worker's copy of this plan minus 2 s he cut)
-  const sc = (await c3.runScore({ timeline: 'Jordan_Solo2' })).steps.score;
-  assert.strictEqual(sc.status, 'done', sc.error);
-  assert.ok(fs.existsSync(RUN('Solo2', 'score_Solo2.txt')) && fs.existsSync(RUN('Solo2', 'score_Solo2.json')));
-  assert.strictEqual(sc.data.removed_s.ours_only, 0);
-  assert.ok(sc.data.missed.length === 1 && sc.data.missed[0].seconds === 2 && sc.data.same_angle_pct === 100, JSON.stringify(sc.data));
-  assert.ok(sc.report.some((l) => /^Jordan removed, we kept/.test(l)), sc.report.join('\n'));
+  // Check every "<LABEL> rough cut" timeline (not "Other"); markers replaced under Check's tag
+  const nCalls = w.calls.length;
+  const ck = (await c3.runCheck({})).steps.check;
+  assert.strictEqual(ck.status, 'done', ck.error);
+  const sent = w.calls.slice(nCalls);
+  assert.deepStrictEqual(sent.filter((c) => c.cmd === 'ct_read_timeline').map((c) => c.name), ['Solo2 rough cut', 'Solo2 rough cut 2']);
+  assert.ok(sent.filter((c) => c.cmd === 'ct_set_markers').every((c) => c.tag === 'cut-through-check' && Array.isArray(c.markers)));
+  assert.ok(fs.existsSync(RUN('Solo2', 'check_Solo2.txt')) && fs.existsSync(RUN('Solo2', 'check_Solo2.json')));
+  assert.ok(ck.data.timelines === 2 && Number.isInteger(ck.data.red) && Number.isInteger(ck.data.yellow), JSON.stringify(ck.data));
+  assert.ok(/^Checked 2 timeline\(s\)/.test(ck.report[0]), ck.report.join('\n'));
+  const one = (await c3.runCheck({ timeline: 'Solo2 rough cut 2' })).steps.check;
+  assert.ok(one.status === 'done' && one.data.timelines === 1, one.error);
   // stage: the lighter brief + looser pause rule reach Claude and the planner
   const stage = (await c3.runPlan({ delivery: 'stage' })).steps.plan;
   assert.strictEqual(stage.status, 'done', stage.error);

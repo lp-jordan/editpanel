@@ -2,7 +2,7 @@
  * CutThroughPage — Cut-through (beta): a day multicam → AI rough cuts.
  *
  * Front end for electron/workers/cut_through.js, which runs the cut_through/
- * pipeline (prep → transcribe → plan → build). All run state lives in the
+ * pipeline (prep → transcribe → plan → build → check). All run state lives in the
  * main process and arrives on cutThroughAPI.onUpdate, so leaving the page
  * never stops a run. Copy stays minimal: labels, empty states, errors.
  *
@@ -14,7 +14,7 @@ const CT_STEPS = [
   { key: 'transcribe', title: 'Transcribe' },
   { key: 'plan', title: 'Plan' },
   { key: 'build', title: 'Build' },
-  { key: 'score', title: 'Score' }
+  { key: 'check', title: 'Check' }
 ];
 
 function ctDuration(ms) {
@@ -92,7 +92,7 @@ function CutThroughPage({ connected }) {
   const [planForm, setPlanForm] = React.useState({ start: '', end: '', extra: '', delivery: 'scripted', useMarks: false });
   const [bins, setBins] = React.useState([]);
   const [timelines, setTimelines] = React.useState([]);
-  const [scoreTimeline, setScoreTimeline] = React.useState('');
+  const [checkTimeline, setCheckTimeline] = React.useState('');
   const [openReports, setOpenReports] = React.useState({});
   const [errors, setErrors] = React.useState({});
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -318,24 +318,25 @@ function CutThroughPage({ connected }) {
         </div>
       );
     }
-    if (key === 'score') {
+    if (key === 'check') {
       const d = st.data;
       if (st.status === 'running' && !d) return null;
+      const roughBase = ct.label ? `${ct.label} rough cut` : '';
       return (
         <div className="ct-grid">
           {st.status !== 'running' && (
-            <CtRow label="Finished edit">
-              <select className="settings-input ct-grow-input" value={scoreTimeline} onFocus={loadTimelines} onChange={(e) => setScoreTimeline(e.target.value)}>
-                <option value="">{timelines.length ? 'Choose…' : 'No timelines'}</option>
-                {timelines.map((t) => <option key={t} value={t}>{t}</option>)}
+            <CtRow label="Timeline">
+              <select className="settings-input ct-grow-input" value={checkTimeline} onFocus={loadTimelines} onChange={(e) => setCheckTimeline(e.target.value)}>
+                <option value="">{roughBase ? `All ${roughBase}s` : 'All rough cuts'}</option>
+                {timelines.filter((t) => !roughBase || t !== roughBase).map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </CtRow>
           )}
           {d && (
             <CtRow label="Result">
-              {d.removal_coverage_pct !== null && <span className="tag">{d.removal_coverage_pct}% of removals matched</span>}
-              <span className="tag">{d.cuts.ours_within_1s}/{d.cuts.ours} cuts within 1 s</span>
-              {d.same_angle_pct !== null && <span className="tag">{d.same_angle_pct}% same angle</span>}
+              <span className={d.red ? 'tag warning' : 'tag'}>{d.red} red</span>
+              <span className="tag">{d.yellow} yellow</span>
+              {Object.entries(d.kinds || {}).map(([k, n]) => <span key={k} className="tag">{k} × {n}</span>)}
             </CtRow>
           )}
         </div>
@@ -390,10 +391,10 @@ function CutThroughPage({ connected }) {
         </>
       );
     }
-    if (key === 'score') {
+    if (key === 'check') {
       return (
-        <button type="button" className="btn small ghost" disabled={busy || !connected || !ct.planExists || !scoreTimeline}
-          onClick={() => call(key, () => api.runScore({ timeline: scoreTimeline }))}>Score</button>
+        <button type="button" className="btn small ghost" disabled={busy || !connected || steps.transcribe.status !== 'done'}
+          onClick={() => call(key, () => api.runCheck({ timeline: checkTimeline }))}>{st.status === 'pending' ? 'Check' : 'Check again'}</button>
       );
     }
     if (key === 'build') {

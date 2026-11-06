@@ -25,9 +25,9 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { randomUUID } = require('crypto');
 const claude = require('./cut_through_claude');
-const { scorePlan } = require('./cut_through_score');
+const { checkTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 
-const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'score'];
+const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check'];
 const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
 const DEFAULT_WX_PYTHON = 'C:\\wxbench\\Scripts\\python.exe';
 const MAX_LOG_LINES = 400;
@@ -242,7 +242,7 @@ function createCutThrough(opts) {
       transcribeReport: path.join(dir, `transcribe_${label}.txt`),
       plan: path.join(dir, `${label}_plan.json`),
       buildReport: path.join(dir, `cut_through_${label}.txt`),
-      scoreReport: path.join(dir, `score_${label}.txt`)
+      checkReport: path.join(dir, `check_${label}.txt`)
     };
   }
 
@@ -353,7 +353,7 @@ function createCutThrough(opts) {
       transcribe: [f.words, f.transcribeReport],
       plan: [f.plan, null],
       build: [f.buildReport, f.buildReport],
-      score: [f.scoreReport, f.scoreReport]
+      check: [f.checkReport, f.checkReport]
     };
     for (const key of STEP_KEYS) {
       const [out, rep] = marks[key];
@@ -402,7 +402,7 @@ function createCutThrough(opts) {
     if (owner && owner !== s.project) return;
     const dir = runDir(label);
     const fixed = [`day_${label}.json`, `day_prep_${label}.txt`, `words_${label}.json`, `levels_${label}.json`,
-      `transcript_${label}.txt`, `transcribe_${label}.txt`, `cut_through_${label}.txt`, `score_${label}.txt`, `score_${label}.json`,
+      `transcript_${label}.txt`, `transcribe_${label}.txt`, `cut_through_${label}.txt`, `check_${label}.txt`, `check_${label}.json`,
       `removals_${label}.json`, `review_${label}.json`, `mcdef_${label}.fcpxml`, `mcdef_${label}.fcpxmld`, `${label}_joined.fcpxml`,
       `${label}_joined_ranges.json`, `import_${label}.txt`, ...STEP_KEYS.map((k) => `${k}_${label}_log.txt`)];
     let names = [];
@@ -554,30 +554,58 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
-  async function runScore({ timeline } = {}) {
-    if (!timeline) throw new Error('Pick the finished timeline');
+  /** The rough cuts Build made for this label ("<LABEL> rough cut", one per video). */
+  async function roughCuts() {
+    const res = await sendWorkerRequest({ cmd: 'list_timelines' }, 'resolve');
+    const base = `${s.label} rough cut`;
+    return (res?.data?.timelines || []).map((t) => t.name).filter((n) => n && n.startsWith(base)).sort();
+  }
+
+  /** Check: read each rough cut back from Resolve as it is now, mark what an editor would fix
+   *  (red: word cut off, ends mid-sentence, cue kept; yellow: joins mid-sentence, gaps, repeats,
+   *  sound with no words, flash shots). Free — no Claude. A re-run replaces its own markers. */
+  async function runCheck({ timeline } = {}) {
     const f = files();
-    const plan = readJson(f.plan);
-    if (!plan) throw new Error('No plan for this label yet');
-    const st = begin('score');
+    const words = readJson(f.words);
+    if (!words) throw new Error('Run Transcribe first');
+    const st = begin('check');
     st.traceId = randomUUID();
-    st.progress = { phase: `Reading ${timeline} from Resolve`, phaseAt: Date.now(), bar: null };
+    st.progress = { phase: 'Finding the rough cuts', phaseAt: Date.now(), bar: null };
     emit();
     let error = null;
-    let report = [];
+    const report = [];
+    const results = [];
     try {
-      const res = await sendWorkerRequest({ cmd: 'ct_read_timeline', name: String(timeline), trace_id: st.traceId }, 'resolve');
-      st.progress = { phase: 'Comparing it with the plan', phaseAt: Date.now(), bar: null };
-      emit();
-      const out = scorePlan({ plan, finished: res.data, words: readJson(f.words) });
-      report = out.lines;
-      fs.writeFileSync(f.scoreReport, report.join('\n') + '\n', 'utf8');
-      fs.writeFileSync(f.scoreReport.replace(/\.txt$/, '.json'), JSON.stringify(out.data, null, 1), 'utf8');
-      st.data = out.data;
+      const names = timeline ? [String(timeline)] : await roughCuts();
+      if (!names.length) throw new Error(`No "${s.label} rough cut" timeline in this project — Build first`);
+      if (!words.aligned) report.push('Words NOT aligned to the audio — "Word cut off" is approximate. Re-run Plan to align them.');
+      const multicam = (readJson(f.plan) || {}).multicam || s.mc || words.multicam || null;
+      const kind = s.day ? planKind(s.day) : 'solo';
+      for (const [k, name] of names.entries()) {
+        st.progress = { phase: `Checking ${name}`, phaseAt: Date.now(), bar: names.length > 1 ? Math.round((k / names.length) * 100) : null };
+        emit();
+        const tl = (await sendWorkerRequest({ cmd: 'ct_read_timeline', name, trace_id: st.traceId }, 'resolve')).data;
+        const out = checkTimeline({ timeline: tl, words, kind, multicam });
+        const placed = (await sendWorkerRequest({ cmd: 'ct_set_markers', name, tag: CHECK_TAG,
+          markers: out.markers.map(({ frame, color, name: n, note }) => ({ frame, color, name: n, note })), trace_id: st.traceId }, 'resolve')).data || {};
+        report.push(...out.lines);
+        if (placed.failed) report.push(`  (${placed.failed} marker(s) couldn't be placed)`);
+        report.push('');
+        results.push({ ...out.data, markers: out.markers, placed: placed.placed ?? null });
+      }
+      const red = results.reduce((n, r) => n + r.red, 0);
+      const yellow = results.reduce((n, r) => n + r.yellow, 0);
+      const kinds = {};
+      for (const r of results) for (const [k, n] of Object.entries(r.kinds)) kinds[k] = (kinds[k] || 0) + n;
+      st.data = { timelines: results.length, red, yellow, kinds };
+      report.unshift(`Checked ${results.length} timeline(s): ${red} red, ${yellow} yellow`, '');
+      fs.mkdirSync(f.dir, { recursive: true });
+      fs.writeFileSync(f.checkReport, report.join('\n') + '\n', 'utf8');
+      fs.writeFileSync(f.checkReport.replace(/\.txt$/, '.json'), JSON.stringify({ ...st.data, results }, null, 1), 'utf8');
     } catch (err) {
       error = err instanceof Error ? err.message : errMsg(err);
     }
-    finish('score', { error, report, reportFile: f.scoreReport, data: error ? null : st.data });
+    finish('check', { error, report, reportFile: error ? null : f.checkReport, data: error ? null : st.data });
     return snapshot();
   }
 
@@ -888,7 +916,7 @@ function createCutThrough(opts) {
     useExistingPlan,
     readMarks,
     runBuild,
-    runScore,
+    runCheck,
     onWorkerLog,
     _planners: PLANNERS
   };

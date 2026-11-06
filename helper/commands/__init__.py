@@ -24,7 +24,7 @@ from .list_bin_sequences import handle_list_bin_sequences
 from .open_sequence import handle_open_sequence
 from .slate_span_report import handle_slate_span_report
 from .import_media import handle_import_media
-from .cut_through import handle_ct_list_multicams, handle_ct_run_step, handle_ct_read_timeline, handle_ct_mark_in_out
+from .cut_through import handle_ct_list_multicams, handle_ct_run_step, handle_ct_read_timeline, handle_ct_mark_in_out, handle_ct_set_markers
 
 
 RESOLVE_HANDLERS = {
@@ -58,6 +58,7 @@ RESOLVE_HANDLERS = {
     "ct_run_step": handle_ct_run_step,
     "ct_mark_in_out": handle_ct_mark_in_out,
     "ct_read_timeline": handle_ct_read_timeline,
+    "ct_set_markers": handle_ct_set_markers,
 }
 
 # Reserved for future media worker commands (audit mode, etc.)

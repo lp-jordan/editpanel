@@ -70,7 +70,8 @@ const COMMAND_OWNER = Object.freeze({
   ct_list_multicams: WORKERS.resolve,
   ct_run_step: WORKERS.resolve,
   ct_mark_in_out: WORKERS.resolve,
-  ct_read_timeline: WORKERS.resolve,   // Cut-through Score: read a finished edit
+  ct_read_timeline: WORKERS.resolve,   // Cut-through Check: read a built rough cut
+  ct_set_markers: WORKERS.resolve,     // Cut-through Check: replace its markers
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -156,6 +157,7 @@ const COMMAND_SCHEMAS = Object.freeze({
   ct_run_step: { required: ['pipeline_dir', 'script'], types: { pipeline_dir: 'string', script: 'string' } },
   ct_mark_in_out: { required: ['name'], types: { name: 'string' } },
   ct_read_timeline: { required: ['name'], types: { name: 'string' } },
+  ct_set_markers: { required: ['name', 'markers'], types: { name: 'string' } },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });

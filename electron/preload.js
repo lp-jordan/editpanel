@@ -212,7 +212,7 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   useExistingPlan: () => ipcRenderer.invoke('cut-through:use-plan'),
   readMarks: () => ipcRenderer.invoke('cut-through:read-marks'),
   runBuild: (payload) => ipcRenderer.invoke('cut-through:build', payload),
-  runScore: (payload) => ipcRenderer.invoke('cut-through:score', payload),
+  runCheck: (payload) => ipcRenderer.invoke('cut-through:check', payload),
   showInFolder: (p) => ipcRenderer.invoke('cut-through:open-path', p),
   openFile: (p) => ipcRenderer.invoke('cut-through:open-file', p),
   onUpdate(callback) {
