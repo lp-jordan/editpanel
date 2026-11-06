@@ -145,6 +145,35 @@ function emptyStep() {
   return { status: 'pending', startedAt: null, finishedAt: null, earlier: false, error: null, log: [], report: [], reportFile: null, progress: null, traceId: null, data: null };
 }
 
+// What each angle of the multicam is (Jordan 2026-11-06): Claude is told the role and the habits
+// measured from Jordan's edits for it; placement uses wide / close-up / inserts; `skip` is never used.
+const ANGLE_ROLES = ['wide', 'closeup', 'slider', 'side', 'other', 'skip'];
+const angleNumber = (a) => Number((/(\d+)\s*$/.exec(a) || [])[1] || 999);
+
+/** The usual LeaderPass setup: Camera 1 wide, 2 close-up, 3 side, 4 slider; Slate never. */
+function defaultAngleRoles(angles = []) {
+  const out = {};
+  for (const a of angles) {
+    if (/slate/i.test(a)) out[a] = 'skip';
+    else out[a] = { 1: 'wide', 2: 'closeup', 3: 'side', 4: 'slider' }[angleNumber(a)] || 'other';
+  }
+  if (angles.length && !Object.values(out).includes('wide')) {
+    const first = [...angles].filter((a) => out[a] !== 'skip').sort((x, y) => angleNumber(x) - angleNumber(y))[0];
+    if (first) out[first] = 'wide';
+  }
+  return out;
+}
+
+/** Roles → the placer's / Claude's terms: one wide, one close-up (punch-in), inserts, skipped. */
+function rolesOf(map = {}, angles = []) {
+  const sorted = [...angles].sort((x, y) => angleNumber(x) - angleNumber(y));
+  const by = (r) => sorted.filter((a) => map[a] === r);
+  const wide = by('wide')[0] || sorted.find((a) => map[a] !== 'skip') || null;
+  const punch = by('closeup').find((a) => a !== wide) || null;
+  return { wide, punch, slider: by('slider'), side: by('side'), other: [...by('other'), ...by('closeup').filter((a) => a !== punch), ...by('wide').filter((a) => a !== wide)],
+    skip: by('skip') };
+}
+
 function readJson(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; }
 }
@@ -252,8 +281,30 @@ function createCutThrough(opts) {
     return (label && (p.directions || {})[label]) || '';
   }
 
+  /** This project's angle roles (else the last project's, else the usual setup), for the day's angles. */
+  function angleRoles() {
+    const angles = (s.day && s.day.angles) || [];
+    const p = (getPrefs() || {}).cutThrough || {};
+    const saved = (s.project && (p.angleRoles || {})[s.project]) || p.lastAngleRoles || {};
+    const base = defaultAngleRoles(angles);
+    const out = {};
+    for (const a of angles) out[a] = ANGLE_ROLES.includes(saved[a]) ? saved[a] : base[a];
+    return out;
+  }
+
+  function saveAngleRoles(map) {
+    const angles = (s.day && s.day.angles) || [];
+    const clean = {};
+    for (const a of angles) if (ANGLE_ROLES.includes(map[a])) clean[a] = map[a];
+    if (!Object.keys(clean).length) return;
+    const p = (getPrefs() || {}).cutThrough || {};
+    const next = { ...p, lastAngleRoles: { ...(p.lastAngleRoles || {}), ...clean } };
+    if (s.project) next.angleRoles = { ...(p.angleRoles || {}), [s.project]: { ...((p.angleRoles || {})[s.project] || {}), ...clean } };
+    setPrefs({ cutThrough: next });
+  }
+
   function snapshot() {
-    return { ...s, direction: direction(), settings: settings(), files: s.label ? files() : null, now: Date.now() };
+    return { ...s, direction: direction(), angleRoles: angleRoles(), settings: settings(), files: s.label ? files() : null, now: Date.now() };
   }
 
   // Log lines can arrive many per second; coalesce pushes to ~8/s.
@@ -740,7 +791,8 @@ function createCutThrough(opts) {
   // The placer: takes the day + words files (+ Claude's edit and the levels) and writes
   // <run folder>/<LABEL>_plan.json (the build's input).
   const PLANNERS = {
-    solo: { script: 'place_cuts.py', args: ({ extra, punch, removalsFile, levelsFile }) => [...(punch ? [`punch=${punch}`] : []), ...(extra ? [`extra=${extra}`] : []),
+    solo: { script: 'place_cuts.py', args: ({ wide, extra, punch, skip, removalsFile, levelsFile }) => [...(wide ? [`wide=${wide}`] : []),
+      ...(punch ? [`punch=${punch}`] : []), ...[].concat(extra || []).map((x) => `extra=${x}`), ...(skip || []).map((x) => `skip=${x}`),
       ...(removalsFile ? [`removals=${removalsFile}`] : []), ...(levelsFile ? [`levels=${levelsFile}`] : [])] }
   };
   function runPlanner(kind, o) {
@@ -752,7 +804,7 @@ function createCutThrough(opts) {
       ...(o.trims || []).map(([a, b]) => `trim=${a}-${b}`), ...(o.keeps || []).map(([a, b]) => `keep=${a}-${b}`)]);
   }
 
-  async function runPlan({ start, end, extra, punch, delivery, direction: note, useMarks = false } = {}) {
+  async function runPlan({ start, end, extra, punch, roles: roleMap, delivery, direction: note, useMarks = false } = {}) {
     if (!s.day) throw new Error('Run Prep first');
     const kind = planKind(s.day);
     const f = files();
@@ -776,7 +828,13 @@ function createCutThrough(opts) {
     st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
     emit();
     const started = Date.now();
-    const o = { files: f, start: Math.round(a), end: Math.round(b), extra: extra || null, punch: punch || null, cuts: cutList };
+    // what each angle is: the page's roles (saved for this project), else the saved/usual ones;
+    // an explicit punch / extra (older callers) still wins for those two
+    if (roleMap && typeof roleMap === 'object') saveAngleRoles(roleMap);
+    const R = rolesOf(angleRoles(), (s.day && s.day.angles) || []);
+    const extras = [...new Set([...(extra ? [extra] : []), ...R.slider, ...R.side, ...R.other])].filter((x) => x !== (punch || R.punch) && x !== R.wide);
+    const o = { files: f, start: Math.round(a), end: Math.round(b), wide: R.wide, punch: punch || R.punch || null, extra: extras, skip: R.skip,
+      roles: R, cuts: cutList };
     {   // solo and conversations: Claude edits, place_cuts.py places (Z8)
       // Z8 cuts from the waveform: an older transcription has no per-frame levels yet → one
       // levels-only pass over the audio (no Whisper), which also adds the loud-without-words marks
@@ -839,7 +897,8 @@ function createCutThrough(opts) {
           promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
           start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort,
           delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
-          roles: { punch: o.punch || undefined, extra: o.extra ? [o.extra] : [] },
+          roles: { wide: o.wide || undefined, punch: o.punch || undefined, extra: o.extra, slider: o.roles.slider, side: o.roles.side,
+            other: o.roles.other, skip: o.skip },
           direction: direction(),
           client: claudeClient,
           log: (line) => { pushLog('plan', line); emit(); },
@@ -980,5 +1039,7 @@ module.exports = {
   parseSection,
   frameToTc,
   defaultPipelineDir,
+  defaultAngleRoles,
+  rolesOf,
   DEFAULT_SEQ_BIN
 };

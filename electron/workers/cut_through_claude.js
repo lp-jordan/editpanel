@@ -43,6 +43,16 @@ const LINE_GAP_SEC = 0.6;
 const MAX_WORDS = 15000;           // ≈ 2.4 h of talk ≈ $1.75 on Opus: the most one Claude pass may take
 const SHOW_PAUSE_SEC = 1.5;
 
+// What Jordan's own edits do with each kind of angle (docs/ai-rough-cut-style-guide.md, measured).
+const ANGLE_HABITS = {
+  wide: 'the wide — backbone with the close-up; holds ~9.5 s (4.5–18 s); opens and closes; the most common landing after a removal',
+  closeup: 'the close-up (punch-in) — backbone with the wide; holds ~8.7 s (5–13.5 s)',
+  slider: 'the slider (moving shot) — an insert: ~6 s (4–8 s), usually entered from the close-up, back to the close-up (or the wide)',
+  side: 'the side angle — an insert: ~5 s (3–6 s), entered from the wide and back to the wide',
+  insert: 'an insert angle — short accents of ~5 s',
+  other: 'another angle — use only where it clearly helps'
+};
+
 function buildSchema(angles) {
   return {
   type: 'object',
@@ -322,21 +332,30 @@ async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, pro
   const system = fs.readFileSync(promptPath, 'utf8');
   const nWords = tokens.filter((t) => t.kind === 'w').length;
   const nUnheard = tokens.length - nWords;
-  const angles = [...(day.angles || [])].sort((x, y) => angleNo(x) - angleNo(y));
-  const wide = roles.wide || (angles.includes('Camera 1') ? 'Camera 1' : angles[0]);
+  // angles Jordan marked "don't use" (and a Slate) are never offered
+  const skip = new Set([...(roles.skip || []), ...(day.angles || []).filter((a) => /slate/i.test(a) && !people.includes(a))]);
+  const angles = [...(day.angles || [])].filter((a) => !skip.has(a)).sort((x, y) => angleNo(x) - angleNo(y));
+  const wide = roles.wide && angles.includes(roles.wide) ? roles.wide : (angles.includes('Camera 1') ? 'Camera 1' : angles[0]);
   const punch = roles.punch || angles.find((a) => a !== wide) || wide;
+  const slider = roles.slider || [];
+  const side = roles.side || [];
+  const insert = (a) => (slider.includes(a) ? ANGLE_HABITS.slider : side.includes(a) ? ANGLE_HABITS.side
+    : (roles.extra || []).includes(a) ? ANGLE_HABITS.insert : ANGLE_HABITS.other);
   const roster = multi
-    ? angles.map((a) => `${a} = ${a === wide ? 'the wide (everyone in shot)' : people.includes(a) ? `close-up of the person speaking on the ${a} mic` :
-      (roles.extra || []).includes(a) ? 'an extra angle (side / slider)' : 'another angle'}`).join('; ')
-    : angles.map((a) => `${a} = ${a === wide ? 'the wide' : a === punch ? 'the close-up (punch-in)' :
-      (roles.extra || []).includes(a) ? 'an insert angle (side / slider)' : 'another angle'}`).join('; ');
+    ? angles.map((a) => `${a} = ${a === wide ? `the wide (everyone in shot)` : people.includes(a) ? `close-up of the person speaking on the ${a} mic` :
+      insert(a)}`)
+    : angles.map((a) => `${a} = ${a === wide ? ANGLE_HABITS.wide : a === punch ? ANGLE_HABITS.closeup : insert(a)}`);
+  const insertNote = angles.some((a) => slider.includes(a) || side.includes(a))
+    ? 'Inserts are part of Jordan\'s rhythm, not an exception: about a quarter of his cuts after a removal land on one, and he uses the slider about 1.5× as often as the side. Put them on strong lines, lists, examples and story beats.'
+    : null;
   const meta = [
     `Recording: ${label}, ${((e0 - s0) * frameSec / 60).toFixed(1)} min, ` +
       (multi ? `${people.length} people, each on their own mic (${people.join(', ')}); a line's label says who is talking, ` :
         `one speaker (audio: ${talker || 'mic'}), `) +
       `${nWords} words, ${nUnheard} unheard-sound marks${words.unheard ? '' : ' (this transcript predates unheard-sound detection)'}.`,
     `Delivery: ${DELIVERY[delivery] || DELIVERY.scripted}`,
-    `Angles: ${roster}.`,
+    `Angles:\n${roster.map((x) => `- ${x}`).join('\n')}`,
+    ...(insertNote ? [insertNote] : []),
     // Jordan's own words for this recording — they steer the guidelines, not the hard rules
     ...(String(direction || '').trim() ? ['', `Direction from Jordan for this recording (follow it; where it disagrees with the guidelines in your brief, it wins):`,
       String(direction).trim()] : [])

@@ -30,7 +30,8 @@ Usage:
     python place_cuts.py <words.json> <day.json> <out_plan.json> [start=<frame>] [end=<frame>] [removals=<file>]
         [levels=<levels_LABEL.json>] [pause_max=<fr>] [pause_left=<fr>]
         [wide="Camera 1"] [punch="Camera 2"] [extra="Camera 4" ...] [cut=<from>-<to> ...]
-        [trim=<from>-<to> ...] [keep=<from>-<to> ...]
+        [trim=<from>-<to> ...] [keep=<from>-<to> ...] [skip="Slate" ...]
+  skip: an angle never to show (Jordan's "don't use" on the Cut-through page; a Slate always).
   trim / keep: the second pass (EditPanel's Check on this plan, cut_through_check.js): trim = a
   silence to take out (a gap left at a join, a pause over the rule, dead air at the head/tail, a
   wordless sliver) — optional like a pause trim, so it never forces a blink shot; keep = the rest of
@@ -143,7 +144,8 @@ def main(argv) -> None:
     frame_sec = day["frame_sec"][0] / day["frame_sec"][1]
     total = int(day["length_sec"] / frame_sec)
     # Resolve exports angles in its own order (e.g. 3, 2, 4, 1): sort by the number in the name
-    angles = sorted(day.get("angles") or [], key=lambda a: int((re.findall(r"(\d+)\s*$", a) or [999])[0]))
+    skip = {v for k, v in opts if k == "skip"} | {a for a in day.get("angles") or [] if re.search(r"slate", a, re.I)}
+    angles = sorted((a for a in day.get("angles") or [] if a not in skip), key=lambda a: int((re.findall(r"(\d+)\s*$", a) or [999])[0]))
     wide = o.get("wide") or ("Camera 1" if "Camera 1" in angles else angles[0])          # Camera 1 / "Angle 1"
     punch = o.get("punch") or next((a for a in ("Camera 2", *angles) if a in angles and a != wide), wide)
     extra = [v for k, v in opts if k == "extra" and v and v not in (wide, punch)]

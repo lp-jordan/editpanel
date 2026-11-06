@@ -89,7 +89,8 @@ function CutThroughPage({ connected }) {
   const [now, setNow] = React.useState(Date.now());
   const [labelDraft, setLabelDraft] = React.useState('');
   const [minutes, setMinutes] = React.useState('');
-  const [planForm, setPlanForm] = React.useState({ start: '', end: '', extra: '', delivery: 'scripted', useMarks: false });
+  const [planForm, setPlanForm] = React.useState({ start: '', end: '', delivery: 'scripted', useMarks: false });
+  const [rolesDraft, setRolesDraft] = React.useState({});
   const [bins, setBins] = React.useState([]);
   const [timelines, setTimelines] = React.useState([]);
   const [checkTimeline, setCheckTimeline] = React.useState('');
@@ -126,6 +127,10 @@ function CutThroughPage({ connected }) {
       .then((res) => setTimelines((res?.data?.timelines || []).map((t) => t.name).filter((n) => n && !n.startsWith('__SPIKE_') && !n.startsWith('Cut-through temp'))))
       .catch(() => setTimelines([]));
   }
+
+  // another project (or multicam) has its own angle roles: drop this page's unsaved edits
+  const roleKey = `${ct?.project || ''}|${ct?.mc || ''}`;
+  React.useEffect(() => { setRolesDraft({}); }, [roleKey]);
 
   // Multicams + bins whenever Resolve (re)connects.
   React.useEffect(() => {
@@ -183,14 +188,11 @@ function CutThroughPage({ connected }) {
   const dupe = mcOptions.find((m) => m.name === ct.mc && m.duplicate);
   const solo = ct.planKind === 'solo';
   const delivery = solo ? (planForm.delivery === 'convo' ? 'scripted' : planForm.delivery) : (planForm.delivery === 'stage' ? 'stage' : 'convo');
-  // the wide = Camera 1, else the lowest-numbered angle ("Angle 1"); same rule as plan_solo.py
   const angleNo = (a) => Number((/(\d+)\s*$/.exec(a) || [])[1] || 999);
   const sortedAngles = [...(day?.angles || [])].sort((x, y) => angleNo(x) - angleNo(y));
-  const wide = sortedAngles.includes('Camera 1') ? 'Camera 1' : sortedAngles[0];
-  const punchChoices = sortedAngles.filter((a) => a !== wide);
-  const punch = planForm.punch || (punchChoices.includes('Camera 2') ? 'Camera 2' : punchChoices[0] || '');   // next-lowest after the wide
-  const extraChoices = sortedAngles.filter((a) => a !== wide &&
-    (solo ? a !== punch : !(day?.micAngles || []).includes(a)));
+  // what each angle is (saved per Resolve project in the main process; the draft is this page's edits)
+  const roles = { ...(ct.angleRoles || {}), ...rolesDraft };
+  const micAngles = solo ? [] : (day?.micAngles || []);
   const seqBin = ct.settings.seqBin;
   const binChoices = bins.includes(seqBin) || !seqBin ? bins : [seqBin, ...bins];
 
@@ -281,25 +283,24 @@ function CutThroughPage({ connected }) {
                   <option value="stage">Stage</option>
                 </select>
               </CtRow>
-              {((solo && punchChoices.length > 0) || extraChoices.length > 0) && (
+              {sortedAngles.length > 0 && (
                 <CtRow label="Angles">
-                  {solo && punchChoices.length > 0 && (
-                    <label className="ct-pair">
-                      <span>Punch-in</span>
-                      <select className="settings-input ct-select" value={punch} onChange={(e) => setPlanForm({ ...planForm, punch: e.target.value, extra: planForm.extra === e.target.value ? '' : planForm.extra })}>
-                        {punchChoices.map((a) => <option key={a} value={a}>{a}</option>)}
-                      </select>
+                  {sortedAngles.map((a) => (
+                    <label key={a} className="ct-pair">
+                      <span>{a}</span>
+                      {micAngles.includes(a) ? <span className="dim">Close-up · mic</span> : (
+                        <select className="settings-input ct-select" value={roles[a] || 'other'}
+                          onChange={(e) => setRolesDraft({ ...rolesDraft, [a]: e.target.value })}>
+                          <option value="wide">Wide</option>
+                          <option value="closeup">Close-up</option>
+                          <option value="slider">Slider</option>
+                          <option value="side">Side</option>
+                          <option value="other">Other</option>
+                          <option value="skip">Don't use</option>
+                        </select>
+                      )}
                     </label>
-                  )}
-                  {extraChoices.length > 0 && (
-                    <label className="ct-pair">
-                      <span>Extra</span>
-                      <select className="settings-input ct-select" value={planForm.extra} onChange={(e) => setPlanForm({ ...planForm, extra: e.target.value })}>
-                        <option value="">None</option>
-                        {extraChoices.map((a) => <option key={a} value={a}>{a}</option>)}
-                      </select>
-                    </label>
-                  )}
+                  ))}
                 </CtRow>
               )}
               <CtRow label="Direction">
@@ -386,7 +387,7 @@ function CutThroughPage({ connected }) {
           )}
           {ct.planKind && (
             <button type="button" className={btnClass(key)} disabled={busy || steps.transcribe.status !== 'done'}
-              onClick={() => call(key, () => api.runPlan({ ...planForm, delivery, punch: solo ? punch : '', direction: directionDraft }))}>{ct.planExists ? 'Redraft' : 'Draft'}</button>
+              onClick={() => call(key, () => api.runPlan({ ...planForm, delivery, roles, direction: directionDraft }))}>{ct.planExists ? 'Redraft' : 'Draft'}</button>
           )}
         </>
       );

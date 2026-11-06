@@ -59,6 +59,11 @@ fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
   assert.strictEqual(ct.planKind({ mics: [{ angle: 'Camera 2' }, { angle: 'Camera 2' }] }), 'solo');
   assert.strictEqual(ct.planKind({ mics: [{ angle: 'Camera 2' }, { angle: 'Camera 3' }] }), 'convo');
   assert.strictEqual(ct.dayFrames({ length_sec: 120.12, frame_sec: [1001, 24000] }), 2880);
+  const dr = ct.defaultAngleRoles(['Camera 3', 'Camera 1', 'Slate', 'Camera 2', 'Camera 4']);
+  assert.deepStrictEqual(dr, { 'Camera 3': 'side', 'Camera 1': 'wide', Slate: 'skip', 'Camera 2': 'closeup', 'Camera 4': 'slider' });
+  assert.deepStrictEqual(ct.rolesOf({ ...dr, 'Camera 2': 'side', 'Camera 3': 'closeup' }, Object.keys(dr)),
+    { wide: 'Camera 1', punch: 'Camera 3', slider: ['Camera 4'], side: ['Camera 2'], other: [], skip: ['Slate'] });
+  assert.strictEqual(ct.defaultAngleRoles(['Angle 2', 'Angle 5'])['Angle 2'], 'wide');   // no Camera 1: the lowest angle is the wide
   console.log('✓ helpers');
 }
 {
@@ -1005,7 +1010,8 @@ sys.stdout.write(json.dumps(res))`;
     ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4']);
   assert.strictEqual(req.max_tokens, 128000);
   assert.ok(/Delivery: Scripted/.test(req.messages[0].content) &&
-    /Angles: Camera 1 = the wide; Camera 2 = the close-up \(punch-in\); Camera 3 = another angle; Camera 4 = an insert angle/.test(req.messages[0].content),
+    /Angles:\n- Camera 1 = the wide — .+\n- Camera 2 = the close-up \(punch-in\) — .+\n- Camera 3 = the side angle — .+\n- Camera 4 = the slider \(moving shot\) — an insert/.test(req.messages[0].content) &&
+    /about a quarter of his cuts after a removal land on one/.test(req.messages[0].content),
     req.messages[0].content.slice(0, 400));
   assert.ok(/⟨pause 3\.\d s⟩/.test(req.messages[0].content) && /\[0:02\] 0 Leadership/.test(req.messages[0].content), req.messages[0].content.slice(0, 300));
   const soloPlan = JSON.parse(fs.readFileSync(RUN('Solo2', 'Solo2_plan.json'), 'utf8'));
@@ -1080,8 +1086,13 @@ sys.stdout.write(json.dumps(res))`;
   const one = (await c3.runCheck({ timeline: 'Solo2 rough cut 2' })).steps.check;
   assert.ok(one.status === 'done' && one.data.timelines === 1, one.error);
   // stage: the lighter brief + looser pause rule reach Claude and the planner
-  const stage = (await c3.runPlan({ delivery: 'stage' })).steps.plan;
+  const stage = (await c3.runPlan({ delivery: 'stage', roles: { 'Camera 3': 'skip' } })).steps.plan;
   assert.strictEqual(stage.status, 'done', stage.error);
+  // angle roles: "don't use" never reaches Claude; saved for this project and shown back
+  assert.deepStrictEqual(requests[requests.length - 1].output_config.format.schema.properties.shots.items.properties.angle.enum, ['Camera 1', 'Camera 2', 'Camera 4']);
+  assert.strictEqual(c3.snapshot().angleRoles['Camera 3'], 'skip');
+  assert.strictEqual(c3.snapshot().angleRoles['Camera 4'], 'slider');
+  assert.strictEqual(prefs.cutThrough.lastAngleRoles['Camera 3'], 'skip');
   assert.ok(/Delivery: Live on stage/.test(requests[requests.length - 1].messages[0].content));
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(RUN('Solo2', 'removals_Solo2.json'), 'utf8')).pauses, { max: 36, left: 18, min_save: 36 });
   assert.ok(stage.log.some((l) => /pauses > 36 fr → 18 fr/.test(l)), stage.log.join('\n'));
