@@ -479,10 +479,14 @@ res = '''<resources><media name="mc" id="r5"><multicam tcStart="0/1s"><mc-angle 
 <asset hasAudio="1" id="r4" start="100/1s"><media-rep src="file://localhost/N:/cam.MXF" kind="original-media"/></asset></resources>'''
 refs = m.camera_audio_refs(res)
 blk = re.findall(r"<media [^>]*>\s*<multicam .*?</media>", res, re.S)[0]
-fixed, wavs = m.split_off_angle_tracks(blk, keep_refs=refs)
-print(json.dumps({"refs": sorted(refs), "kept": 'ref="r4"' in fixed, "wavs": len(wavs)}))
+folded_xml, folded = m.fold_camera_audio(blk, refs)
+fixed, wavs = m.split_off_angle_tracks(folded_xml, keep_refs=set(refs))
+inside = re.search(r'<video [^>]*ref="r2"[^>]*>\s*<audio [^>]*ref="r2"', fixed) is not None
+print(json.dumps({"refs": refs, "folded": sorted(folded), "inside": inside, "r4_left": 'ref="r4"' in fixed, "wavs": len(wavs)}))
 `, PIPELINE], { encoding: 'utf8' }));
-  assert.deepStrictEqual(sep, { refs: ['r4'], kept: true, wavs: 0 });
+  // folded back inside the picture clip (a separate clip of the audio-only asset imported as an
+  // EMPTY compound clip → silent A1, Bill Smith mc_1 twice)
+  assert.deepStrictEqual(sep, { refs: { r4: 'r2' }, folded: ['r4'], inside: true, r4_left: false, wavs: 0 });
   // the timeline writer: review markers land on record frames (inside a removal → the splice), a
   // quieter backchannel gets adjust-volume; the split step places markers + crossfades the duck
   const wt = path.join(TMP, 'writer');

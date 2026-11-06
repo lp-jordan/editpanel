@@ -103,18 +103,56 @@ def atem_out(media_xml: str, atem_angle: str = "Camera 1", strip_audio: bool = T
 LAST_ATEM = None                       # file name of the ATEM mix clip in the last build (for the import)
 
 
-def camera_audio_refs(resources: str) -> set:
-    """Audio-only assets that are a CAMERA file's own sound (same file as a picture asset). Resolve
-    exports an angle that way when the camera's audio sits on its own track under the picture
-    (Bill Smith mc_1, 2026-11-05) — that's the camera audio, not a mic WAV, and must stay in the copy."""
-    pics, auds = set(), {}
+def camera_audio_refs(resources: str) -> dict:
+    """Audio-only assets that are a CAMERA file's own sound (same file as a picture asset) →
+    that picture asset's id. Resolve exports an angle that way when the camera's audio sits on its
+    own track under the picture (Bill Smith mc_1, 2026-11-05) — camera audio, not a mic WAV."""
+    pics, auds = {}, {}
     for m in re.finditer(r"<asset ([^>]*)>\s*<media-rep [^>]*src=\"([^\"]+)\"", resources):
         a = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
         if a.get("hasVideo") == "1":
-            pics.add(m.group(2))
+            pics[m.group(2)] = a.get("id")
         elif a.get("hasAudio") == "1":
             auds[a.get("id")] = m.group(2)
-    return {ref for ref, src in auds.items() if src in pics}
+    return {ref: pics[src] for ref, src in auds.items() if src in pics}
+
+
+def fold_camera_audio(media_xml: str, cam_refs: dict):
+    """Put a camera's own audio back INSIDE its picture clip (<video><audio lane="-1" …/></video>,
+    the layout Resolve exports when the audio isn't on its own track). Imported as a separate clip
+    of an audio-only asset, Resolve made an EMPTY compound clip of it and the copy's A1 was silent
+    (Bill Smith mc_1, 2026-11-05, twice). Only folds when the audio lines up with the picture clip
+    (same file, same place, same length). Returns (media xml, set of folded audio asset ids)."""
+    if not cam_refs:
+        return media_xml, set()
+    root = ET.fromstring(media_xml)
+    folded = set()
+    for ang in root.iter("mc-angle"):
+        kids = [el for el in ang if "offset" in el.attrib]
+        for el in kids:
+            aud = next((x for x in el.iter("audio") if x.get("ref") in cam_refs), None)
+            if aud is None or el.find("video") is not None or el.get("ref") in cam_refs.values():
+                continue
+            pic_ref = cam_refs[aud.get("ref")]
+            pic = next((p for p in kids if p is not el and p.find("video") is not None
+                        and p.find("video").get("ref") == pic_ref
+                        and abs(secs(p.get("offset")) - secs(el.get("offset"))) < FD
+                        and abs(secs(p.get("duration")) - secs(el.get("duration"))) < FD), None)
+            if pic is None:
+                continue
+            vid = pic.find("video")
+            if any(x.tag == "audio" for x in vid):
+                continue
+            attrs_ = {k: vid.get(k) for k in ("offset", "duration", "start")}
+            ET.SubElement(vid, "audio", {"lane": "-1", "srcCh": aud.get("srcCh") or "1", **attrs_, "ref": pic_ref})
+            # the audio's own run (a gap up to it, then the clip) goes; the picture's run stays
+            run = list(ang)
+            k = run.index(el)
+            if k > 0 and run[k - 1].tag == "gap" and run.index(pic) < k - 1:
+                ang.remove(run[k - 1])
+            ang.remove(el)
+            folded.add(aud.get("ref"))
+    return ET.tostring(root, encoding="unicode"), folded
 
 
 def split_off_angle_tracks(media_xml: str, remove: bool = True, keep_refs: set = frozenset()):
@@ -199,9 +237,16 @@ def main(argv=None) -> list:
     angle_wavs = {}
     cam_refs = camera_audio_refs(resources)
     if cam_refs:
-        print(f"  camera audio on its own track under the picture ({len(cam_refs)} file(s)): kept in the multicam")
+        for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
+            fixed, folded = fold_camera_audio(block, cam_refs)
+            resources = resources.replace(block, fixed)
+            for ref in folded:                             # the audio-only asset isn't used any more
+                resources = re.sub(r'\s*<asset [^>]*id="%s"[^>]*>.*?</asset>' % re.escape(ref), "", resources, flags=re.S)
+            if folded:
+                print(f"  camera audio on its own track under the picture: folded back into the picture clip "
+                      f"({len(folded)} file(s))")
     for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
-        fixed, found = split_off_angle_tracks(block, remove=not keep_tracks, keep_refs=cam_refs)
+        fixed, found = split_off_angle_tracks(block, remove=not keep_tracks, keep_refs=set(cam_refs))
         if found:
             if not keep_tracks:
                 resources = resources.replace(block, fixed)
