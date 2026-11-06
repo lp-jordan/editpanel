@@ -188,6 +188,7 @@ function createCutThrough(opts) {
     label: '',
     day: null,                      // parsed day_<LABEL>.json
     planKind: null,
+    marks: null,                    // the In/Out read from the multicam in Resolve (Plan's toggle)
     planExists: false,
     busy: null,                     // step key currently running
     steps: Object.fromEntries(STEP_KEYS.map((k) => [k, emptyStep()]))
@@ -370,6 +371,7 @@ function createCutThrough(opts) {
   function select({ mc, label }) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
     s.mc = mc || null;
+    s.marks = null;
     s.label = sanitizeLabel(label || mc || '');
     if (s.label) inspectEarlier();
     else s.steps = Object.fromEntries(STEP_KEYS.map((k) => [k, emptyStep()]));
@@ -430,6 +432,34 @@ function createCutThrough(opts) {
   }
 
   /** Compare the plan with Jordan's finished timeline (Z8): removals, cuts, angles, pacing. */
+  /**
+   * The In/Out marked on the multicam in Resolve (source viewer) → a section of the day, in
+   * multicam frames. Resolve may give marks from the clip's start or on its timecode clock;
+   * both are handled. Out is inclusive in Resolve, so the section ends one frame after it.
+   */
+  async function readMarks() {
+    if (!s.day || !s.mc) throw new Error('Run Prep first');
+    const res = await sendWorkerRequest({ cmd: 'ct_mark_in_out', name: String(s.mc) }, 'resolve');
+    const d = (res && res.data) || {};
+    const total = dayFrames(s.day);
+    const { first } = tcClock(s.day);
+    const conv = (v) => {
+      if (v === null || v === undefined || !Number.isFinite(Number(v))) return null;
+      const n = Math.round(Number(v));
+      return n > total + 1 && n - first >= 0 && n - first <= total + 1 ? n - first : n;
+    };
+    const a = conv(d.in);
+    const o = conv(d.out);
+    if (a === null && o === null) throw new Error(`No In/Out marked on ${s.mc} in Resolve`);
+    const from = Math.max(0, a === null ? 0 : a);
+    const to = Math.min(total, o === null ? total : o + 1);
+    if (to <= from) throw new Error(`The Out on ${s.mc} is before its In`);
+    s.marks = { from, to, fromTc: frameToTc(from, s.day), toTc: frameToTc(to, s.day),
+      minutes: ((to - from) * tcClock(s.day).fsec) / 60, bin: d.bin || null };
+    emit();
+    return snapshot();
+  }
+
   async function runScore({ timeline } = {}) {
     if (!timeline) throw new Error('Pick the finished timeline');
     const f = files();
@@ -585,15 +615,16 @@ function createCutThrough(opts) {
       `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`)]);
   }
 
-  async function runPlan({ start, end, extra, punch, delivery, direction: note } = {}) {
+  async function runPlan({ start, end, extra, punch, delivery, direction: note, useMarks = false } = {}) {
     if (!s.day) throw new Error('Run Prep first');
     const kind = planKind(s.day);
     const f = files();
     if (!fs.existsSync(f.words)) throw new Error('Run Transcribe first');
     const total = dayFrames(s.day);
     // a section of the day (to test on a few minutes instead of the whole recording)
-    const fromF = parseSection(start, s.day);
-    const toF = parseSection(end, s.day);
+    if (useMarks) await readMarks();                 // read them again: Jordan may have moved them
+    const fromF = useMarks ? s.marks.from : parseSection(start, s.day);
+    const toF = useMarks ? s.marks.to : parseSection(end, s.day);
     const a = fromF === null ? 0 : fromF;
     const b = toF === null ? total : toF;
     if (b <= a) throw new Error('To must be after From');
@@ -719,6 +750,7 @@ function createCutThrough(opts) {
     cancel,
     runPlan,
     useExistingPlan,
+    readMarks,
     runBuild,
     runScore,
     onWorkerLog,

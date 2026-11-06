@@ -59,7 +59,7 @@ function CutThroughPage({ connected }) {
   const [now, setNow] = React.useState(Date.now());
   const [labelDraft, setLabelDraft] = React.useState('');
   const [minutes, setMinutes] = React.useState('');
-  const [planForm, setPlanForm] = React.useState({ start: '', end: '', extra: '', delivery: 'scripted' });
+  const [planForm, setPlanForm] = React.useState({ start: '', end: '', extra: '', delivery: 'scripted', useMarks: false });
   const [bins, setBins] = React.useState([]);
   const [timelines, setTimelines] = React.useState([]);
   const [scoreTimeline, setScoreTimeline] = React.useState('');
@@ -233,16 +233,31 @@ function CutThroughPage({ connected }) {
         <div className="ct-facts">
           {ct.planKind && st.status !== 'running' && (
             <div className="ct-form-row">
+              <label className="ct-inline ct-check">
+                <input type="checkbox" checked={planForm.useMarks} disabled={!connected}
+                  onChange={(e) => {
+                    setPlanForm({ ...planForm, useMarks: e.target.checked });
+                    if (e.target.checked) call('plan', () => api.readMarks());
+                  }} />
+                <span className="settings-label">In/Out from Resolve</span>
+              </label>
               <label className="ct-inline">
                 <span className="settings-label">From</span>
-                <input className="settings-input ct-tc" placeholder={day?.startTc || ''} value={planForm.start}
+                <input className="settings-input ct-tc" disabled={planForm.useMarks}
+                  placeholder={day?.startTc || ''} value={planForm.useMarks ? (ct.marks?.fromTc || '') : planForm.start}
                   onChange={(e) => setPlanForm({ ...planForm, start: e.target.value })} />
               </label>
               <label className="ct-inline">
                 <span className="settings-label">To</span>
-                <input className="settings-input ct-tc" placeholder={day?.endTc || ''} value={planForm.end}
+                <input className="settings-input ct-tc" disabled={planForm.useMarks}
+                  placeholder={day?.endTc || ''} value={planForm.useMarks ? (ct.marks?.toTc || '') : planForm.end}
                   onChange={(e) => setPlanForm({ ...planForm, end: e.target.value })} />
               </label>
+              {planForm.useMarks && ct.marks && (
+                <button className="btn small ghost" onClick={() => call('plan', () => api.readMarks())}>
+                  Re-read · {ct.marks.minutes.toFixed(1)} min
+                </button>
+              )}
               {ct.planKind && (
                 <label className="ct-inline">
                   <span className="settings-label">Delivery</span>

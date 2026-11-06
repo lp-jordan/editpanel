@@ -3446,6 +3446,7 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:cancel', ctCall(() => cutThrough.cancel()));
   ipcMain.handle('cut-through:plan', ctCall((a) => cutThrough.runPlan(a)));
   ipcMain.handle('cut-through:use-plan', ctCall(() => cutThrough.useExistingPlan()));
+  ipcMain.handle('cut-through:read-marks', ctCall(() => cutThrough.readMarks()));
   ipcMain.handle('cut-through:build', ctCall((a) => cutThrough.runBuild(a)));
   ipcMain.handle('cut-through:score', ctCall((a) => cutThrough.runScore(a)));
   ipcMain.handle('cut-through:open-file', async (_e, p) => {

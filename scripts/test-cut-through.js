@@ -594,6 +594,7 @@ sys.stdout.write(json.dumps(res))`;
         proc.stdin.end(JSON.stringify(payload));
       });
     }
+    if (payload.cmd === 'ct_mark_in_out') return Promise.resolve({ data: globalThis.FAKE_MARKS || { in: null, out: null, bin: null, multicams: 1 } });
     if (payload.cmd === 'ct_read_timeline') {
       const plan = JSON.parse(fs.readFileSync(path.join(FAKE_PIPELINE, 'plans', `${payload.name.replace(/^Jordan_/, '')}_plan.json`), 'utf8'));
       // "Jordan's edit": our pieces, but he also removed the first 2 s of the longest one
@@ -711,6 +712,15 @@ sys.stdout.write(json.dumps(res))`;
   assert.ok(convoPlan.video.every((x, k) => !k || x.angle !== convoPlan.video[k - 1].angle));
   assert.ok(snap.planExists);
   await assert.rejects(c.runPlan({ start: '0:30', end: '0:10' }), /To must be after From/);
+  // In/Out from Resolve: none marked → a clear error; marks from the clip start or on its TC clock
+  await assert.rejects(c.readMarks(), /No In\/Out marked/);
+  globalThis.FAKE_MARKS = { in: 240, out: 1199, bin: 'MC', multicams: 1 };
+  let inOut = (await c.readMarks()).marks;
+  assert.deepStrictEqual([inOut.from, inOut.to], [240, 1200]);
+  globalThis.FAKE_MARKS = { in: null, out: 1199, bin: 'MC', multicams: 1 };
+  inOut = (await c.readMarks()).marks;
+  assert.deepStrictEqual([inOut.from, inOut.to], [0, 1200]);
+  globalThis.FAKE_MARKS = null;
 
   snap = await c.runBuild({ seqBin: 'MASTER / SEQUENCES' });
   assert.strictEqual(snap.steps.build.status, 'done');

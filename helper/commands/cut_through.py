@@ -158,6 +158,42 @@ def handle_ct_run_step(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]
         _run_lock.release()
 
 
+def _walk_all(folder: Any, path: List[str]):
+    """Every clip, archive bins included."""
+    for clip in _safe(lambda: folder.GetClipList(), []) or []:
+        yield path, clip
+    for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
+        yield from _walk_all(sub, path + [_safe(lambda: sub.GetName()) or "?"])
+
+
+def mark_in_out(root: Any, name: str) -> Dict[str, Any]:
+    """The In/Out Jordan marked on the multicam in Resolve's source viewer. Copies and the original
+    share one clock, so any multicam of that name will do: working bins first, then the archive
+    bins (MC ORIGINAL). Values are as Resolve returns them; the page converts to multicam frames."""
+    found = [(path, clip) for path, clip in _walk_all(root, [])
+             if _safe(lambda: clip.GetName()) == name
+             and "multicam" in str(_safe(lambda: clip.GetClipProperty("Type"), "")).lower()]
+    found.sort(key=lambda pc: any(p in ARCHIVE_BINS for p in pc[0]))
+    for path, clip in found:
+        marks = _safe(lambda: clip.GetMarkInOut(), {}) or {}
+        m = marks.get("video") or marks.get("audio") or {}
+        if "in" in m or "out" in m:
+            return {"in": m.get("in"), "out": m.get("out"), "bin": " / ".join(path), "multicams": len(found)}
+    return {"in": None, "out": None, "bin": None, "multicams": len(found)}
+
+
+def handle_ct_mark_in_out(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
+    from .. import resolve_helper as rh
+
+    if not rh.project:
+        raise RuntimeError("No project open in Resolve")
+    name = str(payload.get("name") or "")
+    out = mark_in_out(rh.project.GetMediaPool().GetRootFolder(), name)
+    if not out["multicams"]:
+        raise RuntimeError(f"No multicam named {name!r}")
+    return out
+
+
 def angle_of(item_name: str, mc_name: str) -> str:
     """A multicam piece's active angle, from its item name ("<MC> - Camera 2")."""
     if mc_name and item_name.startswith(mc_name + " - "):

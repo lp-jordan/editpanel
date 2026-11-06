@@ -4749,6 +4749,7 @@ button.status-bar-chip-btn:disabled {
 .ct-inline { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ct-grow { flex: 1 1 220px; }
 .ct-tc { width: 120px; font-variant-numeric: tabular-nums; }
+.ct-check { flex-direction: row; align-items: center; gap: 6px; }
 .ct-direction { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 .ct-direction textarea { width: 100%; resize: vertical; font: inherit; }
 .ct-num { width: 96px; }
