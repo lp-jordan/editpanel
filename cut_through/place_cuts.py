@@ -441,7 +441,9 @@ def main(argv) -> None:
                     continue
                 shots.append({"from": x0, "to": y0, "angle": ang, "kind": "claude", "join": join})
         if len(known) > 1:
-            hold = 40 if multi else 72
+            # shortest comfortable shot, per style: stage holds long (3 s); a studio solo allows the
+            # brief's ~2 s beats; a conversation allows ~1.7 s reactions
+            hold = 40 if multi else (72 if (given or {}).get("delivery") == "stage" else 48)
             prefer = [wide, punch] + [e for e in extra if e not in (wide, punch)]
             prefer += [a for a in sorted(known, key=cam_no) if a not in prefer]
             shots = fit_angles(shots, [a for a in prefer if a in known], hold=hold)
