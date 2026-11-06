@@ -197,6 +197,7 @@ function createCutThrough(opts) {
   };
   let child = null;                 // transcribe / plan child process
   let canceled = false;
+  const alignFailed = new Set();                    // words files this session could not align (WhisperX missing)
 
   function settings() {
     const p = (getPrefs() || {}).cutThrough || {};
@@ -237,6 +238,7 @@ function createCutThrough(opts) {
       prepReport: path.join(dir, `day_prep_${label}.txt`),
       words: path.join(dir, `words_${label}.json`),
       levels: path.join(dir, `levels_${label}.json`),
+      align: path.join(dir, `align_${label}.txt`),
       transcript: path.join(dir, `transcript_${label}.txt`),
       transcribeReport: path.join(dir, `transcribe_${label}.txt`),
       plan: path.join(dir, `${label}_plan.json`),
@@ -745,6 +747,35 @@ function createCutThrough(opts) {
     {   // solo and conversations: Claude edits, place_cuts.py places (Z8)
       // Z8 cuts from the waveform: an older transcription has no per-frame levels yet → one
       // levels-only pass over the audio (no Whisper), which also adds the loud-without-words marks
+      // a transcript from before WhisperX alignment (2026-11-06): pin its words to the audio
+      // once (no Whisper, minutes on the GPU) — Whisper's own word times cut words in half
+      if (!fs.existsSync(f.align) && !alignFailed.has(f.words)) {
+        st.progress = { phase: 'Aligning words to the audio', phaseAt: Date.now(), bar: null };
+        emit();
+        const al = await runChild('plan', st0.wxPython, [path.join(st0.pipelineDir, 'transcribe.py'), s.label, `dir=${runDir()}`, 'align_only=1'], {
+          onLine: (line) => {
+            const r = parseRead(line);
+            if (r) {
+              st.progress = { ...st.progress, phase: `Aligning words · reading ${r.name} · ${Math.round(r.mb)} MB`, bar: r.pct };
+              return true;
+            }
+            const m = /^Aligning words to the audio (\d+)%/.exec(line.trim());
+            if (m) {
+              st.progress = { ...st.progress, phase: 'Aligning words to the audio', bar: Number(m[1]) };
+              return true;
+            }
+            return false;
+          }
+        });
+        if (canceled) {
+          finish('plan', { error: null, report: st.log.slice(), reportFile: saveLog('plan') });
+          return snapshot();
+        }
+        if (al.error || al.code !== 0 || !fs.existsSync(f.align)) {
+          alignFailed.add(f.words);                     // don't re-read the whole day on every draft
+          pushLog('plan', 'Words not aligned to the audio — cuts will be less exact (see the lines above)');
+        }
+      }
       if (!fs.existsSync(f.levels)) {
         st.progress = { phase: 'Measuring the audio (levels for cut placement)', phaseAt: Date.now(), bar: null };
         emit();

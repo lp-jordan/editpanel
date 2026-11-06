@@ -157,6 +157,12 @@ args = [a for a in sys.argv[1:] if "=" not in a]
 opts = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
 label, desk = args[0], opts["dir"]
 slow = os.environ.get("CT_FAKE_SLOW") == "1"
+if opts.get("align_only") == "1":
+    # the fixture's word times are already exact: say so (the real one moves s/e onto the audio)
+    print("Aligning words to the audio…", flush=True)
+    print("Aligning words to the audio 50%…", flush=True)
+    open(os.path.join(desk, f"align_{label}.txt"), "w").write("Aligned (fake)\n")
+    sys.exit(0)
 if opts.get("levels_only") == "1":
     import math
     fs = 1001 / 24000
@@ -609,6 +615,41 @@ print(json.dumps({k: [[x["from"], x["to"], x["angle"]] for x in v] for k, v in o
   assert.deepStrictEqual(fit.flip.map((x) => x[2]), ['A', 'B']);   // the opening stays; the shot after the removal changes
   assert.ok(fit.pick.every((x) => x[2] !== 'C'), JSON.stringify(fit.pick));
   console.log('✓ place_cuts.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio, no ping-pong at removals');
+}
+
+// ── 2e. removal joins on aligned word times (Elevate, 2026-11-06) ──
+{
+  const fps = 24000 / 1001;
+  const W = (w, s, e, extra = {}) => ({ mic: 'Camera 1', w, s, e, own: true, a: 0.9, ...extra });
+  const words = [W('So', 20, 30), W('clock', 100, 110), W('in', 114, 119), W('the', 140, 146), W('show', 146, 147, { ghost: true }),
+    W('Show', 160, 166), W('them', 167, 172), W('the', 200, 210), W('end.', 230, 240)];
+  const n = 400;
+  const db = Array(n).fill(-70);
+  for (const w of words) if (!w.ghost) for (let f = w.s; f <= Math.min(n - 1, w.e + 1); f++) db[f] = -25;   // a word's tail rings 1 fr
+  for (let f = 130; f <= 136; f++) db[f] = -32;                                                             // an "uh" nobody wrote
+  const dir = path.join(TMP, 'joins');
+  fs.mkdirSync(dir, { recursive: true });
+  const wp = path.join(dir, 'words_J.json'), dp = path.join(dir, 'day_J.json'), pp = path.join(dir, 'J_plan.json');
+  const lp = path.join(dir, 'levels_J.json'), rp = path.join(dir, 'removals_J.json');
+  fs.writeFileSync(wp, JSON.stringify({ label: 'J', multicam: 'mc_j', fps, frame_sec: [1001, 24000], angles: ['Camera 1', 'Camera 2'], mics: ['Camera 1'], words, aligned: true }));
+  fs.writeFileSync(dp, JSON.stringify({ multicam: 'mc_j', fps, frame_sec: [1001, 24000], length_sec: n / fps, angles: ['Camera 1', 'Camera 2'], audio_source: 'camera', mics: [{ angle: 'Camera 1' }] }));
+  fs.writeFileSync(lp, JSON.stringify({ label: 'J', frame_sec: 1001 / 24000, mics: { 'Camera 1': { start: 0, db } } }));
+  fs.writeFileSync(rp, JSON.stringify({ start: 0, end: 260, delivery: 'scripted', shots: [], review: [], pauses: null, removals: [
+    { from: 116, to: 135, why: 'flub', prev_end: 110, cut_start: 114, cut_end: 119, next_start: 140 },
+    { from: 205, to: 220, why: 'flub', prev_end: null, cut_start: 205, cut_end: 220, next_start: null }] }));
+  execFileSync(PY, [path.join(PIPELINE, 'place_cuts.py'), wp, dp, pp, `removals=${rp}`, `levels=${lp}`, 'start=0', 'end=260'], { encoding: 'utf8' });
+  const plan = JSON.parse(fs.readFileSync(pp, 'utf8'));
+  const r1 = plan.removals.find((r) => r.why.includes('flub') && r.from < 150);
+  // the cut starts after "clock"'s ringing tail but before "in"; ends after the "uh", before "the"
+  assert.ok(r1.from >= 112 && r1.from <= 113, JSON.stringify(r1));
+  assert.ok(r1.to >= 137 && r1.to <= 139, JSON.stringify(r1));
+  // the head starts 3 + 8 fr (air + fade) before the first sound, not at the old ±10-fr guess
+  assert.strictEqual(plan.video[0].in, 20 - 3 - 8);
+  const notes = JSON.parse(fs.readFileSync(plan.review_file, 'utf8')).markers;
+  assert.ok(notes.some((m) => m.name.includes('Word cut off') && m.note.includes('"the"')), JSON.stringify(notes));
+  assert.ok(!notes.some((m) => /fr of quiet/.test(m.note)), 'old "fr of quiet" wording');
+  assert.ok(!plan.removals.some((r) => r.from <= 146 && 147 <= r.to && r.why.includes('stutter')));   // Whisper's doubled "show" is not a stutter
+  console.log('✓ place_cuts.py: joins on aligned words keep the tail, drop an unwritten "uh", flag a word cut in half in plain words');
 }
 
 // ── 3. orchestrator end to end ─────────────────────────────────

@@ -7,9 +7,9 @@ rebuilding EditPanel.
 | Step | File | What it does |
 |---|---|---|
 | Prep | `prepare_multicam.py` | Reads the multicam from Resolve: its angles, its length, and where each mic or camera's audio sits. Writes `day_<LABEL>.json`. |
-| Transcribe | `transcribe.py` | Transcribes every mic on LP1's GPU (Whisper). Also measures the loudness of every frame, which is used to place cuts. Writes `words_`, `levels_` and `transcript_<LABEL>` files. |
+| Transcribe | `transcribe.py` | Transcribes every mic on LP1's GPU (Whisper), then pins every word to the audio with WhisperX alignment (wav2vec2) so word starts and ends are within a frame or two. Also measures the loudness of every frame. Writes `words_`, `levels_`, `align_` and `transcript_<LABEL>` files. A transcript made before alignment existed is aligned automatically the next time Plan runs (`align_only=1`, no Whisper). Needs `whisperx` in `C:\wxbench`; without it the run says "Words NOT aligned" and cuts are less exact. |
 | Plan | `editor_briefs/solo.md`, `editor_briefs/conversation.md` | Claude's brief: how Jordan edits. Claude reads the transcript and decides what to remove and which angle is on screen. |
-| Plan | `place_cuts.py` | Places Claude's decisions on exact frames using the waveform, tightens pauses and sets mic levels. Writes `<LABEL>_plan.json`. |
+| Plan | `place_cuts.py` | Places Claude's decisions on exact frames: each removal starts 3 frames after the kept word's sound ends and ends 3 frames before the next kept word starts, and drops any unwritten "uh" or mumble in between. Tightens pauses (scripted: gaps over 20 frames go to 11) and sets mic levels. Review markers: red "Word cut off" names the word, yellow "Volume jump" and "Retake replaced", red "Check" from Claude. Words Whisper wrote twice but the aligner can't find ("show show") are ignored. Writes `<LABEL>_plan.json`. |
 | Build | `build_rough_cut.py` | Builds the edit in Resolve and runs the next two files. |
 | Build | `write_timeline_xml.py` | Writes the plan as one timeline file that Resolve can import. |
 | Build | `import_into_resolve.py` | Imports that timeline and checks picture and sound. The original multicam goes to `MC ORIGINAL`, renamed `<name>_original`. |

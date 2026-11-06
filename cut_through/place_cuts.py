@@ -148,7 +148,7 @@ def main(argv) -> None:
     people = list(data.get("mics") or [])
     multi = bool(o.get("removals")) and len(people) > 1
     talker = people[0] if people else None
-    W = sorted((w for w in data["words"] if w.get("own", True) and
+    W = sorted((w for w in data["words"] if w.get("own", True) and not w.get("ghost") and
                 (talker is None or w["mic"] == talker or (multi and w["mic"] in people))), key=lambda w: w["s"])
     lo_req, hi_req = int(o.get("start", 0)), int(o.get("end", total))
     W = [w for w in W if lo_req <= w["s"] < hi_req]
@@ -232,17 +232,49 @@ def main(argv) -> None:
         m = min(lvl(f) for f in range(lo, hi + 1))
         return max(f for f in range(lo, hi + 1) if lvl(f) <= m + 3)
 
+    def quietest_early(lo, hi):
+        """The quietest frame in [lo, hi], the earliest of the near-quietest (cuts just after speech)."""
+        lo, hi = int(lo), int(hi)
+        if hi < lo:
+            return lo
+        m = min(lvl(f) for f in range(lo, hi + 1))
+        return min(f for f in range(lo, hi + 1) if lvl(f) <= m + 3)
+
+    # Removal joins on aligned word times (WhisperX, 2026-11-06): a word's end / start is where it
+    # really is, so the waveform only looks a few frames around it. Searching ±10 fr (the Z8 rule,
+    # made for Whisper's loose times) grabbed the next word's onset or an untranscribed "uh" as
+    # "kept sound" (Elevate: "in", "I", "uh design", mumble before "a pretty").
+    def join_after(pe, cs):
+        """First frame of a removal after a kept word ending at pe (cs = first removed word)."""
+        pe_i = math.ceil(pe)
+        if cs - pe < 4:                                  # touching words: the dip between them
+            return quietest_early(pe_i, max(pe_i, int(cs)))
+        last = next((f for f in range(min(pe_i + 3, int(cs) - 2), pe_i - 3, -1) if sound(f)), None)   # the word's tail
+        a = (last + 1 if last is not None else pe_i) + 3
+        if any(sound(f) for f in range(a - 2, a + 1)):   # still sounding (breath / sound with no word)
+            a = quietest_early(pe_i, pe_i + 5)
+        return min(a, int(cs) - 1)
+
+    def join_before(ns, ce):
+        """End of a removal before a kept word starting at ns (ce = last removed word's end)."""
+        ns_i = math.floor(ns)
+        if ns - ce < 4:
+            return quietest(min(math.ceil(ce), ns_i), ns_i)
+        first = next((f for f in range(max(ns_i - 3, math.ceil(ce) + 2), ns_i + 3) if sound(f)), None)   # the word's onset
+        b = (first if first is not None else ns_i) - 3
+        if any(sound(f) for f in range(b - 1, b + 2)):   # sound right before the word: an "uh", a mumble
+            b = quietest(ns_i - 5, ns_i - 1)
+        return max(b, math.ceil(ce) + 1)
+
     def snap_removal(r):
-        """Z8 join: 3 frames after the last kept sound, 3 before the next (~6 fr of air across)."""
+        """The removal's two joins from the waveform around the aligned word times."""
         if not LV or r.get("prev_end") is None and r.get("next_start") is None:
             return int(r["from"]), int(r["to"])
         a, b = int(r["from"]), int(r["to"])
         if r.get("prev_end") is not None:
-            pe, cs = r["prev_end"], r.get("cut_start", r["from"])
-            a = after_sound(pe, cs - 2, 3) if cs - pe >= 4 else quietest(pe - 2, cs + 2)
+            a = join_after(r["prev_end"], r.get("cut_start", r["from"]))
         if r.get("next_start") is not None:
-            ns, ce = r["next_start"], r.get("cut_end", r["to"])
-            b = before_sound(ns, ce + 2, 3) if ns - ce >= 4 else quietest(ce - 2, ns + 2)
+            b = join_before(r["next_start"], r.get("cut_end", r["to"]))
         return (a, b) if b > a else (int(r["from"]), int(r["to"]))
 
     removals, floor = [], 0
@@ -613,20 +645,18 @@ def main(argv) -> None:
             said = (r.get("said") or "").strip()
             mark(r["from"], "Yellow", "Retake replaced",
                  (r.get("reason") or "an earlier take") + (f" — removed: {said[:120]}" if said else ""))
-        if LV:
-            before = next((f for f in range(r["from"] - 1, r["from"] - 25, -1) if sound(f)), None)
-            after = next((f for f in range(r["to"], r["to"] + 25) if sound(f)), None)
-            air_b = r["from"] - 1 - before if before is not None else 99
-            air_a = after - r["to"] if after is not None else 99
-            if min(air_b, air_a) < 3:
-                mark(r["from"], "Red", "Tight splice",
-                     f"{air_b if air_b < 99 else '24+'} fr of quiet before the cut, {air_a if air_a < 99 else '24+'} after — listen for a clipped sound")
+        # a cut inside a kept word (aligned times, 1 fr of slack) — Jordan, 2026-11-06: say which
+        # word, in plain words; nothing when the cut sits in the gap between words
+        cut_in = [w for w in W if w["s"] + 1 < r["from"] < w["e"] - 1 or w["s"] + 1 < r["to"] < w["e"] - 1]
+        for w in cut_in[:1]:
+            mark(r["from"], "Red", "Word cut off", f"The cut goes through \"{w['w'].strip()}\" — listen")
+        if LV and not cut_in and r["from"] > start:      # the head trim has nothing kept before it
             lv_b = sorted(lvl(f) for f in range(r["from"] - 48, r["from"]) if sound(f))
             lv_a = sorted(lvl(f) for f in range(r["to"], r["to"] + 48) if sound(f))
             if len(lv_b) >= 6 and len(lv_a) >= 6:
                 jump = lv_a[len(lv_a) // 2] - lv_b[len(lv_b) // 2]
-                if abs(jump) >= 8:
-                    mark(r["from"], "Yellow", "Level jump", f"speech {'louder' if jump > 0 else 'quieter'} by {abs(jump):.0f} dB across the cut")
+                if abs(jump) >= 10:
+                    mark(r["from"], "Yellow", "Volume jump", f"{'Louder' if jump > 0 else 'Quieter'} by {abs(jump):.0f} dB after the cut")
     # a clipped word only matters where a removal follows it (elsewhere the audio plays on untouched).
     # Pause trims are cut in the quiet, so they never clip a word: on Bill's stage talk they made
     # 37 of 40 markers, all noise (Jordan, 2026-11-05).

@@ -4,7 +4,7 @@ Cut-through step 2 (Transcribe): transcribe the day's mics on LP1's GPU.
 
 Reads Desktop\\day_<LABEL>.json (written by prepare_multicam.py in Resolve), transcribes every mic
 WAV over the stretch it covers in the multicam with faster-whisper large-v3 (WhisperX's engine)
-on the NVIDIA GPU, puts every word on the multicam's frame grid, and decides who said it: each
+on the NVIDIA GPU, pins every word to the audio (WhisperX alignment), puts it on the multicam's frame grid, and decides who said it: each
 mic hears the other person faintly, so a word belongs to the mic where it's loudest.
 Writes (client words — Desktop only, never into git):
   Desktop\\words_<LABEL>.json  — every word: mic angle, multicam start/end frame, probability,
@@ -19,6 +19,9 @@ Run (normal Command Prompt):
 Quick test first (first 3 minutes of each mic): add  minutes=3
 Second, verbatim pass (restarts, "uh"s, cut-off words; ~2× the GPU time): add  verbatim=1
 Already transcribed, just measure the audio (levels + loud-without-words marks, no Whisper): add  levels_only=1
+Already transcribed before alignment existed, pin the words to the audio (no Whisper): add  align_only=1
+Every run ends with WhisperX forced alignment (wav2vec2, `pip install whisperx` in C:\\wxbench): word
+times to within a frame or two instead of Whisper's own (3–25 frames off); align_<LABEL>.txt says it ran.
 Days without mic WAVs: the day file lists one angle's camera clips instead (ATEM mix or in-camera
 audio); those are decoded with PyAV or ffmpeg (first audio track) and every source on one angle becomes one
 track on the multicam clock.
@@ -207,7 +210,7 @@ def clip_stretched(words: list, m: dict, fs: float, max_frames: int = 24) -> int
     thr = (inside[len(inside) // 2] if inside else -30) - 24
     n = 0
     for w in own:
-        if w["e"] - w["s"] <= max_frames:
+        if w["e"] - w["s"] <= max_frames or "a" in w:     # aligned words already end where the sound does
             continue
         quiet = 0
         for f in range(int(w["s"]) + 6, int(w["e"])):
@@ -218,6 +221,123 @@ def clip_stretched(words: list, m: dict, fs: float, max_frames: int = 24) -> int
                 n += 1
                 break
     return n
+
+
+ALIGN_PAD_SEC = 1.0          # Whisper's own word times run up to ~1 s off: align over a padded slice
+ALIGN_GAP_SEC = 1.5          # a new alignment chunk after a pause this long…
+ALIGN_MAX_SEC = 25.0         # …or once a chunk would run longer than this (wav2vec2 works on short stretches)
+GHOST_SCORE, GHOST_FRAMES = 0.05, 3   # a word the aligner can't find in the audio (score ~0, ≤ 3 fr): never said
+
+
+def norm_word(t: str) -> str:
+    return "".join(c for c in str(t).lower() if c.isalnum() or c == "'")
+
+
+def align_words(words: list, mics: list, fs: float, progress=None) -> str:
+    """WhisperX forced alignment (wav2vec2): pins every word Whisper wrote to the audio. Whisper's
+    own word times touch each other and run 3–25 frames off (Elevate, 2026-11-06: "reconnect" cut
+    to "re-", "also" to "al-"); aligned times land within a frame or two of where Jordan would cut.
+    The text stays Whisper's — only s/e move (Whisper's kept as ws/we, score as "a"). A word the
+    aligner can't hear (score ~0, a blink long) sits between its neighbours; one that repeats the next
+    word was never said (Whisper invented "show show"): marked "ghost" so the edit never treats it
+    as a stutter. Returns a report line."""
+    t0 = time.time()
+    try:
+        import torch
+        import whisperx
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model, meta = whisperx.load_align_model(language_code="en", device=device)
+    except Exception as exc:                            # noqa: BLE001 — never lose a transcription over it
+        return f"Words NOT aligned to the audio (WhisperX unavailable: {type(exc).__name__}: {exc}) — cuts will be less exact"
+    by_mic = {m["angle"]: m for m in mics}
+    todo = [w for w in words if w.get("own", True) and w["mic"] in by_mic]
+    ws_of = lambda w: w.get("ws", w["s"])               # Whisper's own times (stable on a re-run)
+    we_of = lambda w: w.get("we", w["e"])
+    chunks = []                                         # (mic's words, first, past-last index)
+    for mic in by_mic:
+        ws = sorted((w for w in todo if w["mic"] == mic), key=ws_of)
+        i0 = 0
+        for i in range(1, len(ws) + 1):
+            if i == len(ws) or (ws_of(ws[i]) - we_of(ws[i - 1])) * fs > ALIGN_GAP_SEC or \
+                    (we_of(ws[i]) - ws_of(ws[i0])) * fs > ALIGN_MAX_SEC:
+                chunks.append((mic, ws, i0, i))
+                i0 = i
+    done = moved = ghosts = skipped = 0
+    last_pct = -1
+    for k, (mic, ws, i0, i1) in enumerate(chunks):
+        m = by_mic[mic]
+        # the slice is padded (Whisper's times can be ~1 s off), so it also holds the neighbours'
+        # speech: their words go into the text too (context), and only this chunk's words are taken
+        # — otherwise the aligner fits these words onto the neighbours' sound (Elevate "now a third…")
+        c0, c1 = i0, i1
+        while c0 > 0 and (ws_of(ws[i0]) - we_of(ws[c0 - 1])) * fs < 2 * ALIGN_PAD_SEC:
+            c0 -= 1
+        while c1 < len(ws) and (ws_of(ws[c1]) - we_of(ws[i1 - 1])) * fs < 2 * ALIGN_PAD_SEC:
+            c1 += 1
+        ctx = ws[c0:c1]
+        a = max(m["lo"], int((ws_of(ctx[0]) * fs - ALIGN_PAD_SEC) * SR))
+        b = min(m["hi"], int((we_of(ctx[-1]) * fs + ALIGN_PAD_SEC) * SR))
+        texts = [str(w["w"]).strip() for w in ctx]
+        if b - a < SR // 10 or not all(texts) or any(" " in t for t in texts):
+            skipped += i1 - i0
+            continue
+        clip = np.clip(m["audio"][a:b] * m["gain"], -1, 1).astype(np.float32)
+        try:
+            res = whisperx.align([{"text": " ".join(texts), "start": 0.0, "end": (b - a) / SR}], model, meta, clip,
+                                 device, return_char_alignments=False)
+            got = [x for seg in res.get("segments", []) for x in seg.get("words", [])]
+        except Exception:                               # noqa: BLE001 — one bad chunk keeps Whisper's times
+            got = []
+        if len(got) != len(ctx):
+            skipped += i1 - i0
+            continue
+        placed = []
+        for w, g in zip(ctx, got):
+            if g.get("start") is None or g.get("end") is None:
+                placed.append(None)                     # numbers etc. the aligner can't place: Whisper's times
+                continue
+            s, e = round((a / SR + g["start"]) / fs, 1), round((a / SR + g["end"]) / fs, 1)
+            placed.append((s, max(e, s + 0.5), round(float(g.get("score") or 0), 2)))
+        weak = [p is not None and p[2] < GHOST_SCORE and p[1] - p[0] <= GHOST_FRAMES for p in placed]
+        for i, (w, p) in enumerate(zip(ctx, placed)):
+            if p is None or not (i0 - c0 <= i < i1 - c0):
+                continue
+            w.setdefault("ws", w["s"])
+            w.setdefault("we", w["e"])
+            w.pop("e0", None)                           # an aligned end is the real end (no stretch to clip)
+            w.pop("ghost", None)
+            s, e, score = p
+            if weak[i]:
+                # the aligner couldn't hear it. Short words ("a", "I") often score ~0 though said, and
+                # their aligned spot can be wrong: keep the word, but sit it between its neighbours.
+                # Said again right after ("show show") = Whisper doubled it: never said
+                nxt = ctx[i + 1] if i + 1 < len(ctx) else None
+                if nxt is not None and norm_word(nxt["w"]) == norm_word(w["w"]):
+                    w["ghost"] = True
+                    ghosts += 1
+                prev_e = next((placed[j][1] for j in range(i - 1, -1, -1) if placed[j] and not weak[j]), None)
+                next_s = next((placed[j][0] for j in range(i + 1, len(ctx)) if placed[j] and not weak[j]), None)
+                lo = prev_e if prev_e is not None else w["ws"]
+                hi = next_s if next_s is not None else lo + (w["we"] - w["ws"])
+                s = min(max(w["ws"], lo), hi)
+                e = max(s + 0.5, min(s + (w["we"] - w["ws"]), hi))
+            if abs(s - w["s"]) >= 1 or abs(e - w["e"]) >= 1:
+                moved += 1
+            w["s"], w["e"], w["a"] = round(s, 1), round(e, 1), score
+            done += 1
+        pct = int(100 * (k + 1) / len(chunks))
+        if progress and pct // 10 != last_pct // 10:
+            last_pct = pct
+            progress(pct)
+    words.sort(key=lambda w: (w["s"], w["mic"]))
+    return (f"Aligned {done} of {len(todo)} words to the audio on {device} in {time.time() - t0:.0f}s "
+            f"({moved} moved ≥ 1 fr; {ghosts} doubled word(s) Whisper invented, ignored; {skipped} kept Whisper's times)")
+
+
+def write_align_note(label: str, line: str) -> None:
+    """align_<LABEL>.txt: says the words were aligned (EditPanel aligns an older transcript before Plan)."""
+    with open(os.path.join(DESKTOP, f"align_{label}.txt"), "w", encoding="utf-8") as fh:
+        fh.write(line + "\n")
 
 
 def write_levels(label: str, mics: list, fs: float) -> str:
@@ -281,6 +401,28 @@ def main() -> None:
         mics.append({**t, "gain": 0.9 / peak})
     report.append(f"Read audio in {time.time() - t0:.0f}s ({day.get('audio_source', 'wav')} audio, "
                   f"{len(mics)} track(s))")
+
+    def align_progress(pct: int) -> None:
+        print(f"Aligning words to the audio {pct}%…", flush=True)
+
+    if opts.get("align_only") == "1":
+        # an already transcribed day (before alignment was added): pin its words to the audio,
+        # then re-measure what depends on word times — no Whisper, the text stays as it was
+        wp = os.path.join(DESKTOP, f"words_{label}.json")
+        data = json.load(open(wp, encoding="utf-8"))
+        print("Aligning words to the audio…", flush=True)
+        line = align_words(data["words"], mics, fs, align_progress)
+        if not line.startswith("Aligned"):
+            raise SystemExit(line)
+        clipped = sum(clip_stretched(data["words"], m, fs) for m in mics)
+        data["unheard"] = [u for m in mics for u in unheard_speech(m, data["words"], fs)]
+        data["aligned"] = True
+        json.dump(data, open(wp, "w", encoding="utf-8"))
+        write_levels(label, mics, fs)
+        write_align_note(label, line)
+        print(f"{line}; {clipped} stretched word(s) clipped; {len(data['unheard'])} loud stretch(es) with no words. "
+              f"Updated words_{label}.json", flush=True)
+        return
 
     if opts.get("levels_only") == "1":
         # an already transcribed day: measure the audio only (no Whisper) — per-frame levels for
@@ -352,6 +494,9 @@ def main() -> None:
             report.append(f"  {m['angle']}: verbatim pass added {len(extra)} word(s) the clean pass missed")
 
     words.sort(key=lambda w: (w["s"], w["mic"]))
+    print("Aligning words to the audio…", flush=True)
+    align_line = align_words(words, mics, fs, align_progress)
+    report.append(align_line)
     print("Measuring loudness frame by frame (for cut placement)…", flush=True)
     clipped = sum(clip_stretched(words, m, fs) for m in mics)
     report.append(f"{clipped} stretched word(s) clipped where the audio goes quiet")
@@ -361,8 +506,13 @@ def main() -> None:
     own = [w for w in words if w["own"]]
     report.append(f"{len(words)} words, {len(own)} owned (rest = the other person heard on that mic)")
     json.dump({"label": label, "multicam": day["multicam"], "fps": day["fps"], "frame_sec": day["frame_sec"],
-               "angles": day["angles"], "mics": [m["angle"] for m in mics], "words": words, "unheard": unheard},
+               "angles": day["angles"], "mics": [m["angle"] for m in mics], "words": words, "unheard": unheard,
+               "aligned": align_line.startswith("Aligned")},
               open(os.path.join(DESKTOP, f"words_{label}.json"), "w", encoding="utf-8"))
+    if align_line.startswith("Aligned"):
+        write_align_note(label, align_line)
+    elif os.path.exists(os.path.join(DESKTOP, f"align_{label}.txt")):
+        os.remove(os.path.join(DESKTOP, f"align_{label}.txt"))     # an older run's note: no longer true
 
     lines, cur = [], None
     for w in own:

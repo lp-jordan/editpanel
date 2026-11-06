@@ -37,7 +37,8 @@ const DELIVERY = {
 // conversations: pauses are mostly turn-taking — only over 2 s, down to ~0.75 s
 // min_save: a pause trim costs an angle change, so on stage / in conversation only trim when it saves
 // that much (or a shot change already sits in the pause) — Bill Smith 2026-11-05: 0.5 s trims forced 8 extra cuts
-const PAUSES = { stage: { max: 36, left: 18, min_save: 36 }, convo: { max: 48, left: 18, min_save: 24 } };
+// scripted: gaps over ~0.8 s go down to ~0.45 s (Elevate, Jordan 2026-11-06: 19–26 fr gaps after a line read long)
+const PAUSES = { scripted: { max: 20, left: 11, min_save: 0 }, stage: { max: 36, left: 18, min_save: 36 }, convo: { max: 48, left: 18, min_save: 24 } };
 const LINE_GAP_SEC = 0.6;
 const SHOW_PAUSE_SEC = 1.5;
 
@@ -102,7 +103,8 @@ function buildTokens(wordsFile, { start = 0, end = Infinity } = {}) {
   const mine = (x) => talker === null || (multi ? people.includes(x.mic) : x.mic === talker);
   const toks = [];
   for (const w of wordsFile.words || []) {
-    if (w.own !== false && mine(w) && w.s >= start && w.s < end) toks.push({ kind: 'w', s: w.s, e: w.e, text: String(w.w).trim(), who: w.mic });
+    // ghost: a word Whisper wrote twice that was said once (WhisperX alignment can't find it)
+    if (w.own !== false && !w.ghost && mine(w) && w.s >= start && w.s < end) toks.push({ kind: 'w', s: w.s, e: w.e, text: String(w.w).trim(), who: w.mic });
   }
   for (const u of wordsFile.unheard || []) {
     if (mine(u) && u.s >= start && u.s < end) toks.push({ kind: 'u', s: u.s, e: u.e, text: '', who: u.mic });
