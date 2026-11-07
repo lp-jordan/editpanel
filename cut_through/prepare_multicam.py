@@ -129,15 +129,37 @@ def describe(xml: str, mc_name: str = None) -> dict:
                     cams.append(item)      # a <clip> holds the same file as <video> and <audio>
             visit(ch, angle, pos, _s(ch.get("start")))
 
+    def has_picture(el) -> bool:
+        a = assets.get(el.get("ref"))
+        if a is not None and a.get("hasVideo") == "1":
+            return True
+        return el.tag == "video" or any(has_picture(ch) for ch in el)
+
+    pictures = []                                  # [from, to] of every camera clip, any angle
     for ang in mc.findall("mc-angle"):
         angles.append(ang.get("name"))
         visit(ang, ang.get("name"), Fraction(0), Fraction(0))
         for ch in ang:
             if "offset" in ch.attrib:
                 length = max(length, _s(ch.get("offset")) + _s(ch.get("duration")))
+                if ch.tag != "gap" and not re.search(r"slate", ang.get("name") or "", re.I) and has_picture(ch):
+                    pictures.append((_s(ch.get("offset")), _s(ch.get("offset")) + _s(ch.get("duration"))))
     return {"multicam": media.get("name"), "fps": float(1 / fd), "frame_sec": [fd.numerator, fd.denominator],
             "tc_start_sec": float(_s(mc.get("tcStart"))), "length_sec": float(length),
-            "angles": angles, "mics": mics, "camera_audio": cams}
+            "angles": angles, "mics": mics, "camera_audio": cams, "recordings": recordings(pictures)}
+
+
+def recordings(pictures, join_sec: float = 0.5) -> list:
+    """Camera clips on every angle → the recordings: where the cameras rolled. The ATEM records
+    every camera at once, so clips that overlap or touch (a long recording split into files) are one
+    recording; a real gap between them is a stop. Seconds from the multicam's start."""
+    out = []
+    for a, b in sorted(pictures):
+        if out and a <= out[-1][1] + Fraction(join_sec):
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [{"from_sec": float(a), "to_sec": float(b)} for a, b in out]
 
 
 def main() -> None:
@@ -195,6 +217,9 @@ def main() -> None:
     json.dump(day, open(out, "w", encoding="utf-8"), indent=1)
     say(f"Multicam '{day['multicam']}': {day['length_sec'] / 60:.1f} min at {day['fps']:.3f} fps; "
         f"angles {day['angles']}; throwaway timeline deleted: {gone}")
+    say(f"   {len(day['recordings'])} recording(s): " + ", ".join(
+        f"{r['from_sec'] / 60:.1f}–{r['to_sec'] / 60:.1f} min" for r in day["recordings"][:12])
+        + (" …" if len(day["recordings"]) > 12 else ""))
     for m in day["mics"]:
         ok_file = os.path.isfile(m["path"])
         say(f"   {'camera clip' if m.get('camera') else 'audio clip'} {m['name']} under {m['angle']}: multicam {m['from_sec'] / 60:.1f}–{m['to_sec'] / 60:.1f} min, "

@@ -9,7 +9,8 @@ Cut-through step 4 (Build): the whole build in one run, nothing copied between m
      (Resolve places clips inside an imported multicam by timecode, and the recorder's WAVs
      start at 00:00:00:00, so they can't ride along in the copy's angles).
   2. write_timeline_xml.py builds ONE joined timeline from the cut plan (PLAN_FILE; EditPanel keeps it in the run folder) on top
-     of that description, plus its ranges file.
+     of that description, plus its ranges file. PLAN_FILES=[[plan, name], ...] (EditPanel's Videos list) puts one
+     plan per video into that same timeline, each named (its J-code).
   3. import_into_resolve.py imports it (one multicam copy → primary in the MC bin; the original
      goes to "MC ORIGINAL").
   4. split_into_videos.py cuts it into one timeline per video in SEQ_BIN.
@@ -42,6 +43,10 @@ RAW = globals().get("RAW")
 REPO = r"C:\lp-app-ecosystem\editpanel"
 PIPELINE = os.path.join(REPO, "cut_through")
 PLAN_FILE = globals().get("PLAN_FILE") or os.path.join(PIPELINE, "plans", f"{LABEL}_plan.json")
+# one plan per video (EditPanel's Videos list): [[plan file, timeline name], ...], all of one multicam
+PLAN_FILES = [list(x) for x in (globals().get("PLAN_FILES") or [])]
+if PLAN_FILES:
+    PLAN_FILE = PLAN_FILES[0][0]
 OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
 os.makedirs(OUT_DIR, exist_ok=True)
 ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
@@ -154,10 +159,22 @@ def main() -> None:
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — cut-through {LABEL}")
     global MICS
     MICS = MICS or plan.get("mic_angles") or {}         # newer plans carry it (angle N = person on camera N)
+    videos = PLAN_FILES or [[PLAN_FILE, f"{LABEL} rough cut"]]
+    plans = [json.load(open(p, encoding="utf-8")) for p, _ in videos]
+    for other in plans[1:]:
+        if other["multicam"] != name:
+            raise RuntimeError(f"Every video must come from {name!r}; one plan is for {other['multicam']!r}")
+        if list(other["mics"]) != list(plan["mics"]):
+            raise RuntimeError(f"Videos have different mic tracks ({list(plan['mics'])} vs {list(other['mics'])}) — plan them again")
+        for k, v in (other.get("mic_angles") or {}).items():
+            MICS.setdefault(k, v)
     missing = [role for role in plan["mics"] if role not in MICS]
     if missing:
         raise RuntimeError(f"MICS needs an angle for {missing}")
     joined, base = f"Cut-through temp {LABEL}", f"{LABEL} rough cut"
+    names = [n for _, n in videos]
+    if len(set(names)) != len(names):
+        raise RuntimeError(f"Two videos have the same name: {sorted({n for n in names if names.count(n) > 1})}")
     tls = {project.GetTimelineByIndex(i).GetName(): project.GetTimelineByIndex(i)
            for i in range(1, int(project.GetTimelineCount()) + 1)}
     if joined in tls:                                   # our own throwaway from a run that stopped
@@ -170,7 +187,7 @@ def main() -> None:
         say(f"Deleted {joined!r} left by an earlier run: {gone}")
         if not gone:
             raise RuntimeError(f"Delete the timeline {joined!r} left by an earlier run, then build again")
-    stale = sorted(n for n in tls if n.startswith(base))
+    stale = sorted(n for n in tls if (n in names if PLAN_FILES else n.startswith(base)))
     if stale:
         raise RuntimeError(f"Rename or delete these from an earlier run first: {stale}")
     mcs = [c for _, c in walk(mp.GetRootFolder())
@@ -223,8 +240,8 @@ def main() -> None:
     mk = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mk)
     out = os.path.join(OUT_DIR, f"{LABEL}_joined.fcpxml")
-    plan_arg = PLAN_FILE + f":{base}"
-    args = [src, out, *(f"{k}={v}" for k, v in MICS.items()), f"split={SPLIT}", f"joined={joined}", plan_arg]
+    plan_args = [f"{p}:{n}" for p, n in videos]
+    args = [src, out, *(f"{k}={v}" for k, v in MICS.items()), f"split={1 if PLAN_FILES else SPLIT}", f"joined={joined}", *plan_args]
     ranges = mk.main(args)
     say(f"2. Built {os.path.basename(out)} (written as FCPXML 1.14): {len(ranges)} video(s) in one timeline "
         f"({time.time() - t1:.1f}s)")
@@ -260,5 +277,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("LABEL", "MICS", "SPLIT", "SEQ_BIN", "RAW", "OUT_DIR", "PLAN_FILE"):   # the console keeps run-line settings between runs
+    for _k in ("LABEL", "MICS", "SPLIT", "SEQ_BIN", "RAW", "OUT_DIR", "PLAN_FILE", "PLAN_FILES"):   # the console keeps run-line settings between runs
         globals().pop(_k, None)

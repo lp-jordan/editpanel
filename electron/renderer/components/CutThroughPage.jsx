@@ -44,6 +44,45 @@ function ctStatusText(st, now) {
 
 const CT_DOT = { pending: 'is-pending', running: 'is-active', done: 'is-done', failed: 'is-error', canceled: 'is-skipped' };
 
+const CT_DELIVERY = [['scripted', 'Scripted'], ['free', 'Free talk'], ['stage', 'Stage'], ['convo', 'Conversation']];
+
+function ctMoney(x) {
+  return Number.isFinite(x) ? `$${x < 10 ? x.toFixed(2) : x.toFixed(0)}` : '';
+}
+
+/** One video of the day: tick, name, where, type, flags, plan status. */
+function CtVideoRow({ v, soloDefault, locked, busy, onPatch, onRetry, estimate }) {
+  const [name, setName] = React.useState(v.name);
+  React.useEffect(() => { setName(v.name); }, [v.name]);
+  const delivery = v.delivery || (v.kind === 'convo' ? 'convo' : soloDefault);
+  const st = (v.plan && v.plan.status) || 'none';
+  return (
+    <div className={`ct-video${v.include ? '' : ' is-off'}`}>
+      <input type="checkbox" checked={v.include} disabled={locked} aria-label={`Include ${v.name}`}
+        onChange={(e) => onPatch({ include: e.target.checked })} />
+      <input className="settings-input ct-video-name" value={name} disabled={locked} aria-label="Timeline name"
+        onChange={(e) => setName(e.target.value)}
+        onBlur={() => { if (name.trim() && name !== v.name) onPatch({ name }); else setName(v.name); }}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+      <span className="dim ct-video-when">{v.fromTc} · {v.minutes.toFixed(1)} min</span>
+      <select className="settings-input ct-video-type" value={delivery} disabled={locked} aria-label="Type"
+        onChange={(e) => onPatch({ delivery: e.target.value })}>
+        {CT_DELIVERY.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+      </select>
+      <span className="ct-video-tags">
+        {v.flags.map((f) => <span key={f} className="tag warning">{f}</span>)}
+        {estimate && <span className="tag">≈ {ctMoney(estimate.usd)}</span>}
+        {st === 'planned' && <span className="tag success">Planned{v.plan.via === 'batch' ? ' · batch' : ''}</span>}
+        {st === 'queued' && <span className="tag info">In batch</span>}
+        {st === 'failed' && <span className="tag danger" title={v.plan.error || ''}>Failed</span>}
+        {st === 'failed' && !locked && (
+          <button type="button" className="btn small ghost" disabled={busy} onClick={onRetry}>Retry</button>
+        )}
+      </span>
+    </div>
+  );
+}
+
 function CtReport({ lines, live }) {
   const ref = React.useRef(null);
   React.useEffect(() => {
@@ -100,6 +139,8 @@ function CutThroughPage({ connected }) {
   const [settingsDraft, setSettingsDraft] = React.useState({ pipelineDir: '', wxPython: '', filesDir: '' });
   const [keyDraft, setKeyDraft] = React.useState('');
   const [directionDraft, setDirectionDraft] = React.useState('');
+  const [planMode, setPlanMode] = React.useState(null);
+  const [offsetDraft, setOffsetDraft] = React.useState('');
   const ctLabel = ct && ct.label;
   React.useEffect(() => { setDirectionDraft((ct && ct.direction) || ''); setLabelDraft(ctLabel || ''); }, [ctLabel]);
 
@@ -146,6 +187,11 @@ function CutThroughPage({ connected }) {
   const buildFinished = ct && ct.steps && ct.steps.build && ct.steps.build.finishedAt;
   React.useEffect(() => { if (connected && buildFinished) loadTimelines(); }, [buildFinished]);
 
+  const showVideos = ct && (planMode || (ct.videos && ct.videos.active ? 'videos' : 'section')) === 'videos';
+  React.useEffect(() => {
+    if (showVideos && api && api.listLposProjects && !(ct.lposProjects || []).length && !ct.lposLoading) api.listLposProjects().then((res) => apply(res, 'lpos'));
+  }, [showVideos]);
+
   const running = ct && ct.busy;
   React.useEffect(() => {
     if (!running) return undefined;
@@ -187,6 +233,13 @@ function CutThroughPage({ connected }) {
   const mcKnown = !ct.mc || mcOptions.some((m) => m.name === ct.mc);
   const dupe = mcOptions.find((m) => m.name === ct.mc && m.duplicate);
   const solo = ct.planKind === 'solo';
+  const vids = ct.videos;
+  const mode = planMode || (vids && vids.active ? 'videos' : 'section');
+  const batch = vids && vids.batch;
+  const batchLive = Boolean(batch && ['in_progress', 'canceling'].includes(batch.status));
+  const batchDraft = Boolean(batch && batch.status === 'draft');
+  const soloDefault = ['scripted', 'free', 'stage'].includes(planForm.delivery) ? planForm.delivery : 'scripted';
+  const lposPick = ct.settings.lposProject;
   const delivery = solo ? (planForm.delivery === 'convo' ? 'scripted' : planForm.delivery) : (planForm.delivery === 'stage' ? 'stage' : 'convo');
   const angleNo = (a) => Number((/(\d+)\s*$/.exec(a) || [])[1] || 999);
   const sortedAngles = [...(day?.angles || [])].sort((x, y) => angleNo(x) - angleNo(y));
@@ -201,6 +254,70 @@ function CutThroughPage({ connected }) {
   }
 
   const audioChoice = day && day.audioSource === 'camera' ? (day.mics[0] || {}).angle || '' : '';
+
+  function renderVideos() {
+    const locked = busy || batchLive || batchDraft;
+    const list = (vids && vids.videos) || [];
+    const ticked = list.filter((v) => v.include);
+    const offset = vids && vids.offset;
+    return (
+      <>
+        <CtRow label="Slate">
+          <select className="settings-input ct-grow-input" value={lposPick ? lposPick.id : ''} disabled={locked}
+            onChange={(e) => {
+              const p = (ct.lposProjects || []).find((x) => x.id === e.target.value);
+              call('plan', () => api.updateSettings({ lposProject: p ? { id: p.id, name: p.name } : null }));
+            }}>
+            <option value="">{ct.lposLoading ? 'Loading…' : 'No slate (one video per recording)'}</option>
+            {lposPick && !(ct.lposProjects || []).some((p) => p.id === lposPick.id) && <option value={lposPick.id}>{lposPick.name}</option>}
+            {(ct.lposProjects || []).map((p) => <option key={p.id} value={p.id}>{p.client ? `${p.client} — ${p.name}` : p.name}</option>)}
+          </select>
+          <button type="button" className="btn small ghost" disabled={ct.lposLoading}
+            onClick={() => call('lpos', () => api.listLposProjects())}>Refresh</button>
+          {ct.lposError && <span className="tag danger">{ct.lposError}</span>}
+        </CtRow>
+        {lposPick && (
+          <CtRow label="Slate offset">
+            <input className="settings-input ct-num" inputMode="decimal" aria-label="Slate offset in seconds" disabled={locked}
+              placeholder={offset ? String(offset.auto) : 'Auto'} value={offsetDraft}
+              onChange={(e) => setOffsetDraft(e.target.value.replace(/[^\d.\-]/g, ''))} />
+            <span className="dim">s</span>
+            {offset && <span className="dim ct-num-text">{offset.manual ? `using ${offset.used} s` : `auto ${offset.auto} s`}{vids.notes != null ? ` · ${vids.notes} J-codes` : ''}</span>}
+          </CtRow>
+        )}
+        {list.length > 0 && (
+          <CtRow label="Videos">
+            <div className="ct-videos">
+              {list.map((v) => (
+                <CtVideoRow key={v.id} v={v} soloDefault={soloDefault} locked={locked} busy={busy}
+                  estimate={batchDraft && batch.items ? batch.items[v.id] : null}
+                  onPatch={(patch) => call('plan', () => api.updateVideo(v.id, patch))}
+                  onRetry={() => call('plan', () => api.planVideos({ ids: [v.id], roles, direction: directionDraft, delivery: soloDefault }))} />
+              ))}
+              <div className="dim ct-num-text">{ticked.length} of {list.length} ticked · {ticked.reduce((t, v) => t + v.minutes, 0).toFixed(1)} min</div>
+            </div>
+          </CtRow>
+        )}
+        {batch && (
+          <CtRow label="Batch">
+            {batchDraft && (
+              <span>{Object.keys(batch.items || {}).length} videos · ≈ {ctMoney(batch.estimate)} <span className="dim">(live ≈ {ctMoney(batch.liveEstimate)})</span></span>
+            )}
+            {batchDraft && (batch.skipped || []).map((x) => <span key={x} className="tag warning">{x}</span>)}
+            {!batchDraft && (
+              <span>
+                {batch.status === 'ended' ? (batch.collected ? 'Collected' : 'Ended') : batch.status === 'canceling' ? 'Canceling' : 'Running'}
+                {batch.counts ? ` · ${batch.counts.succeeded + batch.counts.errored + batch.counts.canceled + batch.counts.expired}/${Object.keys(batch.items || {}).length} done` : ''}
+                {batch.submittedAt ? ` · sent ${ctWhen(batch.submittedAt)}` : ''}
+                {batch.spent != null ? ` · ${ctMoney(batch.spent)}` : ''}
+              </span>
+            )}
+            {batch.collectError && <span className="tag danger">{batch.collectError}</span>}
+          </CtRow>
+        )}
+      </>
+    );
+  }
 
   function renderStepBody(key) {
     const st = steps[key];
@@ -256,7 +373,16 @@ function CutThroughPage({ connected }) {
       return (
         <div className="ct-grid">
           {editing && (
-            <>
+            <CtRow label="Plan by">
+              <select className="settings-input ct-select" value={mode} disabled={busy || batchLive || batchDraft}
+                onChange={(e) => setPlanMode(e.target.value)}>
+                <option value="section">One section</option>
+                <option value="videos">Videos</option>
+              </select>
+            </CtRow>
+          )}
+          {editing && mode === 'videos' && renderVideos()}
+          {editing && mode === 'section' && (
               <CtRow label="Section">
                 <label className="ct-check">
                   <input type="checkbox" checked={planForm.useMarks} disabled={!connected}
@@ -275,11 +401,15 @@ function CutThroughPage({ connected }) {
                   onChange={(e) => setPlanForm({ ...planForm, end: e.target.value })} />
                 {planForm.useMarks && ct.marks && <span className="dim ct-num-text">{ct.marks.minutes.toFixed(1)} min</span>}
               </CtRow>
-              <CtRow label="Delivery">
-                <select className="settings-input ct-select" value={delivery} onChange={(e) => setPlanForm({ ...planForm, delivery: e.target.value })}>
-                  {solo && <option value="scripted">Scripted</option>}
-                  {solo && <option value="free">Free talk</option>}
-                  {!solo && <option value="convo">Conversation</option>}
+          )}
+          {editing && (
+            <>
+              <CtRow label={mode === 'videos' ? 'Solo videos' : 'Delivery'}>
+                <select className="settings-input ct-select" value={mode === 'videos' ? soloDefault : delivery}
+                  onChange={(e) => setPlanForm({ ...planForm, delivery: e.target.value })}>
+                  {(solo || mode === 'videos') && <option value="scripted">Scripted</option>}
+                  {(solo || mode === 'videos') && <option value="free">Free talk</option>}
+                  {!solo && mode !== 'videos' && <option value="convo">Conversation</option>}
                   <option value="stage">Stage</option>
                 </select>
               </CtRow>
@@ -309,7 +439,7 @@ function CutThroughPage({ connected }) {
               </CtRow>
             </>
           )}
-          {summary && (
+          {summary && summary.pieces !== undefined && mode === 'section' && (
             <CtRow label="Result">
               <span>{summary.pieces} pieces · {summary.removals} removals{summary.keptMin != null ? ` · ${summary.keptMin.toFixed(1)} min kept` : ''}</span>
               {Object.entries(summary.angles).map(([a, n]) => <span key={a} className="tag">{a} × {n}</span>)}
@@ -322,7 +452,7 @@ function CutThroughPage({ connected }) {
     if (key === 'check') {
       const d = st.data;
       if (st.status === 'running' && !d) return null;
-      const roughBase = ct.label ? `${ct.label} rough cut` : '';
+      const roughBase = ct.label && !(vids && vids.active) ? `${ct.label} rough cut` : '';
       return (
         <div className="ct-grid">
           {st.status !== 'running' && (
@@ -347,6 +477,7 @@ function CutThroughPage({ connected }) {
       if (st.status === 'running') return null;
       return (
         <div className="ct-grid">
+          {vids && vids.active && <CtRow label="Videos"><span>{ct.videosReady} planned</span></CtRow>}
           <CtRow label="Sequence bin">
             <select className="settings-input ct-select" value={seqBin || ''}
               onChange={(e) => call('build', () => api.updateSettings({ seqBin: e.target.value }))}>
@@ -378,6 +509,45 @@ function CutThroughPage({ connected }) {
           onClick={() => call(key, () => api.runTranscribe({ minutes }))}>{st.status === 'pending' ? 'Run' : 'Run again'}</button>
       );
     }
+    if (key === 'plan' && mode === 'videos') {
+      const hasVideos = vids && vids.videos && vids.videos.length > 0;
+      const ready = steps.transcribe.status === 'done';
+      const form = { roles, direction: directionDraft, delivery: soloDefault };
+      if (batchDraft) {
+        return (
+          <>
+            <button type="button" className="btn small ghost" disabled={busy} onClick={() => call(key, () => api.discardBatch())}>Discard</button>
+            <button type="button" className="btn small" disabled={busy} onClick={() => call(key, () => api.submitBatch())}>Submit batch</button>
+          </>
+        );
+      }
+      if (batchLive) {
+        return (
+          <>
+            <button type="button" className="btn small ghost" onClick={() => call(key, () => api.refreshBatch())}>Refresh</button>
+            <button type="button" className="btn small danger" disabled={batch.status === 'canceling'}
+              onClick={() => call(key, () => api.cancelBatch())}>Cancel batch</button>
+          </>
+        );
+      }
+      return (
+        <>
+          {batch && batch.status === 'ended' && !batch.collected && (
+            <button type="button" className="btn small" disabled={busy} onClick={() => call(key, () => api.collectBatch())}>Collect</button>
+          )}
+          <button type="button" className={`btn small${hasVideos ? ' ghost' : ''}`} disabled={busy || !ready}
+            onClick={() => call(key, () => api.findVideos({ offsetSec: offsetDraft }))}>{hasVideos ? 'Find again' : 'Find videos'}</button>
+          {hasVideos && (
+            <button type="button" className="btn small ghost" disabled={busy || !ready}
+              onClick={() => call(key, () => api.prepareBatch(form))}>Batch</button>
+          )}
+          {hasVideos && (
+            <button type="button" className={btnClass(key)} disabled={busy || !ready}
+              onClick={() => call(key, () => api.planVideos(form))}>Plan now</button>
+          )}
+        </>
+      );
+    }
     if (key === 'plan') {
       return (
         <>
@@ -400,7 +570,7 @@ function CutThroughPage({ connected }) {
     }
     if (key === 'build') {
       return (
-        <button type="button" className={btnClass(key)} disabled={busy || !connected || !ct.planExists}
+        <button type="button" className={btnClass(key)} disabled={busy || !connected || !(vids && vids.active ? ct.videosReady : ct.planExists)}
           onClick={() => call(key, () => api.runBuild({}))}>{st.status === 'pending' ? 'Build' : 'Build again'}</button>
       );
     }

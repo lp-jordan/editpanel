@@ -30,7 +30,9 @@ Usage:
     python place_cuts.py <words.json> <day.json> <out_plan.json> [start=<frame>] [end=<frame>] [removals=<file>]
         [levels=<levels_LABEL.json>] [pause_max=<fr>] [pause_left=<fr>]
         [wide="Camera 1"] [punch="Camera 2"] [extra="Camera 4" ...] [cut=<from>-<to> ...]
-        [trim=<from>-<to> ...] [keep=<from>-<to> ...] [skip="Slate" ...]
+        [trim=<from>-<to> ...] [keep=<from>-<to> ...] [skip="Slate" ...] [talker="Camera 2"] [review=<file>]
+  talker: plan one person's video on a day with several mics (the others stay closed, tracks kept).
+  review: where the review markers go (default review_<LABEL>.json beside the words file).
   skip: an angle never to show (Jordan's "don't use" on the Cut-through page; a Slate always).
   trim / keep: the second pass (EditPanel's Check on this plan, cut_through_check.js): trim = a
   silence to take out (a gap left at a join, a pause over the rule, dead air at the head/tail, a
@@ -156,6 +158,9 @@ def main(argv) -> None:
     # one talker (solo), or — with Claude's edit — a conversation: every mic is a person (angle N =
     # the person on camera N, Jordan's rule) and everyone's words count
     people = list(data.get("mics") or [])
+    every_mic = list(people)
+    if o.get("talker") in people:                    # one person's video on a conversation day
+        people = [o["talker"]]
     multi = bool(o.get("removals")) and len(people) > 1
     talker = people[0] if people else None
     W = sorted((w for w in data["words"] if w.get("own", True) and not w.get("ghost") and
@@ -667,6 +672,10 @@ def main(argv) -> None:
             # a backchannel already inside (or touching) a full open stays at full level
             ducks = [d for d in ducks if not any(a - 2 <= d[1] and d[0] <= b + 2 for a, b in opens)]
             mics[p] = sorted(opens + ducks)
+    if not camera and len(every_mic) > 1 and not multi:
+        # the day's other mics stay closed, but keep their tracks: every video of a day has the
+        # same audio layout, so one joined build puts each person on the same track
+        mics = {p: mics.get(p, []) for p in every_mic}
     # 7. review markers (Jordan, 2026-11-05): red = check this, yellow = worth a look. Waveform ones
     # cost nothing; retakes come from Claude's removal reasons; "check" spots from Claude's notes.
     markers = []
@@ -719,7 +728,7 @@ def main(argv) -> None:
 
     # the notes quote client words, so they stay on this machine (beside the transcript), never in
     # the plan (plans can be committed to git)
-    review_p = os.path.join(os.path.dirname(os.path.abspath(words_p)), f"review_{data['label']}.json")
+    review_p = o.get("review") or os.path.join(os.path.dirname(os.path.abspath(words_p)), f"review_{data['label']}.json")
     json.dump({"label": data["label"], "markers": markers}, open(review_p, "w", encoding="utf-8"), indent=1)
     plan = {"label": data["label"], "multicam": data["multicam"], "fps": fps, "review_file": review_p,
             "note": ("Edit by Claude (removals) + place_cuts.py (pauses, picture, audio)." if given else

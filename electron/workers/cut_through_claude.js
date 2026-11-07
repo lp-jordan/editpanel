@@ -109,8 +109,10 @@ const SCHEMA = buildSchema(['Camera 1', 'Camera 2']);   // shape reference for t
  * mics = a conversation: each word is said by the owner of the mic it's loudest on (`own`), and
  * every token carries who (`who` = that mic's angle).
  */
-function buildTokens(wordsFile, { start = 0, end = Infinity } = {}) {
-  const people = wordsFile.mics || [];
+function buildTokens(wordsFile, { start = 0, end = Infinity, talker: only = null } = {}) {
+  const all = wordsFile.mics || [];
+  // one person's video on a conversation day: only their mic
+  const people = only && all.includes(only) ? [only] : all;
   const talker = people[0] || null;
   const multi = people.length > 1;
   const mine = (x) => talker === null || (multi ? people.includes(x.mic) : x.mic === talker);
@@ -252,22 +254,18 @@ function toFrameSpans(tokens, removals, { start, end }) {
   }).filter((x) => x.to > x.from);
 }
 
-function costOf(model, usage) {
+/** factor 0.5 = the Message Batches price (half of every token). */
+function costOf(model, usage, factor = 1) {
   const p = PRICES[model] || PRICES[DEFAULT_MODEL];
   const u = usage || {};
   const dollars = ((u.input_tokens || 0) * p.input + (u.output_tokens || 0) * p.output +
     (u.cache_read_input_tokens || 0) * p.cacheRead + (u.cache_creation_input_tokens || 0) * p.cacheWrite) / 1e6;
-  return Math.round(dollars * 1000) / 1000;
+  return Math.round(dollars * factor * 1000) / 1000;
 }
 
-/**
- * Ask Claude for the removals. Streams (long input, adaptive thinking) and
- * returns the final message parsed against SCHEMA.
- */
-async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', system, transcript, meta, angles = ['Camera 1', 'Camera 2'], client = null, onEvent = () => {} }) {
-  // maxRetries 0: an automatic retry re-runs (and re-bills) a whole long edit
-  const anthropic = client || new Anthropic({ ...(apiKey ? { apiKey } : {}), maxRetries: 0 });
-  const params = {
+/** The request for one edit (live: streamed; batch: one entry's params, as-is). */
+function requestParams({ model = DEFAULT_MODEL, effort = 'high', system, transcript, meta, angles }) {
+  return {
     model,
     // a shot list for a long talk is a few hundred entries on top of the removals and thinking
     max_tokens: 128000,
@@ -276,6 +274,35 @@ async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', syste
     system,
     messages: [{ role: 'user', content: `${meta}\n\n<transcript>\n${transcript}\n</transcript>\n\nReturn the edit: removals, shots, notes.` }]
   };
+}
+
+/** A finished message → { parsed, usage, model, stopReason }; a refusal / cut-off / bad JSON throws,
+ *  carrying the usage (it's billed anyway). Live and batch answers both come through here. */
+function readMessage(msg, model) {
+  const paid = (e) => Object.assign(e, { usage: msg.usage, model: msg.model || model });
+  if (msg.stop_reason === 'refusal') {
+    const d = msg.stop_details || {};
+    throw paid(new Error(`Claude declined (${d.category || 'refusal'}): ${d.explanation || ''}`.trim()));
+  }
+  if (msg.stop_reason === 'max_tokens') throw paid(new Error('Claude ran out of output room (max_tokens) — try a shorter Start/End range'));
+  const text = (msg.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (_) {
+    throw paid(new Error(`Claude's answer wasn't valid JSON (stop: ${msg.stop_reason})`));
+  }
+  return { parsed, usage: msg.usage, model: msg.model || model, stopReason: msg.stop_reason };
+}
+
+/**
+ * Ask Claude for the removals. Streams (long input, adaptive thinking) and
+ * returns the final message parsed against SCHEMA.
+ */
+async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', system, transcript, meta, angles = ['Camera 1', 'Camera 2'], client = null, onEvent = () => {} }) {
+  // maxRetries 0: an automatic retry re-runs (and re-bills) a whole long edit
+  const anthropic = client || makeClient(apiKey);
+  const params = requestParams({ model, effort, system, transcript, meta, angles });
   const run = async (withFallback) => {
     const stream = withFallback
       // Refusal fallback: if a safety classifier declines, the API re-runs on a
@@ -294,21 +321,13 @@ async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', syste
     if (err instanceof Anthropic.BadRequestError && /fallback/i.test(err.message || '')) msg = await run(false);
     else throw err;
   }
-  // a failed answer is still billed: the error carries its usage so the cost gets logged
-  const paid = (e) => Object.assign(e, { usage: msg.usage, model: msg.model || model });
-  if (msg.stop_reason === 'refusal') {
-    const d = msg.stop_details || {};
-    throw paid(new Error(`Claude declined (${d.category || 'refusal'}): ${d.explanation || ''}`.trim()));
-  }
-  if (msg.stop_reason === 'max_tokens') throw paid(new Error('Claude ran out of output room (max_tokens) — try a shorter Start/End range'));
-  const text = (msg.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (_) {
-    throw paid(new Error(`Claude's answer wasn't valid JSON (stop: ${msg.stop_reason})`));
-  }
-  return { parsed, usage: msg.usage, model: msg.model || model, stopReason: msg.stop_reason };
+  // a failed answer is still billed: readMessage's error carries its usage so the cost gets logged
+  return readMessage(msg, model);
+}
+
+function makeClient(apiKey) {
+  // maxRetries 0: an automatic retry re-runs (and re-bills) a whole long edit
+  return new Anthropic({ ...(apiKey ? { apiKey } : {}), maxRetries: 0 });
 }
 
 /**
@@ -317,12 +336,17 @@ async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', syste
  * (frame spans for place_cuts.py), appends <files folder>/cut_through_costs.csv.
  * Returns { removalsFile, lines, cost, problems }.
  */
-async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, promptPath, start, end, apiKey, model, effort, client,
-  delivery = 'scripted', roles = {}, direction = '', log = () => {}, onEvent }) {
+/**
+ * Everything one edit needs, without asking yet: the numbered transcript, Claude's brief and the
+ * request (`params`). Deterministic from the files, so a batch answer is read back by preparing the
+ * same video again. Throws on an empty or too-long range.
+ */
+function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model, effort, delivery = 'scripted', roles = {}, direction = '',
+  talker: only = null }) {
   const words = JSON.parse(fs.readFileSync(wordsPath, 'utf8'));
   const day = JSON.parse(fs.readFileSync(dayPath, 'utf8'));
   const frameSec = day.frame_sec[0] / day.frame_sec[1];
-  const { talker, people, multi, tokens } = buildTokens(words, { start, end });
+  const { talker, people, multi, tokens } = buildTokens(words, { start, end, talker: only });
   if (!tokens.length) throw new Error('No words in that range');
   const s0 = Math.max(start, Math.floor(tokens[0].s) - 18);
   const e0 = Math.min(end, Math.ceil(tokens[tokens.length - 1].e) + 24);
@@ -360,40 +384,67 @@ async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, pro
     ...(String(direction || '').trim() ? ['', `Direction from Jordan for this recording (follow it; where it disagrees with the guidelines in your brief, it wins):`,
       String(direction).trim()] : [])
   ].join('\n');
-  log(`Asking ${model || DEFAULT_MODEL} to edit the ${((e0 - s0) * frameSec / 60).toFixed(1)}-minute recording (${nWords} words)…`);
   // one pass over a whole day can run out of output room and is billed anyway (2026-11-06):
   // refuse a section that long before sending it (~6,200 words per raw hour)
   if (nWords > MAX_WORDS) {
     throw new Error(`Too long for one Claude pass: ${nWords} words (about ${(nWords / 6200).toFixed(1)} h). ` +
       `Pick a From/To of about ${Math.floor(MAX_WORDS / 6200 * 4) * 15} minutes or less.`);
   }
+  const params = requestParams({ model: model || DEFAULT_MODEL, effort, system, transcript, meta, angles });
+  return { label, tokens, s0, e0, frameSec, angles, system, transcript, meta, nWords, minutes: (e0 - s0) * frameSec / 60,
+    model: model || DEFAULT_MODEL, effort, delivery, direction, params };
+}
+
+/** Appends one Claude call to <costs folder>/cut_through_costs.csv. */
+function logCost({ costsDir, outDir, label, step, model, effort, usage, seconds = 0, factor = 1 }) {
+  fs.mkdirSync(costsDir || outDir, { recursive: true });
+  const csv = path.join(costsDir || outDir, 'cut_through_costs.csv');
+  const u = usage || {};
+  if (!fs.existsSync(csv)) fs.writeFileSync(csv, 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds\n');
+  fs.appendFileSync(csv, `${new Date().toISOString()},${label},${step},${model},${effort},${u.input_tokens || 0},${u.output_tokens || 0},` +
+    `${u.cache_read_input_tokens || 0},${u.cache_creation_input_tokens || 0},${costOf(model, usage, factor)},${Math.round(seconds)}\n`);
+}
+
+/**
+ * The whole Claude planning step, live. Writes Desktop/claude_edit_<LABEL>.json
+ * (token ranges + reasons, client words) and Desktop/removals_<LABEL>.json
+ * (frame spans for place_cuts.py), appends <files folder>/cut_through_costs.csv.
+ * Returns { removalsFile, lines, cost, problems }.
+ */
+async function planWithClaude(o) {
+  const { outDir, costsDir, apiKey, client, log = () => {}, onEvent } = o;
+  const ctx = preparePlan(o);
+  log(`Asking ${ctx.model} to edit the ${ctx.minutes.toFixed(1)}-minute recording (${ctx.nWords} words)…`);
   const t0 = Date.now();
-  const logCost = (m, usage, status) => {
-    fs.mkdirSync(costsDir || outDir, { recursive: true });
-    const csv = path.join(costsDir || outDir, 'cut_through_costs.csv');
-    const u = usage || {};
-    if (!fs.existsSync(csv)) fs.writeFileSync(csv, 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds\n');
-    fs.appendFileSync(csv, `${new Date().toISOString()},${label},${status},${m},${effort},${u.input_tokens || 0},${u.output_tokens || 0},` +
-      `${u.cache_read_input_tokens || 0},${u.cache_creation_input_tokens || 0},${costOf(m, usage)},${Math.round((Date.now() - t0) / 1000)}\n`);
-  };
   let res;
   try {
-    res = await askClaude({ apiKey, model, effort, system, transcript, meta, angles, client, onEvent });
+    res = await askClaude({ apiKey, model: ctx.model, effort: ctx.effort, system: ctx.system, transcript: ctx.transcript, meta: ctx.meta,
+      angles: ctx.angles, client, onEvent });
   } catch (err) {
     if (err.usage) {
-      const m = err.model || model || DEFAULT_MODEL;
-      logCost(m, err.usage, 'solo_plan_failed');
+      const m = err.model || ctx.model;
+      logCost({ costsDir, outDir, label: ctx.label, step: 'solo_plan_failed', model: m, effort: ctx.effort, usage: err.usage, seconds: (Date.now() - t0) / 1000 });
       err.message += ` (billed $${costOf(m, err.usage)})`;
     }
     throw err;
   }
   const seconds = Math.round((Date.now() - t0) / 1000);
+  logCost({ costsDir, outDir, label: ctx.label, step: 'solo_plan', model: res.model, effort: ctx.effort, usage: res.usage, seconds });
+  return finishPlan(ctx, res, { outDir, seconds });
+}
+
+/**
+ * Claude's answer → the edit files place_cuts.py reads. `factor` = what the call cost relative to
+ * the live price (0.5 for a batch), for the report line.
+ */
+function finishPlan(ctx, res, { outDir, seconds = 0, factor = 1, via = '' }) {
+  const { label, tokens, s0, e0, frameSec, angles, effort, delivery, direction } = ctx;
   const { ok, problems } = validateRemovals(res.parsed.removals, tokens.length);
   const spans = toFrameSpans(tokens, ok, { start: s0, end: e0 });
   const sv = validateShots(res.parsed.shots, ok, tokens.length, angles);
   problems.push(...sv.problems);
   const shots = toFrameShots(tokens, sv.ok, ok);
-  const cost = costOf(res.model, res.usage);
+  const cost = costOf(res.model, res.usage, factor);
   const notes = (res.parsed.notes || []).map((n) => (typeof n === 'string' ? { at: null, note: n } : n));
   // beats → the end frame of each thought's last word (words only; a removed word can't end a kept thought)
   const removedTok = (i) => ok.some((r) => r.from <= i && i <= r.to);
@@ -417,13 +468,12 @@ async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, pro
     pauses: PAUSES[delivery] || null, beats: beats.map((i) => tokens[i].e) }, null, 1));
   // a copy per model, so an Opus and a Sonnet edit of the same day can be compared
   fs.copyFileSync(claudeFile, path.join(outDir, `claude_edit_${label}_${String(res.model).replace(/[^A-Za-z0-9_.-]+/g, '_')}.json`));
-  logCost(res.model, res.usage, 'solo_plan');
 
   const byKind = {};
   ok.forEach((r) => { byKind[r.kind] = (byKind[r.kind] || 0) + 1; });
   const removedSec = spans.reduce((a, x) => a + (x.to - x.from), 0) * frameSec;
   const lines = [
-    `Claude (${res.model}, effort ${effort}, ${delivery}): ${ok.length} removals (${Object.entries(byKind).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}), ` +
+    `Claude (${res.model}, effort ${effort}, ${delivery}${via ? `, ${via}` : ''}): ${ok.length} removals (${Object.entries(byKind).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}), ` +
       `${removedSec.toFixed(0)} s removed, ${sv.ok.length} shots — ${seconds}s, $${cost.toFixed(3)} (${(res.usage || {}).input_tokens || 0} in / ${(res.usage || {}).output_tokens || 0} out tokens)`,
     ...ok.map((r) => `  ${r.from}–${r.to} [${clock(tokens[r.from].s * frameSec)}] ${r.kind}: ${r.reason}`),
     ...(beats.length ? [`  beats: ${beats.length} (a few more frames of air after a finished thought)`] : []),
@@ -433,5 +483,5 @@ async function planWithClaude({ label, wordsPath, dayPath, outDir, costsDir, pro
   return { removalsFile, claudeFile, lines, cost, problems };
 }
 
-module.exports = { planWithClaude, buildTokens, renderTranscript, validateRemovals, validateShots, toFrameSpans, toFrameShots,
-  costOf, askClaude, buildSchema, SCHEMA, DEFAULT_MODEL, DELIVERY, PAUSES };
+module.exports = { planWithClaude, preparePlan, finishPlan, readMessage, requestParams, makeClient, logCost, buildTokens, renderTranscript,
+  validateRemovals, validateShots, toFrameSpans, toFrameShots, costOf, askClaude, buildSchema, SCHEMA, DEFAULT_MODEL, DELIVERY, PAUSES, MAX_WORDS };

@@ -2548,6 +2548,7 @@ app.whenReady().then(() => {
     setPrefs: (patch) => controlPlane.setPreferences(patch),
     pythonCmd: PYTHON_CMD,
     ffmpegPath,
+    getLpos: () => lposClient,
     isPackaged: app.isPackaged,
     appDir: path.join(__dirname, '..')
   });
@@ -3452,6 +3453,16 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:read-marks', ctCall(() => cutThrough.readMarks()));
   ipcMain.handle('cut-through:build', ctCall((a) => cutThrough.runBuild(a)));
   ipcMain.handle('cut-through:check', ctCall((a) => cutThrough.runCheck(a)));
+  ipcMain.handle('cut-through:lpos-projects', ctCall(() => cutThrough.listLposProjects()));
+  ipcMain.handle('cut-through:find-videos', ctCall((a) => cutThrough.findVideos(a)));
+  ipcMain.handle('cut-through:update-video', ctCall((a) => cutThrough.updateVideo(a && a.id, a && a.patch)));
+  ipcMain.handle('cut-through:plan-videos', ctCall((a) => cutThrough.planVideos(a)));
+  ipcMain.handle('cut-through:batch-prepare', ctCall((a) => cutThrough.prepareBatch(a)));
+  ipcMain.handle('cut-through:batch-discard', ctCall(() => cutThrough.discardBatch()));
+  ipcMain.handle('cut-through:batch-submit', ctCall(() => cutThrough.submitBatch()));
+  ipcMain.handle('cut-through:batch-refresh', ctCall(() => cutThrough.refreshBatch()));
+  ipcMain.handle('cut-through:batch-cancel', ctCall(() => cutThrough.cancelBatch()));
+  ipcMain.handle('cut-through:batch-collect', ctCall(() => cutThrough.collectBatch()));
   ipcMain.handle('cut-through:open-file', async (_e, p) => {
     if (typeof p !== 'string' || !p) return { ok: false, error: 'No report file' };
     if (!fs.existsSync(p)) return { ok: false, error: `Not found: ${p}` };

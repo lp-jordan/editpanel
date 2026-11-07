@@ -10,6 +10,12 @@
  *               conversation, else one speaker
  *   build       build_rough_cut.py          Resolve worker (ct_run_step)
  *
+ * Videos (2026-11-07): Plan can also work per video. findVideos splits the day into videos from
+ * Prep's recordings + the LPOS slate's J-codes (cut_through_videos.js) → videos_<LABEL>.json; each
+ * included video gets its own Claude edit and plan (<LABEL>__<id>_plan.json), live one after the
+ * other or as one Message Batch (half price: review → submit → status / cancel → collect); Build
+ * then makes one timeline per video, named by its J-code, from one import.
+ *
  * Outputs: one folder per run, <files folder>\<Resolve project>\<label>\ (default
  * Documents\Cut-through): day_, words_, levels_, transcript_, claude_edit_, the plan, reports.
  * Client words/media names never leave this machine. Runs from before 1.2.94 left their files on
@@ -25,12 +31,15 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { randomUUID } = require('crypto');
 const claude = require('./cut_through_claude');
+const videosLib = require('./cut_through_videos');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 
 const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check'];
 const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
 const DEFAULT_WX_PYTHON = 'C:\\wxbench\\Scripts\\python.exe';
 const MAX_LOG_LINES = 400;
+const BATCH_POLL_MS = 60 * 1000;
+const BATCH_LIVE = ['in_progress', 'canceling'];
 
 // `  Camera 2 [######-------------------]  24%  5.4/22.6 min  41s`
 const PROGRESS_RE = /^\s*(.*?)\s*\[([#-]+)\]\s+(\d+)%\s+([\d.]+)\/([\d.]+)\s*min(?:\s+(\d+)s)?/;
@@ -204,6 +213,7 @@ function createCutThrough(opts) {
     pythonCmd = 'python3',         // the app's own Python (place_cuts.py is stdlib only)
     ffmpegPath = '',               // bundled ffmpeg: transcribe.py's decode fallback
     claudeClient = null,           // tests: a stand-in for the Anthropic client
+    getLpos = () => null,          // the LPOS client (slate notes, projects); main replaces it on reconnect
     isPackaged = false,
     appDir = path.join(__dirname, '..', '..'),
     desktopDir = path.join(os.homedir(), 'Desktop'),  // where runs before 1.2.94 left their files
@@ -221,6 +231,10 @@ function createCutThrough(opts) {
     planKind: null,
     marks: null,                    // the In/Out read from the multicam in Resolve (Plan's toggle)
     planExists: false,
+    videos: null,                   // videos_<LABEL>.json: the day's videos, their plans, the batch
+    lposProjects: [],
+    lposError: null,
+    lposLoading: false,
     busy: null,                     // step key currently running
     steps: Object.fromEntries(STEP_KEYS.map((k) => [k, emptyStep()]))
   };
@@ -237,7 +251,8 @@ function createCutThrough(opts) {
       claudeEffort: p.claudeEffort || 'high',
       filesDir: p.filesDir || filesDir,
       // the key itself never goes to the renderer
-      claudeKey: claudeKey() ? (p.anthropicKey ? `saved …${p.anthropicKey.slice(-4)}` : 'from ANTHROPIC_API_KEY') : null
+      claudeKey: claudeKey() ? (p.anthropicKey ? `saved …${p.anthropicKey.slice(-4)}` : 'from ANTHROPIC_API_KEY') : null,
+      lposProject: (s.project && (p.lposProjects || {})[s.project]) || null
     };
   }
 
@@ -271,8 +286,31 @@ function createCutThrough(opts) {
       transcribeReport: path.join(dir, `transcribe_${label}.txt`),
       plan: path.join(dir, `${label}_plan.json`),
       buildReport: path.join(dir, `cut_through_${label}.txt`),
-      checkReport: path.join(dir, `check_${label}.txt`)
+      checkReport: path.join(dir, `check_${label}.txt`),
+      videos: path.join(dir, `videos_${label}.json`),
+      batchDraft: path.join(dir, `batch_${label}.json`)
     };
+  }
+
+  /** One video's files: its own Claude edit, removals, review markers and plan. */
+  function videoFiles(id, label = s.label) {
+    const dir = runDir(label);
+    const tag = `${label}__${id}`;
+    return { tag, plan: path.join(dir, `${tag}_plan.json`), review: path.join(dir, `review_${tag}.json`),
+      removals: path.join(dir, `removals_${tag}.json`), claudeEdit: path.join(dir, `claude_edit_${tag}.json`) };
+  }
+
+  function writeVideos(m) {
+    fs.mkdirSync(files().dir, { recursive: true });
+    fs.writeFileSync(files().videos, JSON.stringify(m, null, 1), 'utf8');
+    s.videos = m;
+  }
+
+  /** Videos mode is on (the last Plan was per video) and these are ready to build. */
+  function videosToBuild() {
+    const m = s.videos;
+    if (!m || !m.active) return [];
+    return (m.videos || []).filter((v) => v.include && v.plan && v.plan.status === 'planned' && fs.existsSync(videoFiles(v.id).plan));
   }
 
   /** Jordan's plain-language direction for Claude, saved per label on this machine. */
@@ -304,7 +342,8 @@ function createCutThrough(opts) {
   }
 
   function snapshot() {
-    return { ...s, direction: direction(), angleRoles: angleRoles(), settings: settings(), files: s.label ? files() : null, now: Date.now() };
+    return { ...s, direction: direction(), angleRoles: angleRoles(), settings: settings(), files: s.label ? files() : null,
+      videosReady: videosToBuild().length, now: Date.now() };
   }
 
   // Log lines can arrive many per second; coalesce pushes to ~8/s.
@@ -348,6 +387,15 @@ function createCutThrough(opts) {
     refreshFiles();
     if (pendingProject) { const n = pendingProject; pendingProject = null; onProject(n); }
     emit();
+    maybeCollect();
+  }
+
+  /** An ended batch that wasn't read yet (something else was running, or EditPanel was closed). */
+  function maybeCollect() {
+    const b = s.videos && s.videos.batch;
+    if (!s.busy && b && b.id && b.status === 'ended' && !b.collected && !b.collectError) {
+      setTimeout(() => { if (!s.busy) collectBatch().catch(() => {}); }, 0);
+    }
   }
 
   /** A child process's full output (stdout + stderr, so tracebacks too) as a
@@ -370,6 +418,7 @@ function createCutThrough(opts) {
     s.day = readJson(f.day);
     s.planKind = s.day ? planKind(s.day) : null;
     s.planExists = fs.existsSync(f.plan);
+    s.videos = readJson(f.videos);
     if (s.day && s.steps.prep.status !== 'running') s.steps.prep.data = prepData(s.day);
   }
 
@@ -402,7 +451,7 @@ function createCutThrough(opts) {
     const marks = {
       prep: [f.day, f.prepReport],
       transcribe: [f.words, f.transcribeReport],
-      plan: [f.plan, null],
+      plan: [readJson(f.videos)?.active ? f.videos : f.plan, null],
       build: [f.buildReport, f.buildReport],
       check: [f.checkReport, f.checkReport]
     };
@@ -488,6 +537,9 @@ function createCutThrough(opts) {
     if (s.label) inspectEarlier();
     else s.steps = Object.fromEntries(STEP_KEYS.map((k) => [k, emptyStep()]));
     refreshFiles();
+    pollBatch();
+    if (batchLive() && (claudeKey() || claudeClient)) refreshBatch().catch(() => {});
+    else maybeCollect();
   }
 
   /** label omitted = a fresh pick (see defaultLabel); label given = what the editor typed. */
@@ -532,6 +584,11 @@ function createCutThrough(opts) {
     for (const k of ['pipelineDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort', 'filesDir']) {
       if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
     }
+    // the LPOS project whose slate names this Resolve project's videos
+    if (patch.lposProject !== undefined && s.project) {
+      const lp = patch.lposProject && patch.lposProject.id ? { id: String(patch.lposProject.id), name: String(patch.lposProject.name || '') } : null;
+      next.lposProjects = { ...(p.lposProjects || {}), [s.project]: lp };
+    }
     setPrefs({ cutThrough: next });
     refreshFiles();
     emit();
@@ -569,9 +626,14 @@ function createCutThrough(opts) {
 
   async function runBuild({ seqBin } = {}) {
     if (seqBin !== undefined) updateSettings({ seqBin });
-    if (!fs.existsSync(files().plan)) throw new Error('No plan for this label yet');
+    const vids = videosToBuild();
+    if (s.videos && s.videos.active && !vids.length) throw new Error('No planned videos to build');
+    if (!vids.length && !fs.existsSync(files().plan)) throw new Error('No plan for this label yet');
     const bin = settings().seqBin;
-    const out = await runStep('build', 'build_rough_cut.py', { LABEL: s.label, OUT_DIR: runDir(), PLAN_FILE: files().plan, ...(bin ? { SEQ_BIN: bin } : {}) });
+    const which = vids.length
+      ? { PLAN_FILES: vids.map((v) => [videoFiles(v.id).plan, v.name]) }
+      : { PLAN_FILE: files().plan };
+    const out = await runStep('build', 'build_rough_cut.py', { LABEL: s.label, OUT_DIR: runDir(), ...which, ...(bin ? { SEQ_BIN: bin } : {}) });
     finish('build', { error: out.error, report: out.lines, reportFile: files().buildReport });
     // mark what's left on the new rough cuts straight away (Jordan looks once, after this)
     if (!out.error && fs.existsSync(files().words)) await runCheck({});
@@ -610,8 +672,22 @@ function createCutThrough(opts) {
   /** The rough cuts Build made for this label ("<LABEL> rough cut", one per video). */
   async function roughCuts() {
     const res = await sendWorkerRequest({ cmd: 'list_timelines' }, 'resolve');
+    const names = (res?.data?.timelines || []).map((t) => t.name).filter(Boolean);
+    const vids = videosToBuild();
+    if (vids.length) return vids.map((v) => v.name).filter((n) => names.includes(n));
     const base = `${s.label} rough cut`;
-    return (res?.data?.timelines || []).map((t) => t.name).filter((n) => n && n.startsWith(base)).sort();
+    return names.filter((n) => n.startsWith(base)).sort();
+  }
+
+  /** What Check needs to know about one rough cut: its video's kind and Claude's pauses / beats. */
+  function checkContext(name) {
+    const v = videosToBuild().find((x) => x.name === name);
+    if (v) {
+      const given = readJson(videoFiles(v.id).removals) || {};
+      return { kind: v.kind === 'convo' ? 'convo' : 'solo', pauses: given.pauses || null, beats: given.beats || [], multicam: s.videos.multicam };
+    }
+    const given = readJson(path.join(files().dir, `removals_${s.label}.json`)) || {};
+    return { kind: s.day ? planKind(s.day) : 'solo', pauses: given.pauses || null, beats: given.beats || [], multicam: null };
   }
 
   /** Check: read each rough cut back from Resolve as it is now, mark what an editor would fix
@@ -632,12 +708,10 @@ function createCutThrough(opts) {
       const names = timeline ? [String(timeline)] : await roughCuts();
       if (!names.length) throw new Error(`No "${s.label} rough cut" timeline in this project — Build first`);
       if (!words.aligned) report.push('Words NOT aligned to the audio — "Word cut off" is approximate. Re-run Plan to align them.');
-      const multicam = (readJson(f.plan) || {}).multicam || s.mc || words.multicam || null;
-      const kind = s.day ? planKind(s.day) : 'solo';
-      const given = readJson(path.join(f.dir, `removals_${s.label}.json`)) || {};
-      const pauses = given.pauses || null;
-      const beats = given.beats || [];
       for (const [k, name] of names.entries()) {
+        const cx = checkContext(name);
+        const multicam = cx.multicam || (readJson(f.plan) || {}).multicam || s.mc || words.multicam || null;
+        const { kind, pauses, beats } = cx;
         st.progress = { phase: `Checking ${name}`, phaseAt: Date.now(), bar: names.length > 1 ? Math.round((k / names.length) * 100) : null };
         emit();
         const tl = (await sendWorkerRequest({ cmd: 'ct_read_timeline', name, trace_id: st.traceId }, 'resolve')).data;
@@ -791,17 +865,65 @@ function createCutThrough(opts) {
   // The placer: takes the day + words files (+ Claude's edit and the levels) and writes
   // <run folder>/<LABEL>_plan.json (the build's input).
   const PLANNERS = {
-    solo: { script: 'place_cuts.py', args: ({ wide, extra, punch, skip, removalsFile, levelsFile }) => [...(wide ? [`wide=${wide}`] : []),
+    solo: { script: 'place_cuts.py', args: ({ wide, extra, punch, skip, removalsFile, levelsFile, talker, reviewFile }) => [...(wide ? [`wide=${wide}`] : []),
       ...(punch ? [`punch=${punch}`] : []), ...[].concat(extra || []).map((x) => `extra=${x}`), ...(skip || []).map((x) => `skip=${x}`),
-      ...(removalsFile ? [`removals=${removalsFile}`] : []), ...(levelsFile ? [`levels=${levelsFile}`] : [])] }
+      ...(removalsFile ? [`removals=${removalsFile}`] : []), ...(levelsFile ? [`levels=${levelsFile}`] : []),
+      ...(talker ? [`talker=${talker}`] : []), ...(reviewFile ? [`review=${reviewFile}`] : [])] }
   };
   function runPlanner(kind, o) {
     const { script, args } = PLANNERS[kind];
     const f = o.files;
-    fs.mkdirSync(path.dirname(f.plan), { recursive: true });
-    return runChild('plan', pythonCmd, [path.join(settings().pipelineDir, script), f.words, f.day, f.plan,
+    const planFile = o.planFile || f.plan;
+    fs.mkdirSync(path.dirname(planFile), { recursive: true });
+    return runChild('plan', pythonCmd, [path.join(settings().pipelineDir, script), f.words, f.day, planFile,
       `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`),
       ...(o.trims || []).map(([a, b]) => `trim=${a}-${b}`), ...(o.keeps || []).map(([a, b]) => `keep=${a}-${b}`)]);
+  }
+
+  /** Before any Claude edit: words pinned to the audio (WhisperX) and per-frame levels (cut
+   *  placement). Each runs once per label. Returns an error message, or null. */
+  async function ensureAudioPrep(st, f, st0) {
+    if (!fs.existsSync(f.align)) {
+      st.progress = { phase: 'Aligning words to the audio', phaseAt: Date.now(), bar: null };
+      emit();
+      const al = await runChild('plan', st0.wxPython, [path.join(st0.pipelineDir, 'transcribe.py'), s.label, `dir=${runDir()}`, 'align_only=1'], {
+        onLine: (line) => {
+          const r = parseRead(line);
+          if (r) {
+            st.progress = { ...st.progress, phase: `Aligning words · reading ${r.name} · ${Math.round(r.mb)} MB`, bar: r.pct };
+            return true;
+          }
+          const m = /^Aligning words to the audio (\d+)%/.exec(line.trim());
+          if (m) {
+            st.progress = { ...st.progress, phase: 'Aligning words to the audio', bar: Number(m[1]) };
+            return true;
+          }
+          return false;
+        }
+      });
+      if (canceled) return null;
+      // unaligned word times cut words in half (Elevate, 2026-11-06: LP1 had no WhisperX and
+      // Plan carried on quietly) — stop instead, and say why
+      if (al.error || al.code !== 0 || !fs.existsSync(f.align)) {
+        return 'Words not aligned to the audio, so cuts would clip words. WhisperX is missing or failed in the Whisper Python (see report).';
+      }
+    }
+    if (!fs.existsSync(f.levels)) {
+      st.progress = { phase: 'Measuring the audio (levels for cut placement)', phaseAt: Date.now(), bar: null };
+      emit();
+      const lv = await runChild('plan', st0.wxPython, [path.join(st0.pipelineDir, 'transcribe.py'), s.label, `dir=${runDir()}`, 'levels_only=1'], {
+        onLine: (line) => {
+          const r = parseRead(line);
+          if (!r) return false;
+          st.progress = { ...st.progress, phase: `Measuring the audio · ${r.name} · ${Math.round(r.mb)} MB`, bar: r.pct };
+          return true;
+        }
+      });
+      if (lv.error || lv.code !== 0 || !fs.existsSync(f.levels)) {
+        return lv.error || exitError('plan', 'transcribe.py levels_only', lv.code);
+      }
+    }
+    return null;
   }
 
   async function runPlan({ start, end, extra, punch, roles: roleMap, delivery, direction: note, useMarks = false } = {}) {
@@ -840,52 +962,14 @@ function createCutThrough(opts) {
       // levels-only pass over the audio (no Whisper), which also adds the loud-without-words marks
       // a transcript from before WhisperX alignment (2026-11-06): pin its words to the audio
       // once (no Whisper, minutes on the GPU) — Whisper's own word times cut words in half
-      if (!fs.existsSync(f.align)) {
-        st.progress = { phase: 'Aligning words to the audio', phaseAt: Date.now(), bar: null };
-        emit();
-        const al = await runChild('plan', st0.wxPython, [path.join(st0.pipelineDir, 'transcribe.py'), s.label, `dir=${runDir()}`, 'align_only=1'], {
-          onLine: (line) => {
-            const r = parseRead(line);
-            if (r) {
-              st.progress = { ...st.progress, phase: `Aligning words · reading ${r.name} · ${Math.round(r.mb)} MB`, bar: r.pct };
-              return true;
-            }
-            const m = /^Aligning words to the audio (\d+)%/.exec(line.trim());
-            if (m) {
-              st.progress = { ...st.progress, phase: 'Aligning words to the audio', bar: Number(m[1]) };
-              return true;
-            }
-            return false;
-          }
-        });
-        if (canceled) {
-          finish('plan', { error: null, report: st.log.slice(), reportFile: saveLog('plan') });
-          return snapshot();
-        }
-        // unaligned word times cut words in half (Elevate, 2026-11-06: LP1 had no WhisperX and
-        // Plan carried on quietly) — stop instead, and say why
-        if (al.error || al.code !== 0 || !fs.existsSync(f.align)) {
-          finish('plan', { error: 'Words not aligned to the audio, so cuts would clip words. WhisperX is missing or failed in the Whisper Python (see report).',
-            report: st.log.slice(), reportFile: saveLog('plan') });
-          return snapshot();
-        }
+      const prepErr = await ensureAudioPrep(st, f, st0);
+      if (canceled) {
+        finish('plan', { error: null, report: st.log.slice(), reportFile: saveLog('plan') });
+        return snapshot();
       }
-      if (!fs.existsSync(f.levels)) {
-        st.progress = { phase: 'Measuring the audio (levels for cut placement)', phaseAt: Date.now(), bar: null };
-        emit();
-        const lv = await runChild('plan', st0.wxPython, [path.join(st0.pipelineDir, 'transcribe.py'), s.label, `dir=${runDir()}`, 'levels_only=1'], {
-          onLine: (line) => {
-            const r = parseRead(line);
-            if (!r) return false;
-            st.progress = { ...st.progress, phase: `Measuring the audio · ${r.name} · ${Math.round(r.mb)} MB`, bar: r.pct };
-            return true;
-          }
-        });
-        if (lv.error || lv.code !== 0 || !fs.existsSync(f.levels)) {
-          const why = lv.error || exitError('plan', 'transcribe.py levels_only', lv.code);
-          finish('plan', { error: why, report: st.log.slice(), reportFile: saveLog('plan') });
-          return snapshot();
-        }
+      if (prepErr) {
+        finish('plan', { error: prepErr, report: st.log.slice(), reportFile: saveLog('plan') });
+        return snapshot();
       }
       o.levelsFile = f.levels;
       // Claude edits like Z8 — every removal and every shot; place_cuts.py places the cuts
@@ -925,6 +1009,8 @@ function createCutThrough(opts) {
     if (!error && res.code !== 0) error = exitError('plan', PLANNERS.solo.script, res.code);
     if (!error && !(mtime(f.plan) >= started - 2000)) error = `${s.label}_plan.json was not written`;
     if (!error) error = await secondPass(o, kind);
+    // a section plan replaces a per-video one: Build makes the one "<LABEL> rough cut" again
+    if (!error && s.videos && s.videos.active) writeVideos({ ...s.videos, active: false });
     finish('plan', { error, report: st.log.slice(), reportFile: error ? saveLog('plan') : f.claudeEdit,
       data: error ? null : planSummary(readJson(f.plan)) });
     return snapshot();
@@ -936,8 +1022,9 @@ function createCutThrough(opts) {
    *  trims/keeps. One build afterwards, so no extra timelines or multicam copies. No Claude. */
   async function secondPass(o, kind) {
     const f = o.files;
+    const planFile = o.planFile || f.plan;
     const words = readJson(f.words);
-    const plan = readJson(f.plan);
+    const plan = readJson(planFile);
     if (!words || !plan) return null;
     const given = readJson(o.removalsFile) || {};
     const pauses = given.pauses || null;
@@ -951,9 +1038,10 @@ function createCutThrough(opts) {
     st0Progress('Second pass: fixing gaps, pauses and cut words');
     const res = await runPlanner('solo', { ...o, trims, keeps });
     if (res.error || res.code !== 0) return res.error || exitError('plan', `${PLANNERS.solo.script} (second pass)`, res.code);
-    const after = checkTimeline({ timeline: planTimeline(readJson(f.plan) || plan), words, kind, multicam: plan.multicam, pauses, beats });
+    const after = checkTimeline({ timeline: planTimeline(readJson(planFile) || plan), words, kind, multicam: plan.multicam, pauses, beats });
     const what = Object.entries(fixed).map(([k, n]) => `${k.toLowerCase()} × ${n}`).join(', ');
     pushLog('plan', `Second pass fixed ${what}; left for you: ${after.data.red} red, ${after.data.yellow} yellow (marked after Build)`);
+    o.checked = after.data;
     return null;
   }
 
@@ -961,6 +1049,410 @@ function createCutThrough(opts) {
     const st = s.steps.plan;
     st.progress = { phase, phaseAt: Date.now(), bar: null };
     emit();
+  }
+
+  // ── videos: one plan per video, live or as a Message Batch ────
+  function lposClient() {
+    const c = getLpos();
+    return c && (typeof c.isConfigured !== 'function' || c.isConfigured()) ? c : null;
+  }
+
+  async function listLposProjects() {
+    const c = lposClient();
+    s.lposLoading = true;
+    s.lposError = null;
+    emit();
+    try {
+      if (!c) throw new Error('LPOS not connected');
+      const data = await c.listProjects();
+      s.lposProjects = (data?.projects || []).map((p) => ({ id: p.projectId || p.id, name: p.name || p.projectId, client: p.clientName || '' }))
+        .filter((p) => p.id).sort((a, b) => `${a.client} ${a.name}`.localeCompare(`${b.client} ${b.name}`));
+    } catch (err) {
+      s.lposProjects = [];
+      s.lposError = errMsg(err);
+    } finally {
+      s.lposLoading = false;
+      emit();
+    }
+    return snapshot();
+  }
+
+  function batchLive() {
+    return Boolean(s.videos && s.videos.batch && BATCH_LIVE.includes(s.videos.batch.status));
+  }
+
+  /**
+   * Split the day into videos: Prep's recordings + the LPOS slate's J-codes (+ the words, to cut in
+   * a pause and to tell solo from conversation). offsetSec: '' = work it out from the slate.
+   * Earlier choices (tick, type, name) and plans stay with a video that comes back unchanged.
+   */
+  async function findVideos({ offsetSec } = {}) {
+    if (s.busy) throw new Error(`${s.busy} is still running`);
+    if (!s.day) throw new Error('Run Prep first');
+    const f = files();
+    const words = readJson(f.words);
+    if (!words) throw new Error('Run Transcribe first');
+    if (batchLive()) throw new Error('A batch is still running for these videos — cancel it or wait');
+    const lp = settings().lposProject;
+    let notes = [];
+    if (lp) {
+      const c = lposClient();
+      if (!c) throw new Error('LPOS not connected — pick "No slate" to split by recordings only');
+      const data = await c.getSlateNotes(lp.id);
+      notes = Array.isArray(data?.notes) ? data.notes : [];
+    }
+    const auto = videosLib.slateOffset(s.day, notes);
+    const manual = offsetSec !== undefined && offsetSec !== null && String(offsetSec).trim() !== '' && Number.isFinite(Number(offsetSec));
+    const used = manual ? Number(offsetSec) : auto.offsetSec;
+    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label });
+    const old = new Map(((s.videos && s.videos.videos) || []).map((v) => [v.id, v]));
+    const videos = found.map((v) => {
+      const o = old.get(v.id);
+      if (!o || o.from !== v.from || o.to !== v.to) return { ...v, plan: { status: 'none' } };
+      const kept = { ...v, include: o.include, delivery: o.delivery, name: o.name, kind: o.kind, talker: o.talker };
+      return { ...kept, plan: o.plan && o.plan.status === 'planned' && fs.existsSync(videoFiles(v.id).plan) ? o.plan : { status: 'none' } };
+    });
+    const codes = notes.filter((n) => n.code && n.code !== 'ATEM').length;
+    writeVideos({
+      label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes,
+      offset: { used, auto: auto.offsetSec, manual, hours: auto.hours, seconds: auto.seconds, matched: auto.matched },
+      active: Boolean(s.videos && s.videos.active), batch: null, videos
+    });
+    emit();
+    return snapshot();
+  }
+
+  function updateVideo(id, patch = {}) {
+    if (!s.videos) throw new Error('Find the videos first');
+    if (batchLive() || (s.videos.batch && s.videos.batch.status === 'draft')) throw new Error('Discard or finish the batch first');
+    const videos = s.videos.videos.map((v) => {
+      if (v.id !== id) return v;
+      const next = { ...v };
+      if (patch.include !== undefined) next.include = Boolean(patch.include);
+      if (patch.name !== undefined) next.name = videosLib.cleanName(patch.name) || v.name;
+      if (patch.delivery !== undefined && claude.DELIVERY[patch.delivery]) {
+        next.delivery = patch.delivery;
+        next.kind = patch.delivery === 'convo' ? 'convo' : 'solo';
+        if (next.kind === 'solo' && !next.talker) next.talker = (readJson(files().words)?.mics || [])[0] || null;
+      }
+      return next;
+    });
+    writeVideos({ ...s.videos, videos });
+    emit();
+    return snapshot();
+  }
+
+  /** The options every video's edit shares (roles, direction) + this video's own. */
+  function videoArgs(v, { roles: R, defaultDelivery }) {
+    const st0 = settings();
+    const f = files();
+    const kind = v.kind === 'convo' ? 'convo' : 'solo';
+    const delivery = claude.DELIVERY[v.delivery] ? v.delivery : kind === 'convo' ? 'convo' : (claude.DELIVERY[defaultDelivery] && defaultDelivery !== 'convo' ? defaultDelivery : 'scripted');
+    const vf = videoFiles(v.id);
+    return {
+      label: vf.tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
+      promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
+      start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, delivery,
+      talker: kind === 'solo' ? v.talker || null : null,
+      roles: { wide: R.wide || undefined, punch: R.punch || undefined, extra: R.extra, slider: R.slider, side: R.side, other: R.other, skip: R.skip },
+      direction: direction(), kind
+    };
+  }
+
+  function setVideoPlan(id, plan) {
+    const videos = s.videos.videos.map((v) => (v.id === id ? { ...v, plan: { ...plan, at: Date.now() } } : v));
+    writeVideos({ ...s.videos, videos });
+  }
+
+  /** Claude's edit for one video is in (removals file written): place the cuts, second pass. */
+  async function placeVideo(v, args, removalsFile, R) {
+    const vf = videoFiles(v.id);
+    const extras = [...new Set([...R.slider, ...R.side, ...R.other])].filter((x) => x !== R.punch && x !== R.wide);
+    const o = { files: files(), planFile: vf.plan, reviewFile: vf.review, start: v.from, end: v.to, wide: R.wide, punch: R.punch || null,
+      extra: extras, skip: R.skip, roles: R, cuts: (v.gaps || []).map(([a, b]) => `${a}-${b}`), talker: args.talker,
+      levelsFile: files().levels, removalsFile };
+    const started = Date.now();
+    const res = await runPlanner('solo', o);
+    let error = res.error;
+    if (!error && res.code !== 0) error = exitError('plan', PLANNERS.solo.script, res.code);
+    if (!error && !(mtime(vf.plan) >= started - 2000)) error = `${path.basename(vf.plan)} was not written`;
+    if (!error) error = await secondPass(o, args.kind);
+    return { error, summary: error ? null : planSummary(readJson(vf.plan)) };
+  }
+
+  /** Shared start of a videos Plan: roles + direction saved, Claude key, videos chosen. */
+  function videosPlanSetup({ ids, roles: roleMap, direction: note }) {
+    if (!s.day) throw new Error('Run Prep first');
+    if (!fs.existsSync(files().words)) throw new Error('Run Transcribe first');
+    if (!s.videos || !s.videos.videos.length) throw new Error('Find the videos first');
+    if (batchLive()) throw new Error('A batch is still running for these videos');
+    if (!claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
+    if (note !== undefined) {
+      const p = (getPrefs() || {}).cutThrough || {};
+      setPrefs({ cutThrough: { ...p, directions: { ...(p.directions || {}), [s.label]: String(note).trim().slice(0, 4000) } } });
+    }
+    if (roleMap && typeof roleMap === 'object') saveAngleRoles(roleMap);
+    const want = ids && ids.length ? new Set(ids) : null;
+    const list = s.videos.videos.filter((v) => (want ? want.has(v.id) : v.include));
+    if (!list.length) throw new Error('No videos ticked');
+    return { list, R: rolesOf(angleRoles(), s.day.angles || []) };
+  }
+
+  function claudeApi() {
+    return claudeClient || claude.makeClient(claudeKey());
+  }
+
+  /** Plan the ticked videos now, one Claude call after another (ids: just those, e.g. a re-send). */
+  async function planVideos({ ids, roles, direction: note, delivery } = {}) {
+    const { list, R } = videosPlanSetup({ ids, roles, direction: note });
+    const st = begin('plan');
+    st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
+    emit();
+    const f = files();
+    const st0 = settings();
+    const prepErr = await ensureAudioPrep(st, f, st0);
+    if (canceled || prepErr) {
+      finish('plan', { error: canceled ? null : prepErr, report: st.log.slice(), reportFile: saveLog('plan') });
+      return snapshot();
+    }
+    writeVideos({ ...s.videos, active: true });
+    const results = [];
+    for (const [k, v] of list.entries()) {
+      st.progress = { phase: `${v.name} · Claude is reading the transcript`, phaseAt: Date.now(), bar: Math.round((k / list.length) * 100) };
+      emit();
+      pushLog('plan', `── ${v.name} (${v.fromTc}–${v.toTc}, ${v.kind === 'convo' ? 'conversation' : 'solo'}) ──`);
+      const args = videoArgs(v, { roles: R, defaultDelivery: delivery });
+      let error = null;
+      let summary = null;
+      let cost = null;
+      try {
+        const out = await claude.planWithClaude({ ...args, apiKey: claudeKey(), client: claudeClient,
+          log: (line) => { pushLog('plan', line); emit(); },
+          onEvent: (ev) => {
+            if (ev.type === 'writing' && !String(st.progress.phase).endsWith('writing the edit')) {
+              st.progress = { ...st.progress, phase: `${v.name} · Claude is writing the edit`, phaseAt: Date.now() };
+              emit();
+            }
+          } });
+        out.lines.forEach((line) => pushLog('plan', line));
+        cost = out.cost;
+        st.progress = { ...st.progress, phase: `${v.name} · placing the cuts`, phaseAt: Date.now() };
+        emit();
+        ({ error, summary } = await placeVideo(v, args, out.removalsFile, R));
+      } catch (err) {
+        error = `Claude: ${err instanceof Error ? err.message : errMsg(err)}`;
+      }
+      if (error) pushLog('plan', `✗ ${v.name}: ${error}`);
+      setVideoPlan(v.id, error ? { status: 'failed', error, via: 'now' } : { status: 'planned', via: 'now', cost, summary });
+      results.push({ v, error });
+    }
+    const failed = results.filter((r) => r.error);
+    pushLog('plan', `Planned ${results.length - failed.length} of ${results.length} video(s)${failed.length ? `; failed: ${failed.map((r) => r.v.name).join(', ')}` : ''}`);
+    finish('plan', { error: failed.length === results.length ? `No video was planned (${failed[0].error})` : null,
+      report: st.log.slice(), reportFile: saveLog('plan'), data: videosSummary() });
+    return snapshot();
+  }
+
+  function videosSummary() {
+    const vids = (s.videos && s.videos.videos) || [];
+    const by = (k) => vids.filter((v) => v.include && v.plan && v.plan.status === k).length;
+    return { videos: vids.filter((v) => v.include).length, planned: by('planned'), failed: by('failed'), queued: by('queued') };
+  }
+
+  /** Output tokens per input token on this machine's earlier edits (cut_through_costs.csv), for the estimate. */
+  function outputRatio() {
+    const rows = readLines(path.join(settings().filesDir, 'cut_through_costs.csv')) || [];
+    const ratios = rows.slice(1).map((l) => l.split(',')).filter((c) => /plan$/.test(c[2] || '') && Number(c[5]) > 0)
+      .map((c) => Number(c[6]) / Number(c[5])).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+    return ratios.length >= 3 ? ratios[Math.floor(ratios.length / 2)] : 1;
+  }
+
+  /**
+   * Batch, step 1: prepare every ticked video's request and price it (token count; output from
+   * earlier runs). Nothing is sent: the page shows the list and the estimate → Submit or Discard.
+   */
+  async function prepareBatch({ ids, roles, direction: note, delivery } = {}) {
+    const { list, R } = videosPlanSetup({ ids, roles, direction: note });
+    const st = begin('plan');
+    st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
+    emit();
+    const f = files();
+    const st0 = settings();
+    const prepErr = await ensureAudioPrep(st, f, st0);
+    if (canceled || prepErr) {
+      finish('plan', { error: canceled ? null : prepErr, report: st.log.slice(), reportFile: saveLog('plan') });
+      return snapshot();
+    }
+    const api = claudeApi();
+    const ratio = outputRatio();
+    const requests = [];
+    const items = {};
+    const skipped = [];
+    for (const [k, v] of list.entries()) {
+      st.progress = { phase: `Pricing ${v.name}`, phaseAt: Date.now(), bar: Math.round((k / list.length) * 100) };
+      emit();
+      const args = videoArgs(v, { roles: R, defaultDelivery: delivery });
+      let ctx;
+      try {
+        ctx = claude.preparePlan(args);
+      } catch (err) {
+        skipped.push(`${v.name}: ${err.message}`);
+        continue;
+      }
+      let input = null;
+      try {
+        const counted = await api.messages.countTokens({ model: ctx.params.model, system: ctx.params.system, messages: ctx.params.messages });
+        input = counted && Number(counted.input_tokens);
+      } catch (_) { /* estimate below */ }
+      if (!Number.isFinite(input) || input <= 0) input = Math.round((ctx.params.system.length + ctx.params.messages[0].content.length) / 3.5);
+      const output = Math.round(input * ratio);
+      const usd = claude.costOf(ctx.model, { input_tokens: input, output_tokens: output }, 0.5);
+      const { label: _l, wordsPath: _w, dayPath: _d, outDir: _o, costsDir: _c, promptPath: _p, ...keep } = args;
+      requests.push({ custom_id: v.id, params: ctx.params });
+      items[v.id] = { name: v.name, input, output, usd, args: keep };
+    }
+    if (!requests.length) {
+      finish('plan', { error: `Nothing to send: ${skipped.join('; ')}`, report: st.log.slice() });
+      return snapshot();
+    }
+    // the requests quote client words: they stay in the run folder until sent
+    fs.writeFileSync(f.batchDraft, JSON.stringify({ requests }), 'utf8');
+    const total = Object.values(items).reduce((t, x) => t + x.usd, 0);
+    writeVideos({ ...s.videos, batch: { status: 'draft', preparedAt: Date.now(), model: st0.claudeModel, effort: st0.claudeEffort,
+      items, skipped, estimate: Math.round(total * 100) / 100, liveEstimate: Math.round(total * 200) / 100 } });
+    pushLog('plan', `Batch ready: ${requests.length} video(s), about $${total.toFixed(2)} at the batch price` +
+      (skipped.length ? `; left out: ${skipped.join('; ')}` : '') + '. Submit or discard.');
+    finish('plan', { report: st.log.slice(), data: videosSummary() });
+    return snapshot();
+  }
+
+  function discardBatch() {
+    if (!s.videos || !s.videos.batch || s.videos.batch.status !== 'draft') throw new Error('No batch waiting to be sent');
+    try { fs.rmSync(files().batchDraft, { force: true }); } catch (_) { /* gone */ }
+    writeVideos({ ...s.videos, batch: null });
+    emit();
+    return snapshot();
+  }
+
+  /** Batch, step 2: send it. The id is saved with the videos, so a restart keeps track of it. */
+  async function submitBatch() {
+    if (s.busy) throw new Error(`${s.busy} is still running`);
+    const b = s.videos && s.videos.batch;
+    if (!b || b.status !== 'draft') throw new Error('Prepare a batch first');
+    const draft = readJson(files().batchDraft);
+    if (!draft || !Array.isArray(draft.requests) || !draft.requests.length) throw new Error('The prepared batch is missing — prepare it again');
+    const created = await claudeApi().messages.batches.create({ requests: draft.requests });
+    try { fs.rmSync(files().batchDraft, { force: true }); } catch (_) { /* sent */ }
+    const videos = s.videos.videos.map((v) => (b.items[v.id] ? { ...v, plan: { status: 'queued', via: 'batch', at: Date.now() } } : v));
+    writeVideos({ ...s.videos, active: true, videos, batch: { ...b, status: created.processing_status || 'in_progress', id: created.id,
+      submittedAt: Date.now(), counts: created.request_counts || null, endedAt: null, collected: false } });
+    pushLog('plan', `Batch sent: ${created.id} (${draft.requests.length} video(s))`);
+    pollBatch();
+    emit();
+    return snapshot();
+  }
+
+  /** Status from Anthropic; an ended batch is collected straight away when nothing else runs. */
+  async function refreshBatch() {
+    const b = s.videos && s.videos.batch;
+    if (!b || !b.id) return snapshot();
+    const label = s.label;
+    const got = await claudeApi().messages.batches.retrieve(b.id);
+    if (s.label !== label || !s.videos || !s.videos.batch || s.videos.batch.id !== b.id) return snapshot();   // switched away meanwhile
+    writeVideos({ ...s.videos, batch: { ...s.videos.batch, status: got.processing_status, counts: got.request_counts || null,
+      endedAt: got.ended_at ? Date.parse(got.ended_at) : null, checkedAt: Date.now() } });
+    if (got.processing_status === 'ended' && !s.videos.batch.collected && !s.busy) await collectBatch();
+    pollBatch();
+    emit();
+    return snapshot();
+  }
+
+  async function cancelBatch() {
+    const b = s.videos && s.videos.batch;
+    if (!b || !b.id || !BATCH_LIVE.includes(b.status)) throw new Error('No batch running');
+    await claudeApi().messages.batches.cancel(b.id);
+    return refreshBatch();
+  }
+
+  /** Batch, step 3: read every answer back and place its cuts (same as a live edit, at half price). */
+  async function collectBatch() {
+    const b = s.videos && s.videos.batch;
+    if (!b || !b.id) throw new Error('No batch to collect');
+    const st = begin('plan');
+    st.progress = { phase: 'Reading the batch results', phaseAt: Date.now(), bar: null };
+    emit();
+    const R = rolesOf(angleRoles(), s.day.angles || []);
+    const f = files();
+    const st0 = settings();
+    const got = {};
+    try {
+      for await (const r of await claudeApi().messages.batches.results(b.id)) got[r.custom_id] = r.result;
+    } catch (err) {
+      writeVideos({ ...s.videos, batch: { ...s.videos.batch, collectError: errMsg(err) } });
+      finish('plan', { error: `Couldn't read the batch results: ${errMsg(err)}`, report: st.log.slice() });
+      return snapshot();
+    }
+    const ids = Object.keys(b.items || {});
+    let n = 0;
+    let spent = 0;
+    for (const [k, id] of ids.entries()) {
+      const v = s.videos.videos.find((x) => x.id === id);
+      const item = b.items[id];
+      if (!v) continue;
+      st.progress = { phase: `${v.name} · placing the cuts`, phaseAt: Date.now(), bar: Math.round((k / ids.length) * 100) };
+      emit();
+      pushLog('plan', `── ${v.name} ──`);
+      const result = got[id];
+      let error = null;
+      let summary = null;
+      let cost = null;
+      if (!result) error = 'No answer in the batch';
+      else if (result.type === 'errored') error = `Batch error: ${result.error?.error?.message || result.error?.type || 'unknown'}`;
+      else if (result.type === 'canceled') error = 'Canceled before it ran';
+      else if (result.type === 'expired') error = 'Expired (not run within 24 h)';
+      else {
+        const args = { ...item.args, label: videoFiles(id).tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
+          promptPath: path.join(st0.pipelineDir, 'editor_briefs', item.args.kind === 'convo' ? 'conversation.md' : 'solo.md') };
+        const msg = result.message;
+        try {
+          const res = claude.readMessage(msg, b.model);
+          claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan', model: res.model, effort: args.effort, usage: res.usage, factor: 0.5 });
+          cost = claude.costOf(res.model, res.usage, 0.5);
+          spent += cost;
+          const ctx = claude.preparePlan(args);
+          const out = claude.finishPlan(ctx, res, { outDir: f.dir, factor: 0.5, via: 'batch' });
+          out.lines.forEach((line) => pushLog('plan', line));
+          ({ error, summary } = await placeVideo(v, args, out.removalsFile, R));
+        } catch (err) {
+          if (err.usage) {
+            const c = claude.costOf(err.model || b.model, err.usage, 0.5);
+            claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan_failed', model: err.model || b.model, effort: args.effort, usage: err.usage, factor: 0.5 });
+            spent += c;
+            err.message += ` (billed $${c})`;
+          }
+          error = `Claude: ${err.message}`;
+        }
+      }
+      if (error) pushLog('plan', `✗ ${v.name}: ${error}`);
+      else n += 1;
+      setVideoPlan(id, error ? { status: 'failed', error, via: 'batch' } : { status: 'planned', via: 'batch', cost, summary });
+    }
+    writeVideos({ ...s.videos, active: true, batch: { ...s.videos.batch, collected: true, collectError: null, collectedAt: Date.now(), spent: Math.round(spent * 1000) / 1000 } });
+    pushLog('plan', `Batch collected: ${n} of ${ids.length} video(s) planned, $${spent.toFixed(2)}`);
+    finish('plan', { error: n ? null : 'No video in the batch was planned', report: st.log.slice(), reportFile: saveLog('plan'), data: videosSummary() });
+    return snapshot();
+  }
+
+  // An unfinished batch is checked every minute while EditPanel runs (and once when its label opens).
+  let batchTimer = null;
+  function pollBatch() {
+    if (batchLive() && !batchTimer && (claudeKey() || claudeClient)) {
+      batchTimer = setInterval(() => { refreshBatch().catch(() => {}); }, BATCH_POLL_MS);
+      if (batchTimer.unref) batchTimer.unref();
+    } else if (!batchLive() && batchTimer) {
+      clearInterval(batchTimer);
+      batchTimer = null;
+    }
   }
 
   /** Accept <run folder>/<LABEL>_plan.json as-is (solo days, hand-made plans). */
@@ -1014,6 +1506,16 @@ function createCutThrough(opts) {
     runPlan,
     useExistingPlan,
     readMarks,
+    listLposProjects,
+    findVideos,
+    updateVideo,
+    planVideos,
+    prepareBatch,
+    discardBatch,
+    submitBatch,
+    refreshBatch,
+    cancelBatch,
+    collectBatch,
     runBuild,
     runCheck,
     onWorkerLog,

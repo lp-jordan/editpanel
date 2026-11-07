@@ -768,6 +768,187 @@ sys.stdout.write(json.dumps(res))`;
   return { send, calls };
 }
 
+// ── 3b. videos: find (recordings + slate) → plan now → batch → build ──
+const vlib = require('../electron/workers/cut_through_videos');
+{
+  // pure: the slate's clock (another time zone, ~2 s late) is found from the notes alone
+  const fps = 24000 / 1001;
+  const day = { frame_sec: [1001, 24000], fps: 23.976, tc_start_sec: 36036, length_sec: 600,
+    recordings: [{ from_sec: 0, to_sec: 200 }, { from_sec: 210, to_sec: 400 }, { from_sec: 420, to_sec: 600 }] };
+  const tc = (sec) => { const t = 36000 + sec / 1.001 + 5 * 3600 + 2; const p = (x) => String(Math.floor(x)).padStart(2, '0');
+    return `${p(t / 3600)}:${p((t / 60) % 60)}:${p(t % 60)}:${p((t % 1) * 24)}`; };
+  const notes = [
+    { timestamp: tc(0), code: 'ATEM', note: 'Recording started' }, { timestamp: tc(4), code: 'A1', note: '' },
+    { timestamp: tc(200), code: 'ATEM', note: 'Recording stopped' },
+    { timestamp: tc(210), code: 'ATEM', note: 'Recording started' },
+    { timestamp: tc(300), code: 'B2', note: '' },                       // a code change inside a recording
+    { timestamp: tc(420), code: 'ATEM', note: 'Recording started' }, { timestamp: tc(425), code: 'A1', note: 'again' }
+  ];
+  const off = vlib.slateOffset(day, notes);
+  assert.deepStrictEqual([off.hours, off.seconds, off.matched], [-5, -2, 4], JSON.stringify(off));
+  // words: one talker, a long pause at 290–296 s (where B2's split should land)
+  const words = { mics: ['Camera 1'], words: [] };
+  for (let t = 1; t < 600; t += 0.5) if (!(t > 290 && t < 296) && !(t > 199 && t < 422)) words.words.push({ mic: 'Camera 1', w: 'x', s: t * fps, e: t * fps + 8 });
+  for (let t = 211; t < 290; t += 0.5) words.words.push({ mic: 'Camera 1', w: 'y', s: t * fps, e: t * fps + 8 });
+  for (let t = 296; t < 399; t += 0.5) words.words.push({ mic: 'Camera 1', w: 'z', s: t * fps, e: t * fps + 8 });
+  const v = vlib.findVideos({ day, words, notes, offsetSec: off.offsetSec, label: 'Day' });
+  assert.deepStrictEqual(v.map((x) => x.name), ['A1 (1)', 'B2', 'A1 (2)'], JSON.stringify(v.map((x) => [x.name, x.fromTc, x.toTc])));
+  // A1 runs on across the stop at 200 s (same code: one video, the gap cut), until B2's pause
+  assert.deepStrictEqual(v[0].gaps.map(([a, b]) => [Math.round(a * 1001 / 24000), Math.round(b * 1001 / 24000)]), [[200, 210]]);
+  assert.ok(v[0].flags.includes('Restart') && v[0].flags.some((f) => /^A1 again at 10:06:59:14$/.test(f)), JSON.stringify(v[0].flags));
+  const split = v[1].from * 1001 / 24000;
+  assert.ok(split > 290 && split < 296, `B2 starts at ${split} s, not in the pause`);
+  assert.ok(v.every((x) => x.kind === 'solo' && x.talker === 'Camera 1' && x.include), JSON.stringify(v));
+  // no slate: one video per recording, flagged, named by the label
+  const plain = vlib.findVideos({ day, words, notes: [], label: 'Day' });
+  assert.deepStrictEqual(plain.map((x) => [x.name, x.flags.includes('No J-code')]), [['Day video 1', true], ['Day video 2', true], ['Day video 3', true]]);
+  assert.strictEqual(vlib.cleanName('A1: "intro" = x'), 'A1 intro x');
+  console.log('✓ videos: slate clock found (time zone + seconds), J-code split in a pause, same code across a stop = one video, flags, no slate');
+}
+
+async function videosEndToEnd({ w, getPrefs, setPrefs }) {
+  // the E2E conversation day, recorded as two takes, slate on a clock 5 h + 2 s ahead
+  const fsec = 1001 / 24000;
+  fs.mkdirSync(RUN('Vids', ''), { recursive: true });
+  const day = JSON.parse(fs.readFileSync(RUN('E2E_test', 'day_E2E_test.json'), 'utf8'));
+  day.tc_start_sec = 36036;   // TC 10:00:00:00 (real seconds at 23.976)
+  day.recordings = [{ from_sec: 0, to_sec: 30 }, { from_sec: 31, to_sec: day.length_sec }];
+  fs.writeFileSync(RUN('Vids', 'day_Vids.json'), JSON.stringify(day));
+  fs.copyFileSync(RUN('E2E_test', 'words_E2E_test.json'), RUN('Vids', 'words_Vids.json'));
+  fs.copyFileSync(RUN('E2E_test', 'levels_E2E_test.json'), RUN('Vids', 'levels_Vids.json'));
+  fs.copyFileSync(RUN('E2E_test', 'align_E2E_test.txt'), RUN('Vids', 'align_Vids.txt'));
+  const at = (sec) => { const t = 36000 + sec / 1.001 + 5 * 3600 + 2; const p = (x) => String(Math.floor(x)).padStart(2, '0');
+    return `${p(t / 3600)}:${p((t / 60) % 60)}:${p(t % 60)}:${p((t % 1) * 24)}`; };
+  const notes = [
+    { timestamp: at(0), code: 'ATEM', note: 'Recording started' }, { timestamp: at(3), code: 'A1', note: '' },
+    { timestamp: at(25), code: 'S1', note: '' },
+    { timestamp: at(30), code: 'ATEM', note: 'Recording stopped' }, { timestamp: at(31), code: 'ATEM', note: 'Recording started' },
+    { timestamp: at(60), code: 'B2', note: '' }
+  ];
+  const lpos = { isConfigured: () => true, listProjects: async () => ({ projects: [{ projectId: 'p1', name: 'Day', clientName: 'Client' }] }),
+    getSlateNotes: async (id) => { assert.strictEqual(id, 'p1'); return { notes, tabs: [] }; } };
+  // a stand-in Claude: live calls and the batch API (the real one isn't called)
+  const answer = (params) => {
+    const shots = [];
+    for (const line of params.messages[0].content.split('\n')) {
+      const m = /^\[\d+:\d+\] (Camera \d+): (\d+) /.exec(line);
+      if (m) shots.push({ from: Number(m[2]), angle: shots.length ? m[1] : 'Camera 1', why: 'turn' });
+    }
+    return { model: params.model, stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ removals: [], shots, beats: [], notes: [] }) }],
+      usage: { input_tokens: 4000, output_tokens: 2000 } };
+  };
+  const live = [];
+  const sent = { create: null, canceled: 0, retrieves: 0 };
+  const api = {
+    beta: { messages: { stream: (params) => { live.push(params); return { on: () => {}, finalMessage: async () => answer(params) }; } } },
+    messages: {
+      countTokens: async () => ({ input_tokens: 5000 }),
+      batches: {
+        create: async ({ requests }) => { sent.create = requests; return { id: 'msgbatch_test', processing_status: 'in_progress',
+          request_counts: { processing: requests.length, succeeded: 0, errored: 0, canceled: 0, expired: 0 } }; },
+        retrieve: async () => { sent.retrieves += 1; return sent.retrieves < 2
+          ? { processing_status: 'in_progress', request_counts: { processing: 3, succeeded: 0, errored: 0, canceled: 0, expired: 0 }, ended_at: null }
+          : { processing_status: 'ended', request_counts: { processing: 0, succeeded: 2, errored: 1, canceled: 0, expired: 0 }, ended_at: new Date().toISOString() }; },
+        cancel: async () => { sent.canceled += 1; return {}; },
+        results: async () => (async function* gen() {
+          for (const [k, r] of sent.create.entries()) {
+            yield k === 0 ? { custom_id: r.custom_id, result: { type: 'errored', error: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } } }
+              : { custom_id: r.custom_id, result: { type: 'succeeded', message: answer(r.params) } };
+          }
+        }())
+      }
+    }
+  };
+  const c = ct.createCutThrough({ sendWorkerRequest: w.send, broadcast: () => {}, getPrefs, setPrefs, pythonCmd: PY, desktopDir: DESKTOP,
+    filesDir: FILES, claudeClient: api, getLpos: () => lpos });
+  await c.listMulticams();
+  c.select({ mc: 'mc_test', label: 'Vids' });
+  let snap = await c.listLposProjects();
+  assert.deepStrictEqual(snap.lposProjects, [{ id: 'p1', name: 'Day', client: 'Client' }]);
+  c.updateSettings({ lposProject: { id: 'p1', name: 'Day' } });
+  snap = await c.findVideos({});
+  const vs = snap.videos;
+  assert.deepStrictEqual([vs.offset.hours, vs.offset.seconds], [-5, -2], JSON.stringify(vs.offset));
+  assert.deepStrictEqual(vs.videos.map((v) => v.name), ['A1', 'S1', 'B2'], JSON.stringify(vs.videos.map((v) => [v.name, v.fromTc, v.toTc])));
+  const [a1, s1, b2] = vs.videos;
+  assert.ok(a1.kind === 'solo' && a1.talker === 'Camera 2' && a1.flags.includes('Few words'), JSON.stringify(a1));
+  assert.ok(s1.gaps.length === 1 && s1.flags.includes('Restart'), JSON.stringify(s1));
+  assert.strictEqual(b2.kind, 'convo');
+  assert.ok(fs.existsSync(RUN('Vids', 'videos_Vids.json')));
+  // a type changed by hand sticks when the videos are found again
+  c.updateVideo(s1.id, { delivery: 'free' });
+  snap = await c.findVideos({});
+  assert.strictEqual(snap.videos.videos[1].delivery, 'free');
+
+  // plan now: one Claude call per ticked video
+  c.updateVideo(b2.id, { include: false });
+  snap = await c.planVideos({ delivery: 'scripted' });
+  assert.strictEqual(snap.steps.plan.status, 'done', `${snap.steps.plan.error}\n${snap.steps.plan.log.join('\n')}`);
+  assert.strictEqual(live.length, 2);
+  assert.ok(/one speaker \(audio: Camera 2\)/.test(live[0].messages[0].content) && /Delivery: Scripted/.test(live[0].messages[0].content), live[0].messages[0].content.slice(0, 300));
+  assert.ok(/Delivery: Free talk/.test(live[1].messages[0].content));
+  const p1 = JSON.parse(fs.readFileSync(RUN('Vids', `Vids__${a1.id}_plan.json`), 'utf8'));
+  // a solo video on a two-mic day keeps both mic tracks; the other mic stays closed
+  assert.deepStrictEqual(Object.keys(p1.mics), ['Camera 2', 'Camera 3']);
+  assert.ok(p1.mics['Camera 2'].length > 0 && p1.mics['Camera 3'].length === 0, JSON.stringify(p1.mics));
+  assert.ok(p1.review_file.endsWith(`review_Vids__${a1.id}.json`));
+  const p2 = JSON.parse(fs.readFileSync(RUN('Vids', `Vids__${s1.id}_plan.json`), 'utf8'));
+  const g = snap.videos.videos[1].gaps[0];
+  assert.ok(p2.removals.some((r) => r.from <= g[0] && r.to >= g[1]), 'the gap between recordings was not cut');
+  assert.strictEqual(snap.videosReady, 2);
+  snap = await c.runBuild({});
+  const call = w.calls.filter((x) => x.cmd === 'ct_run_step').pop();
+  assert.deepStrictEqual(call.settings.PLAN_FILES, [[RUN('Vids', `Vids__${a1.id}_plan.json`), 'A1'], [RUN('Vids', `Vids__${s1.id}_plan.json`), 'S1']]);
+  assert.ok(!('PLAN_FILE' in call.settings));
+
+  // batch: priced first (nothing sent), then sent, followed, collected — half price
+  c.updateVideo(b2.id, { include: true });
+  snap = await c.prepareBatch({ delivery: 'scripted' });
+  assert.strictEqual(snap.steps.plan.status, 'done', snap.steps.plan.error);
+  assert.strictEqual(sent.create, null, 'sent before Submit');
+  const draft = snap.videos.batch;
+  assert.strictEqual(draft.status, 'draft');
+  assert.deepStrictEqual(Object.keys(draft.items), [a1.id, s1.id, b2.id]);
+  assert.ok(draft.items[a1.id].input === 5000 && draft.estimate > 0 && Math.abs(draft.liveEstimate - 2 * draft.estimate) < 0.02, JSON.stringify(draft));
+  assert.throws(() => c.updateVideo(a1.id, { include: false }), /Discard or finish the batch/);
+  snap = c.discardBatch();
+  assert.strictEqual(snap.videos.batch, null);
+  assert.ok(!fs.existsSync(RUN('Vids', 'batch_Vids.json')));
+  await c.prepareBatch({ delivery: 'scripted' });
+  snap = await c.submitBatch();
+  assert.ok(sent.create.length === 3 && sent.create.every((r) => r.params.model === 'claude-opus-5-5' && !r.params.fallbacks && !r.params.betas &&
+    r.params.max_tokens === 128000 && r.params.output_config.format.type === 'json_schema'), JSON.stringify(sent.create.map((r) => r.custom_id)));
+  assert.deepStrictEqual(sent.create.map((r) => r.custom_id), [a1.id, s1.id, b2.id]);
+  assert.strictEqual(snap.videos.batch.id, 'msgbatch_test');
+  assert.ok(snap.videos.videos.every((v) => v.plan.status === 'queued'));
+  await assert.rejects(c.findVideos({}), /batch is still running/);
+  assert.ok(!fs.existsSync(RUN('Vids', 'batch_Vids.json')), 'the draft (client words) was kept after sending');
+  // EditPanel restarted while it runs: the batch is picked up from the run folder
+  const c2 = ct.createCutThrough({ sendWorkerRequest: w.send, broadcast: () => {}, getPrefs, setPrefs, pythonCmd: PY, desktopDir: DESKTOP,
+    filesDir: FILES, claudeClient: api, getLpos: () => lpos });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.strictEqual(c2.snapshot().videos.batch.status, 'in_progress');
+  snap = await c2.cancelBatch();       // the next status says it ended (2 done, 1 failed) → collected
+  assert.strictEqual(sent.canceled, 1);
+  snap = c2.snapshot();
+  assert.ok(snap.videos.batch.collected, JSON.stringify(snap.videos.batch));
+  const st = snap.videos.videos.map((v) => v.plan.status);
+  assert.deepStrictEqual(st, ['failed', 'planned', 'planned'], JSON.stringify(snap.videos.videos.map((v) => v.plan)));
+  assert.ok(/overloaded|Overloaded/.test(snap.videos.videos[0].plan.error));
+  assert.ok(snap.videos.videos[1].plan.via === 'batch' && snap.videos.videos[1].plan.cost === 0.028, JSON.stringify(snap.videos.videos[1].plan));
+  assert.ok(/batch_plan,claude-opus-5-5,high,4000,2000,0,0,0\.028,/.test(fs.readFileSync(path.join(FILES, 'cut_through_costs.csv'), 'utf8')));
+  assert.ok(snap.steps.plan.log.some((l) => /Batch collected: 2 of 3 video\(s\) planned/.test(l)), snap.steps.plan.log.join('\n'));
+  assert.strictEqual(snap.videosReady, 2);
+  // a failed video is re-sent live on its own
+  snap = await c2.planVideos({ ids: [a1.id], delivery: 'scripted' });
+  assert.strictEqual(snap.videos.videos[0].plan.status, 'planned');
+  assert.strictEqual(snap.videosReady, 3);
+  // a section plan switches Build back to the one rough cut
+  snap = await c2.runPlan({});
+  assert.ok(snap.steps.plan.status === 'done' && !snap.videos.active && snap.videosReady === 0, snap.steps.plan.error);
+  console.log('✓ videos end to end: slate J-codes → A1 / S1 (restart) / B2 → plan now (solo keeps both mic tracks, gap cut) → build PLAN_FILES → batch priced, sent, survives a restart, canceled, collected at half price, failed one re-sent');
+}
+
 (async () => {
   let prefs = {};
   const updates = [];
@@ -807,6 +988,9 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(snap.steps.prep.status, 'done', snap.steps.prep.error);
   assert.deepStrictEqual(snap.steps.prep.data.micAngles, ['Camera 2', 'Camera 3']);
   assert.strictEqual(snap.planKind, 'convo');
+  // the recordings: every angle's camera clips, one stretch here (cameras rolled once)
+  const prepDay = JSON.parse(fs.readFileSync(RUN('E2E_test', 'day_E2E_test.json'), 'utf8'));
+  assert.deepStrictEqual(prepDay.recordings, [{ from_sec: 0, to_sec: 120.12 }]);
 
   // transcribe, canceled midway
   process.env.CT_FAKE_SLOW = '1';
@@ -1111,6 +1295,8 @@ sys.stdout.write(json.dumps(res))`;
   assert.strictEqual(c3.snapshot().settings.claudeKey, 'saved …1234');
   assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-ant-test'), 'key leaked to the renderer');
   console.log('✓ Claude solo editor: request shape, removals + shots → plan (last takes kept, unheard mutter cut, Claude\'s angles), cuts placed from the waveform (levels-only pass), stage delivery, cost logged, refusal reported, key never sent to the page');
+
+  await videosEndToEnd({ w, getPrefs: () => prefs, setPrefs: (patch) => { prefs = { ...prefs, ...patch }; } });
 
   await new Promise((r) => setTimeout(r, 200));
   assert.ok(updates.length > 0, 'no updates broadcast');
