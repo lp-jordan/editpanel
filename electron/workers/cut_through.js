@@ -39,6 +39,7 @@ const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
 const DEFAULT_WX_PYTHON = 'C:\\wxbench\\Scripts\\python.exe';
 const MAX_LOG_LINES = 400;
 const BATCH_POLL_MS = 60 * 1000;
+const LIST_MULTICAMS_TIMEOUT_MS = 2 * 60 * 1000;
 const BATCH_LIVE = ['in_progress', 'canceling'];
 
 // `  Camera 2 [######-------------------]  24%  5.4/22.6 min  41s`
@@ -471,14 +472,22 @@ function createCutThrough(opts) {
     s.multicamsLoading = true;
     s.multicamsError = null;
     emit();
+    // A worker request has no timeout of its own: a hung Resolve would leave "Loading…" up forever.
+    let timer = null;
     try {
-      const res = await sendWorkerRequest({ cmd: 'ct_list_multicams' }, 'resolve');
+      const res = await Promise.race([
+        sendWorkerRequest({ cmd: 'ct_list_multicams' }, 'resolve'),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Resolve did not answer. If it stays stuck, quit Resolve, end any leftover Resolve process and relaunch.')), LIST_MULTICAMS_TIMEOUT_MS);
+        })
+      ]);
       s.multicams = res?.data?.multicams || [];
       applyProject(res?.data?.project || null);
     } catch (err) {
       s.multicams = [];
       s.multicamsError = errMsg(err);
     } finally {
+      clearTimeout(timer);
       s.multicamsLoading = false;
       emit();
     }
