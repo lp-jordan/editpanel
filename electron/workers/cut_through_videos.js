@@ -96,6 +96,36 @@ function slateOffset(day, notes) {
   return { offsetSec: best.hours * 3600 + seconds, hours: best.hours, seconds, matched: diffs.length, codesInside: Math.max(0, best.hits) };
 }
 
+/**
+ * "This multicam starts at H6": only that shoot day's notes, from H6 on. Slate notes have no date
+ * and a project's days sit one after another, so a new day = the time of day jumps backwards. If
+ * the code is on several days, the day that fits the multicam's recordings best; ties = the
+ * earliest. The ATEM notes just before the code stay (they set the clock offset). null = not found.
+ */
+function notesFrom(day, notes, firstCode) {
+  const want = String(firstCode || '').trim().toLowerCase();
+  if (!want) return null;
+  const list = notes || [];
+  const runs = [];
+  let last = null;
+  for (const n of list) {
+    const t = slateSeconds(n.timestamp);
+    if (!runs.length || (t !== null && last !== null && t < last - 60)) runs.push([]);
+    runs[runs.length - 1].push(n);
+    if (t !== null) last = t;
+  }
+  let best = null;
+  for (const run of runs) {
+    let i = run.findIndex((n) => String(n.code || '').trim().toLowerCase() === want);
+    if (i < 0) continue;
+    while (i > 0 && run[i - 1].code === 'ATEM') i -= 1;
+    const picked = run.slice(i);
+    const fit = slateOffset(day, picked);
+    if (!best || fit.matched > best.fit.matched || (fit.matched === best.fit.matched && fit.codesInside > best.fit.codesInside)) best = { notes: picked, fit };
+  }
+  return best ? best.notes : null;
+}
+
 /** J-code notes → [{ frame, code }] on the multicam (offset applied), in order. */
 function codeEvents(day, notes, offsetSec) {
   const wrap = (x) => ((x % 86400) + 86400) % 86400;
@@ -163,8 +193,9 @@ function tcLabel(day, f) {
  *   notes     LPOS slate notes [{ timestamp, code, note }] (optional: without them, one video per recording)
  *   offsetSec slate clock → multicam timecode (slateOffset's, or the page's override)
  *   label     the run label (names videos that have no J-code)
+ *   firstCode the editor says the multicam starts on this code (notes already cut by notesFrom)
  */
-function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'video' }) {
+function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'video', firstCode = '' }) {
   const fs_ = frameSec(day);
   const sec = (x) => Math.round(x / fs_);
   const W = wordList(words);
@@ -178,6 +209,7 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
     const before = events.filter((e) => e.frame < a);
     const within = events.filter((e) => e.frame >= a && e.frame < b);
     let code = before.length ? before[before.length - 1].code : null;
+    if (code === null && firstCode && !pieces.length && events.length) code = events[0].code;   // even if typed late
     let k = 0;
     // a code typed just after rolling names the recording
     while (k < within.length && within[k].frame < a + sec(START_GRACE_SEC)) { code = within[k].code; k += 1; }
@@ -240,4 +272,4 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
   return videos;
 }
 
-module.exports = { findVideos, slateOffset, codeEvents, recordingsOf, slateSeconds, longestPause, speakersIn, tcSecOfFrame, frameOfTcSec, cleanName, safeId, tcLabel };
+module.exports = { findVideos, notesFrom, slateOffset, codeEvents, recordingsOf, slateSeconds, longestPause, speakersIn, tcSecOfFrame, frameOfTcSec, cleanName, safeId, tcLabel };

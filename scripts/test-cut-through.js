@@ -803,6 +803,22 @@ const vlib = require('../electron/workers/cut_through_videos');
   const plain = vlib.findVideos({ day, words, notes: [], label: 'Day' });
   assert.deepStrictEqual(plain.map((x) => [x.name, x.flags.includes('No J-code')]), [['Day video 1', true], ['Day video 2', true], ['Day video 3', true]]);
   assert.strictEqual(vlib.cleanName('A1: "intro" = x'), 'A1 intro x');
+  // "starts at H6": a project shot over several days, only that day from H6 on
+  const dayM = { frame_sec: [1, 24], tc_start_sec: 36000, length_sec: 1300, recordings: [{ from_sec: 0, to_sec: 600 }, { from_sec: 700, to_sec: 1200 }] };
+  const N = (timestamp, code, note = '') => ({ timestamp, code, note });
+  const multiDay = [
+    N('10:00:00:00', 'ATEM', 'Recording started'), N('10:00:05:00', 'A1'), N('10:03:00:00', 'A2'), N('10:10:00:00', 'ATEM', 'Recording stopped'),
+    N('09:00:00:00', 'X1'), N('10:00:00:00', 'ATEM', 'Recording started'), N('10:00:40:00', 'H6'), N('10:05:00:00', 'H7'), N('10:10:00:00', 'ATEM', 'Recording stopped'),
+    N('10:11:40:00', 'ATEM', 'Recording started'), N('10:11:45:00', 'H8'), N('10:30:00:00', 'ATEM', 'Recording stopped'),
+    N('08:00:00:00', 'Z9'), N('10:02:00:00', 'Z10')
+  ];
+  const fromH6 = vlib.notesFrom(dayM, multiDay, 'h6');
+  assert.deepStrictEqual(fromH6.map((n) => n.code).filter((c) => c !== 'ATEM'), ['H6', 'H7', 'H8']);
+  assert.strictEqual(fromH6[0].code, 'ATEM', 'the Recording started note before the code stays');
+  const startH6 = vlib.findVideos({ day: dayM, notes: fromH6, offsetSec: 0, label: 'Day', firstCode: 'h6' });
+  assert.deepStrictEqual(startH6.map((v) => v.name), ['H6', 'H7', 'H8']);
+  assert.strictEqual(startH6[0].from, 0, 'typed 40 s late, still names the first recording');
+  assert.strictEqual(vlib.notesFrom(dayM, multiDay, 'Q1'), null);
   console.log('✓ videos: slate clock found (time zone + seconds), J-code split in a pause, same code across a stop = one video, flags, no slate');
 }
 

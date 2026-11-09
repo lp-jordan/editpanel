@@ -141,6 +141,7 @@ function CutThroughPage({ connected }) {
   const [directionDraft, setDirectionDraft] = React.useState('');
   const [planMode, setPlanMode] = React.useState(null);
   const [offsetDraft, setOffsetDraft] = React.useState('');
+  const [firstCodeDraft, setFirstCodeDraft] = React.useState(null);
   const ctLabel = ct && ct.label;
   React.useEffect(() => { setDirectionDraft((ct && ct.direction) || ''); setLabelDraft(ctLabel || ''); }, [ctLabel]);
 
@@ -191,6 +192,8 @@ function CutThroughPage({ connected }) {
   React.useEffect(() => {
     if (showVideos && api && api.listLposProjects && !(ct.lposProjects || []).length && !ct.lposLoading) api.listLposProjects().then((res) => apply(res, 'lpos'));
   }, [showVideos]);
+
+  React.useEffect(() => { setFirstCodeDraft(null); }, [ct && ct.project, ct && ct.label]);
 
   const running = ct && ct.busy;
   React.useEffect(() => {
@@ -244,6 +247,7 @@ function CutThroughPage({ connected }) {
   const dupe = mcOptions.find((m) => m.name === ct.mc && m.duplicate);
   const solo = ct.planKind === 'solo';
   const vids = ct.videos;
+  const firstCode = firstCodeDraft !== null ? firstCodeDraft : ((vids && vids.firstCode) || '');
   const mode = planMode || (vids && vids.active ? 'videos' : 'section');
   const batch = vids && vids.batch;
   const batchLive = Boolean(batch && ['in_progress', 'canceling'].includes(batch.status));
@@ -293,6 +297,12 @@ function CutThroughPage({ connected }) {
               onChange={(e) => setOffsetDraft(e.target.value.replace(/[^\d.\-]/g, ''))} />
             <span className="dim">s</span>
             {offset && <span className="dim ct-num-text">{offset.manual ? `using ${offset.used} s` : `auto ${offset.auto} s`}{vids.notes != null ? ` · ${vids.notes} J-codes` : ''}</span>}
+          </CtRow>
+        )}
+        {lposPick && (
+          <CtRow label="First code">
+            <input className="settings-input ct-num" aria-label="First J-code on this multicam" disabled={locked}
+              placeholder="All" value={firstCode} onChange={(e) => setFirstCodeDraft(e.target.value)} />
           </CtRow>
         )}
         {list.length > 0 && (
@@ -546,7 +556,7 @@ function CutThroughPage({ connected }) {
             <button type="button" className="btn small" disabled={busy} onClick={() => call(key, () => api.collectBatch())}>Collect</button>
           )}
           <button type="button" className={`btn small${hasVideos ? ' ghost' : ''}`} disabled={busy || !ready}
-            onClick={() => call(key, () => api.findVideos({ offsetSec: offsetDraft }))}>{hasVideos ? 'Find again' : 'Find videos'}</button>
+            onClick={() => call(key, () => api.findVideos({ offsetSec: offsetDraft, firstCode }))}>{hasVideos ? 'Find again' : 'Find videos'}</button>
           {hasVideos && (
             <button type="button" className="btn small ghost" disabled={busy || !ready}
               onClick={() => call(key, () => api.prepareBatch(form))}>Batch</button>

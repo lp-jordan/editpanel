@@ -1155,7 +1155,7 @@ function createCutThrough(opts) {
    * a pause and to tell solo from conversation). offsetSec: '' = work it out from the slate.
    * Earlier choices (tick, type, name) and plans stay with a video that comes back unchanged.
    */
-  async function findVideos({ offsetSec } = {}) {
+  async function findVideos({ offsetSec, firstCode } = {}) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
     needRunFolder();
     if (!s.day) throw new Error('Run Prep first');
@@ -1171,10 +1171,15 @@ function createCutThrough(opts) {
       const data = await c.getSlateNotes(lp.id);
       notes = Array.isArray(data?.notes) ? data.notes : [];
     }
+    const first = lp ? String(firstCode || '').trim() : '';
+    if (first) {
+      notes = videosLib.notesFrom(s.day, notes, first);
+      if (!notes) throw new Error(`${first} isn't on this slate`);
+    }
     const auto = videosLib.slateOffset(s.day, notes);
     const manual = offsetSec !== undefined && offsetSec !== null && String(offsetSec).trim() !== '' && Number.isFinite(Number(offsetSec));
     const used = manual ? Number(offsetSec) : auto.offsetSec;
-    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label });
+    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first });
     const old = new Map(((s.videos && s.videos.videos) || []).map((v) => [v.id, v]));
     const videos = found.map((v) => {
       const o = old.get(v.id);
@@ -1184,7 +1189,7 @@ function createCutThrough(opts) {
     });
     const codes = notes.filter((n) => n.code && n.code !== 'ATEM').length;
     writeVideos({
-      label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes,
+      label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes, firstCode: first,
       offset: { used, auto: auto.offsetSec, manual, hours: auto.hours, seconds: auto.seconds, matched: auto.matched },
       active: Boolean(s.videos && s.videos.active), batch: null, videos
     });
