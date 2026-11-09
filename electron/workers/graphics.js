@@ -297,18 +297,18 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     return path.join(dirs().projects, `${slug(name)}-${hashOf(name).slice(0, 6)}.json`);
   }
 
-  function loadWs() {
-    return readJson(wsPath()) || {
+  function loadWs(file = wsPath()) {
+    return readJson(file) || {
       project: currentProject,
       ui: { page: 'design', kind: 'slide', filter: 'editing', activeByKind: {}, templateByKind: {}, brandId: null, accent: null },
       items: [], fps: FPS_DEFAULT, durationSec: 15, outDir: '', binPath: 'GRAPHICS', nextSeq: 1
     };
   }
 
-  const saveWs = (ws) => writeJson(wsPath(), ws);
+  const saveWs = (ws, file = wsPath()) => writeJson(file, ws);
 
-  function commit(ws) {
-    saveWs(ws);
+  function commit(ws, file) {
+    saveWs(ws, file);
     emit();
     return snapshot();
   }
@@ -425,12 +425,13 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     return String(v || '').replace(/\s+/g, ' ').trim().slice(0, 60);
   }
 
-  function withItem(itemId, fn) {
-    const ws = loadWs();
+  /** file: a project's workspace, for work that started before Resolve may have switched project. */
+  function withItem(itemId, fn, file) {
+    const ws = loadWs(file);
     const item = ws.items.find((it) => it.id === itemId);
     if (!item) throw new Error('That item is no longer in the Library');
     fn(item, ws);
-    return commit(ws);
+    return commit(ws, file);
   }
 
   function pushHistory(item) {
@@ -542,7 +543,8 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   async function editItem(a) {
     if (editStatus) throw new Error('Still working on the last change');
     const request = String(a.request || '').trim();
-    const ws = loadWs();
+    const wsFile = wsPath();      // the result belongs to this project, even if Resolve switches while Claude works
+    const ws = loadWs(wsFile);
     const item = ws.items.find((it) => it.id === a.itemId);
     if (!item) throw new Error('That item is no longer in the Library');
     const note = item.kind === 'slide'
@@ -567,7 +569,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       }
       it.chat = chat.slice(-40);
       it.costUsd = (it.costUsd || 0) + out.spent;
-    });
+    }, wsFile);
   }
 
   async function renderQueue() {
