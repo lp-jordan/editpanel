@@ -4906,3 +4906,20 @@ button.status-bar-chip-btn:disabled {
 .gp-tag.is-warn { background: var(--warning-soft); color: var(--warning); }
 .gp-tag.is-done { background: var(--success-soft); color: var(--success); }
 .gp-render { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.gp-modal-small { max-width: 460px; }
+.gp-end { justify-content: flex-end; }
+.gp-wide { width: 100%; box-sizing: border-box; }
+.gp-square { min-width: 38px; }
+.gp-add { margin-top: auto; align-self: flex-end; }
+.gp-tabs { display: flex; gap: 3px; padding: 3px; background: var(--surface-inset); border-radius: var(--radius-md); }
+.gp-tabs button { flex: 1 1 0; min-width: 0; padding: 5px 2px; display: flex; flex-direction: column; align-items: center; gap: 1px; white-space: nowrap; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: inherit; font-size: 0.76rem; font-weight: 600; cursor: pointer; }
+.gp-tabs button.is-on { background: var(--accent); color: var(--accent-contrast); }
+.gp-tab-count { font-size: 0.96rem; font-variant-numeric: tabular-nums; }
+.gp-rows { display: flex; flex-direction: column; gap: 5px; flex: 1 1 200px; min-height: 120px; max-height: 420px; overflow-y: auto; }
+.gp-item { display: flex; align-items: stretch; background: var(--surface-inset); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.gp-item.is-active { border-color: var(--accent); background: var(--accent-soft); }
+.gp-item-main { flex: 1 1 auto; min-width: 0; min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; background: transparent; border: 0; color: var(--text); font: inherit; font-size: 0.86rem; text-align: left; cursor: pointer; }
+.gp-item-tags { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.gp-item-icon { flex: none; width: 40px; display: flex; align-items: center; justify-content: center; background: transparent; border: 0; border-left: 1px solid var(--border); color: var(--text-muted); cursor: pointer; }
+.gp-item-icon.is-on { color: var(--accent); }
+.gp-item-icon.is-confirm { color: var(--danger); background: var(--danger-soft); }

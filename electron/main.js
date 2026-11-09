@@ -377,6 +377,7 @@ function handleWorkerLine(state, line) {
         resolveTimeline = normalized.envelope.data.timeline || resolveTimeline;
       }
       if (cutThrough && resolveProject) cutThrough.onProject(resolveProject);
+      if (graphics && resolveProject) graphics.onProject(resolveProject);
     }
 
     BrowserWindow.getAllWindows().forEach(w => {
@@ -2550,7 +2551,8 @@ app.whenReady().then(() => {
     isPackaged: app.isPackaged,
     appDir: path.join(__dirname, '..'),
     userData: app.getPath('userData'),
-    dialog
+    dialog,
+    nativeImage
   });
 
   cutThrough = createCutThrough({

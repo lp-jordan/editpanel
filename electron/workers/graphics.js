@@ -38,6 +38,7 @@ const TOOL = {
         items: { type: 'object', properties: { find: { type: 'string' }, replace: { type: 'string' } }, required: ['find', 'replace'] }
       },
       code: { type: 'string' },
+      rebuild: { type: 'boolean' },
       fields: {
         type: 'array',
         items: {
@@ -87,7 +88,7 @@ function fontInfo(file) {
   return { family: family || stem, weight, style };
 }
 
-function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, userData, dialog }) {
+function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, userData, dialog, nativeImage }) {
   const token = crypto.randomBytes(12).toString('hex');
   const allowedRoots = new Set();
   let serverPort = null;
@@ -95,14 +96,14 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   let job = null;
   let editStatus = null; // { stage, request, model, startedAt } while Claude is working
   let cancelFn = null;
-  let activeSetId = null;
+  let currentProject = null;
 
   const prefs = () => (getPrefs() || {}).graphics || {};
   const savePrefs = (patch) => setPrefs({ graphics: { ...prefs(), ...patch } });
   const libraryDir = () => prefs().libraryDir || path.join(userData, 'graphics');
   const dirs = () => {
     const base = libraryDir();
-    return { base, templates: path.join(base, 'templates'), brands: path.join(base, 'brands'), sets: path.join(base, 'sets'), work: path.join(base, 'work') };
+    return { base, templates: path.join(base, 'templates'), brands: path.join(base, 'brands'), projects: path.join(base, 'projects'), work: path.join(base, 'work') };
   };
   const apiKey = () => prefs().anthropicKey || process.env.ANTHROPIC_API_KEY || null;
 
@@ -150,7 +151,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     fs.mkdirSync(d.templates, { recursive: true });
     fs.mkdirSync(d.brands, { recursive: true });
     fs.mkdirSync(d.work, { recursive: true });
-    fs.mkdirSync(d.sets, { recursive: true });
+    fs.mkdirSync(d.projects, { recursive: true });
     allowedRoots.add(path.resolve(d.base));
     for (const s of STARTERS) {
       const f = path.join(d.templates, `${s.id}.json`);
@@ -235,8 +236,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       job,
       busyEdit: Boolean(editStatus),
       editStatus,
-      sets: listSets(),
-      activeSet: activeSetView()
+      workspace: workspaceView()
     };
   }
 
@@ -268,16 +268,13 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     if (job && job.status === 'running') throw new Error('A batch is still running');
   }
 
-  // ── Review sets ───────────────────────────────────────────────────────────
-  // One foundation template, one row per overlay. A row inherits the foundation until it gets its
-  // own override. Stored values use asset: paths, because server URLs last only for this session.
+  // ── Project workspace ─────────────────────────────────────────────────────
+  // One per Resolve project. Each item keeps its own working copy, plus the saved copy that went
+  // to review. Stored values use asset: paths, because server URLs last only for this session.
 
   const ASSET = 'asset:';
-  const setPath = (id) => path.join(dirs().sets, `${path.basename(String(id))}.json`);
   const hashOf = (v) => crypto.createHash('sha1').update(JSON.stringify(v)).digest('hex');
-  const foundationHash = (t) => hashOf({ code: t.code, fields: t.fields });
-  const REVIEW = 'review';
-  const APPROVED = 'approved';
+  const mapValues = (obj, fn) => Object.fromEntries(Object.entries(obj || {}).map(([k, v]) => [k, fn(v)]));
 
   function dehydrate(value) {
     if (Array.isArray(value)) return value.map(dehydrate);
@@ -295,243 +292,312 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     return assetUrl(file);
   }
 
-  const mapValues = (obj, fn) => Object.fromEntries(Object.entries(obj || {}).map(([k, v]) => [k, fn(v)]));
-
-  function loadSet(id) {
-    const set = readJson(setPath(id));
-    if (!set) throw new Error('Review set not found');
-    return set;
+  function wsPath() {
+    const name = currentProject || 'no-project';
+    return path.join(dirs().projects, `${slug(name)}-${hashOf(name).slice(0, 6)}.json`);
   }
 
-  const saveSet = (set) => writeJson(setPath(set.id), set);
-
-  /** A changed foundation restyles inheriting rows; overridden rows get flagged instead. */
-  function reconcile(set) {
-    const t = readJson(templatePath(set.templateId));
-    if (!t) return set;
-    const hash = foundationHash(t);
-    if (set.foundationHash === hash) return set;
-    const rows = set.rows.map((r) => (r.override
-      ? { ...r, foundationChanged: true }
-      : { ...r, status: REVIEW }));
-    const next = { ...set, rows, foundationHash: hash };
-    saveSet(next);
-    return next;
-  }
-
-  function effective(set, row, t) {
-    return { code: (row.override && row.override.code) || t.code, fields: (row.override && row.override.fields) || t.fields };
-  }
-
-  function rowHash(set, row, t, brandRaw) {
-    return hashOf({ ...effective(set, row, t), values: row.values, brand: brandRaw, accent: set.accent, fps: set.fps, durationSec: set.durationSec });
-  }
-
-  function listSets() {
-    const d = dirs().sets;
-    let names = [];
-    try { names = fs.readdirSync(d).filter((f) => f.endsWith('.json')); } catch (_) { /* first run */ }
-    return names.map((f) => readJson(path.join(d, f))).filter(Boolean)
-      .map((x) => ({ id: x.id, name: x.name, kind: x.kind, total: x.rows.length, approved: x.rows.filter((r) => r.status === APPROVED).length }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  function activeSetView() {
-    if (!activeSetId || !fs.existsSync(setPath(activeSetId))) return null;
-    const set = reconcile(loadSet(activeSetId));
-    const t = readJson(templatePath(set.templateId));
-    if (!t) return { id: set.id, name: set.name, missingTemplate: true, rows: [] };
-    const brandRaw = listBrands().find((b) => b.id === set.brandId) || listBrands()[0];
-    const brand = { ...runtimeBrand(brandRaw), accent: set.accent || runtimeBrand(brandRaw).accent };
-    const toImport = [];
-    const rows = set.rows.map((r) => {
-      const hash = rowHash(set, r, t, brandRaw);
-      const hasFile = Boolean(r.rendered && r.rendered.file && fs.existsSync(r.rendered.file));
-      const renderState = !hasFile ? 'none' : (r.rendered.hash === hash ? 'current' : 'stale');
-      if (hasFile && r.status === APPROVED && !r.imported) toImport.push(r.rendered.file);
-      return {
-        id: r.id, name: r.name, status: r.status, renderState,
-        values: mapValues(r.values, hydrate),
-        code: r.override ? r.override.code : null,
-        fieldDefs: effective(set, r, t).fields,
-        hasOverride: Boolean(r.override),
-        foundationChanged: Boolean(r.foundationChanged),
-        canUndo: Boolean(r.history && r.history.length),
-        chat: r.chat || []
-      };
-    });
-    return {
-      id: set.id, name: set.name, kind: set.kind, templateId: set.templateId, templateName: t.name,
-      foundationCode: t.code, foundationChat: t.chat || [], foundationCanUndo: Boolean(t.history && t.history.length),
-      brandId: brandRaw.id, accent: brand.accent, brand, fps: set.fps, durationSec: set.durationSec,
-      outDir: set.outDir || '', binPath: set.binPath || 'GRAPHICS', rows, toImport
+  function loadWs() {
+    return readJson(wsPath()) || {
+      project: currentProject,
+      ui: { page: 'design', kind: 'slide', filter: 'editing', activeByKind: {}, templateByKind: {}, brandId: null, accent: null },
+      items: [], fps: FPS_DEFAULT, durationSec: 15, outDir: '', binPath: 'GRAPHICS', nextSeq: 1
     };
   }
 
-  function createSet(a) {
-    const name = String(a.name || '').trim();
-    if (!name) throw new Error('Enter a name');
-    const t = loadTemplate(a.templateId);
-    const inputRows = a.rows || [];
-    if (!inputRows.length) throw new Error('Add at least one overlay');
-    const id = newId(name);
-    const { fps } = batchTiming(a);
-    saveSet({
-      id, name, kind: t.kind, templateId: t.id, brandId: a.brandId, accent: a.accent || null,
-      fps, durationSec: Math.max(0.5, Number(a.durationSec) || 15), outDir: '', binPath: `GRAPHICS / ${fileSafe(name)}`,
-      foundationHash: foundationHash(t), nextRow: inputRows.length + 1,
-      rows: inputRows.map((r, i) => ({ id: `r${i + 1}`, name: r.name, values: mapValues(r.fields, dehydrate), status: REVIEW, override: null, history: [], chat: [] }))
-    });
-    activeSetId = id;
+  const saveWs = (ws) => writeJson(wsPath(), ws);
+
+  function commit(ws) {
+    saveWs(ws);
     emit();
     return snapshot();
   }
 
-  function openSet({ setId }) {
-    loadSet(setId);
-    activeSetId = setId;
-    emit();
-    return snapshot();
+  function onProject(name) {
+    const next = String(name || '').trim() || null;
+    if (next === currentProject) return;
+    currentProject = next;
+    if (serverPort) emit();
   }
 
-  function deleteSet({ setId }) {
-    fs.rmSync(setPath(setId), { force: true });
-    if (activeSetId === setId) activeSetId = null;
-    emit();
-    return snapshot();
+  const defaultTemplateId = (ws, kind) => {
+    const list = listTemplates().filter((t) => t.kind === kind);
+    const wanted = ws.ui.templateByKind[kind];
+    return (list.find((t) => t.id === wanted) || list[0] || {}).id;
+  };
+
+  const stateOf = (item) => ({ code: item.code, fields: item.fields, values: item.values, mode: item.mode });
+
+  function brandRawOf(ws) {
+    return listBrands().find((b) => b.id === ws.ui.brandId) || listBrands()[0];
   }
 
-  /** Change a set's settings. Anything affecting the look sends approved rows back to review. */
-  function updateSet(a) {
-    const set = reconcile(loadSet(a.setId));
-    const restyled = (a.brandId !== undefined && a.brandId !== set.brandId) || (a.accent !== undefined && a.accent !== set.accent);
-    const next = { ...set };
-    for (const k of ['name', 'brandId', 'accent', 'outDir', 'binPath']) if (a[k] !== undefined) next[k] = a[k];
-    if (a.fps !== undefined || a.durationSec !== undefined) {
-      next.fps = batchTiming({ fps: a.fps !== undefined ? a.fps : set.fps }).fps;
-      if (a.durationSec !== undefined) next.durationSec = Math.max(0.5, Math.min(600, Number(a.durationSec) || 15));
-    }
-    if (restyled) next.rows = next.rows.map((r) => ({ ...r, status: REVIEW }));
-    saveSet(next);
-    emit();
-    return snapshot();
+  function brandOf(ws) {
+    const raw = brandRawOf(ws);
+    const rt = runtimeBrand(raw);
+    return { ...rt, accent: ws.ui.accent && rt.colors.includes(ws.ui.accent) ? ws.ui.accent : rt.accent };
   }
 
-  function changeRow(setId, rowId, fn) {
-    const set = reconcile(loadSet(setId));
-    const rows = set.rows.map((r) => (r.id === rowId ? fn(r) : r));
-    saveSet({ ...set, rows });
-    emit();
-    return snapshot();
+  function renderHash(ws, state) {
+    const { code, fields, values } = state;
+    return hashOf({ code, fields, values, brand: brandRawOf(ws), accent: ws.ui.accent, fps: ws.fps, durationSec: ws.durationSec });
   }
 
-  function updateRow({ setId, rowId, values }) {
-    return changeRow(setId, rowId, (r) => {
-      const next = mapValues(values, dehydrate);
-      if (hashOf(next) === hashOf(r.values)) return r;
-      return { ...r, values: next, status: REVIEW };
-    });
-  }
-
-  function setRowStatus({ setId, rowId, approved }) {
-    return changeRow(setId, rowId, (r) => ({ ...r, status: approved ? APPROVED : REVIEW, foundationChanged: approved ? false : r.foundationChanged }));
-  }
-
-  function resetRow({ setId, rowId }) {
-    return changeRow(setId, rowId, (r) => ({
-      ...r, override: null, status: REVIEW, foundationChanged: false,
-      history: [...(r.history || []), { override: r.override }].slice(-30),
-      chat: [...(r.chat || []), { who: 'ai', text: 'Reset to the foundation.' }].slice(-30)
-    }));
-  }
-
-  function keepRow({ setId, rowId }) {
-    return changeRow(setId, rowId, (r) => ({ ...r, foundationChanged: false }));
-  }
-
-  function undoRow({ setId, rowId }) {
-    return changeRow(setId, rowId, (r) => {
-      const history = [...(r.history || [])];
-      const last = history.pop();
-      if (!last) return r;
-      return { ...r, override: last.override, history, status: REVIEW, chat: [...(r.chat || []), { who: 'ai', text: 'Undone.' }].slice(-30) };
-    });
-  }
-
-  function removeRow({ setId, rowId }) {
-    const set = loadSet(setId);
-    saveSet({ ...set, rows: set.rows.filter((r) => r.id !== rowId) });
-    emit();
-    return snapshot();
-  }
-
-  function addRows({ setId, rows: inputRows }) {
-    const set = reconcile(loadSet(setId));
-    let n = set.nextRow || set.rows.length + 1;
-    const added = (inputRows || []).map((r) => {
-      const row = { id: `r${n}`, name: r.name, values: mapValues(r.fields, dehydrate), status: REVIEW, override: null, history: [], chat: [] };
-      n += 1;
-      return row;
-    });
-    saveSet({ ...set, nextRow: n, rows: [...set.rows, ...added] });
-    emit();
-    return snapshot();
-  }
-
-  async function editSlide(a) {
-    if (editStatus) throw new Error('Still working on the last change');
-    const set = reconcile(loadSet(a.setId));
-    const row = set.rows.find((r) => r.id === a.rowId);
-    if (!row) throw new Error('Overlay not found');
-    const t = loadTemplate(set.templateId);
-    const brand = brandForRender(set.brandId, set.accent);
-    const base = { id: `${set.id}/${row.id}`, kind: t.kind, ...effective(set, row, t), chat: row.chat };
-    const request = String(a.request || '').trim();
-    const chat = [...(row.chat || []), { who: 'me', text: request }];
-    const out = await askForChange({
-      base, target: row.id, brand, values: mapValues(row.values, hydrate), request, harder: a.harder,
-      fps: set.fps, durationSec: set.durationSec, note: 'This change is for this one overlay only.'
-    });
-    return changeRow(a.setId, a.rowId, (r) => {
-      const reply = [...chat, { ...out.reply, usd: out.spent, model: out.model }].slice(-30);
-      if (!out.change) return { ...r, chat: reply, costUsd: (r.costUsd || 0) + out.spent };
+  function workspaceView() {
+    if (!serverPort) return null;
+    const ws = loadWs();
+    const toImport = [];
+    const items = ws.items.map((it) => {
+      const saved = it.snapshot;
+      const hasFile = Boolean(it.rendered && it.rendered.file && fs.existsSync(it.rendered.file));
+      const renderState = !saved || !hasFile ? 'none' : (it.rendered.hash === renderHash(ws, saved) ? 'current' : 'stale');
+      if (hasFile && it.stage === 'queue' && !it.imported) toImport.push(it.rendered.file);
       return {
-        ...r, chat: reply, costUsd: (r.costUsd || 0) + out.spent, status: REVIEW, foundationChanged: false,
-        override: out.change, history: [...(r.history || []), { override: r.override }].slice(-30)
+        id: it.id, name: it.name, kind: it.kind, stage: it.stage, mode: it.mode, templateId: it.templateId,
+        code: it.code, fieldDefs: it.fields, values: mapValues(it.values, hydrate),
+        chat: it.chat || [], costUsd: it.costUsd || 0, canUndo: Boolean(it.history && it.history.length),
+        changed: !saved || hashOf(stateOf(it)) !== hashOf(saved), renderState,
+        snapshot: saved ? { code: saved.code, fieldDefs: saved.fields, values: mapValues(saved.values, hydrate), mode: saved.mode } : null
       };
     });
+    return { project: ws.project, ui: ws.ui, items, toImport, fps: ws.fps, durationSec: ws.durationSec, outDir: ws.outDir, binPath: ws.binPath, brand: brandOf(ws) };
   }
 
-  async function renderSet(a) {
+  function setUi(patch) {
+    const ws = loadWs();
+    const ui = { ...ws.ui, ...patch };
+    if (patch.activeByKind) ui.activeByKind = { ...ws.ui.activeByKind, ...patch.activeByKind };
+    if (patch.templateByKind) ui.templateByKind = { ...ws.ui.templateByKind, ...patch.templateByKind };
+    return commit({ ...ws, ui });
+  }
+
+  function updateWorkspace(a) {
+    const ws = loadWs();
+    const next = { ...ws };
+    for (const k of ['outDir', 'binPath']) if (a[k] !== undefined) next[k] = String(a[k]);
+    if (a.fps !== undefined) next.fps = batchTiming({ fps: a.fps }).fps;
+    if (a.durationSec !== undefined) next.durationSec = Math.max(0.5, Math.min(600, Number(a.durationSec) || 15));
+    return commit(next);
+  }
+
+  function newItem(ws, kind, name, values) {
+    const t = loadTemplate(defaultTemplateId(ws, kind));
+    const seq = ws.nextSeq || 1;
+    ws.nextSeq = seq + 1;
+    return {
+      id: `i${seq}`, seq, name, kind, stage: 'editing', mode: 'image', templateId: t.id, code: t.code, fields: t.fields,
+      values: { ...valuesFor(t.fields, {}), ...values }, originalCode: null, snapshot: null, chat: [], history: [], costUsd: 0
+    };
+  }
+
+  async function loadSlides() {
+    const res = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
+    if (res.canceled || !res.filePaths.length) return snapshot();
+    const ws = loadWs();
+    let active = null;
+    for (const file of res.filePaths) {
+      const asset = ASSET + file;
+      const same = ws.items.find((it) => it.kind === 'slide' && Object.values(it.values).includes(asset));
+      if (same) { active = active || same.id; continue; }
+      const t = loadTemplate(defaultTemplateId(ws, 'slide'));
+      const imageField = t.fields.find((f) => f.type === 'image');
+      if (!imageField) throw new Error('This template has no slide image');
+      const item = newItem(ws, 'slide', path.basename(file, path.extname(file)), { [imageField.key]: asset });
+      ws.items.push(item);
+      active = active || item.id;
+    }
+    ws.ui = { ...ws.ui, kind: 'slide', page: 'design', activeByKind: { ...ws.ui.activeByKind, slide: active } };
+    return commit(ws);
+  }
+
+  function newCallout() {
+    const ws = loadWs();
+    const item = newItem(ws, 'callout', 'New callout', {});
+    item.name = calloutName(item) || 'New callout';
+    ws.items.push(item);
+    ws.ui = { ...ws.ui, kind: 'callout', page: 'design', activeByKind: { ...ws.ui.activeByKind, callout: item.id } };
+    return commit(ws);
+  }
+
+  function calloutName(item) {
+    const first = item.fields.find((f) => f.type === 'text' || f.type === 'textarea');
+    const v = first ? item.values[first.key] : '';
+    return String(v || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  }
+
+  function withItem(itemId, fn) {
+    const ws = loadWs();
+    const item = ws.items.find((it) => it.id === itemId);
+    if (!item) throw new Error('That item is no longer in the Library');
+    fn(item, ws);
+    return commit(ws);
+  }
+
+  function pushHistory(item) {
+    item.history = [...(item.history || []), { code: item.code, fields: item.fields, mode: item.mode, originalCode: item.originalCode, templateId: item.templateId }].slice(-30);
+  }
+
+  function updateItem({ itemId, values }) {
+    return withItem(itemId, (item) => {
+      const next = mapValues(values, dehydrate);
+      item.values = next;
+      if (item.kind === 'callout') item.name = calloutName(item) || item.name;
+    });
+  }
+
+  function useTemplate({ itemId, kind, templateId }) {
+    const ws = loadWs();
+    loadTemplate(templateId);
+    ws.ui = { ...ws.ui, templateByKind: { ...ws.ui.templateByKind, [kind]: templateId } };
+    const item = ws.items.find((it) => it.id === itemId);
+    if (item) {
+      const t = loadTemplate(templateId);
+      pushHistory(item);
+      item.templateId = t.id;
+      item.code = t.code;
+      item.fields = t.fields;
+      item.mode = 'image';
+      item.originalCode = null;
+      item.values = valuesFor(t.fields, item.values);
+    }
+    return commit(ws);
+  }
+
+  function saveAsTemplate({ itemId, kind, templateId, name }) {
+    const label = String(name || '').trim();
+    if (!label) throw new Error('Enter a name');
+    const ws = loadWs();
+    const item = ws.items.find((it) => it.id === itemId);
+    const source = item || loadTemplate(templateId);
+    const t = { id: newId(label), name: label, kind: item ? item.kind : kind, code: source.code, fields: source.fields, chat: [], history: [], costUsd: 0 };
+    saveTemplate(t);
+    ws.ui = { ...ws.ui, templateByKind: { ...ws.ui.templateByKind, [t.kind]: t.id } };
+    if (item) item.templateId = t.id;
+    return commit(ws);
+  }
+
+  function addToReview({ itemId }) {
+    return withItem(itemId, (item) => {
+      item.snapshot = JSON.parse(JSON.stringify(stateOf(item)));
+      if (item.stage === 'editing') item.stage = 'review';
+    });
+  }
+
+  function setStage({ itemId, stage }) {
+    if (!['editing', 'review', 'queue'].includes(stage)) throw new Error('Unknown stage');
+    return withItem(itemId, (item, ws) => {
+      if (stage !== 'editing' && !item.snapshot) throw new Error('Add it to review first');
+      item.stage = stage;
+      if (stage === 'editing') ws.ui = { ...ws.ui, page: 'design', kind: item.kind, activeByKind: { ...ws.ui.activeByKind, [item.kind]: item.id } };
+    });
+  }
+
+  function openItem({ itemId }) {
+    return withItem(itemId, (item, ws) => {
+      ws.ui = { ...ws.ui, page: 'design', kind: item.kind, activeByKind: { ...ws.ui.activeByKind, [item.kind]: item.id } };
+    });
+  }
+
+  function removeItem({ itemId }) {
+    const ws = loadWs();
+    const gone = ws.items.find((it) => it.id === itemId);
+    ws.items = ws.items.filter((it) => it.id !== itemId);
+    if (gone && ws.ui.activeByKind[gone.kind] === itemId) {
+      const next = ws.items.find((it) => it.kind === gone.kind && it.stage === 'editing');
+      ws.ui = { ...ws.ui, activeByKind: { ...ws.ui.activeByKind, [gone.kind]: next ? next.id : null } };
+    }
+    return commit(ws);
+  }
+
+  function undoItem({ itemId }) {
+    return withItem(itemId, (item) => {
+      const history = [...(item.history || [])];
+      const last = history.pop();
+      if (!last) return;
+      Object.assign(item, last, { history, chat: [...(item.chat || []), { who: 'ai', text: 'Undone.' }].slice(-40) });
+    });
+  }
+
+  function revertToImage({ itemId }) {
+    return withItem(itemId, (item) => {
+      if (item.mode !== 'rebuilt' || !item.originalCode) return;
+      pushHistory(item);
+      item.code = item.originalCode;
+      item.originalCode = null;
+      item.mode = 'image';
+      item.chat = [...(item.chat || []), { who: 'ai', text: 'Back to the original image.' }].slice(-40);
+    });
+  }
+
+  /** The loaded slide as Claude will see it: small enough to stay cheap, large enough to read. */
+  function slideImage(item) {
+    if (item.kind !== 'slide' || !nativeImage) return null;
+    const value = Object.values(item.values).find((v) => typeof v === 'string' && v.startsWith(ASSET));
+    if (!value) return null;
+    const img = nativeImage.createFromPath(value.slice(ASSET.length));
+    if (img.isEmpty()) return null;
+    return img.resize({ width: Math.min(1280, img.getSize().width), quality: 'good' }).toJPEG(82).toString('base64');
+  }
+
+  async function editItem(a) {
+    if (editStatus) throw new Error('Still working on the last change');
+    const request = String(a.request || '').trim();
+    const ws = loadWs();
+    const item = ws.items.find((it) => it.id === a.itemId);
+    if (!item) throw new Error('That item is no longer in the Library');
+    const note = item.kind === 'slide'
+      ? (item.mode === 'rebuilt' ? 'This slide has been rebuilt as editable elements.' : 'This slide is still a flat image, attached here.')
+      : '';
+    const out = await askForChange({
+      base: { id: `${item.id}`, kind: item.kind, code: item.code, fields: item.fields, chat: item.chat },
+      target: item.id, brand: brandOf(ws), values: mapValues(item.values, hydrate), request, harder: a.harder,
+      fps: ws.fps, durationSec: ws.durationSec, note, image: slideImage(item)
+    });
+    return withItem(a.itemId, (it) => {
+      const chat = [...(it.chat || []), { who: 'me', text: request }, { ...out.reply, usd: out.spent, model: out.model }];
+      if (out.change) {
+        pushHistory(it);
+        if (out.change.rebuild && it.mode !== 'rebuilt') {
+          it.originalCode = it.code;
+          it.mode = 'rebuilt';
+        }
+        it.code = out.change.code;
+        it.fields = out.change.fields;
+        it.values = valuesFor(it.fields, it.values);
+      }
+      it.chat = chat.slice(-40);
+      it.costUsd = (it.costUsd || 0) + out.spent;
+    });
+  }
+
+  async function renderQueue() {
     needIdle();
     const { renderMedia, selectComposition, makeCancelSignal } = require('@remotion/renderer');
     const base = renderBase();
-    const set = reconcile(loadSet(a.setId));
-    if (!set.outDir) throw new Error('Choose an output folder');
-    const t = loadTemplate(set.templateId);
-    const brandRaw = listBrands().find((b) => b.id === set.brandId) || listBrands()[0];
-    const brand = brandForRender(set.brandId, set.accent);
-    const fps = set.fps;
-    const durationInFrames = Math.max(1, Math.round(set.durationSec * fps));
-    fs.mkdirSync(set.outDir, { recursive: true });
+    const ws = loadWs();
+    if (!ws.outDir) throw new Error('Choose an output folder');
+    const brand = brandOf(ws);
+    const fps = ws.fps;
+    const durationInFrames = Math.max(1, Math.round(ws.durationSec * fps));
+    fs.mkdirSync(ws.outDir, { recursive: true });
     const work = [];
     let skipped = 0;
-    set.rows.forEach((r, i) => {
-      if (r.status !== APPROVED) return;
-      const hash = rowHash(set, r, t, brandRaw);
-      const same = r.rendered && r.rendered.file && path.dirname(r.rendered.file) === path.resolve(set.outDir) && fs.existsSync(r.rendered.file);
-      if (same && r.rendered.hash === hash) { skipped += 1; return; }
-      const file = same ? r.rendered.file : path.resolve(set.outDir, `${String(i + 1).padStart(3, '0')}_${fileSafe(r.name)}.mov`);
-      work.push({ row: r, hash, file, sameFile: Boolean(same) });
-    });
-    job = { kind: 'render', setId: set.id, status: 'running', done: 0, total: work.length, skipped, outputs: [], failures: [], current: 0 };
+    for (const it of ws.items) {
+      if (it.stage !== 'queue' || !it.snapshot) continue;
+      const hash = renderHash(ws, it.snapshot);
+      const same = it.rendered && it.rendered.file && path.dirname(it.rendered.file) === path.resolve(ws.outDir) && fs.existsSync(it.rendered.file);
+      if (same && it.rendered.hash === hash) { skipped += 1; continue; }
+      const file = same ? it.rendered.file : path.resolve(ws.outDir, `${String(it.seq).padStart(3, '0')}_${fileSafe(it.name)}.mov`);
+      work.push({ it, hash, file, sameFile: Boolean(same) });
+    }
+    job = { kind: 'render', status: 'running', done: 0, total: work.length, skipped, outputs: [], failures: [], current: 0 };
     emit();
     let stop = false;
     let cancelNow = null;
     cancelFn = () => { stop = true; if (cancelNow) cancelNow(); };
     for (let i = 0; i < work.length && !stop; i += 1) {
       const w = work[i];
-      const inputProps = { code: effective(set, w.row, t).code, fields: mapValues(w.row.values, hydrate), brand, fps, durationInFrames };
+      const inputProps = { code: w.it.snapshot.code, fields: mapValues(w.it.snapshot.values, hydrate), brand, fps, durationInFrames };
       const signal = makeCancelSignal();
       cancelNow = signal.cancel;
       try {
@@ -544,12 +610,17 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
             if (pct !== job.current) { job = { ...job, current: pct }; emit(); }
           }
         });
-        const latest = loadSet(set.id);
-        saveSet({ ...latest, rows: latest.rows.map((r) => (r.id === w.row.id ? { ...r, rendered: { hash: w.hash, file: w.file }, imported: w.sameFile ? r.imported : false } : r)) });
+        const latest = loadWs();
+        const row = latest.items.find((x) => x.id === w.it.id);
+        if (row) {
+          row.rendered = { hash: w.hash, file: w.file };
+          if (!w.sameFile) row.imported = false;
+          saveWs(latest);
+        }
         job = { ...job, done: i + 1, current: 0, outputs: [...job.outputs, w.file] };
       } catch (err) {
         if (stop) break;
-        job = { ...job, done: i + 1, current: 0, failures: [...job.failures, { name: w.row.name, error: errText(err) }] };
+        job = { ...job, done: i + 1, current: 0, failures: [...job.failures, { name: w.it.name, error: errText(err) }] };
       }
       emit();
     }
@@ -560,12 +631,11 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     return snapshot();
   }
 
-  function markImported({ setId, files }) {
+  function markImported({ files }) {
     const done = new Set(files || []);
-    const set = loadSet(setId);
-    saveSet({ ...set, rows: set.rows.map((r) => (r.rendered && done.has(r.rendered.file) ? { ...r, imported: true } : r)) });
-    emit();
-    return snapshot();
+    const ws = loadWs();
+    for (const it of ws.items) if (it.rendered && done.has(it.rendered.file)) it.imported = true;
+    return commit(ws);
   }
 
   function cancel() {
@@ -602,7 +672,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     ].filter(Boolean).join('\n\n');
   }
 
-  async function callClaude(model, text) {
+  async function callClaude(model, text, image) {
     const key = apiKey();
     if (!key) throw new Error('Add a Claude API key in Settings below');
     const client = claude.makeClient(key);
@@ -613,7 +683,9 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       system: [{ type: 'text', text: GUIDE, cache_control: { type: 'ephemeral', ttl: '1h' } }],
       tools: [TOOL],
       tool_choice: { type: 'auto' },
-      messages: [{ role: 'user', content: text }]
+      messages: [{ role: 'user', content: image
+        ? [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } }, { type: 'text', text }]
+        : text }]
     };
     if (model.id !== MODELS.harder.id) return client.messages.create(params);
     try {
@@ -636,7 +708,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       }
     }
     const fields = Array.isArray(input.fields) && input.fields.length ? input.fields : t.fields;
-    return { code, fields };
+    return { code, fields, rebuild: Boolean(input.rebuild) };
   }
 
   function valuesFor(fields, values) {
@@ -648,7 +720,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   }
 
   /** One request against one piece of template code, tested before it is accepted. */
-  async function askForChange({ base, target, brand, values, request, harder, fps, durationSec, note }) {
+  async function askForChange({ base, target, brand, values, request, harder, fps, durationSec, note, image }) {
     if (!request) throw new Error('Describe a change');
     const model = harder ? MODELS.harder : MODELS.default;
     const modelName = harder ? 'Opus' : 'Haiku';
@@ -662,7 +734,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       const text = (f) => requestText(base, brand, values || {}, note ? `${request}\n(${note})` : request, f);
       for (let attempt = 1; attempt <= 2; attempt += 1) {
         if (attempt > 1) stage(`Fixing a problem (${modelName})`);
-        const msg = await callClaude(model, text(failure));
+        const msg = await callClaude(model, text(failure), image);
         const usd = costOf(model.id, msg.usage || {});
         spent += usd;
         logCost(base.id, model.id, msg.usage || {}, usd);
@@ -675,13 +747,13 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
         }
         try {
           const next = applyChange(base, call.input || {});
-          stage('Testing the change');
+          stage(next.rebuild ? 'Rebuilding this slide so it can be edited' : 'Testing the change');
           const timing = batchTiming({ fps, durationSec });
           await still({
             code: next.code, fields: valuesFor(next.fields, values), brand, fps: timing.fps, durationInFrames: timing.durationInFrames,
             frame: Math.min(timing.durationInFrames - 1, Math.round(timing.fps * 3)), output: path.join(dirs().work, 'check.png')
           });
-          return out({ who: 'ai', text: call.input.summary || 'Done.' }, next);
+          return out({ who: 'ai', text: next.rebuild ? `Rebuilt as editable. ${call.input.summary || ''}`.trim() : (call.input.summary || 'Done.') }, next);
         } catch (err) {
           failure = errText(err);
         }
@@ -703,7 +775,8 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     const latest = loadTemplate(t.id);
     const chat = [...(latest.chat || []), { who: 'me', text: request }, { ...res.reply, usd: res.spent, model: res.model }].slice(-40);
     const history = res.change ? [...(latest.history || []), { code: latest.code, fields: latest.fields }].slice(-30) : latest.history;
-    saveTemplate({ ...latest, ...(res.change || {}), history, chat, costUsd: (latest.costUsd || 0) + res.spent });
+    const { rebuild: _rebuild, ...applied } = res.change || {};
+    saveTemplate({ ...latest, ...applied, history, chat, costUsd: (latest.costUsd || 0) + res.spent });
     emit();
     return snapshot();
   }
@@ -793,19 +866,6 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
 
   // ── Files and settings ────────────────────────────────────────────────────
 
-  function naturalImages(dir) {
-    const collator = new Intl.Collator(undefined, { numeric: true });
-    return fs.readdirSync(dir).filter((f) => IMAGE_EXT.includes(path.extname(f).toLowerCase()) && !f.startsWith('.')).sort(collator.compare);
-  }
-
-  async function pickSlides() {
-    const res = await dialog.showOpenDialog({ properties: ['openDirectory'] });
-    if (res.canceled) return null;
-    const dir = res.filePaths[0];
-    allowedRoots.add(path.resolve(dir));
-    return { folder: dir, images: naturalImages(dir).map((f) => ({ name: path.basename(f, path.extname(f)), url: assetUrl(path.join(dir, f)) })) };
-  }
-
   async function pickImage() {
     const res = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
     if (res.canceled) return null;
@@ -848,12 +908,13 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     previewDoc: async () => { await start(); return previewDoc(); },
     editTemplate, undo, createTemplate, renameTemplate, deleteTemplate,
     createBrand, updateBrand, addBrandFiles,
-    pickSlides, pickImage, pickFolder, updateSettings,
-    createSet, openSet, deleteSet, updateSet, updateRow, setRowStatus, resetRow, keepRow, undoRow, removeRow, addRows,
-    editSlide, renderSet, markImported, cancel
+    pickImage, pickFolder, updateSettings,
+    setUi, updateWorkspace, loadSlides, newCallout, updateItem, useTemplate, saveAsTemplate, addToReview, setStage, openItem,
+    removeItem, undoItem, revertToImage, editItem, renderQueue, markImported, cancel
   };
 
   return {
+    onProject,
     /** IPC entry: only the methods above are reachable from the page. */
     async call(method, args) {
       if (!Object.prototype.hasOwnProperty.call(api, method)) throw new Error(`Unknown Graphics call: ${method}`);
