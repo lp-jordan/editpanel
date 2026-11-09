@@ -800,8 +800,9 @@ function createCutThrough(opts) {
       const yellow = results.reduce((n, r) => n + r.yellow, 0);
       const kinds = {};
       for (const r of results) for (const [k, n] of Object.entries(r.kinds)) kinds[k] = (kinds[k] || 0) + n;
-      st.data = { timelines: results.length, red, yellow, kinds };
-      report.unshift(`Checked ${results.length} timeline(s): ${red} red, ${yellow} yellow`, '');
+      const repeats = results.reduce((n, r) => n + r.repeats, 0);
+      st.data = { timelines: results.length, red, yellow, repeats, kinds };
+      report.unshift(`Checked ${results.length} timeline(s): ${red} red, ${yellow} yellow, ${repeats} repeat`, '');
       fs.mkdirSync(f.dir, { recursive: true });
       fs.writeFileSync(f.checkReport, report.join('\n') + '\n', 'utf8');
       fs.writeFileSync(f.checkReport.replace(/\.txt$/, '.json'), JSON.stringify({ ...st.data, results }, null, 1), 'utf8');

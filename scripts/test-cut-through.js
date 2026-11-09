@@ -105,7 +105,7 @@ fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
   const tl3 = { name: 'T3', fps: 24, start_frame: 0, start_tc: '01:00:00:00', pieces: [
     { mc: 'mc', angle: 'Camera 1', start: 0, end: 141, src_in: 0, src_out: 141 },
     { mc: 'mc', angle: 'Camera 1', start: 141, end: 300, src_in: 141, src_out: 300 } ] };
-  assert.ok(checkTimeline({ timeline: tl3, words, multicam: 'mc' }).markers.some((m) => m.name.includes('Repeated word') && /"The the"/.test(m.note)));
+  assert.ok(checkTimeline({ timeline: tl3, words, multicam: 'mc' }).markers.some((m) => m.name.includes('Repeated word') && m.color === 'Purple' && /"The the"/.test(m.note)));
   console.log('✓ check: word cut off, cue kept, sound with no words, flash shot, pauses, mid-sentence join, repeats, one marker per frame');
 }
 
@@ -768,6 +768,18 @@ sys.stdout.write(json.dumps(res))`;
   return { send, calls };
 }
 
+// ── 3a0. phantom doubles: Whisper's doubted repeat goes, a real or one-letter repeat stays ──
+{
+  const src = fs.readFileSync(path.join(PIPELINE, 'transcribe.py'), 'utf8');
+  const code = [/def norm_word[\s\S]*?(?=\n\ndef )/, /PHANTOM_P.*\n/, /def drop_phantom_doubles[\s\S]*?(?=\n\n\ndef )/].map((re) => re.exec(src)[0]).join('\n');
+  const py = `import json,re,sys\n${code}\nw=json.loads(sys.argv[1])\nprint(drop_phantom_doubles(w),' '.join(x['w'] for x in w))`;
+  const W = (w, s, e, p) => ({ mic: 'M', w, s, e, p });
+  const out = execFileSync(PY, ['-c', py, JSON.stringify([W('business.', 0, 10, 1), W('business.', 10, 14, 0.07), W('recruiting,', 20, 30, 0.99), W('recruiting,', 31, 40, 1),
+    W('I', 50, 52, 0.9), W('I', 52, 54, 0.1), W('make', 60, 70, 1), W('make', 90, 95, 0.1)])], { encoding: 'utf8' }).trim();
+  assert.strictEqual(out, '1 business. recruiting, recruiting, I I make make');
+  console.log('✓ transcribe: phantom doubled words dropped, real repeats kept');
+}
+
 // ── 3a. Compare: differences in source frames, whatever the timeline's position ──
 {
   const cmp = require('../electron/workers/cut_through_compare');
@@ -1292,8 +1304,8 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   const loud = (f) => lv[f] > -40;
   for (const r of soloPlan.removals) {
     const quietBefore = [1, 2, 3].every((k) => !loud(r.from - k));
-    const quietAfter = [0, 1, 2].every((k) => !loud(r.to + k));
-    assert.ok((quietBefore && quietAfter) || r.to - r.from < 20, `removal ${r.from}-${r.to} (${r.why}) not 3 fr clear of sound`);
+    const quietAfter = [0, 1].every((k) => !loud(r.to + k));      // scripted: ~2 fr before the incoming word
+    assert.ok((quietBefore && quietAfter) || r.to - r.from < 20, `removal ${r.from}-${r.to} (${r.why}) not clear of sound`);
   }
   take.words.forEach((x, k) => {
     if (gone(x.s)) return;
@@ -1303,12 +1315,12 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
       if (loud(f) && gone(f)) assert.fail(`kept word "${x.w}" clipped at frame ${f}`);
     }
   });
-  // head and tail from the waveform: fade-in ends 3 fr before the first sound, fade-out starts 3 fr after the last
+  // scripted head and tail (Jordan's edits, Compare 2026-11-09): 6 fr before the first word, 24 after the last sound
   const firstSound = lv.findIndex((v) => v > -40);
   let lastSound = lv.length - 1;
   while (lastSound > 0 && !(lv[lastSound] > -40)) lastSound -= 1;
-  assert.strictEqual(vv[0].in, firstSound - 11, 'head');
-  assert.strictEqual(vv[vv.length - 1].out, lastSound + 1 + 3 + 8, 'tail');
+  assert.strictEqual(vv[0].in, firstSound - 6, 'head');
+  assert.ok(vv[vv.length - 1].out > lastSound + 12 && vv[vv.length - 1].out <= lastSound + 1 + 24, 'tail');   // capped by the recording's end
   const joins = new Set(soloPlan.removals.map((r) => r.to));
   for (const x of vv.slice(1).filter((x) => !joins.has(x.in))) {
     assert.ok(!loud(x.in), `picture cut at ${x.in} lands on sound`);

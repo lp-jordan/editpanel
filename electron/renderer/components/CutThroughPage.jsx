@@ -489,6 +489,7 @@ function CutThroughPage({ connected }) {
             <CtRow label="Result">
               <span className={d.red ? 'tag warning' : 'tag'}>{d.red} red</span>
               <span className="tag">{d.yellow} yellow</span>
+              {d.repeats ? <span className="tag">{d.repeats} repeat</span> : null}
               {Object.entries(d.kinds || {}).map(([k, n]) => <span key={k} className="tag">{k} × {n}</span>)}
             </CtRow>
           )}

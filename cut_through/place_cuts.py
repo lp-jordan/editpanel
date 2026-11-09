@@ -265,7 +265,9 @@ def main(argv) -> None:
         if cs - pe < 4:                                  # touching words: the dip between them
             return quietest_early(pe_i, max(pe_i, int(cs)))
         last = next((f for f in range(min(pe_i + 3, int(cs) - 2), pe_i - 3, -1) if sound(f)), None)   # the word's tail
-        a = (last + 1 if last is not None else pe_i) + 3
+        a = (last + 1 if last is not None else pe_i) + JOIN_AFTER
+        if JOIN_AFTER > 3:                               # the extra air stops short of the removed word
+            a = min(a, max(pe_i + 3, int(cs) - 2))
         if any(sound(f) for f in range(a - 2, a + 1)):   # still sounding (breath / sound with no word)
             a = quietest_early(pe_i, pe_i + 5)
         return min(a, int(cs) - 1)
@@ -276,7 +278,7 @@ def main(argv) -> None:
         if ns - ce < 4:
             return quietest(min(math.ceil(ce), ns_i), ns_i)
         first = next((f for f in range(max(ns_i - 3, math.ceil(ce) + 2), ns_i + 3) if sound(f)), None)   # the word's onset
-        b = (first if first is not None else ns_i) - 3
+        b = (first if first is not None else ns_i) - JOIN_BEFORE
         if any(sound(f) for f in range(b - 1, b + 2)):   # sound right before the word: an "uh", a mumble
             b = quietest(ns_i - 5, ns_i - 1)
         return max(b, math.ceil(ce) + 1)
@@ -303,6 +305,11 @@ def main(argv) -> None:
     # removals=<file>: the edit decisions come from Claude (cut_through_claude.js) as frame
     # spans; the rule-based detection below is skipped and the rest (pauses, picture, audio) runs
     given = json.load(open(o["removals"], encoding="utf-8")) if o.get("removals") else None
+    # the delivery's join shape (scripted, Jordan's edits 2026-11-09: ~10 fr after the outgoing word,
+    # ~2 before the incoming one); other deliveries keep 3 and 3, and split a pause evenly
+    air = (given or {}).get("pauses") or {}
+    JOIN_AFTER = int(air.get("join_after", 3))
+    JOIN_BEFORE = int(air.get("before", 3))
     beat_ends = sorted(float(x) for x in ((given or {}).get("beats") or []))
 
     def is_beat(word_end):
@@ -407,8 +414,9 @@ def main(argv) -> None:
         if last is not None and s - last > pause_max and (free or s - last - pause_left >= min_save):
             if LV:                                      # leave pause_left frames of air, split around the join
                 beat = BEAT if is_beat(last - 1) else 0  # a finished thought keeps its beat
-                a = after_sound(last, s - 2, pause_left // 2 + beat)
-                b = before_sound(s, a + 1, pause_left - pause_left // 2)
+                pad_b = int(gp.get("before", pause_left - pause_left // 2))
+                a = after_sound(last, s - 2, pause_left - pad_b + beat)
+                b = before_sound(s, a + 1, pad_b)
                 if b <= a:
                     last = e if last is None else max(last, e)
                     continue
@@ -465,7 +473,10 @@ def main(argv) -> None:
         first = next((f for f in range(a0, kept[0][1]) if sound(f)), None)
         if first is not None:
             prev = next((f for f in range(first - 1, max(0, first - 120), -1) if sound(f) and removed(f)), None)
-            head = first - AIR - FADE
+            if "head" in gp:                                   # to the first word, past any breath before it
+                head = int(next((w["s"] for w in W if a0 <= w["s"] < kept[0][1]), first)) - int(gp["head"])
+            else:
+                head = first - AIR - FADE
             if prev is not None:
                 head = max(head, prev + 1 + AIR)               # never pull in the cut pre-roll's sound
             kept[0][0] = max(0, min(head, kept[0][1] - 1))
@@ -473,9 +484,16 @@ def main(argv) -> None:
         last = next((f for f in range(b0 - 1, kept[-1][0], -1) if sound(f)), None)
         if last is not None:
             nxt = next((f for f in range(last + 1, last + 120) if sound(f) and removed(f)), None)
-            tail = last + 1 + AIR + FADE
+            if "tail" in gp and sum(sound(f) for f in range(last + 1, last + 17)) < 12:
+                # the last word's own decay can run on into a removed post-roll: only a new onset
+                # (4 quiet frames before it) is the post-roll; 12 of 16 still sounding = it touches
+                nxt = next((f for f in range(last + 5, last + 120)
+                            if sound(f) and removed(f) and not any(sound(g) for g in range(f - 4, f))), None)
+            tail = last + 1 + int(gp.get("tail", AIR + FADE))
             if nxt is not None:
                 tail = min(tail, nxt - AIR)                    # never take in the cut post-roll
+            gap = next((r["from"] for r in merged if "editorial" in r["why"] and r["from"] > last), None)
+            tail = min(tail, gap if gap is not None else end)  # never past the recording
             kept[-1][1] = max(kept[-1][0] + 1, tail)
 
     # 5. picture. With Claude's shot list (removals file "shots": [{at, angle}]) the cuts are its
@@ -690,6 +708,15 @@ def main(argv) -> None:
             said = (r.get("said") or "").strip()
             mark(r["from"], "Yellow", "Retake replaced",
                  (r.get("reason") or "an earlier take") + (f" — removed: {said[:120]}" if said else ""))
+        else:
+            # a real repeat taken out: its own colour, so repeats can be seen (or hidden) as a group
+            gone = [w for w in W if r["from"] <= (w["s"] + w["e"]) / 2 < r["to"]]
+            if 1 <= len(gone) <= 3:
+                k = W.index(gone[0])
+                before = norm(W[k - 1]["w"]) if k else ""
+                after = norm(W[k + len(gone)]["w"]) if k + len(gone) < len(W) else ""
+                if norm(gone[0]["w"]) in (before, after) or norm(gone[-1]["w"]) in (before, after):
+                    mark(r["from"], "Purple", "Repeat removed", f"\"{' '.join(w['w'].strip() for w in gone)}\" taken out — keep it if the repeat was deliberate")
         # a cut inside a kept word (aligned times, 1 fr of slack) — Jordan, 2026-11-06: say which
         # word, in plain words; nothing when the cut sits in the gap between words
         cut_in = [w for w in W if w["s"] + 1 < r["from"] < w["e"] - 1 or w["s"] + 1 < r["to"] < w["e"] - 1]

@@ -11,11 +11,11 @@
  *           Ends mid-sentence the video's last kept word doesn't end a sentence
  *           Cue kept          "say that again", "from the top", … left in
  *   Yellow  Joins mid-sentence the words before a join stop mid-sentence and ≥ 3 real words were removed
- *           Repeat at the cut  the same word(s) on both sides of a join
  *           Gap at the cut / Pause kept / Silence at the head or tail
- *           Repeated word      "the the" left in (Whisper's own doubles are already ignored)
  *           Sound, no words    a loud stretch with no words (mumble, off-camera talk) left in
  *           Flash shot         a shot under half a second
+ *   Purple  Repeat at the cut  the same word(s) on both sides of a join
+ *           Repeated word      "the the" left in (may be deliberate emphasis; Whisper's own doubles are already ignored)
  */
 
 const TAG = 'cut-through-check';
@@ -31,6 +31,7 @@ const CUES = [
   /\btake (two|2)\b/
 ];
 
+const RANK = { Red: 3, Yellow: 2, Purple: 1 };           // one marker per frame: the higher priority colour shows
 const norm = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9']/g, '');
 const endsSentence = (w) => /[.?!…]["'”’)\]]*$/.test(String(w.w || '').trim());
 const startsLower = (w) => /^["'“‘(]*[a-z]/.test(String(w.w || '').trim());
@@ -111,8 +112,8 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
 
   const pauseMax = Math.max(Math.round((kind === 'convo' ? 2.0 : 1.0) * fps), (pauses && pauses.max) || 0);
   const left = (pauses && pauses.left) || 11;              // air left across a trimmed pause / join
-  const airAfter = Math.floor(left / 2);
-  const airBefore = left - airAfter;
+  const airBefore = pauses && Number.isFinite(pauses.before) ? pauses.before : left - Math.floor(left / 2);
+  const airAfter = left - airBefore;
   const edgeMax = Math.round(1.5 * fps);
   const found = [];
   const add = (frame, color, name, note, fix = null) => found.push({ frame: Math.max(0, Math.round(frame)), color, name, note, fix });
@@ -167,7 +168,7 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
         const l = a.words.slice(-n).map((w) => norm(w.w));
         const r = b.words.slice(0, n).map((w) => norm(w.w));
         if (l.length === n && r.length === n && l.every((x, i) => x && x === r[i]) && !l.every((x) => FILLERS.has(x))) {
-          add(at, 'Yellow', 'Repeat at the cut', `"${quote(a.words.slice(-n))}" on both sides`);
+          add(at, 'Purple', 'Repeat at the cut', `"${quote(a.words.slice(-n))}" on both sides`);
           break;
         }
       }
@@ -195,7 +196,7 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
       if (norm(p.w) && norm(p.w) === norm(w.w) && !isFiller(w) && gap < fps * 0.6 && !(i >= 2 && norm(ws[i - 2].w) === norm(p.w))) {
         let n = i + 1;
         while (n < ws.length && norm(ws[n].w) === norm(p.w)) n += 1;
-        add(rec(g, p.s), 'Yellow', 'Repeated word', `"${quote(ws.slice(i - 1, n))}"`);
+        add(rec(g, p.s), 'Purple', 'Repeated word', `"${quote(ws.slice(i - 1, n))}"`);
       }
     }
     // cue phrases: on the stretch's words in order
@@ -253,7 +254,7 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
   for (const f of found.sort((x, y) => x.frame - y.frame)) {
     const m = byFrame.get(f.frame);
     if (!m) { byFrame.set(f.frame, { ...f }); continue; }
-    if (f.color === 'Red') m.color = 'Red';
+    if (RANK[f.color] > RANK[m.color]) m.color = f.color;
     if (!m.name.split(' + ').includes(f.name)) m.name = `${m.name} + ${f.name}`;
     m.note = `${m.note}\n${f.note}`;
   }
@@ -261,13 +262,14 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
   const kinds = {};
   for (const f of found) kinds[f.name] = (kinds[f.name] || 0) + 1;
   const red = markers.filter((m) => m.color === 'Red').length;
+  const repeats = markers.filter((m) => m.color === 'Purple').length;
   const data = {
-    timeline: timeline.name, red, yellow: markers.length - red, kinds,
+    timeline: timeline.name, red, yellow: markers.length - red - repeats, repeats, kinds,
     joins: segs.length - 1, minutes: +((Math.max(...pieces.map((p) => p.end)) - t0) / fps / 60).toFixed(1)
   };
   const lines = [
-    `${timeline.name}: ${red} red, ${data.yellow} yellow · ${data.joins} joins · ${data.minutes} min`,
-    ...markers.map((m) => `  ${m.tc}  ${m.color === 'Red' ? 'RED   ' : 'yellow'}  ${m.name} — ${m.note.replace(/\n/g, ' / ')}`)
+    `${timeline.name}: ${red} red, ${data.yellow} yellow, ${repeats} repeat · ${data.joins} joins · ${data.minutes} min`,
+    ...markers.map((m) => `  ${m.tc}  ${m.color === 'Red' ? 'RED   ' : m.color === 'Purple' ? 'repeat' : 'yellow'}  ${m.name} — ${m.note.replace(/\n/g, ' / ')}`)
   ];
   const fixes = { trims: [], keeps: [], fixed: {} };
   for (const f of found) {

@@ -233,6 +233,29 @@ def norm_word(t: str) -> str:
     return "".join(c for c in str(t).lower() if c.isalnum() or c == "'")
 
 
+PHANTOM_P, PHANTOM_GAP = 0.3, 3        # a repeat Whisper doubts this much, this close (frames), was never said
+
+
+def drop_phantom_doubles(words: list) -> int:
+    """Whisper sometimes writes one spoken word twice, the second copy at very low confidence (Chad
+    Volkert 2026-11-09: 0.01-0.27; real repeats 0.68+). Left in, alignment splits the one word between
+    the two copies and the edit cuts half of it as a stutter. Removed in place, before alignment, so the
+    aligner gives the real word all of its sound. Returns how many went."""
+    start_of = lambda w: w.get("ws", w["s"])
+    end_of = lambda w: w.get("we", w["e"])
+    drop, prev = set(), {}
+    for w in sorted(words, key=start_of):
+        p = prev.get(w["mic"])
+        # one-letter words are exempt: "I I I" is a real stumble, and Whisper always doubts those
+        if p is not None and len(norm_word(w["w"])) > 1 and norm_word(w["w"]) == norm_word(p["w"]) \
+                and w.get("p", 1) < PHANTOM_P and start_of(w) - end_of(p) <= PHANTOM_GAP:
+            drop.add(id(w))
+            continue
+        prev[w["mic"]] = w
+    words[:] = [w for w in words if id(w) not in drop]
+    return len(drop)
+
+
 def align_words(words: list, mics: list, fs: float, progress=None) -> str:
     """WhisperX forced alignment (wav2vec2): pins every word Whisper wrote to the audio. Whisper's
     own word times touch each other and run 3–25 frames off (Elevate, 2026-11-06: "reconnect" cut
@@ -242,6 +265,7 @@ def align_words(words: list, mics: list, fs: float, progress=None) -> str:
     word was never said (Whisper invented "show show"): marked "ghost" so the edit never treats it
     as a stutter. Returns a report line."""
     t0 = time.time()
+    phantoms = drop_phantom_doubles(words)
     try:
         import torch
         import whisperx
@@ -331,7 +355,7 @@ def align_words(words: list, mics: list, fs: float, progress=None) -> str:
             progress(pct)
     words.sort(key=lambda w: (w["s"], w["mic"]))
     return (f"Aligned {done} of {len(todo)} words to the audio on {device} in {time.time() - t0:.0f}s "
-            f"({moved} moved ≥ 1 fr; {ghosts} doubled word(s) Whisper invented, ignored; {skipped} kept Whisper's times)")
+            f"({moved} moved ≥ 1 fr; {phantoms + ghosts} doubled word(s) Whisper invented, ignored; {skipped} kept Whisper's times)")
 
 
 def write_align_note(label: str, line: str) -> None:
