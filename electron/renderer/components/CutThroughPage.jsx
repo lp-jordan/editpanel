@@ -14,7 +14,8 @@ const CT_STEPS = [
   { key: 'transcribe', title: 'Transcribe' },
   { key: 'plan', title: 'Plan' },
   { key: 'build', title: 'Build' },
-  { key: 'check', title: 'Check' }
+  { key: 'check', title: 'Check' },
+  { key: 'compare', title: 'Compare' }
 ];
 
 function ctDuration(ms) {
@@ -133,6 +134,7 @@ function CutThroughPage({ connected }) {
   const [bins, setBins] = React.useState([]);
   const [timelines, setTimelines] = React.useState([]);
   const [checkTimeline, setCheckTimeline] = React.useState('');
+  const [compareTimeline, setCompareTimeline] = React.useState('');
   const [openReports, setOpenReports] = React.useState({});
   const [errors, setErrors] = React.useState({});
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -493,6 +495,29 @@ function CutThroughPage({ connected }) {
         </div>
       );
     }
+    if (key === 'compare') {
+      const d = st.data;
+      if (st.status === 'running' && !d) return null;
+      const roughBase = ct.label && !(vids && vids.active) ? `${ct.label} rough cut` : '';
+      return (
+        <div className="ct-grid">
+          {st.status !== 'running' && (
+            <CtRow label="Timeline">
+              <select className="settings-input ct-grow-input" value={compareTimeline} onFocus={loadTimelines} onChange={(e) => setCompareTimeline(e.target.value)}>
+                <option value="">{roughBase ? `All ${roughBase}s` : 'All rough cuts'}</option>
+                {timelines.filter((t) => !roughBase || t !== roughBase).map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </CtRow>
+          )}
+          {d && (
+            <CtRow label="Result">
+              <span className="tag">{d.changed} of {d.timelines} changed</span>
+              <span className="tag">Words +{d.restored} −{d.cut}</span>
+            </CtRow>
+          )}
+        </div>
+      );
+    }
     if (key === 'build') {
       if (st.status === 'running') return null;
       return (
@@ -586,6 +611,12 @@ function CutThroughPage({ connected }) {
       return (
         <button type="button" className="btn small ghost" disabled={busy || !connected || steps.transcribe.status !== 'done'}
           onClick={() => call(key, () => api.runCheck({ timeline: checkTimeline }))}>{st.status === 'pending' ? 'Check' : 'Check again'}</button>
+      );
+    }
+    if (key === 'compare') {
+      return (
+        <button type="button" className="btn small ghost" disabled={busy || !connected || steps.transcribe.status !== 'done'}
+          onClick={() => call(key, () => api.runCompare({ timeline: compareTimeline }))}>{st.status === 'pending' ? 'Compare' : 'Compare again'}</button>
       );
     }
     if (key === 'build') {

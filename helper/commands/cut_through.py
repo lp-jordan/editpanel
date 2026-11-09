@@ -205,6 +205,16 @@ def angle_of(item_name: str, mc_name: str) -> str:
     return item_name.rsplit(" - ", 1)[-1] if " - " in item_name else "?"
 
 
+def read_audio(tl: Any) -> List[Dict[str, Any]]:
+    """Where every audio clip sits on the timeline (record frames only: enough to see a split edit)."""
+    out: List[Dict[str, Any]] = []
+    for t in range(1, int(_safe(lambda: tl.GetTrackCount("audio"), 0) or 0) + 1):
+        for it in _safe(lambda: tl.GetItemListInTrack("audio", t), []) or []:
+            out.append({"track": t, "name": str(_safe(lambda: it.GetName(), "")),
+                        "start": int(_safe(lambda: it.GetStart(), 0)), "end": int(_safe(lambda: it.GetEnd(), 0))})
+    return out
+
+
 def read_timeline(tl: Any) -> Dict[str, Any]:
     """Every multicam piece on the picture track with the most of them: record start/end, the
     multicam source in/out (multicam frames, the unit the cut plan uses) and the angle. Same read
@@ -245,7 +255,10 @@ def _timeline_named(name: str):
 
 def handle_ct_read_timeline(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
     name = str(payload.get("name") or "")
-    out = read_timeline(_timeline_named(name))
+    tl = _timeline_named(name)
+    out = read_timeline(tl)
+    if payload.get("audio"):
+        out["audio"] = read_audio(tl)
     if log_func:
         log_func(f"[cut-through] read {len(out['pieces'])} multicam piece(s) from {name!r}")
     return out

@@ -3454,6 +3454,7 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:read-marks', ctCall(() => cutThrough.readMarks()));
   ipcMain.handle('cut-through:build', ctCall((a) => cutThrough.runBuild(a)));
   ipcMain.handle('cut-through:check', ctCall((a) => cutThrough.runCheck(a)));
+  ipcMain.handle('cut-through:compare', ctCall((a) => cutThrough.runCompare(a)));
   ipcMain.handle('cut-through:lpos-projects', ctCall(() => cutThrough.listLposProjects()));
   ipcMain.handle('cut-through:find-videos', ctCall((a) => cutThrough.findVideos(a)));
   ipcMain.handle('cut-through:name-multicam-timelines', ctCall((a) => cutThrough.nameMulticamTimelines(a)));

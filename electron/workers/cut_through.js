@@ -33,8 +33,9 @@ const { randomUUID } = require('crypto');
 const claude = require('./cut_through_claude');
 const videosLib = require('./cut_through_videos');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
+const compare = require('./cut_through_compare');
 
-const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check'];
+const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check', 'compare'];
 const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
 const DEFAULT_WX_PYTHON = 'C:\\wxbench\\Scripts\\python.exe';
 const MAX_LOG_LINES = 400;
@@ -292,6 +293,8 @@ function createCutThrough(opts) {
       plan: path.join(dir, `${label}_plan.json`),
       buildReport: path.join(dir, `cut_through_${label}.txt`),
       checkReport: path.join(dir, `check_${label}.txt`),
+      compareJson: path.join(dir, `compare_${label}.json`),
+      compareHtml: path.join(dir, `compare_${label}.html`),
       videos: path.join(dir, `videos_${label}.json`),
       batchDraft: path.join(dir, `batch_${label}.json`)
     };
@@ -466,7 +469,8 @@ function createCutThrough(opts) {
       transcribe: [f.words, f.transcribeReport],
       plan: [readJson(f.videos)?.active ? f.videos : f.plan, null],
       build: [f.buildReport, f.buildReport],
-      check: [f.checkReport, f.checkReport]
+      check: [f.checkReport, f.checkReport],
+      compare: [f.compareHtml, null]
     };
     for (const key of STEP_KEYS) {
       const [out, rep] = marks[key];
@@ -805,6 +809,65 @@ function createCutThrough(opts) {
       error = err instanceof Error ? err.message : errMsg(err);
     }
     finish('check', { error, report, reportFile: error ? null : f.checkReport, data: error ? null : st.data });
+    return snapshot();
+  }
+
+  /** Every plan this run has, each with the files that explain it. */
+  function comparablePlans() {
+    const f = files();
+    const vids = (s.videos && s.videos.active && s.videos.videos) || [];
+    const out = vids.map((v) => ({ id: v.id, kind: v.kind === 'convo' ? 'convo' : 'solo', ...videoFiles(v.id) }));
+    if (!out.length) {
+      out.push({ id: null, kind: s.day ? planKind(s.day) : 'solo', plan: f.plan,
+        removals: path.join(f.dir, `removals_${s.label}.json`), review: path.join(f.dir, `review_${s.label}.json`) });
+    }
+    return out.map((p) => ({ ...p, data: readJson(p.plan) })).filter((p) => p.data && (p.data.video || []).length);
+  }
+
+  /** Compare: each rough cut as it is now in Resolve against the plan it was built from. Read-only
+   *  and free. Writes compare_<label>.json (for reading patterns) and .html (for looking). */
+  async function runCompare({ timeline } = {}) {
+    const f = files();
+    const words = readJson(f.words);
+    if (!words) throw new Error('Run Transcribe first');
+    const st = begin('compare');
+    st.traceId = randomUUID();
+    st.progress = { phase: 'Finding the rough cuts', phaseAt: Date.now(), bar: null };
+    emit();
+    let error = null;
+    let report = [];
+    try {
+      const plans = comparablePlans();
+      if (!plans.length) throw new Error('No plan in this run to compare against');
+      const names = timeline ? [String(timeline)] : await roughCuts();
+      if (!names.length) throw new Error('No rough cut timeline in this project');
+      const levels = readJson(f.levels);
+      const results = [];
+      const used = {};
+      const skipped = [];
+      for (const [k, name] of names.entries()) {
+        st.progress = { phase: `Comparing ${name}`, phaseAt: Date.now(), bar: names.length > 1 ? Math.round((k / names.length) * 100) : null };
+        emit();
+        const tl = (await sendWorkerRequest({ cmd: 'ct_read_timeline', name, audio: true, trace_id: st.traceId }, 'resolve')).data;
+        const best = plans.map((p) => ({ p, score: compare.planMatch(tl, p.data) })).sort((a, b) => b.score - a.score)[0];
+        if (!best || best.score < 0.5) { skipped.push(name); continue; }
+        const removals = readJson(best.p.removals);
+        results.push(compare.compareTimeline({ timeline: tl, plan: best.p.data, words, removals, review: readJson(best.p.review), levels,
+          kind: best.p.kind, pauses: (removals && removals.pauses) || null, beats: (removals && removals.beats) || [] }));
+        used[name] = best.p.data;
+      }
+      if (!results.length) throw new Error(`No plan matches ${names.join(', ')}`);
+      const sum = compare.totals(results);
+      report = compare.reportLines(results, sum);
+      if (skipped.length) report.push(`No matching plan: ${skipped.join(', ')}`);
+      st.data = { timelines: sum.timelines, changed: sum.changed, restored: sum.words.restored, cut: sum.words.cut, byType: sum.byType };
+      fs.mkdirSync(f.dir, { recursive: true });
+      fs.writeFileSync(f.compareJson, JSON.stringify({ label: s.label, madeAt: Date.now(), totals: sum, results }, null, 1), 'utf8');
+      fs.writeFileSync(f.compareHtml, compare.reportHtml({ label: s.label, results, sum, levels, plans: used }), 'utf8');
+    } catch (err) {
+      error = err instanceof Error ? err.message : errMsg(err);
+    }
+    finish('compare', { error, report, reportFile: error ? null : f.compareHtml, data: error ? null : st.data });
     return snapshot();
   }
 
@@ -1397,7 +1460,7 @@ function createCutThrough(opts) {
         const counted = await api.messages.countTokens({ model: ctx.params.model, system: ctx.params.system, messages: ctx.params.messages });
         input = counted && Number(counted.input_tokens);
       } catch (_) { /* estimate below */ }
-      if (!Number.isFinite(input) || input <= 0) input = Math.round((ctx.params.system.length + ctx.params.messages[0].content.length) / 3.5);
+      if (!Number.isFinite(input) || input <= 0) input = Math.round((ctx.system.length + ctx.params.messages[0].content.length) / 3.5);
       const output = Math.round(input * ratio);
       const usd = claude.costOf(ctx.model, { input_tokens: input, output_tokens: output }, 0.5);
       const { label: _l, wordsPath: _w, dayPath: _d, outDir: _o, costsDir: _c, promptPath: _p, ...keep } = args;
@@ -1613,6 +1676,7 @@ function createCutThrough(opts) {
     collectBatch,
     runBuild,
     runCheck,
+    runCompare,
     onWorkerLog,
     _planners: PLANNERS
   };

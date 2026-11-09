@@ -271,7 +271,8 @@ function requestParams({ model = DEFAULT_MODEL, effort = 'high', system, transcr
     max_tokens: 128000,
     thinking: { type: 'adaptive' },
     output_config: { effort, format: { type: 'json_schema', schema: buildSchema(angles) } },
-    system,
+    // the brief is the same for every video in a run: cached, so only the first call pays for it in full
+    system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
     messages: [{ role: 'user', content: `${meta}\n\n<transcript>\n${transcript}\n</transcript>\n\nReturn the edit: removals, shots, notes.` }]
   };
 }

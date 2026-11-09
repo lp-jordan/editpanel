@@ -768,6 +768,28 @@ sys.stdout.write(json.dumps(res))`;
   return { send, calls };
 }
 
+// ── 3a. Compare: differences in source frames, whatever the timeline's position ──
+{
+  const cmp = require('../electron/workers/cut_through_compare');
+  assert.deepStrictEqual(cmp.subtract([[0, 10], [20, 30]], [[5, 25]]), [[0, 5], [25, 30]]);
+  const plan = { multicam: 'mc', fps: 24, video: [{ in: 0, out: 100, angle: 'Camera 1' }, { in: 200, out: 300, angle: 'Camera 2' }], removals: [{ from: 100, to: 200, why: 'claude flub' }] };
+  const words = { words: [{ w: 'one.', s: 10, e: 20 }, { w: 'lost', s: 150, e: 160 }, { w: 'two.', s: 210, e: 220 }, { w: 'three.', s: 280, e: 295 }] };
+  const piece = (a, b, angle, t) => ({ mc: 'mc', angle, src_in: a, src_out: b, start: t, end: t + b - a });
+  const same = { name: 'x', fps: 24, start_frame: 1000, start_tc: '01:00:00:00', pieces: [piece(0, 100, 'Camera 1', 1000), piece(200, 300, 'Camera 2', 1100)] };
+  assert.strictEqual(cmp.compareTimeline({ timeline: same, plan, words }).changed, false);
+  assert.strictEqual(cmp.planMatch(same, plan), 1);
+  // the flub put back, 10 frames of air off the tail, the second piece on another camera, and the whole thing later on the timeline
+  const edited = { ...same, pieces: [piece(0, 200, 'Camera 1', 5000), piece(200, 290, 'Camera 3', 5200)] };
+  const r = cmp.compareTimeline({ timeline: edited, plan, words });
+  assert.deepStrictEqual(r.events.map((e) => [e.type, e.from, e.to, e.position]), [['restored', 100, 200, 'join'], ['air_trimmed', 290, 300, 'tail']]);
+  assert.strictEqual(r.events[0].why, 'claude flub');
+  assert.deepStrictEqual(r.angles.map((a) => [a.plan, a.now, a.from, a.to]), [['Camera 2', 'Camera 3', 200, 290]]);
+  assert.deepStrictEqual(r.stats.words, { planKept: 3, nowKept: 4, restored: 1, cut: 0 });
+  const html = cmp.reportHtml({ label: '<x>', results: [r], sum: cmp.totals([r]), levels: null, plans: { x: plan } });
+  assert.ok(html.includes('&lt;x&gt;') && !html.includes('<x>'));
+  console.log('✓ compare: restored / trimmed / camera changes found in source frames, untouched is unchanged');
+}
+
 // ── 3b. videos: find (recordings + slate) → plan now → batch → build ──
 const vlib = require('../electron/workers/cut_through_videos');
 {
@@ -1087,7 +1109,7 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.strictEqual(pl.status, 'done', `${pl.error}\n${pl.log.join('\n')}`);
   assert.ok(pl.data.pieces > 0 && pl.data.angles['Camera 1'] >= 1 && pl.data.angles['Camera 2'] >= 1 && pl.data.angles['Camera 3'] >= 1, JSON.stringify(pl.data));
   const creq = convoRequests[convoRequests.length - 1];
-  assert.ok(creq.system.includes('Angle = person') && /Delivery: A recorded conversation/.test(creq.messages[0].content) &&
+  assert.ok(creq.system[0].text.includes('Angle = person') && /Delivery: A recorded conversation/.test(creq.messages[0].content) &&
     /2 people, each on their own mic \(Camera 2, Camera 3\)/.test(creq.messages[0].content) &&
     /Camera 2 = close-up of the person speaking on the Camera 2 mic/.test(creq.messages[0].content), creq.messages[0].content.slice(0, 500));
   const convoPlan = JSON.parse(fs.readFileSync(RUN('E2E_test', 'E2E_test_plan.json'), 'utf8'));
@@ -1237,7 +1259,7 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.strictEqual(req.output_config.format.type, 'json_schema');
   assert.strictEqual(req.fallbacks, 'default');
   assert.deepStrictEqual(req.betas, ['server-side-fallback-2026-07-01']);
-  assert.ok(req.system.includes('Keep the last good take') && req.system.includes('Cut on the thought') && req.system.includes('Direction from Jordan'));
+  assert.ok(req.system[0].text.includes('Keep the last good take') && req.system[0].text.includes('Cut on the thought') && req.system[0].text.includes('Direction from Jordan'));
   assert.ok(/Direction from Jordan for this recording[^\n]*\nUse the wide only to hide cuts\./.test(req.messages[0].content), req.messages[0].content.slice(0, 600));
   assert.deepStrictEqual(req.output_config.format.schema.properties.shots.items.properties.angle.enum,
     ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4']);
@@ -1318,6 +1340,18 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.ok(/^Checked 2 timeline\(s\)/.test(ck.report[0]), ck.report.join('\n'));
   const one = (await c3.runCheck({ timeline: 'Solo2 rough cut 2' })).steps.check;
   assert.ok(one.status === 'done' && one.data.timelines === 1, one.error);
+  // Compare: an untouched rough cut is unchanged, read-only (no markers), with the audio read asked for
+  const nCmp = w.calls.length;
+  const cmp = (await c3.runCompare({})).steps.compare;
+  assert.strictEqual(cmp.status, 'done', cmp.error);
+  const cmpSent = w.calls.slice(nCmp);
+  assert.ok(cmpSent.filter((c) => c.cmd === 'ct_read_timeline').every((c) => c.audio === true) && !cmpSent.some((c) => c.cmd === 'ct_set_markers'));
+  assert.ok(cmp.data.timelines === 2 && cmp.data.changed === 0 && cmp.reportFile === RUN('Solo2', 'compare_Solo2.html'), JSON.stringify(cmp.data));
+  assert.ok(fs.existsSync(RUN('Solo2', 'compare_Solo2.json')));
+  // the brief is marked for caching; the transcript after it is not
+  const lastReq = requests[requests.length - 1];
+  assert.deepStrictEqual(lastReq.system[0].cache_control, { type: 'ephemeral' });
+  assert.strictEqual(typeof lastReq.messages[0].content, 'string');
   // stage: the lighter brief + looser pause rule reach Claude and the planner
   const stage = (await c3.runPlan({ delivery: 'stage', roles: { 'Camera 3': 'skip' } })).steps.plan;
   assert.strictEqual(stage.status, 'done', stage.error);
