@@ -2,14 +2,14 @@
 Called by CreateMulticamOverlay. Needs Resolve 21.1+.
 
 create_multicam
-  { "source_bin": "FOOTAGE / ATEM / Session", "bin_name": "Session", "reuse_existing": false }
-  Writes SEQUENCES / MC / <bin_name> / <bin_name> MC. Returns `day`: the multicam's
+  { "source_bin": "FOOTAGE / ATEM / Session", "multicam_name": "Session", "reuse_existing": false }
+  Writes SEQUENCES / MC / <multicam_name>. Returns `day`: the multicam's
   fps, timecode and recordings, which main names from the LPOS slate
   (cut_through_videos.js).
 
 create_multicam_timelines
-  { "bin_name": "Session", "timelines": [{ "name": "H6_raw", "segments": [[from, to], ...] }] }
-  Writes SEQUENCES / <bin_name> / <name>. Segments are multicam frames, `to` exclusive.
+  { "multicam_name": "Session", "timelines": [{ "name": "H6_raw", "segments": [[from, to], ...] }] }
+  Writes SEQUENCES / <multicam_name> / <name>. Segments are multicam frames, `to` exclusive.
 
 Clips get their camera number from the nearest `CAM n` bin, else the filename.
 Only CAMERAS are used. Mic WAVs are not handled.
@@ -125,13 +125,13 @@ def handle_create_multicam(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError("Creating multicams needs Resolve 21.1 or later.")
 
     source_path = str(payload.get("source_bin") or "").strip()
-    bin_name = str(payload.get("bin_name") or "").strip()
+    multicam_name = str(payload.get("multicam_name") or "").strip()
     if not source_path:
         raise RuntimeError("Choose a source bin.")
-    if not bin_name:
-        raise RuntimeError("Enter a bin name.")
-    if "/" in bin_name:
-        raise RuntimeError("Bin name can't contain /.")
+    if not multicam_name:
+        raise RuntimeError("Enter a multicam name.")
+    if "/" in multicam_name:
+        raise RuntimeError("Multicam name can't contain /.")
 
     media_pool = rh.project.GetMediaPool()
     root = media_pool.GetRootFolder()
@@ -162,8 +162,8 @@ def handle_create_multicam(payload: Dict[str, Any]) -> Dict[str, Any]:
     for c in clips:
         c["in_f"] = tc_to_frames(c["start_tc"], fps)
 
-    mc_name = f"{bin_name} MC"
-    mc_segments = ["SEQUENCES", "MC", bin_name]
+    mc_name = multicam_name
+    mc_segments = ["SEQUENCES", "MC"]
     mc_path = BIN_PATH_SEPARATOR.join(mc_segments)
     existing_bin = resolve_folder_by_path(root, mc_path)
     mc = _find_clip(existing_bin, mc_name) if existing_bin is not None else None
@@ -225,23 +225,23 @@ def handle_create_multicam_timelines(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if not rh.resolve or not rh.project:
         raise RuntimeError("Resolve not connected or no project open")
-    bin_name = str(payload.get("bin_name") or "").strip()
+    multicam_name = str(payload.get("multicam_name") or "").strip()
     timelines = payload.get("timelines")
-    if not bin_name or not isinstance(timelines, list):
+    if not multicam_name or not isinstance(timelines, list):
         raise RuntimeError("Nothing to build.")
 
     media_pool = rh.project.GetMediaPool()
     root = media_pool.GetRootFolder()
-    mc_name = f"{bin_name} MC"
-    mc_folder = resolve_folder_by_path(root, BIN_PATH_SEPARATOR.join(["SEQUENCES", "MC", bin_name]))
+    mc_name = multicam_name
+    mc_folder = resolve_folder_by_path(root, BIN_PATH_SEPARATOR.join(["SEQUENCES", "MC"]))
     mc = _find_clip(mc_folder, mc_name) if mc_folder is not None else None
     if mc is None:
         raise RuntimeError(f"Multicam not found: {mc_name}")
     mc_frames = _safe(lambda: int(str(mc.GetClipProperty("Frames"))))
 
-    tl_bin = _find_or_create_path(media_pool, root, ["SEQUENCES", bin_name])
+    tl_bin = _find_or_create_path(media_pool, root, ["SEQUENCES", multicam_name])
     if tl_bin is None or not media_pool.SetCurrentFolder(tl_bin):
-        raise RuntimeError(f"Could not create bin SEQUENCES / {bin_name}")
+        raise RuntimeError(f"Could not create bin SEQUENCES / {multicam_name}")
 
     existing = {_safe(lambda: rh.project.GetTimelineByIndex(i).GetName())
                 for i in range(1, int(rh.project.GetTimelineCount() or 0) + 1)}

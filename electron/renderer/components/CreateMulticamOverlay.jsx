@@ -14,7 +14,7 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
   const [binTree, setBinTree] = React.useState([]);
   const [binsLoading, setBinsLoading] = React.useState(false);
   const [sourceBin, setSourceBin] = React.useState('');
-  const [binName, setBinName] = React.useState('');
+  const [mcName, setMcName] = React.useState('');
   const [nameEdited, setNameEdited] = React.useState(false);
   const [buildTimelines, setBuildTimelines] = React.useState(false);
   const [lposProjects, setLposProjects] = React.useState([]);
@@ -26,7 +26,7 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
     if (!open) return;
     setStage('configure');
     setSourceBin('');
-    setBinName('');
+    setMcName('');
     setNameEdited(false);
     setBuildTimelines(false);
     setLposProjectId('');
@@ -82,18 +82,18 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
 
   function handleSourceChange(path) {
     setSourceBin(path);
-    if (!nameEdited) setBinName(binTree.find((b) => b.path === path)?.name || '');
+    if (!nameEdited) setMcName(binTree.find((b) => b.path === path)?.name || '');
   }
 
   async function handleCreate() {
     setStage('running');
-    const name = binName.trim();
+    const name = mcName.trim();
     onLog?.(`[multicam] Creating "${name}" from ${sourceBin}…`);
     let data = null;
     try {
       const res = await window.leaderpassAPI.call('create_multicam', {
         source_bin: sourceBin,
-        bin_name: name,
+        multicam_name: name,
         reuse_existing: buildTimelines,
       });
       data = res?.data || {};
@@ -106,7 +106,7 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
         });
         if (!named?.ok) throw new Error(named?.error || 'Could not read the slate');
         const timelines = named.data.timelines;
-        const tl = await window.leaderpassAPI.call('create_multicam_timelines', { bin_name: name, timelines });
+        const tl = await window.leaderpassAPI.call('create_multicam_timelines', { multicam_name: name, timelines });
         const uncoded = timelines.filter((t) => !t.code).length;
         const warnings = [...(data.warnings || [])];
         if (uncoded) warnings.push(`${uncoded} timeline${uncoded !== 1 ? 's' : ''} had no J-code.`);
@@ -145,14 +145,14 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
         </div>
 
         <div className="atem-dest-section">
-          <p className="atem-field-label">Bin name</p>
+          <p className="atem-field-label">Multicam Sequence Name</p>
           <input
             className="settings-input"
             type="text"
-            value={binName}
-            onChange={(e) => { setBinName(e.target.value); setNameEdited(true); }}
+            value={mcName}
+            onChange={(e) => { setMcName(e.target.value); setNameEdited(true); }}
           />
-          {nameInvalid && <p className="error-text">Bin name can’t contain /.</p>}
+          {nameInvalid && <p className="error-text">Name can’t contain /.</p>}
         </div>
 
         <div className="atem-resolve-toggle">
@@ -229,7 +229,7 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
 
   if (!open) return null;
 
-  const trimmedName = binName.trim();
+  const trimmedName = mcName.trim();
   const nameInvalid = trimmedName.includes('/');
   const canCreate = connected && sourceBin && trimmedName && !nameInvalid;
 
