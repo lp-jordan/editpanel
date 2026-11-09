@@ -1197,6 +1197,25 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
+  /** Create multicam: name its timelines from the slate. No projectId = one per recording, unnamed. */
+  async function nameMulticamTimelines({ day, label, projectId, firstCode } = {}) {
+    if (!day) throw new Error('No multicam details');
+    let notes = [];
+    if (projectId) {
+      const c = lposClient();
+      if (!c) throw new Error('LPOS not connected');
+      const data = await c.getSlateNotes(projectId);
+      notes = Array.isArray(data?.notes) ? data.notes : [];
+    }
+    const first = projectId ? String(firstCode || '').trim() : '';
+    if (first) {
+      notes = videosLib.notesFrom(day, notes, first);
+      if (!notes) throw new Error(`${first} isn't on this slate`);
+    }
+    const videos = videosLib.findVideos({ day, notes, offsetSec: videosLib.slateOffset(day, notes).offsetSec, label, firstCode: first });
+    return { timelines: videosLib.rawTimelines(videos) };
+  }
+
   function updateVideo(id, patch = {}) {
     if (!s.videos) throw new Error('Find the videos first');
     if (batchLive() || (s.videos.batch && s.videos.batch.status === 'draft')) throw new Error('Discard or finish the batch first');
@@ -1583,6 +1602,7 @@ function createCutThrough(opts) {
     useExistingPlan,
     readMarks,
     listLposProjects,
+    nameMulticamTimelines,
     findVideos,
     updateVideo,
     planVideos,

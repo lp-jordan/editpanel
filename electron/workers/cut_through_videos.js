@@ -272,4 +272,19 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
   return videos;
 }
 
-module.exports = { findVideos, notesFrom, slateOffset, codeEvents, recordingsOf, slateSeconds, longestPause, speakersIn, tcSecOfFrame, frameOfTcSec, cleanName, safeId, tcLabel };
+/** Videos → Create multicam timelines: "<J-code>_raw", in multicam frames with restart gaps cut. */
+function rawTimelines(videos) {
+  return (videos || []).map((v) => {
+    const code = cleanName(v.code);
+    const segments = [];
+    let start = v.from;
+    for (const [gapFrom, gapTo] of v.gaps || []) {
+      segments.push([start, gapFrom]);
+      start = gapTo;
+    }
+    segments.push([start, v.to]);
+    return { name: code ? `${code}_raw${v.name.slice(code.length)}` : `${v.name}_raw`, code: v.code || null, segments };
+  });
+}
+
+module.exports = { rawTimelines, findVideos, notesFrom, slateOffset, codeEvents, recordingsOf, slateSeconds, longestPause, speakersIn, tcSecOfFrame, frameOfTcSec, cleanName, safeId, tcLabel };

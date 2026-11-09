@@ -6,9 +6,10 @@
  *   open       — boolean
  *   onClose    — () => void
  *   connected  — boolean (Resolve connection)
+ *   resolveProject — string (preselects the LPOS project of the same name)
  *   onLog      — (msg: string) => void
  */
-function CreateMulticamOverlay({ open, onClose, connected, onLog }) {
+function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog }) {
   const [stage, setStage] = React.useState('configure'); // 'configure' | 'running' | 'done'
   const [binTree, setBinTree] = React.useState([]);
   const [binsLoading, setBinsLoading] = React.useState(false);
@@ -16,6 +17,9 @@ function CreateMulticamOverlay({ open, onClose, connected, onLog }) {
   const [binName, setBinName] = React.useState('');
   const [nameEdited, setNameEdited] = React.useState(false);
   const [buildTimelines, setBuildTimelines] = React.useState(false);
+  const [lposProjects, setLposProjects] = React.useState([]);
+  const [lposProjectId, setLposProjectId] = React.useState('');
+  const [firstCode, setFirstCode] = React.useState('');
   const [result, setResult] = React.useState(null); // { error } | handler output
 
   React.useEffect(() => {
@@ -25,8 +29,24 @@ function CreateMulticamOverlay({ open, onClose, connected, onLog }) {
     setBinName('');
     setNameEdited(false);
     setBuildTimelines(false);
+    setLposProjectId('');
+    setFirstCode('');
     setResult(null);
   }, [open]);
+
+  React.useEffect(() => {
+    if (!open || !buildTimelines || lposProjects.length || !window.cutThroughAPI) return;
+    let cancelled = false;
+    window.cutThroughAPI.listLposProjects().then((res) => {
+      if (cancelled) return;
+      const list = res?.data?.lposProjects || [];
+      setLposProjects(list);
+      const want = String(resolveProject || '').trim().toLowerCase();
+      const match = want && list.find((p) => String(p.name).trim().toLowerCase() === want);
+      if (match) setLposProjectId(match.id);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [open, buildTimelines]);
 
   React.useEffect(() => {
     if (!open || !connected) {
@@ -67,21 +87,36 @@ function CreateMulticamOverlay({ open, onClose, connected, onLog }) {
 
   async function handleCreate() {
     setStage('running');
-    onLog?.(`[multicam] Creating "${binName.trim()}" from ${sourceBin}…`);
+    const name = binName.trim();
+    onLog?.(`[multicam] Creating "${name}" from ${sourceBin}…`);
+    let data = null;
     try {
       const res = await window.leaderpassAPI.call('create_multicam', {
         source_bin: sourceBin,
-        bin_name: binName.trim(),
-        build_timelines: buildTimelines,
+        bin_name: name,
+        reuse_existing: buildTimelines,
       });
-      const data = res?.data || {};
-      setResult(data);
-      onLog?.(`[multicam] Created ${data.multicam} in ${data.bin}` +
-        (buildTimelines ? ` · ${(data.timelines_built || []).length} timeline(s)` : ''));
+      data = res?.data || {};
+      onLog?.(`[multicam] ${data.reused ? 'Using existing' : 'Created'} ${data.multicam} in ${data.bin}`);
       (data.warnings || []).forEach((w) => onLog?.(`[multicam] ${w}`));
+
+      if (buildTimelines && data.day) {
+        const named = await window.cutThroughAPI.nameMulticamTimelines({
+          day: data.day, label: name, projectId: lposProjectId, firstCode: firstCode.trim(),
+        });
+        if (!named?.ok) throw new Error(named?.error || 'Could not read the slate');
+        const timelines = named.data.timelines;
+        const tl = await window.leaderpassAPI.call('create_multicam_timelines', { bin_name: name, timelines });
+        const uncoded = timelines.filter((t) => !t.code).length;
+        const warnings = [...(data.warnings || [])];
+        if (uncoded) warnings.push(`${uncoded} timeline${uncoded !== 1 ? 's' : ''} had no J-code.`);
+        data = { ...data, ...tl?.data && { timelines_built: tl.data.built, timelines_skipped: tl.data.skipped.length, timelines_failed: tl.data.failed }, warnings };
+        onLog?.(`[multicam] Timelines: ${(tl?.data?.built || []).join(', ') || 'none'}`);
+      }
+      setResult(data);
     } catch (err) {
       const msg = String(err?.error?.message || err?.error || err?.message || err);
-      setResult({ error: msg });
+      setResult({ error: msg, created: data?.multicam });
       onLog?.(`[multicam] Failed: ${msg}`);
     }
     setStage('done');
@@ -130,6 +165,30 @@ function CreateMulticamOverlay({ open, onClose, connected, onLog }) {
               onChange={(e) => setBuildTimelines(e.target.checked)}
             />
           </label>
+
+          {buildTimelines && (
+            <>
+              <div className="atem-dest-section" style={{ marginTop: 10 }}>
+                <p className="atem-field-label">LPOS project</p>
+                <select className="settings-input" value={lposProjectId} onChange={(e) => setLposProjectId(e.target.value)}>
+                  <option value="">No slate</option>
+                  {lposProjects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.client ? `${p.client} — ${p.name}` : p.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="atem-dest-section" style={{ marginTop: 10 }}>
+                <p className="atem-field-label">First J-code</p>
+                <input
+                  className="settings-input"
+                  type="text"
+                  value={firstCode}
+                  disabled={!lposProjectId}
+                  onChange={(e) => setFirstCode(e.target.value)}
+                />
+              </div>
+            </>
+          )}
         </div>
       </div>
     );
@@ -137,7 +196,12 @@ function CreateMulticamOverlay({ open, onClose, connected, onLog }) {
 
   function renderDone() {
     if (result?.error) {
-      return <p className="notice error">{result.error}</p>;
+      return (
+        <>
+          {result.created && <p className="run-summary-sub">{result.created} is ready. Timelines weren’t built.</p>}
+          <p className="notice error">{result.error}</p>
+        </>
+      );
     }
     const built = result?.timelines_built?.length || 0;
     const failed = result?.timelines_failed || 0;

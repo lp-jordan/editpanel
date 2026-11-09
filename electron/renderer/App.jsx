@@ -1459,6 +1459,7 @@ function App() {
           open={createMulticamOpen}
           onClose={() => setCreateMulticamOpen(false)}
           connected={connected}
+          resolveProject={project}
           onLog={appendLog}
         />
       )}

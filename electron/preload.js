@@ -216,6 +216,7 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   runCheck: (payload) => ipcRenderer.invoke('cut-through:check', payload),
   listLposProjects: () => ipcRenderer.invoke('cut-through:lpos-projects'),
   findVideos: (payload) => ipcRenderer.invoke('cut-through:find-videos', payload),
+  nameMulticamTimelines: (payload) => ipcRenderer.invoke('cut-through:name-multicam-timelines', payload),
   updateVideo: (id, patch) => ipcRenderer.invoke('cut-through:update-video', { id, patch }),
   planVideos: (payload) => ipcRenderer.invoke('cut-through:plan-videos', payload),
   prepareBatch: (payload) => ipcRenderer.invoke('cut-through:batch-prepare', payload),

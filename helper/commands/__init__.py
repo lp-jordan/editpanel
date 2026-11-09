@@ -24,7 +24,7 @@ from .list_bin_sequences import handle_list_bin_sequences
 from .open_sequence import handle_open_sequence
 from .slate_span_report import handle_slate_span_report
 from .import_media import handle_import_media
-from .create_multicam import handle_create_multicam
+from .create_multicam import handle_create_multicam, handle_create_multicam_timelines
 from .cut_through import handle_ct_list_multicams, handle_ct_run_step, handle_ct_read_timeline, handle_ct_mark_in_out, handle_ct_set_markers
 
 
@@ -55,6 +55,7 @@ RESOLVE_HANDLERS = {
     "slate_span_report": handle_slate_span_report,
     "import_media": handle_import_media,
     "create_multicam": handle_create_multicam,
+    "create_multicam_timelines": handle_create_multicam_timelines,
     # Cut-through (beta), 2026-11-05: runs the cut_through/ pipeline steps in the worker.
     "ct_list_multicams": handle_ct_list_multicams,
     "ct_run_step": handle_ct_run_step,
