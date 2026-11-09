@@ -2841,6 +2841,21 @@ button.status-bar-chip-btn:disabled {
   color: var(--text-strong);
 }
 
+.atem-cam-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+
+.atem-cam-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.84rem;
+  color: var(--text-strong);
+  cursor: pointer;
+}
+
 .atem-dest-row {
   display: flex;
   align-items: center;

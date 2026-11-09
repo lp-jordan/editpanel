@@ -13,6 +13,7 @@
  *   resolveProject   — string  (open project name, shown on the toggle)
  */
 const IMPORT_DEFAULT_BIN = 'FOOTAGE / ATEM';
+const DEFAULT_EXCLUDED_CAMS = [5, 7, 8];
 
 function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveProject, onLog }) {
   const DEFAULT_HOST = atemHost || '172.20.10.241';
@@ -30,6 +31,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
 
   // ── Configure state ────────────────────────────────────
   const [destination, setDestination] = React.useState('');
+  const [excludedCams, setExcludedCams] = React.useState(() => new Set(DEFAULT_EXCLUDED_CAMS));
 
   // ── Import-into-Resolve state ──────────────────────────
   const [importToResolve, setImportToResolve] = React.useState(false);
@@ -63,6 +65,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     setBrowseError(null);
     setSelected(new Set());
     setDestination('');
+    setExcludedCams(new Set(DEFAULT_EXCLUDED_CAMS));
     setProgressItems([]);
     setCurrentProgress(null);
     setIngestDone(false);
@@ -227,6 +230,15 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     }
   }
 
+  function toggleCam(camNumber) {
+    setExcludedCams(prev => {
+      const next = new Set(prev);
+      if (next.has(camNumber)) next.delete(camNumber);
+      else next.add(camNumber);
+      return next;
+    });
+  }
+
   async function handlePickDestination() {
     if (!window.dialogAPI) return;
     const result = await window.dialogAPI.pickFolder();
@@ -236,13 +248,12 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   }
 
   async function handleStartIngest() {
-    if (!destination || selected.size === 0) return;
+    if (!destination || ingestSessions.length === 0) return;
 
-    const selectedSessions = sessions.filter(s => selected.has(s.name));
-    const total = selectedSessions.reduce((sum, s) => sum + s.fileCount, 0);
+    const total = selectedFileCount;
 
     // Build initial progress item list
-    setProgressItems(selectedSessions.flatMap(s =>
+    setProgressItems(ingestSessions.flatMap(s =>
       s.files.map(f => ({ session: s.name, file: f.name, state: 'pending', camInfo: null }))
     ));
     setFilesTotal(total);
@@ -258,7 +269,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     try {
       res = await window.atemAPI?.startIngest({
         host,
-        sessions: selectedSessions,
+        sessions: ingestSessions,
         destination
       });
     } catch (err) {
@@ -370,8 +381,24 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   // ── Selected summary ────────────────────────────────────
 
   const selectedSessions = sessions.filter(s => selected.has(s.name));
-  const selectedFileCount = selectedSessions.reduce((s, ss) => s + ss.fileCount, 0);
-  const selectedBytes     = selectedSessions.reduce((s, ss) => s + ss.totalBytes, 0);
+  const availableCams = [...new Set(
+    selectedSessions.flatMap(s => s.files.map(f => f.camNumber)).filter(n => n != null)
+  )].sort((a, b) => a - b);
+  // Selected sessions narrowed to the checked cameras. Files with no camera in
+  // their name have no checkbox, so they always come along.
+  const ingestSessions = selectedSessions
+    .map(s => {
+      const files = s.files.filter(f => !excludedCams.has(f.camNumber));
+      return {
+        ...s,
+        files,
+        fileCount: files.length,
+        totalBytes: files.reduce((sum, f) => sum + f.size, 0),
+      };
+    })
+    .filter(s => s.files.length > 0);
+  const selectedFileCount = ingestSessions.reduce((s, ss) => s + ss.fileCount, 0);
+  const selectedBytes     = ingestSessions.reduce((s, ss) => s + ss.totalBytes, 0);
 
   // ── Render stages ────────────────────────────────────────
 
@@ -454,10 +481,29 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     return (
       <div className="atem-configure">
         <div className="atem-summary-card">
-          <p className="atem-summary-line"><strong>{selectedSessions.length}</strong> session{selectedSessions.length !== 1 ? 's' : ''}</p>
+          <p className="atem-summary-line"><strong>{ingestSessions.length}</strong> session{ingestSessions.length !== 1 ? 's' : ''}</p>
           <p className="atem-summary-line"><strong>{selectedFileCount}</strong> file{selectedFileCount !== 1 ? 's' : ''}</p>
           <p className="atem-summary-line"><strong>{formatBytes(selectedBytes)}</strong> total</p>
         </div>
+
+        {availableCams.length > 0 && (
+          <div className="atem-dest-section">
+            <p className="atem-field-label">Cameras</p>
+            <div className="atem-cam-grid">
+              {availableCams.map(cam => (
+                <label key={cam} className="atem-cam-option">
+                  <input
+                    type="checkbox"
+                    className="atem-session-checkbox"
+                    checked={!excludedCams.has(cam)}
+                    onChange={() => toggleCam(cam)}
+                  />
+                  <span>CAM {cam}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="atem-dest-section">
           <p className="atem-field-label">Destination folder</p>
@@ -648,7 +694,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   if (!open) return null;
 
   const canProceedToConfigure = selected.size > 0;
-  const canStartIngest = destination.length > 0 && selected.size > 0;
+  const canStartIngest = destination.length > 0 && ingestSessions.length > 0;
 
   return (
     <div className="tool-overlay" role="dialog" aria-label="ATEM ingest">

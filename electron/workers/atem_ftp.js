@@ -83,7 +83,7 @@ function makeClient() {
  *   ftpVideoPath: string,
  *   fileCount: number,
  *   totalBytes: number,
- *   files: Array<{ name: string, size: number }>
+ *   files: Array<{ name: string, size: number, camNumber: number|null }>
  * }
  *
  * onLog (optional): (msg: string) => void — called for each connect stage so
@@ -129,7 +129,11 @@ async function listSessions(host, port = DEFAULT_PORT, onLog = null) {
       const videoFiles = videoItems.filter(i => i.isFile);
       const files = videoFiles
         .filter(i => VIDEO_EXT_RE.test(i.name) && !APPLE_DOUBLE_RE.test(i.name))
-        .map(i => ({ name: i.name, size: i.size || 0 }));
+        .map(i => ({
+          name: i.name,
+          size: i.size || 0,
+          camNumber: parseCameraInfo(i.name)?.camNumber ?? null
+        }));
       const totalBytes = files.reduce((s, f) => s + f.size, 0);
 
       if (files.length === 0) {
