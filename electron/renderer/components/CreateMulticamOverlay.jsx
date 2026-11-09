@@ -9,6 +9,8 @@
  *   resolveProject — string (preselects the LPOS project of the same name)
  *   onLog      — (msg: string) => void
  */
+const DEFAULT_TIMELINE_BIN = 'SEQUENCES';
+
 function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog }) {
   const [stage, setStage] = React.useState('configure'); // 'configure' | 'running' | 'done'
   const [binTree, setBinTree] = React.useState([]);
@@ -20,6 +22,7 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
   const [lposProjects, setLposProjects] = React.useState([]);
   const [lposProjectId, setLposProjectId] = React.useState('');
   const [firstCode, setFirstCode] = React.useState('');
+  const [timelineBin, setTimelineBin] = React.useState(DEFAULT_TIMELINE_BIN);
   const [result, setResult] = React.useState(null); // { error } | handler output
 
   React.useEffect(() => {
@@ -31,6 +34,7 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
     setBuildTimelines(false);
     setLposProjectId('');
     setFirstCode('');
+    setTimelineBin(DEFAULT_TIMELINE_BIN);
     setResult(null);
   }, [open]);
 
@@ -106,7 +110,7 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
         });
         if (!named?.ok) throw new Error(named?.error || 'Could not read the slate');
         const timelines = named.data.timelines;
-        const tl = await window.leaderpassAPI.call('create_multicam_timelines', { multicam_name: name, timelines });
+        const tl = await window.leaderpassAPI.call('create_multicam_timelines', { multicam_name: name, timeline_bin: timelineBin, timelines });
         const uncoded = timelines.filter((t) => !t.code).length;
         const warnings = [...(data.warnings || [])];
         if (uncoded) warnings.push(`${uncoded} timeline${uncoded !== 1 ? 's' : ''} had no J-code.`);
@@ -168,6 +172,17 @@ function CreateMulticamOverlay({ open, onClose, connected, resolveProject, onLog
 
           {buildTimelines && (
             <>
+              <div className="atem-dest-section" style={{ marginTop: 10 }}>
+                <p className="atem-field-label">Timelines bin</p>
+                <select className="settings-input" value={timelineBin} onChange={(e) => setTimelineBin(e.target.value)} disabled={binsLoading}>
+                  {!binTree.some((b) => b.path === timelineBin) && <option value={timelineBin}>{timelineBin}</option>}
+                  {binTree.map((b) => (
+                    <option key={b.path} value={b.path}>
+                      {b.depth > 1 ? '\u00A0\u00A0\u00A0'.repeat(b.depth - 1) : ''}{b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div className="atem-dest-section" style={{ marginTop: 10 }}>
                 <p className="atem-field-label">LPOS project</p>
                 <select className="settings-input" value={lposProjectId} onChange={(e) => setLposProjectId(e.target.value)}>

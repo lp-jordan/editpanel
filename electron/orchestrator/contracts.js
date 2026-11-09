@@ -156,7 +156,7 @@ const COMMAND_SCHEMAS = Object.freeze({
   // validation lives in the Python handler (handle_import_media).
   import_media: { required: ['files'], types: { parent_bin: 'string' } },
   create_multicam: { required: ['source_bin', 'multicam_name'], types: { source_bin: 'string', multicam_name: 'string' } },
-  create_multicam_timelines: { required: ['multicam_name', 'timelines'], types: { multicam_name: 'string' } },
+  create_multicam_timelines: { required: ['multicam_name', 'timelines'], types: { multicam_name: 'string', timeline_bin: 'string' } },
   ct_list_multicams: { required: [] },
   ct_run_step: { required: ['pipeline_dir', 'script'], types: { pipeline_dir: 'string', script: 'string' } },
   ct_mark_in_out: { required: ['name'], types: { name: 'string' } },

@@ -8,8 +8,8 @@ create_multicam
   (cut_through_videos.js).
 
 create_multicam_timelines
-  { "multicam_name": "Session", "timelines": [{ "name": "H6_raw", "segments": [[from, to], ...] }] }
-  Writes SEQUENCES / <multicam_name> / <name>. Segments are multicam frames, `to` exclusive.
+  { "multicam_name": "Session", "timeline_bin": "SEQUENCES", "timelines": [{ "name": "H6_raw", "segments": [[from, to], ...] }] }
+  Writes <timeline_bin> / <name>. Segments are multicam frames, `to` exclusive.
 
 Clips get their camera number from the nearest `CAM n` bin, else the filename.
 Only CAMERAS are used. Mic WAVs are not handled.
@@ -239,9 +239,11 @@ def handle_create_multicam_timelines(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError(f"Multicam not found: {mc_name}")
     mc_frames = _safe(lambda: int(str(mc.GetClipProperty("Frames"))))
 
-    tl_bin = _find_or_create_path(media_pool, root, ["SEQUENCES", multicam_name])
+    timeline_bin = str(payload.get("timeline_bin") or "SEQUENCES").strip()
+    tl_bin = resolve_folder_by_path(root, timeline_bin) or _find_or_create_path(
+        media_pool, root, [s.strip() for s in timeline_bin.split(BIN_PATH_SEPARATOR) if s.strip()])
     if tl_bin is None or not media_pool.SetCurrentFolder(tl_bin):
-        raise RuntimeError(f"Could not create bin SEQUENCES / {multicam_name}")
+        raise RuntimeError(f"Could not open bin {timeline_bin}")
 
     existing = {_safe(lambda: rh.project.GetTimelineByIndex(i).GetName())
                 for i in range(1, int(rh.project.GetTimelineCount() or 0) + 1)}
