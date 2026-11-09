@@ -63,6 +63,17 @@ function friendlyStepName(step) {
   return JOB_STEP_NAMES[step.step_id] || JOB_STEP_NAMES[step.cmd] || null;
 }
 
+// The running Cut-through step as { label, step, pct }, or null when none is
+// running. pct is null for phases that have no measurable progress.
+const CUT_THROUGH_STEPS = ['prep', 'transcribe', 'plan', 'build', 'check', 'compare'];
+function cutThroughRunOf(ct) {
+  const key = CUT_THROUGH_STEPS.find((k) => ct?.steps?.[k]?.status === 'running');
+  if (!key) return null;
+  const p = ct.steps[key].progress || {};
+  const pct = p.bar ?? p.overall ?? null;
+  return { label: ct.label || '', step: key[0].toUpperCase() + key.slice(1), pct: pct == null ? null : Math.round(pct) };
+}
+
 // Engine-job / export state → { dot, label } for the compact rows: a
 // .status-dot modifier plus a short text label.
 function jobStatusOf(state) {
@@ -237,7 +248,7 @@ function RenderingExportRow({
 // render reaches a terminal state, the row falls back to the compact display.
 const RENDERING_STATES = new Set(['queued', 'rendering', 'uploading']);
 
-function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, exportVersion, onViewResults, onReviewExports }) {
+function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThroughRun, exportVersion, onViewResults, onReviewExports }) {
   const [runs, setRuns] = React.useState([]);
   const [loadingRuns, setLoadingRuns] = React.useState(false);
   const [recentExports, setRecentExports] = React.useState([]);
@@ -609,6 +620,28 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, export
               All tab — the per-category tabs have their own focus. */}
           {activeTab === 'all' && typeof UnassignedExportsPill !== 'undefined' && (
             <UnassignedExportsPill onClick={onReviewExports} />
+          )}
+
+          {activeTab === 'all' && cutThroughRun && (
+            <section className="job-panel-section">
+              <div className="job-panel-row active">
+                <div className="job-panel-row-top">
+                  <span className="job-panel-name" title={cutThroughRun.label}>
+                    Cut-through{cutThroughRun.label ? ` · ${cutThroughRun.label}` : ''}
+                  </span>
+                  <div className="job-panel-row-actions">
+                    <span className="job-panel-step-badge">
+                      {cutThroughRun.step}{cutThroughRun.pct != null ? ` ${cutThroughRun.pct}%` : ''}
+                    </span>
+                  </div>
+                </div>
+                {cutThroughRun.pct != null && (
+                  <div className="job-panel-progress-track">
+                    <div className="job-panel-progress-fill" style={{ width: `${cutThroughRun.pct}%` }} />
+                  </div>
+                )}
+              </div>
+            </section>
           )}
 
           {/* ── Exports / renders ── */}
@@ -985,7 +1018,7 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, export
             </section>
           )}
 
-          {tabCounts[activeTab] === 0 && !loadingRuns && (
+          {tabCounts[activeTab] === 0 && !loadingRuns && !(activeTab === 'all' && cutThroughRun) && (
             <p className="job-panel-empty">
               {activeTab === 'all'        ? 'No jobs yet.'
                 : activeTab === 'exports'   ? 'No exports yet.'

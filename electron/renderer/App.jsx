@@ -145,6 +145,7 @@ function App() {
   const [createMulticamOpen, setCreateMulticamOpen] = React.useState(false);
   const [exportOpen, setExportOpen]           = React.useState(false);
   const [activeExport, setActiveExport]       = React.useState(null);
+  const [cutThroughRun, setCutThroughRun]     = React.useState(null);
   const [openSeqOpen, setOpenSeqOpen]         = React.useState(false);
   // Phase 3.5: bumps when the Jobs-tab "exports awaiting assignment" pill is
   // clicked. ExportsPanel observes the change and expands itself filtered to
@@ -938,6 +939,18 @@ function App() {
     }
   }), [handleLPBaseExport, handleNewProjectBins, handleSpellcheck, handlePullComments]);
 
+  // Cut-through runs in the main process, so the Jobs pill can follow it from any page.
+  React.useEffect(() => {
+    const api = window.cutThroughAPI;
+    if (!api) return undefined;
+    const apply = (ct) => {
+      const next = cutThroughRunOf(ct);
+      setCutThroughRun((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    };
+    api.getState().then((res) => { if (res?.ok !== false) apply(res?.data ?? res); }).catch(() => {});
+    return api.onUpdate(apply);
+  }, []);
+
   const currentWorkspace = workspaceConfig[route];
 
   function renderStatusBar() {
@@ -947,7 +960,7 @@ function App() {
     const exportUploading = activeExport && activeExport.state === 'uploading';
     const exportQueued    = activeExport && activeExport.state === 'queued';
     const exportRunning = exportRendering || exportUploading;
-    const showBusy = Boolean(runningJob) || exportRunning;
+    const showBusy = Boolean(runningJob) || exportRunning || Boolean(cutThroughRun);
     const showAdvisory = Boolean(resolveAdvisory) &&
       !connected &&
       resolveAdvisory.code !== dismissedAdvisoryCode;
@@ -1021,6 +1034,8 @@ function App() {
                 ? `Exporting ${activeExport.percent ?? 0}%`
                 : runningJob
                 ? runningJobLabel
+                : cutThroughRun
+                ? `Cut-through: ${cutThroughRun.step}${cutThroughRun.pct != null ? ` ${cutThroughRun.pct}%` : ''}`
                 : exportQueued
                 ? 'Export queued'
                 : 'Jobs'}
@@ -1444,6 +1459,7 @@ function App() {
         onClose={() => setJobPanelOpen(false)}
         dashboard={dashboard}
         activeExport={activeExport}
+        cutThroughRun={cutThroughRun}
         exportVersion={exportVersion}
         onViewResults={(runId) => {
           setJobPanelOpen(false);
