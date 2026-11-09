@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const os = require('os');
 const claude = require('./cut_through_claude');
 const GUIDE = require('../graphics/guide');
 const STARTERS = require('../graphics/starters');
@@ -86,6 +87,78 @@ function fontInfo(file) {
   else if (/light/.test(s)) weight = 300;
   else if (/thin/.test(s)) weight = 100;
   return { family: family || stem, weight, style };
+}
+
+/** Where the OS keeps installed fonts. Collections (.ttc) can't be loaded by a page, so only single files are read. */
+function systemFontDirs() {
+  const home = os.homedir();
+  if (process.platform === 'win32') {
+    return [path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts'), path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Microsoft', 'Windows', 'Fonts')];
+  }
+  if (process.platform === 'darwin') return ['/System/Library/Fonts', '/System/Library/Fonts/Supplemental', '/Library/Fonts', path.join(home, 'Library/Fonts')];
+  return ['/usr/share/fonts', path.join(home, '.fonts')];
+}
+
+/** A .ttf/.otf's own name table: { family, weight, width, italic }, or null if it can't be read. */
+function readFontFace(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const at = (pos, len) => { const b = Buffer.alloc(len); return fs.readSync(fd, b, 0, len, pos) === len ? b : null; };
+    const head = at(0, 12);
+    if (!head) return null;
+    const tag = head.toString('latin1', 0, 4);
+    if (tag !== 'OTTO' && tag !== 'true' && head.readUInt32BE(0) !== 0x00010000) return null;
+    const count = head.readUInt16BE(4);
+    const dir = at(12, count * 16);
+    if (!dir) return null;
+    const tables = {};
+    for (let i = 0; i < count; i += 1) tables[dir.toString('latin1', i * 16, i * 16 + 4)] = { offset: dir.readUInt32BE(i * 16 + 8), length: dir.readUInt32BE(i * 16 + 12) };
+    if (!tables.name || !tables['OS/2']) return null;
+    const os2 = at(tables['OS/2'].offset, 64);
+    const nt = at(tables.name.offset, tables.name.length);
+    if (!os2 || !nt) return null;
+    const stringsAt = nt.readUInt16BE(4);
+    const nameOf = (id) => {
+      let mac = null;
+      for (let i = 0; i < nt.readUInt16BE(2); i += 1) {
+        const r = 6 + i * 12;
+        if (nt.readUInt16BE(r + 6) !== id) continue;
+        const start = stringsAt + nt.readUInt16BE(r + 10);
+        const raw = nt.subarray(start, start + nt.readUInt16BE(r + 8));
+        if (nt.readUInt16BE(r) === 3 && nt.readUInt16BE(r + 4) === 0x409) return Buffer.from(raw).swap16().toString('utf16le');
+        if (nt.readUInt16BE(r) === 1) mac = raw.toString('latin1');
+      }
+      return mac;
+    };
+    const family = (nameOf(16) || nameOf(1) || '').trim();
+    if (!family || family.startsWith('.')) return null;
+    return { family, weight: os2.readUInt16BE(4), width: os2.readUInt16BE(6), italic: Boolean(os2.readUInt16BE(62) & 1) };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+/** Installed upright fonts as Map(family → Map(weight → { file, width })). A page has one face per family + weight. */
+function scanSystemFonts(dirs = systemFontDirs()) {
+  const families = new Map();
+  for (const dir of dirs) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      if (!/\.(ttf|otf)$/i.test(name)) continue;
+      const file = path.join(dir, name);
+      const face = readFontFace(file);
+      if (!face || face.italic) continue;
+      if (!families.has(face.family)) families.set(face.family, new Map());
+      const faces = families.get(face.family);
+      const had = faces.get(face.weight);
+      if (!had || (had.width !== 5 && face.width === 5)) faces.set(face.weight, { file, width: face.width });
+    }
+  }
+  return families;
 }
 
 function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, userData, dialog, nativeImage }) {
@@ -200,8 +273,11 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   function runtimeBrand(b) {
     const dir = path.join(dirs().brands, b.id);
     const fonts = b.fonts || [];
-    const heading = fonts.find((f) => f.weight >= 600) || fonts[0];
-    const body = fonts.find((f) => f.weight < 600) || fonts[0];
+    const roleFonts = (family) => { const own = fonts.filter((f) => f.family === family); return own.length ? own : fonts; };
+    const headingFonts = roleFonts(b.headingFamily);
+    const bodyFonts = roleFonts(b.bodyFamily);
+    const heading = headingFonts.find((f) => f.weight >= 600) || headingFonts[0];
+    const body = bodyFonts.find((f) => f.weight < 600) || bodyFonts[0];
     const logos = {};
     for (const l of b.logos || []) logos[l.name] = assetUrl(path.join(dir, l.file));
     return {
@@ -842,6 +918,33 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     return snapshot();
   }
 
+  let systemFontsCache = null;
+  const systemFontMap = () => { systemFontsCache = systemFontsCache || scanSystemFonts(); return systemFontsCache; };
+  const systemFonts = () => [...systemFontMap().keys()].sort((a, b) => a.localeCompare(b));
+
+  /** Use a font for headings or body. A system font's files are copied in so renders can load them. */
+  function setBrandFont({ brandId, role, family }) {
+    if (!['heading', 'body'].includes(role)) throw new Error('Unknown font role');
+    const b = readJson(brandFile(brandId));
+    if (!b) throw new Error('Brand not found');
+    b.fonts = b.fonts || [];
+    if (!b.fonts.some((f) => f.family === family)) {
+      const faces = systemFontMap().get(family);
+      if (!faces) throw new Error('Font not found');
+      const dest = path.join(path.dirname(brandFile(brandId)), 'fonts');
+      fs.mkdirSync(dest, { recursive: true });
+      for (const [weight, { file }] of faces) {
+        const name = path.basename(file).toLowerCase();
+        fs.copyFileSync(file, path.join(dest, name));
+        b.fonts.push({ file: `fonts/${name}`, family, weight, style: '' });
+      }
+    }
+    b[`${role}Family`] = family;
+    writeJson(brandFile(brandId), b);
+    emit();
+    return snapshot();
+  }
+
   async function addBrandFiles({ brandId, type }) {
     const b = readJson(brandFile(brandId));
     if (!b) throw new Error('Brand not found');
@@ -909,7 +1012,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     state: async () => { await start(); return snapshot(); },
     previewDoc: async () => { await start(); return previewDoc(); },
     editTemplate, undo, createTemplate, renameTemplate, deleteTemplate,
-    createBrand, updateBrand, addBrandFiles,
+    createBrand, updateBrand, addBrandFiles, systemFonts, setBrandFont,
     pickImage, pickFolder, updateSettings,
     setUi, updateWorkspace, loadSlides, newCallout, updateItem, useTemplate, saveAsTemplate, addToReview, setStage, openItem,
     removeItem, undoItem, revertToImage, editItem, renderQueue, markImported, cancel
@@ -926,4 +1029,4 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   };
 }
 
-module.exports = { createGraphics, MODELS, fontInfo };
+module.exports = { createGraphics, MODELS, fontInfo, readFontFace, scanSystemFonts };

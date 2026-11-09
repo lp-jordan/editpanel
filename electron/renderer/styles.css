@@ -4864,6 +4864,7 @@ button.status-bar-chip-btn:disabled {
 .gp-swatches { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .gp-swatches > button:not(.btn) { width: 30px; height: 30px; border-radius: var(--radius-sm); border: 2px solid transparent; cursor: pointer; }
 .gp-swatches > button.is-on { border-color: var(--text-strong); }
+.gp-color-pick { width: 30px; height: 30px; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: none; cursor: pointer; }
 .gp-brand-edit { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
 .gp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .gp-chip { padding: 2px 8px; border-radius: 99px; background: var(--hover); color: var(--text-muted); font-size: 0.75rem; }

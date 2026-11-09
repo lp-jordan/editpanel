@@ -133,31 +133,33 @@ function GpField({ field, value, onChange, call }) {
   );
 }
 
-function GpBrandEditor({ brand, call, onCreated }) {
-  const [colors, setColors] = React.useState((brand.colors || []).join(', '));
-  const [newName, setNewName] = React.useState('');
-  React.useEffect(() => { setColors((brand.colors || []).join(', ')); }, [brand.id, (brand.colors || []).join(',')]);
+function GpFontSelect({ label, value, families, onChange }) {
+  const options = value && !families.includes(value) ? [value, ...families] : families;
+  return (
+    <label className="gp-field">
+      <span className="gp-label">{label}</span>
+      <select className="settings-input" value={value || ''} onChange={(e) => onChange(e.target.value)}>
+        {options.map((f) => <option key={f} value={f}>{f}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function GpBrandEditor({ brand, call }) {
+  const [systemFonts, setSystemFonts] = React.useState([]);
+  React.useEffect(() => { call('systemFonts').then((list) => { if (list) setSystemFonts(list); }); }, []);
+  const families = [...new Set([...(brand.fonts || []).map((f) => f.family), ...systemFonts])].sort((a, b) => a.localeCompare(b));
+  const setFont = (role, family) => call('setBrandFont', { brandId: brand.id, role, family });
   return (
     <div className="gp-brand-edit">
-      <label className="gp-field">
-        <span className="gp-label">Colors</span>
-        <input className="settings-input" value={colors} onChange={(e) => setColors(e.target.value)}
-          onBlur={() => call('updateBrand', { brandId: brand.id, colors: colors.split(',').map((c) => c.trim()) })} />
-      </label>
+      <GpFontSelect label="Heading font" value={brand.runtime.headingFont} families={families} onChange={(f) => setFont('heading', f)} />
+      <GpFontSelect label="Body font" value={brand.runtime.bodyFont} families={families} onChange={(f) => setFont('body', f)} />
       <div className="gp-chips">
-        {(brand.fonts || []).map((f) => <span className="gp-chip" key={f.file}>{f.family} {f.weight}</span>)}
         {(brand.logos || []).map((l) => <span className="gp-chip" key={l.file}>{l.name}</span>)}
       </div>
       <div className="gp-row">
         <button type="button" className="btn small ghost" onClick={() => call('addBrandFiles', { brandId: brand.id, type: 'font' })}>Add fonts</button>
         <button type="button" className="btn small ghost" onClick={() => call('addBrandFiles', { brandId: brand.id, type: 'logo' })}>Add logos</button>
-      </div>
-      <div className="gp-row">
-        <input className="settings-input gp-grow" placeholder="New brand" value={newName} onChange={(e) => setNewName(e.target.value)} />
-        <button type="button" className="btn small ghost" disabled={!newName.trim()} onClick={async () => {
-          const res = await call('createBrand', { name: newName });
-          if (res) { setNewName(''); onCreated(res.createdId); }
-        }}>Add</button>
       </div>
     </div>
   );
@@ -174,21 +176,25 @@ function GpModal({ label, children }) {
 function GpBrandModal({ g, call, onClose }) {
   const ws = g.workspace;
   const brand = g.brands.find((b) => b.id === ws.ui.brandId) || g.brands[0];
+  const [newColor, setNewColor] = React.useState('#ffffff');
+  const saveColors = (colors) => call('updateBrand', { brandId: brand.id, colors });
   return (
     <GpModal label="Brand">
       <div className="gp-modal-head"><h3 className="ct-step-title">Brand</h3></div>
       <div className="gp-modal-body gp-col">
-        <select className="settings-input" aria-label="Brand" value={brand ? brand.id : ''} onChange={(e) => call('setUi', { brandId: e.target.value, accent: null })}>
-          {g.brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
         {brand && (
           <div className="gp-swatches">
             {brand.colors.map((c) => (
-              <button type="button" key={c} className={ws.brand.accent === c ? 'is-on' : ''} style={{ background: c }} aria-label={`Accent ${c}`} aria-pressed={ws.brand.accent === c} onClick={() => call('setUi', { accent: c })} />
+              <button type="button" key={c} title={c} className={ws.brand.accent === c ? 'is-on' : ''} style={{ background: c }} aria-label={`Accent ${c}`} aria-pressed={ws.brand.accent === c}
+                onClick={() => call('setUi', { accent: c })}
+                onContextMenu={(e) => { e.preventDefault(); if (brand.colors.length > 1) saveColors(brand.colors.filter((x) => x !== c)); }} />
             ))}
+            <input type="color" className="gp-color-pick" aria-label="New color" value={newColor} onChange={(e) => setNewColor(e.target.value)} />
+            <button type="button" className="btn small ghost" aria-label="Add color" disabled={brand.colors.some((c) => c.toLowerCase() === newColor.toLowerCase())}
+              onClick={() => saveColors([...brand.colors, newColor])}>+</button>
           </div>
         )}
-        {brand && <GpBrandEditor brand={brand} call={call} onCreated={(id) => call('setUi', { brandId: id, accent: null })} />}
+        {brand && <GpBrandEditor brand={brand} call={call} />}
       </div>
       <div className="gp-modal-foot"><div className="gp-row gp-end"><button type="button" className="btn small" onClick={onClose}>Done</button></div></div>
     </GpModal>
