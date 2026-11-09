@@ -141,6 +141,7 @@ function App() {
   const [feedbackOpen, setFeedbackOpen] = React.useState(false);
   const [activeResultJobId, setActiveResultJobId] = React.useState(null);
   const [atemIngestOpen, setAtemIngestOpen]   = React.useState(false);
+  const [createMulticamOpen, setCreateMulticamOpen] = React.useState(false);
   const [exportOpen, setExportOpen]           = React.useState(false);
   const [activeExport, setActiveExport]       = React.useState(null);
   const [openSeqOpen, setOpenSeqOpen]         = React.useState(false);
@@ -843,6 +844,14 @@ function App() {
           onClick: handleNewProjectBins,
           requiresResolve: true
         },
+        {
+          key: 'create-multicam',
+          label: 'Create multicam',
+          description: 'Build a multicam from a bin.',
+          actionLabel: 'Create',
+          onClick: () => setCreateMulticamOpen(true),
+          requiresResolve: true
+        },
         // B2 Backup Manager task card removed 2026-05-27 — see LPOS /settings/storage.
       ]
     },
@@ -1442,6 +1451,14 @@ function App() {
           atemHost={settingsDraft.atemHost || '172.20.10.241'}
           resolveConnected={connected}
           resolveProject={project}
+          onLog={appendLog}
+        />
+      )}
+      {createMulticamOpen && (
+        <CreateMulticamOverlay
+          open={createMulticamOpen}
+          onClose={() => setCreateMulticamOpen(false)}
+          connected={connected}
           onLog={appendLog}
         />
       )}

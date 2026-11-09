@@ -65,6 +65,7 @@ const COMMAND_OWNER = Object.freeze({
   // registered here or validateRequestEnvelope rejects it as an unknown command
   // before the request reaches the Python worker (see note above).
   import_media: WORKERS.resolve,
+  create_multicam: WORKERS.resolve,
   // Cut-through (beta), 2026-11-05: list the project's multicams and run the
   // cut_through/ pipeline steps (day prep, batch build) inside the Resolve worker.
   ct_list_multicams: WORKERS.resolve,
@@ -153,6 +154,7 @@ const COMMAND_SCHEMAS = Object.freeze({
   // cam_number}; the schema layer only checks top-level scalars, so per-item
   // validation lives in the Python handler (handle_import_media).
   import_media: { required: ['files'], types: { parent_bin: 'string' } },
+  create_multicam: { required: ['source_bin', 'bin_name'], types: { source_bin: 'string', bin_name: 'string' } },
   ct_list_multicams: { required: [] },
   ct_run_step: { required: ['pipeline_dir', 'script'], types: { pipeline_dir: 'string', script: 'string' } },
   ct_mark_in_out: { required: ['name'], types: { name: 'string' } },
