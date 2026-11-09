@@ -244,13 +244,17 @@ function createCutThrough(opts) {
 
   function settings() {
     const p = (getPrefs() || {}).cutThrough || {};
+    const runFolder = (s.project && (p.runFolders || {})[s.project]) || null;
     return {
       pipelineDir: pipelineDirFrom(p.pipelineDir || p.spikesDir, defaultPipelineDir({ isPackaged, appDir })),
       wxPython: p.wxPython || (process.platform === 'win32' ? DEFAULT_WX_PYTHON : 'python3'),
       seqBin: p.seqBin === undefined ? DEFAULT_SEQ_BIN : p.seqBin,
       claudeModel: p.claudeModel || claude.DEFAULT_MODEL,
       claudeEffort: p.claudeEffort || 'high',
-      filesDir: p.filesDir || filesDir,
+      // this Resolve project's data folder (chosen on the page, no default: see needRunFolder);
+      // until it's chosen, earlier runs are still read from the old shared location
+      runFolder,
+      filesDir: runFolder || p.filesDir || filesDir,
       // the key itself never goes to the renderer
       claudeKey: claudeKey() ? (p.anthropicKey ? `saved …${p.anthropicKey.slice(-4)}` : 'from ANTHROPIC_API_KEY') : null,
       lposProject: (s.project && (p.lposProjects || {})[s.project]) || null
@@ -363,9 +367,17 @@ function createCutThrough(opts) {
     if (st.log.length > MAX_LOG_LINES) st.log.splice(0, st.log.length - MAX_LOG_LINES);
   }
 
+  /** Nothing is written until this project has its run folder, and the folder can be reached. */
+  function needRunFolder() {
+    const { runFolder } = settings();
+    if (!runFolder) throw new Error('Choose a run folder for this project first');
+    if (!fs.existsSync(runFolder)) throw new Error(`Run folder not reachable: ${runFolder}`);
+  }
+
   function begin(step) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
     if (!s.label) throw new Error('Pick a multicam and label first');
+    needRunFolder();
     s.busy = step;
     canceled = false;
     fs.mkdirSync(files().dir, { recursive: true });
@@ -590,7 +602,7 @@ function createCutThrough(opts) {
   function updateSettings(patch = {}) {
     const p = (getPrefs() || {}).cutThrough || {};
     const next = { ...p };
-    for (const k of ['pipelineDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort', 'filesDir']) {
+    for (const k of ['pipelineDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort']) {
       if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
     }
     // the LPOS project whose slate names this Resolve project's videos
@@ -600,6 +612,54 @@ function createCutThrough(opts) {
     }
     setPrefs({ cutThrough: next });
     refreshFiles();
+    emit();
+    return snapshot();
+  }
+
+  /** A plan names its review file by full path: follow the run to its new folder. */
+  function repointPlans(fromDir, toDir) {
+    let labels = [];
+    try { labels = fs.readdirSync(toDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch (_) { return; }
+    for (const label of labels) {
+      const dir = path.join(toDir, label);
+      for (const n of fs.readdirSync(dir).filter((x) => x.endsWith('_plan.json'))) {
+        const file = path.join(dir, n);
+        const plan = readJson(file);
+        if (!plan || typeof plan.review_file !== 'string' || !plan.review_file.startsWith(fromDir + path.sep)) continue;
+        try {
+          fs.writeFileSync(file, JSON.stringify({ ...plan, review_file: path.join(toDir, path.relative(fromDir, plan.review_file)) }, null, 1), 'utf8');
+        } catch (_) { /* the old copy is still there */ }
+      }
+    }
+  }
+
+  /**
+   * Set this Resolve project's run folder. Its earlier runs are copied across (the originals stay,
+   * and nothing already in the new folder is overwritten) so a finished Transcribe isn't lost.
+   * The folder is only saved once the copy has worked.
+   */
+  async function setRunFolder({ folder } = {}) {
+    if (s.busy) throw new Error(`${s.busy} is still running`);
+    if (!s.project) throw new Error('Open a Resolve project first');
+    const target = String(folder || '').trim();
+    if (!target || !path.isAbsolute(target)) throw new Error('Choose a full folder path');
+    const from = path.join(settings().filesDir, folderName(s.project));
+    const to = path.join(target, folderName(s.project));
+    s.busy = 'Copying runs';
+    emit();
+    try {
+      fs.mkdirSync(target, { recursive: true });
+      if (path.resolve(from) !== path.resolve(to) && fs.existsSync(from)) {
+        await fs.promises.cp(from, to, { recursive: true, force: false, errorOnExist: false });
+        repointPlans(from, to);
+      }
+      const p = (getPrefs() || {}).cutThrough || {};
+      setPrefs({ cutThrough: { ...p, runFolders: { ...(p.runFolders || {}), [s.project]: target } } });
+    } finally {
+      s.busy = null;
+    }
+    show(s.mc, s.label);
+    if (pendingProject) { const n = pendingProject; pendingProject = null; onProject(n); }
     emit();
     return snapshot();
   }
@@ -1097,6 +1157,7 @@ function createCutThrough(opts) {
    */
   async function findVideos({ offsetSec } = {}) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
+    needRunFolder();
     if (!s.day) throw new Error('Run Prep first');
     const f = files();
     const words = readJson(f.words);
@@ -1508,6 +1569,7 @@ function createCutThrough(opts) {
     listMulticams,
     select,
     onProject,
+    setRunFolder,
     updateSettings,
     runPrep,
     runTranscribe,

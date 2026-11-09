@@ -3445,6 +3445,7 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:list-multicams', ctCall(() => cutThrough.listMulticams()));
   ipcMain.handle('cut-through:select', ctCall((a) => cutThrough.select(a)));
   ipcMain.handle('cut-through:settings', ctCall((a) => cutThrough.updateSettings(a)));
+  ipcMain.handle('cut-through:run-folder', ctCall((a) => cutThrough.setRunFolder(a)));
   ipcMain.handle('cut-through:prep', ctCall((a) => cutThrough.runPrep(a)));
   ipcMain.handle('cut-through:transcribe', ctCall((a) => cutThrough.runTranscribe(a)));
   ipcMain.handle('cut-through:cancel', ctCall(() => cutThrough.cancel()));

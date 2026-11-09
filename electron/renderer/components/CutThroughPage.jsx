@@ -136,7 +136,7 @@ function CutThroughPage({ connected }) {
   const [openReports, setOpenReports] = React.useState({});
   const [errors, setErrors] = React.useState({});
   const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [settingsDraft, setSettingsDraft] = React.useState({ pipelineDir: '', wxPython: '', filesDir: '' });
+  const [settingsDraft, setSettingsDraft] = React.useState({ pipelineDir: '', wxPython: '' });
   const [keyDraft, setKeyDraft] = React.useState('');
   const [directionDraft, setDirectionDraft] = React.useState('');
   const [planMode, setPlanMode] = React.useState(null);
@@ -157,7 +157,7 @@ function CutThroughPage({ connected }) {
       if (res?.data) {
         setCt(res.data);
         setLabelDraft(res.data.label || '');
-        setSettingsDraft({ pipelineDir: res.data.settings.pipelineDir, wxPython: res.data.settings.wxPython, filesDir: res.data.settings.filesDir });
+        setSettingsDraft({ pipelineDir: res.data.settings.pipelineDir, wxPython: res.data.settings.wxPython });
       }
     });
     return api.onUpdate((data) => setCt(data));
@@ -204,7 +204,17 @@ function CutThroughPage({ connected }) {
 
   const steps = ct.steps;
   const day = steps.prep.data;
-  const busy = Boolean(ct.busy);
+  const runFolder = ct.settings.runFolder;
+  const stepRunning = Boolean(ct.busy);
+  const needsFolder = Boolean(ct.project) && !runFolder;
+  const busy = stepRunning || needsFolder;   // no folder yet: everything waits for it
+
+  async function chooseRunFolder() {
+    const picked = await window.dialogAPI.pickFolder();
+    if (!picked || picked.canceled) return;
+    await call('folder', () => api.setRunFolder({ folder: picked.folderPath }));
+  }
+
   const nextKey = (CT_STEPS.find((s) => steps[s.key].status !== 'done') || {}).key;
   const btnClass = (key) => `btn small${key === nextKey ? '' : ' ghost'}`;
 
@@ -607,6 +617,15 @@ function CutThroughPage({ connected }) {
           <button type="button" className="btn ghost ct-refresh" disabled={!connected || busy || ct.multicamsLoading}
             onClick={() => call('multicams', () => api.listMulticams())}>Refresh</button>
         </div>
+        {ct.project && (
+          <div className="ct-grid">
+            <CtRow label="Run folder">
+              {runFolder ? <span>{runFolder}</span> : <span className="tag warning">Not set</span>}
+              <button type="button" className={`btn small${runFolder ? ' ghost' : ''}`} disabled={stepRunning} onClick={chooseRunFolder}>{runFolder ? 'Change' : 'Choose'}</button>
+            </CtRow>
+          </div>
+        )}
+        {errors.folder && <div className="notice error">{errors.folder}</div>}
         {ct.multicamsError && <div className="notice error">{ct.multicamsError}</div>}
         {dupe && <div className="notice warning">More than one multicam is named {ct.mc}</div>}
         {errors.select && <div className="notice error">{errors.select}</div>}
@@ -683,11 +702,6 @@ function CutThroughPage({ connected }) {
                   if (!keyDraft.trim()) return;
                   call('settings', () => api.updateSettings({ anthropicKey: keyDraft.trim() })).then(() => setKeyDraft(''));
                 }} />
-            </CtRow>
-            <CtRow label="Run files">
-              <input className="settings-input ct-grow-input" value={settingsDraft.filesDir}
-                onChange={(e) => setSettingsDraft({ ...settingsDraft, filesDir: e.target.value })}
-                onBlur={() => call('settings', () => api.updateSettings({ filesDir: settingsDraft.filesDir }))} />
             </CtRow>
             <CtRow label="Cut-through folder">
               <input className="settings-input ct-grow-input" value={settingsDraft.pipelineDir}

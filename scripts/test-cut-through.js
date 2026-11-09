@@ -806,6 +806,36 @@ const vlib = require('../electron/workers/cut_through_videos');
   console.log('✓ videos: slate clock found (time zone + seconds), J-code split in a pause, same code across a stop = one video, flags, no slate');
 }
 
+/** Per-project run folder: required, earlier runs copied across, one project doesn't affect another. */
+async function runFolderChecks(make) {
+  const c = make();
+  await c.listMulticams();
+  c.select({ mc: 'mc_test', label: 'Fold' });
+  assert.strictEqual(c.snapshot().settings.runFolder, null);
+  await assert.rejects(() => c.runPrep({}), /Choose a run folder/);
+  await assert.rejects(() => c.findVideos({}), /Choose a run folder/);
+  const oldDir = RUN('Fold', '');
+  fs.mkdirSync(oldDir, { recursive: true });
+  const oldReview = RUN('Fold', 'review_Fold.json');
+  fs.writeFileSync(RUN('Fold', 'words_Fold.json'), '{"words":[]}');
+  fs.writeFileSync(oldReview, '[]');
+  fs.writeFileSync(RUN('Fold', 'Fold_plan.json'), JSON.stringify({ review_file: oldReview }));
+  const nas = path.join(HOME, 'NAS share', 'runs');
+  await assert.rejects(() => c.setRunFolder({ folder: 'relative/path' }), /full folder path/);
+  const snap = await c.setRunFolder({ folder: nas });
+  assert.strictEqual(snap.settings.runFolder, nas);
+  const moved = path.join(nas, 'Fake Project', 'Fold');
+  assert.strictEqual(snap.files.words, path.join(moved, 'words_Fold.json'));
+  assert.ok(fs.existsSync(snap.files.words), 'earlier run copied');
+  assert.ok(fs.existsSync(RUN('Fold', 'words_Fold.json')), 'original kept');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(moved, 'Fold_plan.json'), 'utf8')).review_file, path.join(moved, 'review_Fold.json'));
+  // a folder that went away (NAS unmounted) stops the run with a clear reason
+  fs.rmSync(nas, { recursive: true, force: true });
+  await assert.rejects(() => c.runPrep({}), /not reachable/);
+  fs.rmSync(oldDir, { recursive: true, force: true });
+  console.log('✓ run folder: required per project, earlier runs copied, plan repointed, unreachable folder refused');
+}
+
 async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   // the E2E conversation day, recorded as two takes, slate on a clock 5 h + 2 s ahead
   const fsec = 1001 / 24000;
@@ -975,7 +1005,10 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
     desktopDir: DESKTOP, filesDir: FILES,
     claudeClient: convoClaude
   });
+  // no run folder yet: nothing runs until the project has one
   prefs = { cutThrough: { pipelineDir: FAKE_PIPELINE, wxPython: PY } };
+  await runFolderChecks(make);
+  prefs = { cutThrough: { pipelineDir: FAKE_PIPELINE, wxPython: PY, runFolders: { 'Fake Project': FILES } } };
   const c = make();
 
   let snap = await c.listMulticams();

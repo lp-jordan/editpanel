@@ -18,7 +18,7 @@ rebuilding EditPanel.
 | Plan | `electron/workers/cut_through_check.js` (second pass) | After the cuts are placed, Check runs on the plan and `place_cuts.py` runs once more with `trim=` (silences: gaps at joins, long pauses, head/tail air, wordless slivers) and `keep=` (the rest of a word a cut went through). Before any build, no Claude. |
 | Check | `electron/workers/cut_through_check.js` | Reads each `<LABEL> rough cut` back from Resolve as it is now and marks what's left to fix, against the aligned words: red = word cut off, ends mid-sentence, redo cue kept; yellow = joins mid-sentence, gaps and pauses, repeats, sound with no words, flash shots. Free (no Claude). A re-run replaces only its own markers. Runs automatically after Build. Writes `check_<LABEL>.txt` / `.json`. |
 
-Every file a run writes goes in one folder: `Documents\Cut-through\<Resolve project>\<label>\` on LP1 (changeable in the page's Settings → Run files). Run by hand in Resolve's console, the scripts still write to the Desktop.
+Every file a run writes goes in one folder: `<Run folder>\<Resolve project>\<label>\`. The Run folder is chosen per Resolve project at the top of the page (no default; nothing runs until it's set). Run by hand in Resolve's console, the scripts still write to the Desktop.
 
 Temporary timelines are named `Cut-through temp …` and are deleted when the build finishes.
 
