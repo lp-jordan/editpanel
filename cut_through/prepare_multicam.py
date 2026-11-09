@@ -125,8 +125,8 @@ def describe(xml: str, mc_name: str = None) -> dict:
                 item = {"name": a.get("name"), "angle": angle, "path": path(ref),
                         "file_zero_sec": float(pos - start), "from_sec": float(pos), "to_sec": float(pos + dur),
                         "channels": int(a.get("audioChannels") or 1), "camera": True}
-                if not any(c["path"] == item["path"] and c["from_sec"] == item["from_sec"] for c in cams):
-                    cams.append(item)      # a <clip> holds the same file as <video> and <audio>
+                if not any(c["angle"] == angle and c["path"] == item["path"] and c["from_sec"] == item["from_sec"] for c in cams):
+                    cams.append(item)      # a <clip> holds the same file as <video> and <audio>; a punch-in angle shares its files with another angle and keeps its own entry
             visit(ch, angle, pos, _s(ch.get("start")))
 
     def has_picture(el) -> bool:
