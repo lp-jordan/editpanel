@@ -272,19 +272,26 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
   return videos;
 }
 
-/** Videos → Create multicam timelines: "<J-code>_raw", in multicam frames with restart gaps cut. */
-function rawTimelines(videos) {
-  return (videos || []).map((v) => {
-    const code = cleanName(v.code);
-    const segments = [];
-    let start = v.from;
-    for (const [gapFrom, gapTo] of v.gaps || []) {
-      segments.push([start, gapFrom]);
-      start = gapTo;
-    }
-    segments.push([start, v.to]);
-    return { name: code ? `${code}_raw${v.name.slice(code.length)}` : `${v.name}_raw`, code: v.code || null, segments };
+/**
+ * Create multicam: one timeline per recording, named "<J-code>_raw" from the code active at the
+ * recording's midpoint (a best guess; codes are typed late, so not its start).
+ */
+function spanTimelines({ day, notes = [], offsetSec = 0, label = 'video' }) {
+  const events = codeEvents(day, notes || [], offsetSec);
+  const spans = recordingsOf(day).map(([a, b], i) => {
+    const mid = (a + b) / 2;
+    const active = events.filter((e) => e.frame <= mid).pop();
+    return { n: i + 1, a, b, code: active ? cleanName(active.code) : '' };
+  });
+  const total = {};
+  for (const s of spans) if (s.code) total[s.code] = (total[s.code] || 0) + 1;
+  const seen = {};
+  return spans.map((s) => {
+    seen[s.code] = (seen[s.code] || 0) + 1;
+    const name = !s.code ? `${label} video ${s.n}_raw`
+      : total[s.code] > 1 ? `${s.code}_raw (${seen[s.code]})` : `${s.code}_raw`;
+    return { name, code: s.code || null, segments: [[s.a, s.b]] };
   });
 }
 
-module.exports = { rawTimelines, findVideos, notesFrom, slateOffset, codeEvents, recordingsOf, slateSeconds, longestPause, speakersIn, tcSecOfFrame, frameOfTcSec, cleanName, safeId, tcLabel };
+module.exports = { spanTimelines, findVideos, notesFrom, slateOffset, codeEvents, recordingsOf, slateSeconds, longestPause, speakersIn, tcSecOfFrame, frameOfTcSec, cleanName, safeId, tcLabel };

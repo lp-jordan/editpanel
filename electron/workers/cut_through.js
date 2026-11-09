@@ -1212,8 +1212,7 @@ function createCutThrough(opts) {
       notes = videosLib.notesFrom(day, notes, first);
       if (!notes) throw new Error(`${first} isn't on this slate`);
     }
-    const videos = videosLib.findVideos({ day, notes, offsetSec: videosLib.slateOffset(day, notes).offsetSec, label, firstCode: first });
-    return { timelines: videosLib.rawTimelines(videos) };
+    return { timelines: videosLib.spanTimelines({ day, notes, offsetSec: videosLib.slateOffset(day, notes).offsetSec, label }) };
   }
 
   function updateVideo(id, patch = {}) {
