@@ -185,101 +185,52 @@ function GpBrandEditor({ brand, call, onCreated }) {
   );
 }
 
-function GpBatchModal({ g, template, brandId, accent, kind, connected, call, onClose }) {
+function GpNewSet({ template, brandId, accent, kind, call, onClose }) {
+  const [name, setName] = React.useState('');
   const [text, setText] = React.useState('');
   const [slides, setSlides] = React.useState(null);
   const [durationSec, setDurationSec] = React.useState(15);
   const [fps, setFps] = React.useState(GP_FPS[0].value);
-  const [outDir, setOutDir] = React.useState('');
-  const [binPath, setBinPath] = React.useState('GRAPHICS');
-  const [view, setView] = React.useState('rows');
-  const [imported, setImported] = React.useState(null);
-  const [importError, setImportError] = React.useState(null);
   const isSlide = kind === 'slide';
   const rows = React.useMemo(
     () => (isSlide ? gpSlideRows(template, (slides && slides.images) || []) : gpParseRows(template, text)),
     [isSlide, template, slides, text]
   );
-  const job = g.job;
-  const running = Boolean(job && job.status === 'running');
-  const common = { templateId: template.id, brandId, accent, rows, fps, durationSec };
-  const inputColumns = template.fields.filter((f) => f.type !== 'image').map((f) => f.label).join(' → ');
-  const importFiles = async () => {
-    setImportError(null);
-    setImported(null);
-    try {
-      const res = await window.leaderpassAPI.call('import_graphics', { bin_path: binPath, files: job.outputs });
-      setImported(res?.data || {});
-    } catch (err) {
-      setImportError(String(err?.error?.message || err?.error || err?.message || 'Import failed'));
-    }
-  };
+  const columns = template.fields.filter((f) => f.type !== 'image').map((f) => f.label).join(' → ');
   return (
     <div className="gp-modal-wrap">
-      <div className="gp-modal" role="dialog" aria-modal="true" aria-label="Batch render">
+      <div className="gp-modal" role="dialog" aria-modal="true" aria-label="New review set">
         <div className="gp-modal-head">
-          <h3 className="ct-step-title">Batch: {template.name}</h3>
+          <h3 className="ct-step-title">New set from {template.name}</h3>
           <button type="button" className="btn small ghost" onClick={onClose}>Close</button>
         </div>
-
-        <div className="gp-modal-body">
-          {view === 'rows' && (
-            <div className="gp-col">
-              {isSlide ? (
-                <div className="gp-row">
-                  <button type="button" className="btn small ghost" onClick={async () => {
-                    const res = await call('pickSlides');
-                    if (res) setSlides(res);
-                  }}>Choose slide folder</button>
-                  <span className="gp-dim">{slides ? slides.folder : ''}</span>
-                </div>
-              ) : (
-                <label className="gp-field">
-                  <span className="gp-label">One overlay per line{template.fields.length > 1 ? ` (tab between ${inputColumns}; " | " between list items)` : ''}</span>
-                  <textarea className="settings-input gp-area gp-batch" rows={9} value={text} onChange={(e) => setText(e.target.value)} />
-                </label>
-              )}
-              {rows.length > 0 && (
-                <div className="gp-table">
-                  {rows.map((r, i) => <div className="gp-table-row" key={i}><span className="gp-dim">{i + 1}</span><span>{r.name}</span></div>)}
-                </div>
-              )}
+        <div className="gp-modal-body gp-col">
+          <label className="gp-field">
+            <span className="gp-label">Name</span>
+            <input className="settings-input" value={name} onChange={(e) => setName(e.target.value)} />
+          </label>
+          {isSlide ? (
+            <div className="gp-row">
+              <button type="button" className="btn small ghost" onClick={async () => {
+                const res = await call('pickSlides');
+                if (res) setSlides(res);
+              }}>Choose slide folder</button>
+              <span className="gp-dim">{slides ? slides.folder : ''}</span>
             </div>
+          ) : (
+            <label className="gp-field">
+              <span className="gp-label">One overlay per line{template.fields.length > 1 ? ` (tab between ${columns}; " | " between list items)` : ''}</span>
+              <textarea className="settings-input gp-area gp-batch" rows={9} value={text} onChange={(e) => setText(e.target.value)} />
+            </label>
           )}
-          {view === 'proof' && (
-            <div className="gp-proofs">
-              {((job && job.kind === 'proof' && job.items) || []).map((p, i) => (
-                <div className="gp-proof" key={i}>
-                  {p.url ? <img src={p.url} alt={p.name} /> : <div className="notice error">{p.error}</div>}
-                  <span className="gp-dim">{p.name}</span>
-                </div>
-              ))}
+          {rows.length > 0 && (
+            <div className="gp-table">
+              {rows.map((r, i) => <div className="gp-table-row" key={i}><span className="gp-dim">{i + 1}</span><span>{r.name}</span></div>)}
             </div>
           )}
         </div>
-
         <div className="gp-modal-foot">
-          {job && running && (
-            <div className="gp-col gp-grow">
-              <div className="run-progress-track"><div className="run-progress-fill" style={{ width: `${Math.round(((job.done + (job.current || 0) / 100) / Math.max(1, job.total)) * 100)}%` }} /></div>
-              <span className="gp-dim">{job.done} of {job.total}</span>
-            </div>
-          )}
-          {job && job.kind === 'render' && !running && (
-            <div className="gp-col gp-grow">
-              <span className="gp-dim">{job.outputs.length} rendered{job.failures.length ? ` · ${job.failures.length} failed` : ''}{job.status === 'canceled' ? ' · canceled' : ''}</span>
-              {job.failures.slice(0, 3).map((f, i) => <div className="notice error" key={i}>{f.name}: {f.error}</div>)}
-              {job.outputs.length > 0 && (
-                <div className="gp-row">
-                  <input className="settings-input gp-grow" aria-label="Resolve bin" value={binPath} onChange={(e) => setBinPath(e.target.value)} />
-                  <button type="button" className="btn small" disabled={!connected} onClick={importFiles}>Import to Resolve</button>
-                </div>
-              )}
-              {imported && <span className="gp-dim">{imported.imported ?? 0} imported{imported.failed ? ` · ${imported.failed} failed` : ''}</span>}
-              {importError && <div className="notice error">{importError}</div>}
-            </div>
-          )}
-          <div className="gp-row gp-settings-row">
+          <div className="gp-row">
             <label className="gp-inline"><span className="gp-label">Seconds</span>
               <input className="settings-input gp-num" type="number" min="1" max="600" value={durationSec} onChange={(e) => setDurationSec(e.target.value)} />
             </label>
@@ -288,30 +239,295 @@ function GpBatchModal({ g, template, brandId, accent, kind, connected, call, onC
                 {GP_FPS.map((f) => <option key={f.label} value={f.value}>{f.label}</option>)}
               </select>
             </label>
-            <button type="button" className="btn small ghost" onClick={async () => {
-              const res = await call('pickFolder');
-              if (res) setOutDir(res);
-            }}>{outDir ? 'Change folder' : 'Output folder'}</button>
-            <span className="gp-dim gp-grow gp-ellipsis">{outDir}</span>
-            {running
-              ? <button type="button" className="btn small ghost" onClick={() => call('cancel')}>Cancel</button>
-              : (
-                <React.Fragment>
-                  <button type="button" className="btn small ghost" disabled={!rows.length && view === 'rows'} onClick={() => {
-                    if (view === 'proof') { setView('rows'); return; }
-                    setView('proof');
-                    call('proof', common);
-                  }}>{view === 'proof' ? 'Back' : 'Proof'}</button>
-                  <button type="button" className="btn small" disabled={!rows.length || !outDir} onClick={() => {
-                    setImported(null);
-                    setView('rows');
-                    call('render', { ...common, outDir });
-                  }}>Render {rows.length || ''}</button>
-                </React.Fragment>
-              )}
+            <span className="gp-grow" />
+            <button type="button" className="btn small" disabled={!name.trim() || !rows.length} onClick={async () => {
+              const res = await call('createSet', { name, templateId: template.id, brandId, accent, rows, fps, durationSec });
+              if (res) onClose();
+            }}>Create {rows.length || ''}</button>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function GpTile({ row, index, active, onClick }) {
+  const image = row.fieldDefs.find((f) => f.type === 'image');
+  const src = image && row.values[image.key];
+  return (
+    <button type="button" className={`gp-tile${active ? ' is-active' : ''}`} onClick={onClick} aria-pressed={active}>
+      {src ? <img src={src} alt="" /> : <span className="gp-tile-text">{row.name}</span>}
+      <span className="gp-tile-foot">
+        <span>{index + 1}</span>
+        {row.foundationChanged && <span className="gp-tag is-warn">Check</span>}
+        {row.hasOverride && <span className="gp-tag">Edited</span>}
+        {row.renderState === 'current' && <span className="gp-tag is-done">Rendered</span>}
+        {row.renderState === 'stale' && <span className="gp-tag is-warn">Re-render</span>}
+      </span>
+    </button>
+  );
+}
+
+function GpReview({ g, call, template, brandId, accent, kind, connected, onBack }) {
+  const set = g.activeSet;
+  const [showNew, setShowNew] = React.useState(false);
+  const [filter, setFilter] = React.useState('review');
+  const [rowId, setRowId] = React.useState(null);
+  const [draft, setDraft] = React.useState('');
+  const [scope, setScope] = React.useState('slide');
+  const [previewError, setPreviewError] = React.useState(null);
+  const [values, setValues] = React.useState({});
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [imported, setImported] = React.useState(null);
+  const [importError, setImportError] = React.useState(null);
+  const chatEnd = React.useRef(null);
+  const commit = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!set && g.sets.length) call('openSet', { setId: g.sets[0].id });
+  }, [Boolean(set), g.sets.length]);
+
+  const rows = set ? set.rows : [];
+  const needs = rows.filter((r) => r.status !== 'approved');
+  const approved = rows.filter((r) => r.status === 'approved');
+  const shown = filter === 'approved' ? approved : needs;
+  const row = rows.find((r) => r.id === rowId) || shown[0] || rows[0] || null;
+  const currentId = row ? row.id : null;
+  const valuesKey = row ? JSON.stringify(row.values) : '';
+
+  React.useEffect(() => {
+    clearTimeout(commit.current);
+    setValues(row ? row.values : {});
+    setPreviewError(null);
+  }, [currentId, valuesKey]);
+
+  const fieldDefs = row ? row.fieldDefs : [];
+  const shape = { fields: fieldDefs };
+  const message = React.useMemo(() => {
+    if (!set || !row || set.missingTemplate) return null;
+    return {
+      code: row.code || set.foundationCode,
+      fields: gpWithPlaceholders(shape, gpValuesFor(shape, values)),
+      brand: set.brand,
+      fps: set.fps,
+      durationInFrames: Math.max(1, Math.round(set.durationSec * set.fps))
+    };
+  }, [set && set.foundationCode, set && set.brand, set && set.fps, set && set.durationSec, row && row.code, currentId, values]);
+
+  const chat = scope === 'all' ? ((set && set.foundationChat) || []) : ((row && row.chat) || []);
+  React.useEffect(() => {
+    if (chatEnd.current) chatEnd.current.scrollIntoView({ block: 'nearest' });
+  }, [chat.length, g.editStatus && g.editStatus.stage]);
+
+  const job = g.job && g.job.kind === 'render' && set && g.job.setId === set.id ? g.job : null;
+  const running = Boolean(g.job && g.job.status === 'running');
+  const toRender = approved.filter((r) => r.renderState !== 'current').length;
+  const target = scope === 'all' ? (set && set.templateId) : currentId;
+  const working = g.editStatus && g.editStatus.target === target;
+
+  const update = (patch) => call('updateSet', { setId: set.id, ...patch });
+  const changeValue = (key, v) => {
+    const next = { ...values, [key]: v };
+    setValues(next);
+    clearTimeout(commit.current);
+    commit.current = setTimeout(() => call('updateRow', { setId: set.id, rowId: row.id, values: next }), 500);
+  };
+  const send = async (harder) => {
+    const request = draft.trim();
+    if (!request || !row) return;
+    setDraft('');
+    const sample = gpWithPlaceholders(shape, gpValuesFor(shape, values));
+    if (scope === 'all') {
+      await call('editTemplate', { templateId: set.templateId, brandId: set.brandId, accent: set.accent, values: sample, request, harder, fps: set.fps, durationSec: set.durationSec });
+    } else {
+      await call('editSlide', { setId: set.id, rowId: row.id, request, harder });
+    }
+  };
+  const go = (step) => {
+    const list = shown.length ? shown : rows;
+    const at = list.findIndex((r) => r.id === currentId);
+    const next = list[Math.min(list.length - 1, Math.max(0, at + step))];
+    if (next) setRowId(next.id);
+  };
+  const approveAndNext = async () => {
+    const at = needs.findIndex((r) => r.id === currentId);
+    const next = needs[at + 1] || needs[at - 1] || null;
+    await call('setRowStatus', { setId: set.id, rowId: row.id, approved: true });
+    if (next) setRowId(next.id); else { setFilter('approved'); setRowId(row.id); }
+  };
+  const importFiles = async () => {
+    setImported(null);
+    setImportError(null);
+    try {
+      const files = set.toImport;
+      const res = await window.leaderpassAPI.call('import_graphics', { bin_path: set.binPath, files });
+      setImported(res?.data || {});
+      if (!(res?.data?.failed)) await call('markImported', { setId: set.id, files });
+    } catch (err) {
+      setImportError(String(err?.error?.message || err?.error || err?.message || 'Import failed'));
+    }
+  };
+
+  const newSetModal = showNew && template && (
+    <GpNewSet template={template} brandId={brandId} accent={accent} kind={kind} call={call} onClose={() => setShowNew(false)} />
+  );
+  const header = (
+    <div className="gp-top">
+      <button type="button" className="btn small ghost" onClick={onBack}>Design</button>
+      <select className="settings-input gp-grow" aria-label="Review set" value={set ? set.id : ''} onChange={(e) => { setRowId(null); setConfirmDelete(false); call('openSet', { setId: e.target.value }); }}>
+        {g.sets.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.approved}/{s.total})</option>)}
+      </select>
+      <button type="button" className="btn small ghost" disabled={!template} onClick={() => setShowNew(true)}>New set</button>
+      {set && (confirmDelete
+        ? <button type="button" className="btn small ghost" onClick={() => { setConfirmDelete(false); setRowId(null); call('deleteSet', { setId: set.id }); }}>Confirm delete</button>
+        : <button type="button" className="btn small ghost" onClick={() => setConfirmDelete(true)}>Delete</button>)}
+    </div>
+  );
+
+  if (!set) {
+    return (
+      <div className="page-stack gp-page">
+        {header}
+        <div className="notice">No review sets yet.</div>
+        {newSetModal}
+      </div>
+    );
+  }
+  if (set.missingTemplate) {
+    return <div className="page-stack gp-page">{header}<div className="notice error">This set's foundation template was deleted.</div></div>;
+  }
+
+  return (
+    <div className="page-stack gp-page">
+      {header}
+      <div className="gp-main">
+        <div className="gp-stage">
+          <div className="gp-stage-frame">
+            <GpPreview message={message} onError={setPreviewError} />
+            {g.editStatus && <div className="gp-badge"><span className="gp-spinner" />Updating</div>}
+          </div>
+          {previewError && <div className="notice error">{previewError}</div>}
+          {row && (
+            <div className="gp-row">
+              <button type="button" className="btn small ghost" onClick={() => go(-1)}>Previous</button>
+              <button type="button" className="btn small ghost" onClick={() => go(1)}>Next</button>
+              <span className="gp-dim gp-grow gp-ellipsis">{row.name}</span>
+              {row.status === 'approved'
+                ? <button type="button" className="btn small ghost" onClick={() => call('setRowStatus', { setId: set.id, rowId: row.id, approved: false })}>Send back to review</button>
+                : <button type="button" className="btn small" onClick={approveAndNext}>Approve and next</button>}
+            </div>
+          )}
+        </div>
+
+        <section className="panel gp-side">
+          <span className="gp-dim">Foundation: {set.templateName}</span>
+          {row && row.foundationChanged && (
+            <div className="notice warning">
+              The foundation changed since this was edited.
+              <div className="gp-row">
+                <button type="button" className="btn small ghost" onClick={() => call('keepRow', { setId: set.id, rowId: row.id })}>Keep this version</button>
+                <button type="button" className="btn small ghost" onClick={() => call('resetRow', { setId: set.id, rowId: row.id })}>Use foundation</button>
+              </div>
+            </div>
+          )}
+          {row && fieldDefs.map((f) => (
+            <GpField key={f.key} field={f} value={values[f.key]} call={call} onChange={(v) => changeValue(f.key, v)} />
+          ))}
+          <label className="gp-field">
+            <span className="gp-label">Brand</span>
+            <select className="settings-input" value={set.brandId} onChange={(e) => update({ brandId: e.target.value, accent: null })}>
+              {g.brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </label>
+          <div className="gp-swatches">
+            {(set.brand.colors || []).map((c) => (
+              <button type="button" key={c} className={set.accent === c ? 'is-on' : ''} style={{ background: c }} aria-label={`Accent ${c}`} aria-pressed={set.accent === c} onClick={() => update({ accent: c })} />
+            ))}
+          </div>
+          {row && (
+            <div className="gp-row">
+              {row.canUndo && <button type="button" className="btn small ghost" onClick={() => call('undoRow', { setId: set.id, rowId: row.id })}>Undo</button>}
+              {row.hasOverride && <button type="button" className="btn small ghost" onClick={() => call('resetRow', { setId: set.id, rowId: row.id })}>Reset to foundation</button>}
+            </div>
+          )}
+        </section>
+      </div>
+
+      <section className="panel gp-strip-panel">
+        <div className="gp-toggle" role="group" aria-label="Filter">
+          <button type="button" className={filter === 'review' ? 'is-on' : ''} aria-pressed={filter === 'review'} onClick={() => { setFilter('review'); setRowId(null); }}>Needs review ({needs.length})</button>
+          <button type="button" className={filter === 'approved' ? 'is-on' : ''} aria-pressed={filter === 'approved'} onClick={() => { setFilter('approved'); setRowId(null); }}>Approved ({approved.length})</button>
+        </div>
+        <div className="gp-strip">
+          {shown.map((r) => <GpTile key={r.id} row={r} index={rows.indexOf(r)} active={r.id === currentId} onClick={() => setRowId(r.id)} />)}
+          {!shown.length && <span className="gp-dim">None</span>}
+        </div>
+      </section>
+
+      <section className="panel gp-chat">
+        <div className="gp-messages">
+          {chat.slice(-GP_MAX_PREVIEW_CHAT).map((m, i) => (
+            <div key={i} className={`gp-msg ${m.who === 'me' ? 'is-me' : ''} ${m.error ? 'is-error' : ''}`}>
+              {m.text}{m.usd ? <span className="gp-cost">{gpMoney(m.usd)}</span> : null}
+            </div>
+          ))}
+          {working && (
+            <React.Fragment>
+              <div className="gp-msg is-me">{g.editStatus.request}</div>
+              <div className="gp-msg gp-status" role="status">
+                <span className="gp-spinner" /><span>{g.editStatus.stage}</span><GpElapsed since={g.editStatus.startedAt} />
+              </div>
+            </React.Fragment>
+          )}
+          <div ref={chatEnd} />
+        </div>
+        <div className="gp-row">
+          <div className="gp-toggle gp-toggle-small" role="group" aria-label="Apply change to">
+            <button type="button" className={scope === 'slide' ? 'is-on' : ''} aria-pressed={scope === 'slide'} onClick={() => setScope('slide')}>This one</button>
+            <button type="button" className={scope === 'all' ? 'is-on' : ''} aria-pressed={scope === 'all'} onClick={() => setScope('all')}>All</button>
+          </div>
+          <input className="settings-input gp-grow" aria-label="Describe a change" placeholder="Describe a change" value={draft} disabled={g.busyEdit}
+            onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send(false); }} />
+          <button type="button" className="btn small ghost" disabled={g.busyEdit || !draft.trim()} onClick={() => send(true)}>Try harder</button>
+          <button type="button" className="btn small" disabled={g.busyEdit || !draft.trim()} onClick={() => send(false)}>{g.busyEdit ? 'Working' : 'Send'}</button>
+        </div>
+      </section>
+
+      <section className="panel gp-render">
+        {g.job && running && (
+          <div className="gp-col">
+            <div className="run-progress-track"><div className="run-progress-fill" style={{ width: `${Math.round(((g.job.done + (g.job.current || 0) / 100) / Math.max(1, g.job.total)) * 100)}%` }} /></div>
+            <span className="gp-dim">{g.job.done} of {g.job.total}</span>
+          </div>
+        )}
+        {job && !running && (
+          <span className="gp-dim">{job.outputs.length} rendered{job.skipped ? ` · ${job.skipped} unchanged` : ''}{job.failures.length ? ` · ${job.failures.length} failed` : ''}{job.status === 'canceled' ? ' · canceled' : ''}</span>
+        )}
+        {job && job.failures.slice(0, 3).map((f, i) => <div className="notice error" key={i}>{f.name}: {f.error}</div>)}
+        <div className="gp-row">
+          <label className="gp-inline"><span className="gp-label">Seconds</span>
+            <input key={set.id} className="settings-input gp-num" type="number" min="1" max="600" defaultValue={set.durationSec} onBlur={(e) => update({ durationSec: e.target.value })} />
+          </label>
+          <button type="button" className="btn small ghost" onClick={async () => {
+            const res = await call('pickFolder');
+            if (res) update({ outDir: res });
+          }}>{set.outDir ? 'Change folder' : 'Output folder'}</button>
+          <span className="gp-dim gp-grow gp-ellipsis">{set.outDir}</span>
+          {needs.length > 0 && <span className="gp-dim">{needs.length} not approved</span>}
+          {running
+            ? <button type="button" className="btn small ghost" onClick={() => call('cancel')}>Cancel</button>
+            : <button type="button" className="btn small" disabled={!toRender || !set.outDir} onClick={() => call('renderSet', { setId: set.id })}>{toRender ? `Render approved (${toRender})` : 'Up to date'}</button>}
+        </div>
+        {set.toImport.length > 0 && !running && (
+          <div className="gp-row">
+            <input key={`${set.id}-bin`} className="settings-input gp-grow" aria-label="Resolve bin" defaultValue={set.binPath} onBlur={(e) => update({ binPath: e.target.value })} />
+            <button type="button" className="btn small" disabled={!connected} onClick={importFiles}>Import {set.toImport.length} to Resolve</button>
+          </div>
+        )}
+        {imported && <span className="gp-dim">{imported.imported ?? 0} imported{imported.failed ? ` · ${imported.failed} failed` : ''}</span>}
+        {importError && <div className="notice error">{importError}</div>}
+      </section>
+      {newSetModal}
     </div>
   );
 }
@@ -328,7 +544,7 @@ function GraphicsPage({ connected }) {
   const [error, setError] = React.useState(null);
   const [previewError, setPreviewError] = React.useState(null);
   const [showBrand, setShowBrand] = React.useState(false);
-  const [showBatch, setShowBatch] = React.useState(false);
+  const [view, setView] = React.useState('design');
   const [showSettings, setShowSettings] = React.useState(false);
   const [keyDraft, setKeyDraft] = React.useState('');
   const chatEnd = React.useRef(null);
@@ -392,6 +608,10 @@ function GraphicsPage({ connected }) {
   if (!g) return <div className="page-stack gp-page"><div className="notice">{error || 'Loading'}</div></div>;
   if (!g.engineReady) return <div className="page-stack gp-page"><div className="notice error">The Graphics engine is missing. Run npm install on this machine.</div></div>;
 
+  if (view === 'review') {
+    return <GpReview g={g} call={call} template={template} brandId={brand && brand.id} accent={accentNow} kind={kind} connected={connected} onBack={() => setView('design')} />;
+  }
+
   const send = async (harder) => {
     const request = draft.trim();
     if (!request || !template) return;
@@ -416,7 +636,7 @@ function GraphicsPage({ connected }) {
           {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
         <button type="button" className="btn small ghost" onClick={newTemplate} aria-label="New template" title="Copy to a new template">+</button>
-        <button type="button" className="btn small" disabled={!template} onClick={() => setShowBatch(true)}>Batch render</button>
+        <button type="button" className="btn small" disabled={!template} onClick={() => setView('review')}>Review sets</button>
       </div>
 
       {error && <div className="notice error">{error}</div>}
@@ -425,7 +645,7 @@ function GraphicsPage({ connected }) {
         <div className="gp-stage">
           <div className="gp-stage-frame">
             <GpPreview message={message} onError={setPreviewError} />
-            {g.editStatus && g.editStatus.templateId === templateId && <div className="gp-badge"><span className="gp-spinner" />Updating</div>}
+            {g.editStatus && g.editStatus.target === templateId && <div className="gp-badge"><span className="gp-spinner" />Updating</div>}
             {!g.editStatus && justUpdated && <div className="gp-badge is-done">Updated</div>}
           </div>
           {previewError && <div className="notice error">{previewError}</div>}
@@ -468,7 +688,7 @@ function GraphicsPage({ connected }) {
               {m.text}{m.usd ? <span className="gp-cost">{gpMoney(m.usd)}</span> : null}
             </div>
           ))}
-          {g.editStatus && g.editStatus.templateId === templateId && (
+          {g.editStatus && g.editStatus.target === templateId && (
             <React.Fragment>
               <div className="gp-msg is-me">{g.editStatus.request}</div>
               <div className="gp-msg gp-status" role="status">
@@ -512,9 +732,6 @@ function GraphicsPage({ connected }) {
         )}
       </section>
 
-      {showBatch && template && (
-        <GpBatchModal g={g} template={template} brandId={brand.id} accent={accentNow} kind={kind} connected={connected} call={call} onClose={() => setShowBatch(false)} />
-      )}
     </div>
   );
 }

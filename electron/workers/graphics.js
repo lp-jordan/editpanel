@@ -95,13 +95,14 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   let job = null;
   let editStatus = null; // { stage, request, model, startedAt } while Claude is working
   let cancelFn = null;
+  let activeSetId = null;
 
   const prefs = () => (getPrefs() || {}).graphics || {};
   const savePrefs = (patch) => setPrefs({ graphics: { ...prefs(), ...patch } });
   const libraryDir = () => prefs().libraryDir || path.join(userData, 'graphics');
   const dirs = () => {
     const base = libraryDir();
-    return { base, templates: path.join(base, 'templates'), brands: path.join(base, 'brands'), work: path.join(base, 'work') };
+    return { base, templates: path.join(base, 'templates'), brands: path.join(base, 'brands'), sets: path.join(base, 'sets'), work: path.join(base, 'work') };
   };
   const apiKey = () => prefs().anthropicKey || process.env.ANTHROPIC_API_KEY || null;
 
@@ -149,6 +150,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     fs.mkdirSync(d.templates, { recursive: true });
     fs.mkdirSync(d.brands, { recursive: true });
     fs.mkdirSync(d.work, { recursive: true });
+    fs.mkdirSync(d.sets, { recursive: true });
     allowedRoots.add(path.resolve(d.base));
     for (const s of STARTERS) {
       const f = path.join(d.templates, `${s.id}.json`);
@@ -232,7 +234,9 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       brands: listBrands().map((b) => ({ ...b, runtime: runtimeBrand(b) })),
       job,
       busyEdit: Boolean(editStatus),
-      editStatus
+      editStatus,
+      sets: listSets(),
+      activeSet: activeSetView()
     };
   }
 
@@ -264,80 +268,302 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     if (job && job.status === 'running') throw new Error('A batch is still running');
   }
 
-  async function proof(a) {
-    needIdle();
+  // ── Review sets ───────────────────────────────────────────────────────────
+  // One foundation template, one row per overlay. A row inherits the foundation until it gets its
+  // own override. Stored values use asset: paths, because server URLs last only for this session.
+
+  const ASSET = 'asset:';
+  const setPath = (id) => path.join(dirs().sets, `${path.basename(String(id))}.json`);
+  const hashOf = (v) => crypto.createHash('sha1').update(JSON.stringify(v)).digest('hex');
+  const foundationHash = (t) => hashOf({ code: t.code, fields: t.fields });
+  const REVIEW = 'review';
+  const APPROVED = 'approved';
+
+  function dehydrate(value) {
+    if (Array.isArray(value)) return value.map(dehydrate);
+    const prefix = `http://127.0.0.1:${serverPort}/${token}/`;
+    if (typeof value !== 'string' || !value.startsWith(prefix)) return value;
+    const encoded = value.slice(prefix.length).split('/')[0];
+    return ASSET + Buffer.from(encoded, 'base64url').toString('utf8');
+  }
+
+  function hydrate(value) {
+    if (Array.isArray(value)) return value.map(hydrate);
+    if (typeof value !== 'string' || !value.startsWith(ASSET)) return value;
+    const file = value.slice(ASSET.length);
+    allowedRoots.add(path.resolve(path.dirname(file)));
+    return assetUrl(file);
+  }
+
+  const mapValues = (obj, fn) => Object.fromEntries(Object.entries(obj || {}).map(([k, v]) => [k, fn(v)]));
+
+  function loadSet(id) {
+    const set = readJson(setPath(id));
+    if (!set) throw new Error('Review set not found');
+    return set;
+  }
+
+  const saveSet = (set) => writeJson(setPath(set.id), set);
+
+  /** A changed foundation restyles inheriting rows; overridden rows get flagged instead. */
+  function reconcile(set) {
+    const t = readJson(templatePath(set.templateId));
+    if (!t) return set;
+    const hash = foundationHash(t);
+    if (set.foundationHash === hash) return set;
+    const rows = set.rows.map((r) => (r.override
+      ? { ...r, foundationChanged: true }
+      : { ...r, status: REVIEW }));
+    const next = { ...set, rows, foundationHash: hash };
+    saveSet(next);
+    return next;
+  }
+
+  function effective(set, row, t) {
+    return { code: (row.override && row.override.code) || t.code, fields: (row.override && row.override.fields) || t.fields };
+  }
+
+  function rowHash(set, row, t, brandRaw) {
+    return hashOf({ ...effective(set, row, t), values: row.values, brand: brandRaw, accent: set.accent, fps: set.fps, durationSec: set.durationSec });
+  }
+
+  function listSets() {
+    const d = dirs().sets;
+    let names = [];
+    try { names = fs.readdirSync(d).filter((f) => f.endsWith('.json')); } catch (_) { /* first run */ }
+    return names.map((f) => readJson(path.join(d, f))).filter(Boolean)
+      .map((x) => ({ id: x.id, name: x.name, kind: x.kind, total: x.rows.length, approved: x.rows.filter((r) => r.status === APPROVED).length }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function activeSetView() {
+    if (!activeSetId || !fs.existsSync(setPath(activeSetId))) return null;
+    const set = reconcile(loadSet(activeSetId));
+    const t = readJson(templatePath(set.templateId));
+    if (!t) return { id: set.id, name: set.name, missingTemplate: true, rows: [] };
+    const brandRaw = listBrands().find((b) => b.id === set.brandId) || listBrands()[0];
+    const brand = { ...runtimeBrand(brandRaw), accent: set.accent || runtimeBrand(brandRaw).accent };
+    const toImport = [];
+    const rows = set.rows.map((r) => {
+      const hash = rowHash(set, r, t, brandRaw);
+      const hasFile = Boolean(r.rendered && r.rendered.file && fs.existsSync(r.rendered.file));
+      const renderState = !hasFile ? 'none' : (r.rendered.hash === hash ? 'current' : 'stale');
+      if (hasFile && r.status === APPROVED && !r.imported) toImport.push(r.rendered.file);
+      return {
+        id: r.id, name: r.name, status: r.status, renderState,
+        values: mapValues(r.values, hydrate),
+        code: r.override ? r.override.code : null,
+        fieldDefs: effective(set, r, t).fields,
+        hasOverride: Boolean(r.override),
+        foundationChanged: Boolean(r.foundationChanged),
+        canUndo: Boolean(r.history && r.history.length),
+        chat: r.chat || []
+      };
+    });
+    return {
+      id: set.id, name: set.name, kind: set.kind, templateId: set.templateId, templateName: t.name,
+      foundationCode: t.code, foundationChat: t.chat || [], foundationCanUndo: Boolean(t.history && t.history.length),
+      brandId: brandRaw.id, accent: brand.accent, brand, fps: set.fps, durationSec: set.durationSec,
+      outDir: set.outDir || '', binPath: set.binPath || 'GRAPHICS', rows, toImport
+    };
+  }
+
+  function createSet(a) {
+    const name = String(a.name || '').trim();
+    if (!name) throw new Error('Enter a name');
     const t = loadTemplate(a.templateId);
-    const brand = brandForRender(a.brandId, a.accent);
-    const { fps, durationInFrames } = batchTiming(a);
-    const rows = a.rows || [];
-    const outDir = path.join(dirs().work, 'proof');
-    fs.rmSync(outDir, { recursive: true, force: true });
-    fs.mkdirSync(outDir, { recursive: true });
-    job = { kind: 'proof', status: 'running', done: 0, total: rows.length, items: [] };
-    emit();
-    let stop = false;
-    cancelFn = () => { stop = true; };
-    const frame = Math.min(durationInFrames - 1, Math.round(fps * 3));
-    for (let i = 0; i < rows.length && !stop; i += 1) {
-      const output = path.join(outDir, `${String(i + 1).padStart(4, '0')}.png`);
-      const item = { name: rows[i].name };
-      try {
-        await still({ code: t.code, fields: rows[i].fields, brand, fps, durationInFrames, frame, output });
-        item.url = `${assetUrl(output)}?${Date.now()}`;
-      } catch (err) {
-        item.error = errText(err);
-      }
-      job = { ...job, done: i + 1, items: [...job.items, item] };
-      emit();
-    }
-    job = { ...job, status: stop ? 'canceled' : 'done' };
-    cancelFn = null;
+    const inputRows = a.rows || [];
+    if (!inputRows.length) throw new Error('Add at least one overlay');
+    const id = newId(name);
+    const { fps } = batchTiming(a);
+    saveSet({
+      id, name, kind: t.kind, templateId: t.id, brandId: a.brandId, accent: a.accent || null,
+      fps, durationSec: Math.max(0.5, Number(a.durationSec) || 15), outDir: '', binPath: `GRAPHICS / ${fileSafe(name)}`,
+      foundationHash: foundationHash(t), nextRow: inputRows.length + 1,
+      rows: inputRows.map((r, i) => ({ id: `r${i + 1}`, name: r.name, values: mapValues(r.fields, dehydrate), status: REVIEW, override: null, history: [], chat: [] }))
+    });
+    activeSetId = id;
     emit();
     return snapshot();
   }
 
-  async function render(a) {
+  function openSet({ setId }) {
+    loadSet(setId);
+    activeSetId = setId;
+    emit();
+    return snapshot();
+  }
+
+  function deleteSet({ setId }) {
+    fs.rmSync(setPath(setId), { force: true });
+    if (activeSetId === setId) activeSetId = null;
+    emit();
+    return snapshot();
+  }
+
+  /** Change a set's settings. Anything affecting the look sends approved rows back to review. */
+  function updateSet(a) {
+    const set = reconcile(loadSet(a.setId));
+    const restyled = (a.brandId !== undefined && a.brandId !== set.brandId) || (a.accent !== undefined && a.accent !== set.accent);
+    const next = { ...set };
+    for (const k of ['name', 'brandId', 'accent', 'outDir', 'binPath']) if (a[k] !== undefined) next[k] = a[k];
+    if (a.fps !== undefined || a.durationSec !== undefined) {
+      next.fps = batchTiming({ fps: a.fps !== undefined ? a.fps : set.fps }).fps;
+      if (a.durationSec !== undefined) next.durationSec = Math.max(0.5, Math.min(600, Number(a.durationSec) || 15));
+    }
+    if (restyled) next.rows = next.rows.map((r) => ({ ...r, status: REVIEW }));
+    saveSet(next);
+    emit();
+    return snapshot();
+  }
+
+  function changeRow(setId, rowId, fn) {
+    const set = reconcile(loadSet(setId));
+    const rows = set.rows.map((r) => (r.id === rowId ? fn(r) : r));
+    saveSet({ ...set, rows });
+    emit();
+    return snapshot();
+  }
+
+  function updateRow({ setId, rowId, values }) {
+    return changeRow(setId, rowId, (r) => {
+      const next = mapValues(values, dehydrate);
+      if (hashOf(next) === hashOf(r.values)) return r;
+      return { ...r, values: next, status: REVIEW };
+    });
+  }
+
+  function setRowStatus({ setId, rowId, approved }) {
+    return changeRow(setId, rowId, (r) => ({ ...r, status: approved ? APPROVED : REVIEW, foundationChanged: approved ? false : r.foundationChanged }));
+  }
+
+  function resetRow({ setId, rowId }) {
+    return changeRow(setId, rowId, (r) => ({
+      ...r, override: null, status: REVIEW, foundationChanged: false,
+      history: [...(r.history || []), { override: r.override }].slice(-30),
+      chat: [...(r.chat || []), { who: 'ai', text: 'Reset to the foundation.' }].slice(-30)
+    }));
+  }
+
+  function keepRow({ setId, rowId }) {
+    return changeRow(setId, rowId, (r) => ({ ...r, foundationChanged: false }));
+  }
+
+  function undoRow({ setId, rowId }) {
+    return changeRow(setId, rowId, (r) => {
+      const history = [...(r.history || [])];
+      const last = history.pop();
+      if (!last) return r;
+      return { ...r, override: last.override, history, status: REVIEW, chat: [...(r.chat || []), { who: 'ai', text: 'Undone.' }].slice(-30) };
+    });
+  }
+
+  function removeRow({ setId, rowId }) {
+    const set = loadSet(setId);
+    saveSet({ ...set, rows: set.rows.filter((r) => r.id !== rowId) });
+    emit();
+    return snapshot();
+  }
+
+  function addRows({ setId, rows: inputRows }) {
+    const set = reconcile(loadSet(setId));
+    let n = set.nextRow || set.rows.length + 1;
+    const added = (inputRows || []).map((r) => {
+      const row = { id: `r${n}`, name: r.name, values: mapValues(r.fields, dehydrate), status: REVIEW, override: null, history: [], chat: [] };
+      n += 1;
+      return row;
+    });
+    saveSet({ ...set, nextRow: n, rows: [...set.rows, ...added] });
+    emit();
+    return snapshot();
+  }
+
+  async function editSlide(a) {
+    if (editStatus) throw new Error('Still working on the last change');
+    const set = reconcile(loadSet(a.setId));
+    const row = set.rows.find((r) => r.id === a.rowId);
+    if (!row) throw new Error('Overlay not found');
+    const t = loadTemplate(set.templateId);
+    const brand = brandForRender(set.brandId, set.accent);
+    const base = { id: `${set.id}/${row.id}`, kind: t.kind, ...effective(set, row, t), chat: row.chat };
+    const request = String(a.request || '').trim();
+    const chat = [...(row.chat || []), { who: 'me', text: request }];
+    const out = await askForChange({
+      base, target: row.id, brand, values: mapValues(row.values, hydrate), request, harder: a.harder,
+      fps: set.fps, durationSec: set.durationSec, note: 'This change is for this one overlay only.'
+    });
+    return changeRow(a.setId, a.rowId, (r) => {
+      const reply = [...chat, { ...out.reply, usd: out.spent, model: out.model }].slice(-30);
+      if (!out.change) return { ...r, chat: reply, costUsd: (r.costUsd || 0) + out.spent };
+      return {
+        ...r, chat: reply, costUsd: (r.costUsd || 0) + out.spent, status: REVIEW, foundationChanged: false,
+        override: out.change, history: [...(r.history || []), { override: r.override }].slice(-30)
+      };
+    });
+  }
+
+  async function renderSet(a) {
     needIdle();
-    if (!a.outDir) throw new Error('Choose an output folder');
     const { renderMedia, selectComposition, makeCancelSignal } = require('@remotion/renderer');
     const base = renderBase();
-    const t = loadTemplate(a.templateId);
-    const brand = brandForRender(a.brandId, a.accent);
-    const { fps, durationInFrames } = batchTiming(a);
-    const rows = a.rows || [];
-    fs.mkdirSync(a.outDir, { recursive: true });
-    job = { kind: 'render', status: 'running', done: 0, total: rows.length, outputs: [], failures: [], current: 0 };
+    const set = reconcile(loadSet(a.setId));
+    if (!set.outDir) throw new Error('Choose an output folder');
+    const t = loadTemplate(set.templateId);
+    const brandRaw = listBrands().find((b) => b.id === set.brandId) || listBrands()[0];
+    const brand = brandForRender(set.brandId, set.accent);
+    const fps = set.fps;
+    const durationInFrames = Math.max(1, Math.round(set.durationSec * fps));
+    fs.mkdirSync(set.outDir, { recursive: true });
+    const work = [];
+    let skipped = 0;
+    set.rows.forEach((r, i) => {
+      if (r.status !== APPROVED) return;
+      const hash = rowHash(set, r, t, brandRaw);
+      const same = r.rendered && r.rendered.file && path.dirname(r.rendered.file) === path.resolve(set.outDir) && fs.existsSync(r.rendered.file);
+      if (same && r.rendered.hash === hash) { skipped += 1; return; }
+      const file = same ? r.rendered.file : path.resolve(set.outDir, `${String(i + 1).padStart(3, '0')}_${fileSafe(r.name)}.mov`);
+      work.push({ row: r, hash, file, sameFile: Boolean(same) });
+    });
+    job = { kind: 'render', setId: set.id, status: 'running', done: 0, total: work.length, skipped, outputs: [], failures: [], current: 0 };
     emit();
     let stop = false;
     let cancelNow = null;
     cancelFn = () => { stop = true; if (cancelNow) cancelNow(); };
-    for (let i = 0; i < rows.length && !stop; i += 1) {
-      const stem = `${String(i + 1).padStart(3, '0')}_${fileSafe(rows[i].name)}`;
-      let outputLocation = path.join(a.outDir, `${stem}.mov`);
-      for (let n = 2; fs.existsSync(outputLocation); n += 1) outputLocation = path.join(a.outDir, `${stem}_v${n}.mov`);
-      const inputProps = { code: t.code, fields: rows[i].fields, brand, fps, durationInFrames };
+    for (let i = 0; i < work.length && !stop; i += 1) {
+      const w = work[i];
+      const inputProps = { code: effective(set, w.row, t).code, fields: mapValues(w.row.values, hydrate), brand, fps, durationInFrames };
       const signal = makeCancelSignal();
       cancelNow = signal.cancel;
       try {
         const composition = await selectComposition({ ...base, id: 'Host', inputProps });
         await renderMedia({
-          ...base, composition, inputProps, outputLocation, cancelSignal: signal.cancelSignal,
+          ...base, composition, inputProps, outputLocation: w.file, overwrite: true, cancelSignal: signal.cancelSignal,
           codec: 'prores', proResProfile: '4444', imageFormat: 'png', pixelFormat: 'yuva444p10le',
           onProgress: ({ progress }) => {
             const pct = Math.round(progress * 100);
             if (pct !== job.current) { job = { ...job, current: pct }; emit(); }
           }
         });
-        job = { ...job, done: i + 1, current: 0, outputs: [...job.outputs, outputLocation] };
+        const latest = loadSet(set.id);
+        saveSet({ ...latest, rows: latest.rows.map((r) => (r.id === w.row.id ? { ...r, rendered: { hash: w.hash, file: w.file }, imported: w.sameFile ? r.imported : false } : r)) });
+        job = { ...job, done: i + 1, current: 0, outputs: [...job.outputs, w.file] };
       } catch (err) {
         if (stop) break;
-        job = { ...job, done: i + 1, current: 0, failures: [...job.failures, { name: rows[i].name, error: errText(err) }] };
+        job = { ...job, done: i + 1, current: 0, failures: [...job.failures, { name: w.row.name, error: errText(err) }] };
       }
       emit();
     }
     job = { ...job, status: stop ? 'canceled' : 'done' };
     cancelFn = null;
     cancelNow = null;
+    emit();
+    return snapshot();
+  }
+
+  function markImported({ setId, files }) {
+    const done = new Set(files || []);
+    const set = loadSet(setId);
+    saveSet({ ...set, rows: set.rows.map((r) => (r.rendered && done.has(r.rendered.file) ? { ...r, imported: true } : r)) });
     emit();
     return snapshot();
   }
@@ -421,63 +647,65 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     return out;
   }
 
-  async function editTemplate(a) {
-    if (editStatus) throw new Error('Still working on the last change');
-    const request = String(a.request || '').trim();
+  /** One request against one piece of template code, tested before it is accepted. */
+  async function askForChange({ base, target, brand, values, request, harder, fps, durationSec, note }) {
     if (!request) throw new Error('Describe a change');
-    const t = loadTemplate(a.templateId);
-    const model = a.harder ? MODELS.harder : MODELS.default;
-    const brand = brandForRender(a.brandId, a.accent);
-    const modelName = a.harder ? 'Opus' : 'Haiku';
+    const model = harder ? MODELS.harder : MODELS.default;
+    const modelName = harder ? 'Opus' : 'Haiku';
     const startedAt = Date.now();
-    const stage = (text) => { editStatus = { stage: text, request, templateId: t.id, model: modelName, startedAt }; emit(); };
-    stage(`${modelName} is working on it`);
+    const stage = (text) => { editStatus = { stage: text, request, target, model: modelName, startedAt }; emit(); };
     let spent = 0;
-    const chat = [...(t.chat || []), { who: 'me', text: request }];
-    const finish = (extra, assistant) => {
-      const saved = {
-        ...t, ...extra,
-        chat: [...chat, { ...assistant, usd: spent, model: model.id }].slice(-40),
-        costUsd: (t.costUsd || 0) + spent
-      };
-      saveTemplate(saved);
-      editStatus = null;
-      emit();
-      return snapshot();
-    };
+    const out = (reply, change = null) => ({ reply, change, spent, model: model.id });
+    stage(`${modelName} is working on it`);
     try {
       let failure = null;
+      const text = (f) => requestText(base, brand, values || {}, note ? `${request}\n(${note})` : request, f);
       for (let attempt = 1; attempt <= 2; attempt += 1) {
         if (attempt > 1) stage(`Fixing a problem (${modelName})`);
-        const msg = await callClaude(model, requestText(t, brand, a.values || {}, request, failure));
+        const msg = await callClaude(model, text(failure));
         const usd = costOf(model.id, msg.usage || {});
         spent += usd;
-        logCost(t.id, model.id, msg.usage || {}, usd);
-        if (msg.stop_reason === 'refusal') return finish({}, { who: 'ai', error: true, text: 'Claude declined this request.' });
+        logCost(base.id, model.id, msg.usage || {}, usd);
+        if (msg.stop_reason === 'refusal') return out({ who: 'ai', error: true, text: 'Claude declined this request.' });
         if (msg.stop_reason === 'max_tokens') { failure = 'The response was cut off. Use small edits.'; continue; }
         const call = msg.content.find((b) => b.type === 'tool_use' && b.name === TOOL.name);
         if (!call) {
-          const text = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
-          return finish({}, { who: 'ai', text: text || 'No change made.' });
+          const answer = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+          return out({ who: 'ai', text: answer || 'No change made.' });
         }
         try {
-          const next = applyChange(t, call.input || {});
+          const next = applyChange(base, call.input || {});
           stage('Testing the change');
-          const { fps, durationInFrames } = batchTiming({ fps: a.fps, durationSec: a.durationSec });
+          const timing = batchTiming({ fps, durationSec });
           await still({
-            code: next.code, fields: valuesFor(next.fields, a.values), brand, fps, durationInFrames,
-            frame: Math.min(durationInFrames - 1, Math.round(fps * 3)), output: path.join(dirs().work, 'check.png')
+            code: next.code, fields: valuesFor(next.fields, values), brand, fps: timing.fps, durationInFrames: timing.durationInFrames,
+            frame: Math.min(timing.durationInFrames - 1, Math.round(timing.fps * 3)), output: path.join(dirs().work, 'check.png')
           });
-          const history = [...(readJson(templatePath(t.id)).history || []), { code: t.code, fields: t.fields }].slice(-30);
-          return finish({ ...next, history }, { who: 'ai', text: call.input.summary || 'Done.' });
+          return out({ who: 'ai', text: call.input.summary || 'Done.' }, next);
         } catch (err) {
           failure = errText(err);
         }
       }
-      return finish({}, { who: 'ai', error: true, text: `Couldn't apply that: ${failure}` });
+      return out({ who: 'ai', error: true, text: `Couldn't apply that: ${failure}` });
     } catch (err) {
-      return finish({}, { who: 'ai', error: true, text: errText(err) });
+      return out({ who: 'ai', error: true, text: errText(err) });
+    } finally {
+      editStatus = null;
     }
+  }
+
+  async function editTemplate(a) {
+    if (editStatus) throw new Error('Still working on the last change');
+    const request = String(a.request || '').trim();
+    const t = loadTemplate(a.templateId);
+    const brand = brandForRender(a.brandId, a.accent);
+    const res = await askForChange({ base: t, target: t.id, brand, values: a.values, request, harder: a.harder, fps: a.fps, durationSec: a.durationSec });
+    const latest = loadTemplate(t.id);
+    const chat = [...(latest.chat || []), { who: 'me', text: request }, { ...res.reply, usd: res.spent, model: res.model }].slice(-40);
+    const history = res.change ? [...(latest.history || []), { code: latest.code, fields: latest.fields }].slice(-30) : latest.history;
+    saveTemplate({ ...latest, ...(res.change || {}), history, chat, costUsd: (latest.costUsd || 0) + res.spent });
+    emit();
+    return snapshot();
   }
 
   function undo({ templateId }) {
@@ -621,7 +849,8 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     editTemplate, undo, createTemplate, renameTemplate, deleteTemplate,
     createBrand, updateBrand, addBrandFiles,
     pickSlides, pickImage, pickFolder, updateSettings,
-    proof, render, cancel
+    createSet, openSet, deleteSet, updateSet, updateRow, setRowStatus, resetRow, keepRow, undoRow, removeRow, addRows,
+    editSlide, renderSet, markImported, cancel
   };
 
   return {
