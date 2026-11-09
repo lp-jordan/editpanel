@@ -1,13 +1,13 @@
 {
   "name": "editpanel",
-  "version": "1.2.113",
-  "description": "EditPanel — DaVinci Resolve companion app for the LPOS ecosystem",
+  "version": "1.2.114",
+  "description": "EditPanel \u2014 DaVinci Resolve companion app for the LPOS ecosystem",
   "author": "LeaderPass <tools@leaderpass.com>",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "package": "node scripts/package.mjs",
-    "postinstall": "node scripts/fetch-python.mjs",
+    "postinstall": "node scripts/fetch-python.mjs && node scripts/build-graphics.mjs",
     "test": "echo 'No tests'",
     "baseline:latency": "node scripts/baseline-latency.js",
     "test:recipes": "node scripts/validate-recipes.js",
@@ -26,7 +26,8 @@
     "files": [
       "electron/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/.remotion/**"
     ],
     "extraResources": [
       {
@@ -36,6 +37,13 @@
           "**/*",
           "!**/__pycache__/**",
           "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "vendor/graphics",
+        "to": "graphics",
+        "filter": [
+          "**/*"
         ]
       }
     ],
@@ -74,15 +82,22 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.6.0",
+    "@remotion/renderer": "4.0.542",
     "basic-ftp": "5.0.5",
     "dictionary-en": "4.0.0",
     "ffmpeg-static": "5.3.0",
     "js-yaml": "4.1.1",
     "nspell": "2.1.0",
     "react": "18.0.0",
-    "react-dom": "18.0.0"
+    "react-dom": "18.0.0",
+    "remotion": "4.0.542"
   },
   "devDependencies": {
+    "@babel/standalone": "8.1.1",
+    "@remotion/bundler": "4.0.542",
+    "@remotion/layout-utils": "4.0.542",
+    "@remotion/player": "4.0.542",
+    "@remotion/transitions": "4.0.542",
     "electron": "42.2.0",
     "electron-builder": "^26.0.12"
   }

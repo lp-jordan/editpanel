@@ -15,6 +15,7 @@ const { LposClient } = require('./workers/lpos_client');
 const { JobsDb } = require('./store/jobs-db');
 const { listSessions: atemListSessions, ingestSessions: atemIngestSessions } = require('./workers/atem_ftp');
 const { createCutThrough } = require('./workers/cut_through');
+const { createGraphics } = require('./workers/graphics');
 const {
   WORKERS,
   RetryableError,
@@ -131,6 +132,7 @@ let lposClient = null;
 let lposHeartbeatTimer = null;
 let jobsDb = null;
 let atemCancelToken = null; // { canceled: boolean }
+let graphics = null; // Graphics: Remotion overlays — see workers/graphics.js
 let cutThrough = null; // Cut-through (beta) orchestrator — see workers/cut_through.js
 let resolveAutoConnectDone = false; // attempt auto-connect once per app session only
 let pendingEpLinkUrl = null; // captured before whenReady if the OS hands us a callback URL at cold start
@@ -2541,6 +2543,16 @@ app.whenReady().then(() => {
   });
   jobEngine.resumeRecoverableJobs();
 
+  graphics = createGraphics({
+    broadcast: (channel, payload) => BrowserWindow.getAllWindows().forEach(w => w.webContents.send(channel, payload)),
+    getPrefs: () => controlPlane.getPreferences(),
+    setPrefs: (patch) => controlPlane.setPreferences(patch),
+    isPackaged: app.isPackaged,
+    appDir: path.join(__dirname, '..'),
+    userData: app.getPath('userData'),
+    dialog
+  });
+
   cutThrough = createCutThrough({
     sendWorkerRequest,
     broadcast: (channel, payload) => BrowserWindow.getAllWindows().forEach(w => w.webContents.send(channel, payload)),
@@ -3441,6 +3453,13 @@ app.whenReady().then(() => {
       return { ok: false, error: err?.message || String(err), data: cutThrough.snapshot() };
     }
   };
+  ipcMain.handle('graphics:call', async (_e, { method, args } = {}) => {
+    try {
+      return { ok: true, data: await graphics.call(method, args) };
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+  });
   ipcMain.handle('cut-through:state', ctCall(() => cutThrough.snapshot()));
   ipcMain.handle('cut-through:list-multicams', ctCall(() => cutThrough.listMulticams()));
   ipcMain.handle('cut-through:select', ctCall((a) => cutThrough.select(a)));

@@ -235,6 +235,16 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   }
 });
 
+// Graphics: Remotion overlay templates (main: workers/graphics.js).
+contextBridge.exposeInMainWorld('graphicsAPI', {
+  call: (method, args) => ipcRenderer.invoke('graphics:call', { method, args }),
+  onUpdate(callback) {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('graphics:update', handler);
+    return () => ipcRenderer.removeListener('graphics:update', handler);
+  }
+});
+
 contextBridge.exposeInMainWorld('atemAPI', {
   listSessions(host) {
     return ipcRenderer.invoke('atem:list-sessions', host);

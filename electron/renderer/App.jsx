@@ -19,7 +19,8 @@ const ROUTE_LABELS = {
   '/edit': 'Edit',
   '/deliver': 'Deliver',
   '/settings': 'Settings',
-  '/cut-through': 'Cut-through'
+  '/cut-through': 'Cut-through',
+  '/graphics': 'Graphics'
 };
 
 function getRouteFromHash() {
@@ -896,6 +897,15 @@ function App() {
           actionLabel: 'Open',
           onClick: () => navigateTo('/cut-through'),
           requiresResolve: false
+        },
+        {
+          // Graphics: callouts and slides as Remotion overlays.
+          key: 'graphics',
+          label: 'Graphics',
+          description: 'Design and batch render overlays.',
+          actionLabel: 'Open',
+          onClick: () => navigateTo('/graphics'),
+          requiresResolve: false
         }
       ]
     },
@@ -1135,6 +1145,17 @@ function App() {
         <HoverNav route="/edit" onNavigate={navigateTo} />
         <main className="app-content">
           <CutThroughPage connected={connected} />
+        </main>
+      </div>
+    );
+  }
+
+  function renderGraphicsPage() {
+    return (
+      <div className="app-inner">
+        <HoverNav route="/edit" onNavigate={navigateTo} />
+        <main className="app-content">
+          <GraphicsPage connected={connected} />
         </main>
       </div>
     );
@@ -1401,6 +1422,8 @@ function App() {
     ? renderSettingsPage()
     : route === '/cut-through'
     ? renderCutThroughPage()
+    : route === '/graphics'
+    ? renderGraphicsPage()
     : renderWorkspacePage();
 
   return (
