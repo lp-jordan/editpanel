@@ -93,7 +93,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   let serverPort = null;
   let serverReady = null;
   let job = null;
-  let busyEdit = false;
+  let editStatus = null; // { stage, request, model, startedAt } while Claude is working
   let cancelFn = null;
 
   const prefs = () => (getPrefs() || {}).graphics || {};
@@ -231,7 +231,8 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       templates: listTemplates(),
       brands: listBrands().map((b) => ({ ...b, runtime: runtimeBrand(b) })),
       job,
-      busyEdit
+      busyEdit: Boolean(editStatus),
+      editStatus
     };
   }
 
@@ -421,14 +422,16 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   }
 
   async function editTemplate(a) {
-    if (busyEdit) throw new Error('Still working on the last change');
+    if (editStatus) throw new Error('Still working on the last change');
     const request = String(a.request || '').trim();
     if (!request) throw new Error('Describe a change');
-    busyEdit = true;
-    emit();
     const t = loadTemplate(a.templateId);
     const model = a.harder ? MODELS.harder : MODELS.default;
     const brand = brandForRender(a.brandId, a.accent);
+    const modelName = a.harder ? 'Opus' : 'Haiku';
+    const startedAt = Date.now();
+    const stage = (text) => { editStatus = { stage: text, request, templateId: t.id, model: modelName, startedAt }; emit(); };
+    stage(`${modelName} is working on it`);
     let spent = 0;
     const chat = [...(t.chat || []), { who: 'me', text: request }];
     const finish = (extra, assistant) => {
@@ -438,13 +441,14 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
         costUsd: (t.costUsd || 0) + spent
       };
       saveTemplate(saved);
-      busyEdit = false;
+      editStatus = null;
       emit();
       return snapshot();
     };
     try {
       let failure = null;
       for (let attempt = 1; attempt <= 2; attempt += 1) {
+        if (attempt > 1) stage(`Fixing a problem (${modelName})`);
         const msg = await callClaude(model, requestText(t, brand, a.values || {}, request, failure));
         const usd = costOf(model.id, msg.usage || {});
         spent += usd;
@@ -458,6 +462,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
         }
         try {
           const next = applyChange(t, call.input || {});
+          stage('Testing the change');
           const { fps, durationInFrames } = batchTiming({ fps: a.fps, durationSec: a.durationSec });
           await still({
             code: next.code, fields: valuesFor(next.fields, a.values), brand, fps, durationInFrames,

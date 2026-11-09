@@ -16,6 +16,16 @@ const GP_FPS = [
   { label: '30', value: 30 }
 ];
 const GP_MAX_PREVIEW_CHAT = 40;
+// Stands in for an image field until a real slide is chosen. Preview and test renders only.
+const GP_PLACEHOLDER_SLIDE = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<rect width="1920" height="1080" fill="#f7f3ea"/>
+<rect x="140" y="130" width="980" height="74" rx="6" fill="#2b2822"/>
+<rect x="140" y="236" width="190" height="14" fill="#dbaf5f"/>
+<g fill="#b8afa0"><rect x="140" y="320" width="760" height="30" rx="4"/><rect x="140" y="400" width="680" height="30" rx="4"/><rect x="140" y="480" width="720" height="30" rx="4"/><rect x="140" y="560" width="540" height="30" rx="4"/></g>
+<rect x="1040" y="310" width="740" height="580" rx="10" fill="#e6dfd1"/>
+<g fill="#5b9bd5"><rect x="1130" y="680" width="110" height="130"/><rect x="1290" y="580" width="110" height="230"/><rect x="1450" y="470" width="110" height="340"/><rect x="1610" y="410" width="90" height="400"/></g>
+<text x="140" y="960" font-family="Arial, sans-serif" font-size="34" fill="#8a8078" letter-spacing="4">PLACEHOLDER SLIDE</text>
+</svg>`)}`;
 
 function gpEmptyValue(field) {
   if (field.default !== undefined) return field.default;
@@ -31,6 +41,14 @@ function gpValuesFor(template, previous) {
 }
 
 /** Tab-separated rows, one column per field. A list cell uses " | " between items. */
+function gpWithPlaceholders(template, values) {
+  const out = { ...values };
+  for (const f of (template && template.fields) || []) {
+    if (f.type === 'image' && !out[f.key]) out[f.key] = GP_PLACEHOLDER_SLIDE;
+  }
+  return out;
+}
+
 function gpParseRows(template, text) {
   if (!template) return [];
   const fields = template.fields.filter((f) => f.type !== 'image');
@@ -55,6 +73,15 @@ function gpSlideRows(template, images) {
 
 function gpMoney(usd) {
   return usd > 0 && usd < 0.01 ? `$${usd.toFixed(4)}` : `$${(usd || 0).toFixed(2)}`;
+}
+
+function GpElapsed({ since }) {
+  const [now, setNow] = React.useState(Date.now());
+  React.useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, []);
+  return <span className="gp-dim">{Math.max(0, Math.floor((now - since) / 1000))}s</span>;
 }
 
 function GpPreview({ message, onError }) {
@@ -323,6 +350,24 @@ function GraphicsPage({ connected }) {
   const brand = ((g && g.brands) || []).find((b) => b.id === brandId) || (g && g.brands[0]) || null;
   const accentNow = brand && (brand.colors || []).includes(accent) ? accent : (brand && brand.colors[0]) || null;
   const fieldKey = template ? `${template.id}:${template.fields.map((f) => f.key).join(',')}` : '';
+  const templateId = template ? template.id : null;
+
+  // Hold the shown template by id: the list is alphabetical, so a rename can reorder it.
+  React.useEffect(() => {
+    if (templateId && selected[kind] !== templateId) setSelected((s) => ({ ...s, [kind]: templateId }));
+  }, [kind, templateId, selected]);
+
+  const lastCode = React.useRef({ id: null, code: null });
+  const [justUpdated, setJustUpdated] = React.useState(false);
+  React.useEffect(() => {
+    if (!template) return undefined;
+    const prev = lastCode.current;
+    lastCode.current = { id: template.id, code: template.code };
+    if (prev.id !== template.id || prev.code === template.code) return undefined;
+    setJustUpdated(true);
+    const t = setTimeout(() => setJustUpdated(false), 2500);
+    return () => clearTimeout(t);
+  }, [template && template.id, template && template.code]);
 
   React.useEffect(() => {
     setValues((prev) => gpValuesFor(template, prev));
@@ -332,7 +377,7 @@ function GraphicsPage({ connected }) {
     if (!template || !brand) return null;
     return {
       code: template.code,
-      fields: gpValuesFor(template, values),
+      fields: gpWithPlaceholders(template, gpValuesFor(template, values)),
       brand: { ...brand.runtime, accent: accentNow },
       fps: GP_FPS[0].value,
       durationInFrames: Math.round(15 * GP_FPS[0].value)
@@ -342,7 +387,7 @@ function GraphicsPage({ connected }) {
   const chat = (template && template.chat) || [];
   React.useEffect(() => {
     if (chatEnd.current) chatEnd.current.scrollIntoView({ block: 'nearest' });
-  }, [chat.length]);
+  }, [chat.length, g && g.editStatus && g.editStatus.stage]);
 
   if (!g) return <div className="page-stack gp-page"><div className="notice">{error || 'Loading'}</div></div>;
   if (!g.engineReady) return <div className="page-stack gp-page"><div className="notice error">The Graphics engine is missing. Run npm install on this machine.</div></div>;
@@ -351,7 +396,7 @@ function GraphicsPage({ connected }) {
     const request = draft.trim();
     if (!request || !template) return;
     setDraft('');
-    await call('editTemplate', { templateId: template.id, brandId: brand.id, accent: accentNow, values: gpValuesFor(template, values), request, harder });
+    await call('editTemplate', { templateId: template.id, brandId: brand.id, accent: accentNow, values: gpWithPlaceholders(template, gpValuesFor(template, values)), request, harder });
   };
   const newTemplate = async () => {
     const res = await call('createTemplate', { kind, fromId: template && template.id });
@@ -378,7 +423,11 @@ function GraphicsPage({ connected }) {
 
       <div className="gp-main">
         <div className="gp-stage">
-          <GpPreview message={message} onError={setPreviewError} />
+          <div className="gp-stage-frame">
+            <GpPreview message={message} onError={setPreviewError} />
+            {g.editStatus && g.editStatus.templateId === templateId && <div className="gp-badge"><span className="gp-spinner" />Updating</div>}
+            {!g.editStatus && justUpdated && <div className="gp-badge is-done">Updated</div>}
+          </div>
           {previewError && <div className="notice error">{previewError}</div>}
         </div>
 
@@ -419,6 +468,14 @@ function GraphicsPage({ connected }) {
               {m.text}{m.usd ? <span className="gp-cost">{gpMoney(m.usd)}</span> : null}
             </div>
           ))}
+          {g.editStatus && g.editStatus.templateId === templateId && (
+            <React.Fragment>
+              <div className="gp-msg is-me">{g.editStatus.request}</div>
+              <div className="gp-msg gp-status" role="status">
+                <span className="gp-spinner" /><span>{g.editStatus.stage}</span><GpElapsed since={g.editStatus.startedAt} />
+              </div>
+            </React.Fragment>
+          )}
           <div ref={chatEnd} />
         </div>
         <div className="gp-row">
