@@ -407,7 +407,8 @@ function createCutThrough(opts) {
     if (!d) return live ? { running: live } : null;
     const read = d.reads.filter((r) => r.code);
     return { running: live, angle: d.angle, frames: d.reads.length, codes: new Set(read.map((r) => r.code)).size,
-      unreadable: d.reads.length - read.length, cost: d.cost, madeAt: d.madeAt };
+      unreadable: d.reads.length - read.length, cost: d.cost, madeAt: d.madeAt,
+      needsClaude: d.needsClaude || 0, boxMissing: !!d.boxMissing, estimate: d.estimate, hasKey: Boolean(claudeKey() || claudeClient) };
   }
 
   /** "Never cut from X to Y" rules for this project's multicam (Jordan 2026-11-10). */
@@ -1467,9 +1468,11 @@ function createCutThrough(opts) {
 
   /**
    * Read the J-code off the slate angle's footage (cut_through_slate.js): slate_<LABEL>.json, then
-   * Find videos again with it. Costs a little (Claude reads one frame per code change).
+   * Find videos again with it. Free by default (local OCR only); frames OCR can't vouch for are
+   * counted with a cost estimate, and only go to Claude when the editor confirms (useClaude), Jordan
+   * 2026-11-10: nothing goes to Claude without a confirmation step.
    */
-  async function readSlate() {
+  async function readSlate({ useClaude = false } = {}) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
     needRunFolder();
     if (!s.day) throw new Error('Run Prep first');
@@ -1487,6 +1490,7 @@ function createCutThrough(opts) {
         known = (Array.isArray(data?.notes) ? data.notes : []).map((n) => String(n.code || '').trim()).filter((c) => c && c !== 'ATEM');
       } catch (_) { /* the hint is optional */ }
     }
+    if (useClaude && !claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
     s.busy = 'Reading the slate';
     canceled = false;
     s.slateRead = { phase: 'Starting', bar: 0, startedAt: Date.now() };
@@ -1494,14 +1498,19 @@ function createCutThrough(opts) {
     const model = st0.claudeModel || claude.DEFAULT_MODEL;
     try {
       const r = await slateLib.readSlate({ ffmpeg: ffmpegPath || 'ffmpeg', clips, frameSec: s.day.frame_sec[0] / s.day.frame_sec[1],
-        // no Claude key: OCR only (frames it can't vouch for count as unreadable; notes fill in)
-        client: claudeKey() || claudeClient ? claudeApi() : null, model, knownCodes: known,
+        // free unless confirmed: OCR only (frames it can't vouch for are counted for the confirm step)
+        client: useClaude ? claudeApi() : null, model, knownCodes: known,
         onProgress: (p) => { s.slateRead = { ...s.slateRead, ...p }; emit(); },
         onProc: (p) => { child = p; }, isCanceled: () => canceled });
       const cost = claude.costOf(r.model, r.usage);
       claude.logCost({ costsDir: settings().filesDir, outDir: f.dir, label: s.label, step: 'slate', model: r.model, effort: 'low', usage: r.usage, seconds: r.seconds });
       fs.mkdirSync(f.dir, { recursive: true });
-      fs.writeFileSync(f.slate, JSON.stringify({ angle, madeAt: Date.now(), model: r.model, cost, seconds: r.seconds, report: r.report, reads: r.reads }, null, 1), 'utf8');
+      // what Claude would cost for the rest: ~650 input tokens per box crop, ~20 out, the prompt per 8
+      const n = r.needsClaude || 0;
+      const estimate = r.boxMissing ? null : n ? claude.costOf(model, { input_tokens: 650 * n + 500 * Math.ceil(n / 8), output_tokens: 20 * n }) : 0;
+      fs.writeFileSync(f.slate, JSON.stringify({ angle, madeAt: Date.now(), model: r.model, cost, seconds: r.seconds, report: r.report,
+        byOcr: r.byOcr, byClaude: r.byClaude, needsClaude: n, boxMissing: !!r.boxMissing, estimate, reads: r.reads }, null, 1), 'utf8');
+      pushLog('plan', `Slate read: ${r.report}`);
     } catch (err) {
       if (err && err.usage) claude.logCost({ costsDir: settings().filesDir, outDir: f.dir, label: s.label, step: 'slate', model, effort: 'low', usage: err.usage });
       throw canceled ? new Error('Slate read canceled') : err;

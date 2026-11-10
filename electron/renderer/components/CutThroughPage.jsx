@@ -438,13 +438,24 @@ function CutThroughPage({ connected }) {
               {sortedAngles.map((a) => <option key={a} value={a}>{a}</option>)}
             </select>
             <button type="button" className="btn small ghost" disabled={locked || !ct.slateAngle}
-              onClick={() => call('plan', () => api.readSlate())}>{ct.slateInfo && ct.slateInfo.frames ? 'Read again' : 'Read slate'}</button>
+              onClick={() => call('plan', () => api.readSlate())}>{ct.slateInfo && (ct.slateInfo.frames || ct.slateInfo.boxMissing) ? 'Read again' : 'Read slate'}</button>
             {slateRun && <button type="button" className="btn small danger" onClick={() => call('plan', () => api.cancel())}>Cancel</button>}
             {slateRun
               ? <span className="dim ct-num-text">{slateRun.phase}{slateRun.bar ? ` · ${slateRun.bar}%` : ''}</span>
               : ct.slateInfo && ct.slateInfo.frames
-                ? <span className="dim ct-num-text">{ct.slateInfo.codes} codes · {ct.slateInfo.unreadable} unreadable{ct.slateInfo.cost != null ? ` · $${ct.slateInfo.cost.toFixed(2)}` : ''}</span>
+                ? <span className="dim ct-num-text">{ct.slateInfo.codes} codes · {ct.slateInfo.unreadable} unreadable{ct.slateInfo.cost ? ` · $${ct.slateInfo.cost.toFixed(2)}` : ''}</span>
                 : null}
+            {!slateRun && ct.slateInfo && (ct.slateInfo.needsClaude > 0 || ct.slateInfo.boxMissing) && (
+              <>
+                <span className="tag warning">
+                  {ct.slateInfo.boxMissing ? 'Code tile not found' : `${ct.slateInfo.needsClaude} frames unread`}
+                  {ct.slateInfo.estimate ? ` · Claude about $${Math.max(0.01, ct.slateInfo.estimate).toFixed(2)}` : ''}
+                </span>
+                <button type="button" className="btn small" disabled={locked || !ct.slateInfo.hasKey}
+                  title={ct.slateInfo.hasKey ? '' : 'Add a Claude API key in Settings'}
+                  onClick={() => call('plan', () => api.readSlate({ useClaude: true }))}>Ask Claude</button>
+              </>
+            )}
           </CtRow>
         )}
         {list.length > 0 && (

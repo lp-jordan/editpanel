@@ -315,6 +315,14 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
     if (found.box) { box = found.box; boxFrom = 'found'; break; }
   }
 
+  if (!box && !client) {
+    // no code tile where it usually is, and finding it needs Claude: stop here (the caller asks first)
+    await ocr.close();
+    const seconds = (Date.now() - t0) / 1000;
+    return { reads: [], box: null, boxMissing: true, needsClaude: null, frames: byOcr, byOcr, byClaude: 0, ocrOff, usage, model: usedModel,
+      seconds: +seconds.toFixed(1), report: `the code tile isn't where it usually is — Claude is needed to find it${ocrOff ? ` (OCR off: ${ocrOff})` : ''}` };
+  }
+
   // 2. looks per clip (inside the box)
   const perClip = [];
   let looks = 0;
@@ -397,10 +405,13 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
   const codes = new Set(reads.filter((r) => r.code).map((r) => r.code)).size;
   const seconds = (Date.now() - t0) / 1000;
   await ocr.close();
+  // free pass (no client): the frames OCR couldn't vouch for are what Claude would be asked to read
+  const needsClaude = client ? 0 : perClip.reduce((n, pc) => n + pc.samples.filter((x) => !x.code).length, 0);
   return {
-    reads, box, frames: asked + byOcr, byOcr, byClaude: asked, ocrOff, usage, model: usedModel, seconds: +seconds.toFixed(1),
+    reads, box, needsClaude, frames: asked + byOcr, byOcr, byClaude: asked, ocrOff, usage, model: usedModel, seconds: +seconds.toFixed(1),
     report: `${boxFrom === 'usual' ? 'usual code tile' : boxFrom === 'found' ? 'code box found by Claude' : 'no code box found (whole frame used)'}; ` +
-      `${byOcr} frames read free (OCR), ${asked} by Claude${ocrOff ? ` (OCR off: ${ocrOff})` : ''}: ${codes} codes, ` +
+      `${byOcr} frames read free (OCR), ${asked} by Claude${ocrOff ? ` (OCR off: ${ocrOff})` : ''}` +
+      `${needsClaude ? `, ${needsClaude} left for Claude` : ''}: ${codes} codes, ` +
       `${unreadable} unreadable stretches, in ${seconds.toFixed(0)} s`
   };
 }
