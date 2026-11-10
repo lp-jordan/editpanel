@@ -26,6 +26,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const { execFile } = require('child_process');
 const { sampleHash, resolveTarget, statOrNull } = require('./card_ingest_fs');
 
 const MEDIA_EXT = new Set(['.mxf', '.mp4', '.arw']);
@@ -123,7 +124,42 @@ function summarize(files, dest) {
   };
 }
 
-function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, onCardsAdded = () => {} }) {
+/**
+ * Thumbnail for a card file, as a data URL (null when none can be made).
+ *   clips  — the camera's own: <clip folder>/../THMBNL|Thmbnl/<stem>T01.JPG
+ *            (512×288, ~28 KB, written by both FX3 and FX6)
+ *   stills — the companion <stem>.JPG, shrunk
+ *   else   — one frame grabbed with ffmpeg (clips without a camera thumbnail)
+ */
+async function findCaseInsensitive(dir, name) {
+  try {
+    const want = name.toLowerCase();
+    return (await fsp.readdir(dir)).find(n => n.toLowerCase() === want) || null;
+  } catch (_) { return null; }
+}
+
+async function cameraThumb(src) {
+  const stem = path.basename(src, path.extname(src));
+  const parent = path.dirname(path.dirname(src));
+  let entries = [];
+  try { entries = await fsp.readdir(parent, { withFileTypes: true }); } catch (_) { return null; }
+  const thumbDir = entries.find(e => e.isDirectory() && e.name.toLowerCase() === 'thmbnl');
+  if (!thumbDir) return null;
+  const dir = path.join(parent, thumbDir.name);
+  const hit = await findCaseInsensitive(dir, `${stem}T01.JPG`);
+  return hit ? fsp.readFile(path.join(dir, hit)) : null;
+}
+
+function ffmpegFrame(ffmpegPath, src) {
+  return new Promise((resolve) => {
+    if (!ffmpegPath) return resolve(null);
+    execFile(ffmpegPath, ['-v', 'error', '-ss', '1', '-i', src, '-frames:v', '1', '-vf', 'scale=320:-2',
+      '-f', 'image2pipe', '-vcodec', 'mjpeg', '-'], { encoding: 'buffer', timeout: 15000, maxBuffer: 4 * 1024 * 1024 },
+    (err, stdout) => resolve(err || !stdout?.length ? null : stdout));
+  });
+}
+
+function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, onCardsAdded = () => {}, nativeImage = null, ffmpegPath = '' }) {
   let cards = [];
   let firstPoll = true;
   let pollTimer = null;
@@ -211,6 +247,55 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
       results.push({ ...card, dest: dest || null, files, summary: summarize(files, dest) });
     }
     return results;
+  }
+
+  // ── Thumbnails ──────────────────────────────────────────
+
+  const thumbCache = new Map();   // root|relPath → data URL or null
+  let ffmpegBusy = 0;
+  const ffmpegWaiters = [];
+
+  async function withFfmpegSlot(fn) {
+    if (ffmpegBusy >= 2) await new Promise(r => ffmpegWaiters.push(r));
+    ffmpegBusy++;
+    try { return await fn(); } finally { ffmpegBusy--; ffmpegWaiters.shift()?.(); }
+  }
+
+  function shrink(buf) {
+    if (!nativeImage || !buf) return buf;
+    try {
+      const img = nativeImage.createFromBuffer(buf);
+      if (img.isEmpty()) return null;
+      return img.getSize().width > 360 ? img.resize({ width: 320 }).toJPEG(80) : buf;
+    } catch (_) { return null; }
+  }
+
+  /** { root, relPath } of a file on a mounted card → data URL or null. */
+  async function thumbnail({ root, relPath } = {}) {
+    const key = `${root}|${relPath}`;
+    if (thumbCache.has(key)) return thumbCache.get(key);
+    // Only files on a card we detected, and never outside its root.
+    if (!cards.some(c => c.root === root) || typeof relPath !== 'string') return null;
+    const src = path.resolve(root, relPath);
+    if (!src.startsWith(path.resolve(root))) return null;
+    const ext = path.extname(src).toLowerCase();
+    let buf = null;
+    try {
+      if (VIDEO_EXT.has(ext)) {
+        buf = await cameraThumb(src);
+        if (!buf) buf = await withFfmpegSlot(() => ffmpegFrame(ffmpegPath, src));
+      } else if (ext === '.arw') {
+        const jpg = await findCaseInsensitive(path.dirname(src), `${path.basename(src, path.extname(src))}.JPG`);
+        if (jpg) buf = shrink(await fsp.readFile(path.join(path.dirname(src), jpg)));
+        if (!buf && nativeImage?.createThumbnailFromPath) {
+          buf = await nativeImage.createThumbnailFromPath(src, { width: 320, height: 214 }).then(i => i.toJPEG(80)).catch(() => null);
+        }
+      }
+    } catch (_) { buf = null; }
+    const url = buf ? `data:image/jpeg;base64,${buf.toString('base64')}` : null;
+    if (thumbCache.size > 2000) thumbCache.clear();
+    thumbCache.set(key, url);
+    return url;
   }
 
   // ── Ingest run ──────────────────────────────────────────
@@ -410,6 +495,7 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
   return {
     startWatching, stopWatching, poll,
     listCards: () => cards,
+    thumbnail,
     refresh: async () => { await poll(); return cards; },
     check, startIngest, cancel, dismiss, snapshot
   };

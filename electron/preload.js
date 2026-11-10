@@ -273,6 +273,8 @@ contextBridge.exposeInMainWorld('cardIngestAPI', {
   listCards() { return ipcRenderer.invoke('card-ingest:list'); },
   /** targets: [{ root, dest|null }] */
   check(targets) { return ipcRenderer.invoke('card-ingest:check', targets); },
+  /** Data URL of a card file's thumbnail, or null. */
+  thumbnail(root, relPath) { return ipcRenderer.invoke('card-ingest:thumbnail', { root, relPath }); },
   start(targets) { return ipcRenderer.invoke('card-ingest:start', targets); },
   cancel() { return ipcRenderer.invoke('card-ingest:cancel'); },
   snapshot() { return ipcRenderer.invoke('card-ingest:snapshot'); },

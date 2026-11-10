@@ -4975,7 +4975,7 @@ button.status-bar-chip-btn:disabled {
 }
 .ci-file {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) 80px minmax(140px, 230px);
+  grid-template-columns: 10px 64px minmax(0, 1fr) 80px minmax(140px, 230px);
   gap: 12px;
   align-items: center;
   padding: 8px 12px;
@@ -5025,10 +5025,30 @@ button.status-bar-chip-btn:disabled {
 .ci-import { flex-direction: row; flex-wrap: wrap; align-items: center; }
 .ci-import-controls { margin-left: auto; display: flex; gap: 10px; align-items: center; }
 .ci-import-controls .settings-input { min-width: 220px; }
+.ci-thumb {
+  display: block;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+.ci-thumb--row { width: 64px; height: 36px; }
+.ci-thumb--strip { width: 96px; height: 54px; flex: 0 0 auto; }
+.ci-strip {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  overflow: hidden;
+}
+.ci-strip:focus-visible { box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+.ci-strip-more { padding: 0 8px; font-size: 12px; color: var(--text-dim); white-space: nowrap; }
 @media (max-width: 720px) {
   .ci-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .ci-file { grid-template-columns: 10px minmax(0, 1fr) 70px; }
-  .ci-file-state { grid-column: 2 / -1; }
+  .ci-file { grid-template-columns: 10px 64px minmax(0, 1fr) 70px; }
+  .ci-file-state { grid-column: 3 / -1; }
 }
 
 /* ─── Jobs drawer: This project / Other machines / Other projects ─── */

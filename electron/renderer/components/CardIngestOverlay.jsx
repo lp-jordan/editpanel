@@ -51,6 +51,31 @@ const CI_RUN_STATE = {
   canceled:    { dot: 'is-skipped', cls: 'dim',     label: () => 'Canceled' },
 };
 
+// Thumbnails come from the main process as data URLs (the camera's own
+// THMBNL JPG, a still's companion JPG, else one ffmpeg frame). Cached here
+// for the session so reopening the overlay doesn't refetch.
+const ciThumbCache = new Map();
+
+function CiThumb({ root, relPath, size = 'row' }) {
+  const key = `${root}|${relPath}`;
+  const [url, setUrl] = React.useState(() => ciThumbCache.get(key));
+  React.useEffect(() => {
+    if (ciThumbCache.has(key)) { setUrl(ciThumbCache.get(key)); return undefined; }
+    let alive = true;
+    window.cardIngestAPI?.thumbnail(root, relPath).then(res => {
+      const u = res?.ok ? res.data : null;
+      ciThumbCache.set(key, u);
+      if (alive) setUrl(u);
+    });
+    return () => { alive = false; };
+  }, [key]);
+  return url
+    ? <img className={`ci-thumb ci-thumb--${size}`} src={url} alt="" loading="lazy" />
+    : <span className={`ci-thumb ci-thumb--${size} is-empty`} aria-hidden="true" />;
+}
+
+const CI_STRIP_MAX = 8;
+
 function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, onLog }) {
   const [cards, setCards]       = React.useState([]);
   const [dests, setDests]       = React.useState({});      // root → folder
@@ -250,6 +275,17 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
           </div>
         </div>
 
+        {r?.files?.some(f => f.kind !== 'unfinalized') && (
+          <button className="ci-strip" onClick={() => toggleExpanded(card.root)} aria-label={`Show files on ${card.label}`}>
+            {r.files.filter(f => f.kind !== 'unfinalized').slice(0, CI_STRIP_MAX).map(f => (
+              <CiThumb key={f.relPath} root={card.root} relPath={f.relPath} size="strip" />
+            ))}
+            {r.files.filter(f => f.kind !== 'unfinalized').length > CI_STRIP_MAX && (
+              <span className="ci-strip-more">+{r.files.filter(f => f.kind !== 'unfinalized').length - CI_STRIP_MAX}</span>
+            )}
+          </button>
+        )}
+
         {s && !done && (
           <div className="ci-dest">
             <p className="section-label">Destination</p>
@@ -270,6 +306,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
               return (
                 <div key={f.relPath} className="ci-file" title={f.where || f.error || f.relPath}>
                   <span className={`status-dot ${st.dot}`} />
+                  <CiThumb root={card.root} relPath={f.relPath} />
                   <span className="ci-file-name">{f.name}</span>
                   <span className="ci-file-size">{ciBytes(f.size)}</span>
                   <span className={`ci-file-state ${st.cls}`}>{st.label(f)}</span>
@@ -342,6 +379,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
             return (
               <div key={f.relPath} className="ci-file" title={f.error || f.where || f.relPath}>
                 <span className={`status-dot ${st.dot}`} />
+                <CiThumb root={card.root} relPath={f.relPath} />
                 <span className="ci-file-name">{f.name}{f.destName && f.destName !== f.name ? ` → ${f.destName}` : ''}</span>
                 <span className="ci-file-size">{ciBytes(f.size)}</span>
                 <span className={`ci-file-state ${st.cls}`}>{st.label(f)}</span>

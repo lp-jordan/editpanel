@@ -3623,6 +3623,8 @@ app.whenReady().then(() => {
     broadcast: (channel, payload) => BrowserWindow.getAllWindows().forEach(w => w.webContents.send(channel, payload)),
     jobsDb,
     utilityProcess,
+    nativeImage,
+    ffmpegPath,
     log: (line) => {
       console.log(line);
       BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', line));
@@ -3642,6 +3644,7 @@ app.whenReady().then(() => {
   };
   ipcMain.handle('card-ingest:list', ciCall(() => cardIngest.refresh()));
   ipcMain.handle('card-ingest:check', ciCall((targets) => cardIngest.check(targets || [])));
+  ipcMain.handle('card-ingest:thumbnail', ciCall((arg) => cardIngest.thumbnail(arg)));
   ipcMain.handle('card-ingest:start', async (_e, targets) => {
     try {
       const res = await cardIngest.startIngest(targets || []);
