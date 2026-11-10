@@ -48,7 +48,8 @@ function run(cmd, args, { env, capture } = {}) {
 }
 
 if (process.platform !== 'win32') die('Run this on the Windows machine (LP1).');
-if (!fs.existsSync(OUT)) die(`Can't reach ${OUT} (is N: mapped?)`);
+if (!fs.existsSync(path.dirname(OUT))) die(`Can't reach ${path.dirname(OUT)} (is N: mapped?)`);
+fs.mkdirSync(OUT, { recursive: true });
 
 // 1. lock
 let pyVersion = opt('python-version', '');
