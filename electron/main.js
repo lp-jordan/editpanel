@@ -2694,8 +2694,8 @@ app.whenReady().then(() => {
   }
 
   // 10-second heartbeat — pushes current machine state (incl. live jobs) to
-  // LPOS, then pulls the other online machines for the Jobs drawer's "Other
-  // machines" section. Failures are intentionally silent; LPOS marks us
+  // LPOS, then (window showing only) pulls the other online machines for the
+  // Jobs drawer's "Other machines" section. Failures are intentionally silent; LPOS marks us
   // offline after 30s.
   lposHeartbeatTimer = setInterval(async () => {
     if (!lposClient || !lposClient.isConfigured()) {
@@ -2719,6 +2719,11 @@ app.whenReady().then(() => {
     } catch (_err) {
       // silent — transient network failures are expected
     }
+    // Other machines are only shown on screen, so don't ask while the window is
+    // hidden (tray) or minimized. The next beat after it reappears refreshes.
+    const windowShowing = BrowserWindow.getAllWindows()
+      .some(w => !w.isDestroyed() && w.isVisible() && !w.isMinimized());
+    if (!windowShowing) return;
     try {
       const res = await lposClient.getPeers();
       const list = Array.isArray(res?.peers) ? res.peers : [];
