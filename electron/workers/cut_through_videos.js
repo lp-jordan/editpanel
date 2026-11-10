@@ -97,22 +97,32 @@ function slateOffset(day, notes) {
 }
 
 /**
- * "This multicam starts at H6": only that shoot day's notes, from H6 on. Slate notes have no date
- * and a project's days sit one after another, so a new day = the time of day jumps backwards. If
+ * "This multicam starts at H6": only that shoot day's notes, from H6 on. Slate notes have no date,
+ * so a day = one slate tab, split again where the time of day jumps backwards. If
  * the code is on several days, the day that fits the multicam's recordings best; ties = the
  * earliest. The ATEM notes just before the code stay (they set the clock offset). null = not found.
  */
 function notesFrom(day, notes, firstCode) {
   const want = String(firstCode || '').trim().toLowerCase();
   if (!want) return null;
-  const list = notes || [];
+  // a shoot day = one slate tab (untabbed notes together), split again where the time of day
+  // jumps backwards (several days in one tab, or no tabs at all)
+  const byTab = new Map();
+  for (const n of notes || []) {
+    const tab = n.tabId || '';
+    if (!byTab.has(tab)) byTab.set(tab, []);
+    byTab.get(tab).push(n);
+  }
   const runs = [];
-  let last = null;
-  for (const n of list) {
-    const t = slateSeconds(n.timestamp);
-    if (!runs.length || (t !== null && last !== null && t < last - 60)) runs.push([]);
-    runs[runs.length - 1].push(n);
-    if (t !== null) last = t;
+  for (const list of byTab.values()) {
+    let last = null;
+    runs.push([]);
+    for (const n of list) {
+      const t = slateSeconds(n.timestamp);
+      if (t !== null && last !== null && t < last - 60) runs.push([]);
+      runs[runs.length - 1].push(n);
+      if (t !== null) last = t;
+    }
   }
   let best = null;
   for (const run of runs) {

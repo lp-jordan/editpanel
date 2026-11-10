@@ -850,8 +850,8 @@ function CutThroughPage({ connected }) {
             {hasBody && (
               <div className="ct-step-body">
                 {st.status === 'running' && st.progress && <CtLive p={st.progress} now={now} />}
-                {bodyEl}
                 {errs.map((e, k) => <div key={k} className="notice error">{e}</div>)}
+                {bodyEl}
                 {showReport && (
                   <div className="ct-report-wrap">
                     <CtReport lines={lines} live={st.status === 'running'} />
