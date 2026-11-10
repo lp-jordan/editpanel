@@ -81,7 +81,9 @@ def timeline_items(folder: Any, names: set) -> Dict[str, Any]:
 
 def finish(project: Any, tl: Any) -> str:
     """Style guide finishing: 2-frame "Cross Fade 0 dB" only where audio was removed (the source
-    jumps) and the mic is open on at least one side; 8-frame audio fades at head and tail;
+    jumps) and the mic is open on at least one side, and on every mic open / close (a gated clip
+    next to an open one: Jordan 2026-11-10, so room tone doesn't snap on and off); 8-frame audio
+    fades at head and tail;
     8-frame picture Cross Dissolve from/to black. Also counts the disabled (gated) mic clips."""
     project.SetCurrentTimeline(tl)
     t = tracks(tl)
@@ -91,16 +93,20 @@ def finish(project: Any, tl: Any) -> str:
         if not name.startswith("A") or not its:
             continue
         on = [bool(_safe(lambda: it.GetClipEnabled(), True)) for it in its]
-        xf = 0
+        xf = gate = 0
         for (a, ea), (b, eb) in zip(zip(its, on), zip(its[1:], on[1:])):
+            if int(a.GetEnd()) != int(b.GetStart()):
+                continue
             jump = abs(float(b.GetSourceStartFrame()) - float(a.GetSourceEndFrame())) > 1
-            if int(a.GetEnd()) == int(b.GetStart()) and jump and (ea or eb):
+            if ea != eb:
+                gate += bool(_safe(lambda: a.AddTransition(CROSSFADE)))
+            elif jump and ea:
                 xf += bool(_safe(lambda: a.AddTransition(CROSSFADE)))
         head = int(its[0].GetStart()) == start and bool(_safe(lambda: its[0].AddTransition(
             {**CROSSFADE, "position": "start", "alignment": "right", "duration": FADE_FRAMES})))
         tail = int(its[-1].GetEnd()) == end and bool(_safe(lambda: its[-1].AddTransition(
             {**CROSSFADE, "position": "end", "alignment": "left", "duration": FADE_FRAMES})))
-        out.append(f"{name} {len(its)} clips ({on.count(False)} gated off), {xf} crossfade(s), "
+        out.append(f"{name} {len(its)} clips ({on.count(False)} gated off), {xf} crossfade(s), {gate} on mic open/close, "
                    f"fade in {'✓' if head else '✗'} out {'✓' if tail else '✗'}")
     v = t.get("V1", [])
     if v:

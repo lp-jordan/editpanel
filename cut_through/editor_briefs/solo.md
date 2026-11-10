@@ -22,7 +22,7 @@ Every removal becomes a cut, so one removal per problem, covering the whole prob
 - **Quick self-corrections** ("the strategy— the structure is"): remove the wrong word or phrase.
 - **Producer talk and off-camera chatter:** remove whole, including any count that follows. Recognise a producer by what they say ("one more time", "that was great", "rolling", "whenever you're ready").
 - **Pre-roll / post-roll:** remove everything before the first real line and after the last.
-- "Let me say that again" with NO count, followed by the same point said with more emphasis, is deliberate — keep both.
+- "Let me say that again" (or "say that again", "let me try that again") with NO count can go either way: talent often uses it for emphasis (the first version was fine, the second hits the point harder — keep both), but it can also be a real restart with no count (the first attempt stumbled or trailed off — remove it as a retake). Decide from whether the first attempt was complete and clean, and **always add a note** at the phrase saying which call you made, so Jordan checks it.
 - Fillers inside kept lines stay. Remove a filler only when it opens a take right after a cut or is part of a stumble.
 - `⟨unheard sound⟩` between attempts is a dropped stumble: remove it with the failed attempt. Inside a clean line, keep it.
 

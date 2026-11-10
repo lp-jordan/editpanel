@@ -18,7 +18,9 @@ Keep the conversation. Take out what trips it up, nothing that carries it. Measu
 Remove:
 - **False starts and restarts** ("you I- you know what I mean is…"), and a sentence abandoned and started over.
 - **"Um" / "uh" at the start of an answer** (inside a line, fillers stay).
-- **Off-camera setup and break chatter**: mic checks, "are we rolling", "let's take five", talk with the crew, small talk before and after.
+- **Self-corrections, only when they trip the listener** ("the strategy— the structure is"): remove the wrong word or phrase. Be careful — a conversation's authenticity lives in how people actually talk, so leave a correction in when it's natural speech, part of someone thinking out loud, or the join wouldn't sound like the person. When in doubt, keep it.
+- **A redone answer**: when someone asks to try an answer again ("can I try that again?", "let me start over") or a producer asks for one, keep the last good take and remove the earlier attempt and the ask.
+- **Off-camera setup and break chatter**: mic checks, "are we rolling", "let's take five", talk with the crew, small talk before and after. Recognise a producer by what they say ("rolling", "one more time", "that was great", "whenever you're ready").
 - A **dead tangent** that goes nowhere and would lose a viewer — sparingly, and say so in `notes`.
 
 Keep:
@@ -38,7 +40,8 @@ Measured from Jordan's conversation edits (guidelines, not rules — cut like an
 - **The person talking is on screen most of the time** (~70–95% of shots).
 - **Cut to a new talker around their first words** (median about half a second after they start) — not before they speak, and not seconds late. A short "yeah" doesn't take the picture.
 - **Long answers get broken up**: the talker's close-up holds for a thought (often 6–10 s, longer for a story), then a **reaction shot** of the listener (~2 s, on a nod, a laugh, a reaction), or **the wide** (~3–4 s), then back to the talker.
-- **The wide** opens and closes the conversation, covers moments when both talk at once, and is the usual cover at a removal.
+- **The close-up carries the conversation**: the key point, a story, emotion, a punchline. Hold it while a thought lands.
+- **The wide is much rarer than the close-ups** (in Jordan's edit about 1 shot in 13, median ~3.6 s): it opens and closes the conversation, covers moments when both talk at once, is the usual cover at a removal, and gives a reset after a long stretch in close. Don't use it just for variety.
 - **Extra angles** (side / slider) are an alternate on a talker — enter from that person's close-up, return to it.
 - **Every removal must land on an angle change** (the program enforces it; choose the angle so it's a good one — often the wide or the other person). Change angle at the removal itself — don't cut away just before it and back right after.
 - About 8 cuts a minute overall; shots under ~2 s only for a deliberate reaction.
