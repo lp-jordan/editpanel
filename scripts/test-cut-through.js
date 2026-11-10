@@ -109,6 +109,39 @@ fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
   console.log('✓ check: word cut off, cue kept, sound with no words, flash shot, pauses, mid-sentence join, repeats, one marker per frame');
 }
 
+// ── energy hints + energy check (on trial) ─────────────────────
+{
+  const { energyModel, energyLabel, rhythmStats, spearman } = require('../electron/workers/cut_through_energy');
+  const { renderTranscript } = require('../electron/workers/cut_through_claude');
+  // 60 s calm (2 words/s, -30 dB), 60 s fast + loud (4 words/s, -22 dB), 60 s calm again, at 24 fps
+  const ws = [];
+  let f = 0;
+  for (const [sec, rate, db] of [[60, 2, -30], [60, 4, -22], [60, 2, -30]]) {
+    const step = 24 / rate;
+    for (let k = 0; k < sec * rate; k++) { ws.push({ mic: 'Camera 1', w: 'word', s: f, e: f + step * 0.8, db }); f += step; }
+  }
+  const em = energyModel(ws, 1 / 24);
+  assert.strictEqual(energyLabel(em.at(30 * 24)), 'normal');
+  assert.strictEqual(energyLabel(em.at(90 * 24)), 'fast · loud');
+  const tokens = ws.map((w) => ({ kind: 'w', s: w.s, e: w.e, text: w.w, who: w.mic }));
+  for (let i = 0; i < tokens.length; i += 9) tokens[i].s += 0;
+  // lines need breaks: put a 0.7 s gap every 8 words
+  let shift = 0;
+  const spaced = tokens.map((t, i) => { if (i && i % 8 === 0) shift += 17; return { ...t, s: t.s + shift, e: t.e + shift }; });
+  const em2 = energyModel(spaced.map((t) => ({ mic: t.who, w: t.text, s: t.s, e: t.e, db: ws[0].db })), 1 / 24);
+  const tx = renderTranscript(spaced, 1 / 24, null, em2);
+  assert.ok(/⟨energy: normal⟩/.test(tx) && /⟨energy: fast⟩/.test(tx), tx.slice(0, 400));
+  assert.ok(!/⟨energy/.test(renderTranscript(spaced, 1 / 24)), 'hints only with a model');
+  assert.ok((tx.match(/⟨energy/g) || []).length <= 6, 'hints only on a change');
+  // a cut that follows the energy: short shots in the fast stretch → negative ρ
+  const pieces = [];
+  for (let a = 0; a < f;) { const len = a > 60 * 24 && a < 120 * 24 ? 72 : 216; pieces.push({ src_in: a, src_out: Math.min(f, a + len) }); a += len; }
+  const r = rhythmStats(pieces, em, 24);
+  assert.ok(r.rhoPace < -0.5 && r.byPace.fast.medianSec < r.byPace.normal.medianSec, JSON.stringify({ rho: r.rhoPace, by: r.byPace }));
+  assert.strictEqual(spearman([1, 2, 3], [3, 2, 1]), null);
+  console.log('✓ energy: pace / level against the talker\'s own usual, transcript hints on a change only, Compare ρ for a cut that follows it');
+}
+
 // ── fakes ──────────────────────────────────────────────────────
 const FAKE_RESOLVE = String.raw`
 import os

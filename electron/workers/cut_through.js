@@ -252,6 +252,7 @@ function createCutThrough(opts) {
       seqBin: p.seqBin === undefined ? DEFAULT_SEQ_BIN : p.seqBin,
       claudeModel: p.claudeModel || claude.DEFAULT_MODEL,
       claudeEffort: p.claudeEffort || 'high',
+      energyHints: p.energyHints !== false,      // pace / loudness hints in Claude's transcript (on trial 2026-11-10)
       // this Resolve project's data folder (chosen on the page, no default: see needRunFolder);
       // until it's chosen, earlier runs are still read from the old shared location
       runFolder,
@@ -609,6 +610,7 @@ function createCutThrough(opts) {
     for (const k of ['pipelineDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort']) {
       if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
     }
+    if (patch.energyHints !== undefined) next.energyHints = !!patch.energyHints;
     // the LPOS project whose slate names this Resolve project's videos
     if (patch.lposProject !== undefined && s.project) {
       const lp = patch.lposProject && patch.lposProject.id ? { id: String(patch.lposProject.id), name: String(patch.lposProject.name || '') } : null;
@@ -1112,7 +1114,7 @@ function createCutThrough(opts) {
         const out = await claude.planWithClaude({
           label: s.label, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: settings().filesDir,
           promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
-          start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort,
+          start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints,
           delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
           roles: { wide: o.wide || undefined, punch: o.punch || undefined, extra: o.extra, slider: o.roles.slider, side: o.roles.side,
             other: o.roles.other, skip: o.skip },
@@ -1309,7 +1311,7 @@ function createCutThrough(opts) {
     return {
       label: vf.tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
       promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
-      start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, delivery,
+      start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, delivery,
       talker: kind === 'solo' ? v.talker || null : null,
       roles: { wide: R.wide || undefined, punch: R.punch || undefined, extra: R.extra, slider: R.slider, side: R.side, other: R.other, skip: R.skip },
       direction: direction(), kind

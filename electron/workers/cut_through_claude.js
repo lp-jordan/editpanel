@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const AnthropicModule = require('@anthropic-ai/sdk');
+const { energyModel, energyLabel } = require('./cut_through_energy');
 
 const Anthropic = AnthropicModule.default || AnthropicModule;
 
@@ -44,6 +45,7 @@ const PAUSES = { scripted: { max: 20, left: 12, min_save: 0, before: 3, join_aft
 const LINE_GAP_SEC = 0.6;
 const MAX_WORDS = 15000;           // ≈ 2.4 h of talk ≈ $1.75 on Opus: the most one Claude pass may take
 const SHOW_PAUSE_SEC = 1.5;
+const ENERGY_EVERY_SEC = 10;      // energy hints: one reading per talker per ~10 s at most
 
 // What Jordan's own edits do with each kind of angle (docs/ai-rough-cut-style-guide.md, measured).
 const ANGLE_HABITS = {
@@ -146,16 +148,27 @@ function clock(sec) {
  * mic angle → label) every line says who's talking and a new line starts when the talker changes:
  * `[12:41] Camera 2: 412 the …`.
  */
-function renderTranscript(tokens, frameSec, speakers = null) {
+function renderTranscript(tokens, frameSec, speakers = null, energy = null) {
   const lines = [];
   let cur = null;
   let prevEnd = null;
   let prevWho = null;
+  // energy hints (on trial, 2026-11-10): read at most every ENERGY_EVERY_SEC, shown only on a change
+  const said = {};
+  const readAt = {};
   tokens.forEach((t, i) => {
     const gap = prevEnd === null ? 0 : (t.s - prevEnd) * frameSec;
     if (!cur || gap > LINE_GAP_SEC || (speakers && t.who !== prevWho)) {
       if (cur) lines.push(cur);
       cur = `[${clock(t.s * frameSec)}]${speakers ? ` ${speakers[t.who] || t.who}:` : ''}`;
+      if (energy && t.kind === 'w' && !(t.s - (readAt[t.who] ?? -Infinity) < ENERGY_EVERY_SEC / frameSec)) {
+        readAt[t.who] = t.s;
+        const label = energyLabel(energy.at(t.s, t.who));
+        if (label && label !== said[t.who]) {
+          said[t.who] = label;
+          cur = `⟨energy${speakers ? ` ${speakers[t.who] || t.who}` : ''}: ${label}⟩\n${cur}`;
+        }
+      }
       if (gap > SHOW_PAUSE_SEC) cur = `⟨pause ${gap.toFixed(1)} s⟩\n${cur}`;
       prevWho = t.who;
     }
@@ -345,7 +358,7 @@ function makeClient(apiKey) {
  * same video again. Throws on an empty or too-long range.
  */
 function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model, effort, delivery = 'scripted', roles = {}, direction = '',
-  talker: only = null }) {
+  talker: only = null, energy: useEnergy = true }) {
   const words = JSON.parse(fs.readFileSync(wordsPath, 'utf8'));
   const day = JSON.parse(fs.readFileSync(dayPath, 'utf8'));
   const frameSec = day.frame_sec[0] / day.frame_sec[1];
@@ -355,7 +368,8 @@ function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model,
   const e0 = Math.min(end, Math.ceil(tokens[tokens.length - 1].e) + 24);
   // a conversation: angle N is the person on camera N (Jordan's rule), so a mic's angle names its talker
   const speakers = multi ? Object.fromEntries(people.map((p, k) => [p, `${p}`])) : null;
-  const transcript = renderTranscript(tokens, frameSec, speakers);
+  const energy = useEnergy ? energyModel(words.words, frameSec) : null;
+  const transcript = renderTranscript(tokens, frameSec, speakers, energy);
   const system = fs.readFileSync(promptPath, 'utf8');
   const nWords = tokens.filter((t) => t.kind === 'w').length;
   const nUnheard = tokens.length - nWords;
@@ -395,7 +409,7 @@ function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model,
   }
   const params = requestParams({ model: model || DEFAULT_MODEL, effort, system, transcript, meta, angles });
   return { label, tokens, s0, e0, frameSec, angles, system, transcript, meta, nWords, minutes: (e0 - s0) * frameSec / 60,
-    model: model || DEFAULT_MODEL, effort, delivery, direction, params };
+    model: model || DEFAULT_MODEL, effort, delivery, direction, energy: !!energy, params };
 }
 
 /** Appends one Claude call to <costs folder>/cut_through_costs.csv. */
@@ -441,7 +455,7 @@ async function planWithClaude(o) {
  * the live price (0.5 for a batch), for the report line.
  */
 function finishPlan(ctx, res, { outDir, seconds = 0, factor = 1, via = '' }) {
-  const { label, tokens, s0, e0, frameSec, angles, effort, delivery, direction } = ctx;
+  const { label, tokens, s0, e0, frameSec, angles, effort, delivery, direction, energy } = ctx;
   const { ok, problems } = validateRemovals(res.parsed.removals, tokens.length);
   const spans = toFrameSpans(tokens, ok, { start: s0, end: e0 });
   const sv = validateShots(res.parsed.shots, ok, tokens.length, angles);
@@ -459,7 +473,7 @@ function finishPlan(ctx, res, { outDir, seconds = 0, factor = 1, via = '' }) {
   const claudeFile = path.join(outDir, `claude_edit_${label}.json`);
   const removalsFile = path.join(outDir, `removals_${label}.json`);
   fs.writeFileSync(claudeFile, JSON.stringify({
-    label, model: res.model, effort, delivery, direction: String(direction || '').trim() || undefined, seconds, usage: res.usage, cost_usd: cost, range: [s0, e0],
+    label, model: res.model, effort, delivery, direction: String(direction || '').trim() || undefined, energy_hints: !!energy, seconds, usage: res.usage, cost_usd: cost, range: [s0, e0],
     shots: sv.ok.map((x) => ({ ...x, at: clock(tokens[x.from].s * frameSec),
       words: tokens.slice(x.from, x.from + 6).map((t) => t.text || '⟨sound⟩').join(' ') })),
     removals: ok.map((r) => ({ ...r, words: tokens.slice(r.from, r.to + 1).map((t) => (t.kind === 'u' ? '⟨unheard⟩' : t.text)).join(' '),

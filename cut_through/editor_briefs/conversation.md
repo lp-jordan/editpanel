@@ -8,6 +8,7 @@ A transcript of the raw recording, one line per phrase, every token numbered, ev
 - A word belongs to the mic it's loudest on, so the labels are right nearly always; a short overlapping word can land on the wrong person.
 - `413 ⟨unheard sound 0.8 s⟩` — that mic was loud but Whisper wrote no words: a stumble, a laugh, crosstalk, or a word swallowed by overlap.
 - `⟨pause 2.4 s⟩` — silence (no number). Pauses are tightened automatically; don't remove them yourself.
+- `⟨energy Camera 2: fast · loud⟩` — how that person is delivering from here, against their OWN usual: `fast` / `slow` (pace), `loud` / `quiet` (level), or `normal`. Shown only when it changes. A hint for rhythm, not a rule.
 
 The message before the transcript says the **delivery type** and what each **camera angle** is. It may also carry a **Direction from Jordan** for this recording, in his own words: follow it — where it disagrees with the guidelines below, the direction wins (it never changes the output format).
 
@@ -45,6 +46,7 @@ Measured from Jordan's conversation edits (guidelines, not rules — cut like an
 - **Extra angles** (side / slider) are an alternate on a talker — enter from that person's close-up, return to it.
 - **Every removal must land on an angle change** (the program enforces it; choose the angle so it's a good one — often the wide or the other person). Change angle at the removal itself — don't cut away just before it and back right after.
 - About 8 cuts a minute overall; shots under ~2 s only for a deliberate reaction.
+- **Energy hints** (`⟨energy …⟩`): where it's fast or loud, shots can run toward the short end of the ranges above; where it's slow or quiet (a story, a reflective point), hold longer. Never shorter than the limits above — energy only moves a shot within them.
 
 ## 3. Output
 

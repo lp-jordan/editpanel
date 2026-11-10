@@ -17,6 +17,7 @@
  */
 
 const { checkTimeline, planTimeline, tcPlus } = require('./cut_through_check');
+const { energyModel, rhythmStats, rhythmOf } = require('./cut_through_energy');
 
 const MIN_FRAMES = 2;          // a difference shorter than this is rounding
 const SHIFT_FRAMES = 12;       // an angle difference this short is a moved cut, not a new angle
@@ -302,6 +303,11 @@ function compareTimeline({ timeline, plan, words: wordsFile, removals = null, re
     airTrimmedMedian: median(events.filter((e) => e.type === 'air_trimmed').map((e) => e.frames)),
     airAddedMedian: median(events.filter((e) => e.type === 'air_added').map((e) => e.frames))
   };
+  // energy check (on trial, 2026-11-10): do the shots get shorter when the talk is faster / louder?
+  try {
+    const em = energyModel((wordsFile && wordsFile.words) || [], 1 / fps);
+    stats.rhythm = { plan: rhythmStats(planned.pieces, em, fps), now: rhythmStats(pieces, em, fps) };
+  } catch (_) { stats.rhythm = null; }
   const changed = events.length + angleEvents.length > 0 || reorderedAt >= 0;
   return { timeline: timeline.name, fps, changed, angleRead, reordered: reorderedAt >= 0, split, stats, events: events.sort((a, b) => a.from - b.from),
     angles: angleEvents, flags, flagStats, transcript, keptPlan: P, keptNow: N, range: [lo, hi] };
@@ -330,6 +336,9 @@ function totals(results) {
       t.acted += s.acted;
     }
   }
+  // energy check pooled over every timeline (touched or not: an untouched cut is the editor's too)
+  const pool = (k) => rhythmOf(results.flatMap((r) => (r.stats.rhythm && r.stats.rhythm[k] ? r.stats.rhythm[k].rows : [])));
+  out.rhythm = { plan: pool('plan'), now: pool('now') };
   out.airTrimmedMedian = median(out.frames.airTrimmed);
   out.airAddedMedian = median(out.frames.airAdded);
   delete out.frames;
@@ -340,6 +349,12 @@ function totals(results) {
 
 function reportLines(results, sum) {
   const lines = [`Compared ${sum.timelines} timeline(s): ${sum.changed} changed`, ''];
+  const rh = (x) => (x && x.shots ? `${x.shots} shots · shorter when faster ρ ${x.rhoPace ?? '–'} · shorter when louder ρ ${x.rhoLevel ?? '–'} · ` +
+    `median s by pace ${['fast', 'normal', 'slow'].map((k) => `${k} ${x.byPace[k] ? x.byPace[k].medianSec : '–'}`).join(' / ')}` : 'not enough words');
+  if (sum.rhythm) {
+    lines.push('Energy check (negative ρ = the cut gets quicker as the talk gets faster / louder):');
+    lines.push(`  editor: ${rh(sum.rhythm.now)}`, `  plan:   ${rh(sum.rhythm.plan)}`, '');
+  }
   for (const r of results) {
     if (!r.changed) { lines.push(`${r.timeline}: unchanged`, ''); continue; }
     const s = r.stats;

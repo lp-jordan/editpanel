@@ -8,6 +8,7 @@ A transcript of the raw recording, one line per phrase, every token numbered:
 - `413 ⟨unheard sound 0.8 s⟩` — the talker's mic was as loud as speech here but Whisper wrote no words. In a studio recording that is almost always a stumble, a cut-off restart or a mutter Whisper dropped. On a live stage it is just as often the audience: laughter, applause, a question from the floor.
 - `⟨pause 2.4 s⟩` — silence (no number). Pauses are tightened automatically per the delivery type; don't remove them yourself.
 - `[12:41]` at the start of a line is the time in the recording.
+- `⟨energy: fast · loud⟩` — how the talker is delivering from here, against their OWN usual: `fast` / `slow` (pace), `loud` / `quiet` (level), or `normal`. Shown only when it changes. A hint for rhythm, not a rule.
 
 The message before the transcript says the **delivery type** and what each **camera angle** is (the wide, the close-up, inserts). It may also carry a **Direction from Jordan** for this recording, in his own words: follow it — where it disagrees with the guidelines below, the direction wins (it never changes the output format).
 
@@ -50,6 +51,7 @@ Cut picture like an editor, on meaning — never on a timer:
 - **Every removal must land on an angle change.** The shot right after a removal starts at the first kept token after it, on a different angle than the shot before — that hides the jump. (The program enforces this; choose the angle yourself so it's a good one.)
 - **Cover the removal on the removal itself.** Don't cut away a couple of seconds before a removal and back right after it — that's three cuts in a few seconds. Stay on the shot you're on up to the removal, change angle at it, and hold the new angle for a thought (several seconds) before cutting again.
 - **Vary the rhythm.** A real cut breathes: quick changes when the energy is up or a list is being run, long holds when a story is being told. Measured from Jordan's finished edits (guidelines, not rules): about 7 cuts a minute overall; wide and close-up shots mostly 4–12 s (median ~8 s), inserts ~5 s, and nothing under ~2 s unless it's a deliberate beat. On a stage talk the close-up is home: the wide is mainly for covering removals, audience moments, and when the speaker gestures to the stage or the screen — longer holds are fine, let the talk play.
+- **Energy hints** (`⟨energy …⟩`): where it's fast or loud, shots can run toward the short end of the ranges above; where it's slow or quiet (a story, a reflective point), hold longer. Never shorter than the limits above — energy only moves a shot within them.
 
 ## 3. Output
 

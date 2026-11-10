@@ -736,6 +736,10 @@ function CutThroughPage({ connected }) {
                 <option value="claude-sonnet-5-5">Sonnet 5.5</option>
               </select>
             </CtRow>
+            <CtRow label="Energy hints">
+              <input type="checkbox" checked={ct.settings.energyHints !== false}
+                onChange={(e) => call('settings', () => api.updateSettings({ energyHints: e.target.checked }))} />
+            </CtRow>
             <CtRow label="Claude API key">
               <input className="settings-input ct-grow-input" type="password" autoComplete="off" value={keyDraft}
                 placeholder={ct.settings.claudeKey || 'Not set'}
