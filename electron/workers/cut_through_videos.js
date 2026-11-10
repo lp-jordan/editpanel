@@ -97,8 +97,8 @@ function slateOffset(day, notes) {
 }
 
 /**
- * "This multicam starts at H6": only that shoot day's notes, from H6 on. Slate notes have no date,
- * so a day = one slate tab, split again where the time of day jumps backwards. If
+ * "This multicam starts at H6": only that shoot day's notes, from H6 on. A day = one slate tab, split
+ * again where the row's date changes (rows since 2026-11-10) or the time of day jumps backwards. If
  * the code is on several days, the day that fits the multicam's recordings best; ties = the
  * earliest. The ATEM notes just before the code stay (they set the clock offset). null = not found.
  */
@@ -113,12 +113,16 @@ function notesFrom(day, notes, firstCode) {
   const runs = [];
   for (const list of byTab.values()) {
     let last = null;
+    let lastDate = null;
     runs.push([]);
     for (const n of list) {
       const t = slateSeconds(n.timestamp);
-      if (t !== null && last !== null && t < last - 60) runs.push([]);
+      // rows from LPOS since 2026-11-10 carry their shoot day: a new date = a new day
+      const newDate = n.date && lastDate && n.date !== lastDate;
+      if (newDate || (t !== null && last !== null && t < last - 60)) runs.push([]);
       runs[runs.length - 1].push(n);
       if (t !== null) last = t;
+      if (n.date) lastDate = n.date;
     }
   }
   let best = null;

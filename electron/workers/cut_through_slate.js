@@ -5,30 +5,40 @@
  * screen itself was on camera the whole time.
  *
  * How:
- *   1. ffmpeg samples the slate angle's clips at SAMPLE_FPS as tiny grey thumbnails (cheap: the
- *      same decode the slider-motion read does).
- *   2. The picture only changes when someone types a new code (or the screen changes), so the
- *      samples fall into "looks": a new look starts where the thumbnail differs from the current
- *      look's for PERSIST samples in a row.
- *   3. One sharp frame from the middle of each look goes to Claude (several per request), which
- *      reads the code in it. A clip of 6 h with ~100 code changes is ~100 frames, well under $1.
- *   4. Each look becomes { from, to, code } on the multicam (frames). Find videos treats the start
- *      of a look as "this code from here on", like a slate note, and the cut still lands in the
- *      longest pause near it.
+ *   1. Find the code box: Claude gets one whole frame and says where the code is (a box, 0–1).
+ *      Everything after looks only at that box (padded), so a clock or meter elsewhere on the
+ *      screen doesn't count as a change, and a two-character code change does.
+ *   2. ffmpeg samples the box at SAMPLE_FPS as tiny grey thumbnails; the samples fall into "looks"
+ *      where the box stays the same (a new look = differs for PERSIST samples in a row).
+ *   3. Claude reads the box at the START of every look (and at its end, and every CHECK_EVERY_SEC
+ *      inside a long one — a change the thumbnails missed).
+ *   4. Where two neighbouring reads disagree and are more than MIN_GAP_SEC apart, more reads go in
+ *      between (three per gap per round, all gaps batched together) until each change is pinned.
+ *   5. The reads become { from, to, code } on the multicam (frames). Find videos treats the start of
+ *      each as "this code from here on", like a slate note; the cut still lands in the nearest pause.
  *
- * Output (slate_<LABEL>.json): { angle, reads: [{ from, to, code, sure }], frames, cost, ... }.
+ * Output (slate_<LABEL>.json): { angle, box, reads: [{ from, to, code, sure }], frames, cost, … }.
  */
 
 const { spawn } = require('child_process');
 
 const SAMPLE_FPS = 1;
-const THUMB_W = 64;
-const THUMB_H = 36;
-const CHANGE = 10;            // mean |difference| (0–255) between thumbnails that counts as a new look
-const PERSIST = 3;            // …for this many samples in a row (a person walking past isn't a new code)
-const MAX_FRAMES = 600;       // safety: more looks than this = the angle isn't a steady slate screen
+const THUMB_W = 96;
+const THUMB_H = 32;
+const CHANGE = 12;            // mean |difference| (0–255) inside the code box that counts as a new look
+const PERSIST = 2;            // …for this many samples in a row
+const READ_AFTER_SEC = 1.5;   // read a look this far in (past the change itself)
+const CHECK_EVERY_SEC = 300;  // a long look is also read every 5 min, and at its end
+const MIN_GAP_SEC = 3.5;      // a change between two reads closer than this is pinned
+const MAX_ROUNDS = 8;
+const MAX_LOOKS = 600;        // safety: more looks than this = the box isn't a steady code box
 const PER_REQUEST = 8;        // frames per Claude request
-const GRAB_W = 1280;
+const GRAB_W = 1280;          // the whole frame, to find the box
+const CROP_W = 640;           // a read of the box
+const PAD = 0.3;              // box padding, as a share of its size on each side
+// The LPOS Slate page's code tile (Jordan's screenshot 2026-11-10: every slate has this layout, the
+// tile left of Production Notes). Tried first; Claude finds the box only if nothing reads there.
+const SLATE_BOX = { x: 0.215, y: 0.495, w: 0.13, h: 0.235 };
 
 function run(ffmpeg, args, onProc) {
   return new Promise((resolve, reject) => {
@@ -46,20 +56,28 @@ function run(ffmpeg, args, onProc) {
   });
 }
 
-/** ffmpeg → one grey THUMB_W×THUMB_H thumbnail per sample. */
-async function readThumbs(ffmpeg, file, startSec, durSec, onProc = () => {}) {
+/** ffmpeg crop filter for a 0–1 box (null = the whole frame). */
+function cropFilter(box) {
+  if (!box) return '';
+  const f = (v) => v.toFixed(4);
+  return `crop=iw*${f(box.w)}:ih*${f(box.h)}:iw*${f(box.x)}:ih*${f(box.y)},`;
+}
+
+/** ffmpeg → one grey THUMB_W×THUMB_H thumbnail of the box per sample. */
+async function readThumbs(ffmpeg, file, startSec, durSec, box, onProc = () => {}) {
   const buf = await run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-hwaccel', 'auto', '-ss', String(Math.max(0, startSec)), '-t', String(durSec), '-i', file,
-    '-vf', `fps=${SAMPLE_FPS},scale=${THUMB_W}:${THUMB_H}:flags=area,format=gray`, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], onProc);
+    '-vf', `fps=${SAMPLE_FPS},${cropFilter(box)}scale=${THUMB_W}:${THUMB_H}:flags=area,format=gray`, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], onProc);
   const size = THUMB_W * THUMB_H;
   const out = [];
   for (let o = 0; o + size <= buf.length; o += size) out.push(buf.subarray(o, o + size));
   return out;
 }
 
-/** One frame as a JPEG (GRAB_W wide). */
-function grabFrame(ffmpeg, file, sec, onProc = () => {}) {
+/** One frame (or the box of it) as a JPEG. */
+function grabFrame(ffmpeg, file, sec, box = null, onProc = () => {}) {
+  const width = box ? CROP_W : GRAB_W;
   return run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', String(Math.max(0, sec)), '-i', file, '-frames:v', '1',
-    '-vf', `scale=${GRAB_W}:-2`, '-f', 'image2pipe', '-c:v', 'mjpeg', '-q:v', '3', '-'], onProc);
+    '-vf', `${cropFilter(box)}scale=${width}:-2`, '-f', 'image2pipe', '-c:v', 'mjpeg', '-q:v', '3', '-'], onProc);
 }
 
 function diff(a, b) {
@@ -74,71 +92,26 @@ function looksOf(thumbs, { change = CHANGE, persist = PERSIST } = {}) {
   const looks = [];
   let start = 0;
   let ref = thumbs[0];
-  let run_ = 0;
+  let streak = 0;
   for (let i = 1; i < thumbs.length; i++) {
     if (diff(ref, thumbs[i]) > change) {
-      run_ += 1;
-      if (run_ >= persist) {
+      streak += 1;
+      if (streak >= persist) {
         const at = i - persist + 1;
         looks.push([start, at - 1]);
         start = at;
         ref = thumbs[at];
-        run_ = 0;
+        streak = 0;
       }
     } else {
-      run_ = 0;
+      streak = 0;
     }
   }
   looks.push([start, thumbs.length - 1]);
   return looks;
 }
 
-const SCHEMA = {
-  type: 'object',
-  properties: {
-    reads: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          image: { type: 'integer' },
-          code: { type: 'string' },
-          sure: { type: 'boolean' }
-        },
-        required: ['image', 'code', 'sure'],
-        additionalProperties: false
-      }
-    }
-  },
-  required: ['reads'],
-  additionalProperties: false
-};
-
-function prompt(knownCodes) {
-  const known = (knownCodes || []).filter(Boolean);
-  return 'Each image is a frame from the slate camera of a video shoot. The slate is a screen showing the code of the ' +
-    'video being recorded (a J-code such as H6, J12 or A1) in its code box. For every image, return the code shown in the ' +
-    'code box exactly as written. Return an empty string when no code is readable (screen off, blurred, blocked). ' +
-    'Set sure to false when you are guessing between similar characters.' +
-    (known.length ? `\n\nCodes written on this project's slate notes include: ${[...new Set(known)].slice(0, 300).join(', ')}. ` +
-      'A code on screen may also be one that is not in this list.' : '');
-}
-
-/** One request: frames [{ jpeg }] → [{ code, sure }] in the same order. */
-async function readBatch({ client, model, frames, knownCodes }) {
-  const content = [];
-  frames.forEach((f, i) => {
-    content.push({ type: 'text', text: `Image ${i + 1}:` });
-    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: f.jpeg.toString('base64') } });
-  });
-  content.push({ type: 'text', text: 'Read the code in each image.' });
-  const params = {
-    model,
-    max_tokens: 4000,
-    output_config: { effort: 'low', format: { type: 'json_schema', schema: SCHEMA } },
-    system: prompt(knownCodes),
-    messages: [{ role: 'user', content }]
-  };
+async function ask(client, params) {
   let msg;
   try {
     // refusal fallback: a safety decline re-runs on a fallback model inside the same call
@@ -149,17 +122,97 @@ async function readBatch({ client, model, frames, knownCodes }) {
   }
   if (msg.stop_reason === 'refusal') throw Object.assign(new Error('Claude declined to read the slate frames'), { usage: msg.usage });
   const text = (msg.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-  let parsed;
-  try { parsed = JSON.parse(text); } catch (_) { throw Object.assign(new Error('Slate read: answer was not valid JSON'), { usage: msg.usage }); }
-  const by = new Map((parsed.reads || []).map((r) => [r.image, r]));
+  try {
+    return { parsed: JSON.parse(text), usage: msg.usage, model: msg.model || params.model };
+  } catch (_) {
+    throw Object.assign(new Error('Slate read: answer was not valid JSON'), { usage: msg.usage });
+  }
+}
+
+const BOX_SCHEMA = {
+  type: 'object',
+  properties: {
+    found: { type: 'boolean' },
+    code: { type: 'string' },
+    x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' }
+  },
+  required: ['found', 'code', 'x', 'y', 'w', 'h'],
+  additionalProperties: false
+};
+
+const READ_SCHEMA = {
+  type: 'object',
+  properties: {
+    reads: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { image: { type: 'integer' }, code: { type: 'string' }, sure: { type: 'boolean' } },
+        required: ['image', 'code', 'sure'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['reads'],
+  additionalProperties: false
+};
+
+const ABOUT = 'The images come from the slate camera of a video shoot. The slate is a screen showing the code of the ' +
+  'video being recorded (a J-code such as H6, J12, A1 or 1A) in its code box. Codes are short: letters and digits.';
+
+function hint(knownCodes) {
+  const known = [...new Set((knownCodes || []).filter(Boolean))].slice(0, 300);
+  return known.length ? `\n\nCodes written on this project's slate notes include: ${known.join(', ')}. ` +
+    'The code on screen may also be one that is not in this list; always write what is on screen.' : '';
+}
+
+/** Where the code box is, on one whole frame → { box (padded, 0–1) | null, code }. */
+async function locateBox({ client, model, jpeg, knownCodes }) {
+  const r = await ask(client, {
+    model,
+    max_tokens: 2000,
+    output_config: { effort: 'low', format: { type: 'json_schema', schema: BOX_SCHEMA } },
+    system: ABOUT + hint(knownCodes),
+    messages: [{ role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: jpeg.toString('base64') } },
+      { type: 'text', text: 'Find the code box. Return found, the code shown, and the box around the code text as x, y, w, h ' +
+        'fractions of the image width and height (x, y = top-left corner). found = false when there is no slate code on screen.' }
+    ] }]
+  });
+  const p = r.parsed || {};
+  if (!p.found || !(p.w > 0) || !(p.h > 0)) return { box: null, code: null, usage: r.usage, model: r.model };
+  const x0 = Math.max(0, p.x - p.w * PAD);
+  const y0 = Math.max(0, p.y - p.h * PAD);
+  const x1 = Math.min(1, p.x + p.w * (1 + PAD));
+  const y1 = Math.min(1, p.y + p.h * (1 + PAD));
+  return { box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, code: String(p.code || '').trim() || null, usage: r.usage, model: r.model };
+}
+
+/** One request: box crops [{ jpeg }] → [{ code, sure }] in the same order. */
+async function readBatch({ client, model, frames, knownCodes }) {
+  const content = [];
+  frames.forEach((f, i) => {
+    content.push({ type: 'text', text: `Image ${i + 1}:` });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: f.jpeg.toString('base64') } });
+  });
+  content.push({ type: 'text', text: 'Each image is the code box. Read the code in each image exactly as written; an empty string when ' +
+    'no code is readable. sure = false when you are guessing between similar characters.' });
+  const r = await ask(client, {
+    model,
+    max_tokens: 4000,
+    output_config: { effort: 'low', format: { type: 'json_schema', schema: READ_SCHEMA } },
+    system: ABOUT + hint(knownCodes),
+    messages: [{ role: 'user', content }]
+  });
+  const by = new Map(((r.parsed && r.parsed.reads) || []).map((x) => [x.image, x]));
   return {
     reads: frames.map((_, i) => {
-      const r = by.get(i + 1);
-      const code = r ? String(r.code || '').trim() : '';
-      return { code: code || null, sure: Boolean(r && r.sure && code) };
+      const x = by.get(i + 1);
+      const code = x ? String(x.code || '').trim() : '';
+      return { code: code || null, sure: Boolean(x && x.sure && code) };
     }),
-    usage: msg.usage,
-    model: msg.model || model
+    usage: r.usage,
+    model: r.model
   };
 }
 
@@ -169,51 +222,132 @@ function addUsage(a, b) {
   return out;
 }
 
+/** Sorted samples of one clip → [{ fromSec, toSec, code, sure }] covering the clip (multicam seconds). */
+function segmentsOf(samples, clip) {
+  const out = [];
+  samples.forEach((p, i) => {
+    const from = i === 0 ? clip.from_sec : (samples[i - 1].t + p.t) / 2;
+    const to = i === samples.length - 1 ? clip.to_sec : (p.t + samples[i + 1].t) / 2;
+    const last = out[out.length - 1];
+    if (last && last.code === p.code) { last.toSec = to; last.sure = last.sure && p.sure; return; }
+    out.push({ fromSec: from, toSec: to, code: p.code, sure: p.sure });
+  });
+  return out;
+}
+
 /**
  * clips: [{ path, file_zero_sec, from_sec, to_sec }] of the slate angle (multicam seconds).
- * Returns { reads: [{ from, to, code, sure }] (multicam frames), frames, usage, model, seconds, report }.
+ * Returns { reads: [{ from, to, code, sure }] (multicam frames), box, frames, usage, model, seconds, report }.
  */
-async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = [], onProgress = () => {}, onProc = () => {}, isCanceled = () => false }) {
+async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = [], onProgress = () => {}, onProc = () => {}, isCanceled = () => false, grab = grabFrame }) {
   const t0 = Date.now();
-  // 1–2: looks per clip
-  const looks = [];
-  for (const [k, c] of clips.entries()) {
-    if (isCanceled()) throw new Error('Canceled');
-    onProgress({ phase: 'Looking for code changes on the slate', bar: Math.round((k / clips.length) * 70) });
-    const start = c.from_sec - c.file_zero_sec;
-    const thumbs = await readThumbs(ffmpeg, c.path, start, c.to_sec - c.from_sec, onProc);
-    for (const [a, b] of looksOf(thumbs)) {
-      const mid = (a + b) / 2 / SAMPLE_FPS;
-      looks.push({ clip: c, fromSec: c.from_sec + a / SAMPLE_FPS, toSec: Math.min(c.to_sec, c.from_sec + (b + 1) / SAMPLE_FPS), fileSec: start + mid });
-    }
-  }
-  if (looks.length > MAX_FRAMES) {
-    throw new Error(`The slate angle changes ${looks.length} times — it doesn't look like a steady slate screen (pick another angle)`);
-  }
-  // 3: read each look's code
   let usage = {};
   let usedModel = model;
-  const reads = [];
-  for (let i = 0; i < looks.length; i += PER_REQUEST) {
-    if (isCanceled()) throw new Error('Canceled');
-    onProgress({ phase: `Reading the codes (${Math.min(i + PER_REQUEST, looks.length)} of ${looks.length} frames)`, bar: 70 + Math.round((i / looks.length) * 30) });
-    const group = looks.slice(i, i + PER_REQUEST);
+  let asked = 0;
+  const check = () => { if (isCanceled()) throw new Error('Canceled'); };
+  const fileSec = (clip, t) => t - clip.file_zero_sec;
+
+  // 1. the code box: the Slate page's usual tile if a code reads there, else Claude finds it
+  onProgress({ phase: 'Finding the code box', bar: 0 });
+  let box = null;
+  let boxFrom = 'none';
+  const probes = clips.slice(0, 3).map((c) => ({ c, t: c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2) }));
+  if (probes.length) {
     const frames = [];
-    for (const l of group) frames.push({ jpeg: await grabFrame(ffmpeg, l.clip.path, l.fileSec, onProc) });
+    for (const { c, t } of probes) frames.push({ jpeg: await grab(ffmpeg, c.path, fileSec(c, t), SLATE_BOX, onProc) });
     const r = await readBatch({ client, model, frames, knownCodes });
     usage = addUsage(usage, r.usage);
     usedModel = r.model;
-    group.forEach((l, j) => reads.push({ from: Math.round(l.fromSec / frameSec), to: Math.round(l.toSec / frameSec), ...r.reads[j] }));
+    asked += frames.length;
+    if (r.reads.some((x) => x.code)) { box = SLATE_BOX; boxFrom = 'usual'; }
+  }
+  for (const c of box ? [] : clips.slice(0, 4)) {
+    check();
+    const t = c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2);
+    const found = await locateBox({ client, model, jpeg: await grab(ffmpeg, c.path, fileSec(c, t), null, onProc), knownCodes });
+    usage = addUsage(usage, found.usage);
+    usedModel = found.model;
+    asked += 1;
+    if (found.box) { box = found.box; boxFrom = 'found'; break; }
+  }
+
+  // 2. looks per clip (inside the box)
+  const perClip = [];
+  let looks = 0;
+  for (const [k, c] of clips.entries()) {
+    check();
+    onProgress({ phase: 'Looking for code changes on the slate', bar: Math.round((k / clips.length) * 50) });
+    const thumbs = await readThumbs(ffmpeg, c.path, fileSec(c, c.from_sec), c.to_sec - c.from_sec, box, onProc);
+    const L = looksOf(thumbs).map(([a, b]) => [c.from_sec + a / SAMPLE_FPS, Math.min(c.to_sec, c.from_sec + (b + 1) / SAMPLE_FPS)]);
+    looks += L.length;
+    // 3. where to read: each look's start, then every CHECK_EVERY_SEC and its end when it's long
+    const times = new Set();
+    for (const [a, b] of L) {
+      const first = Math.min(a + READ_AFTER_SEC, (a + b) / 2);
+      times.add(+first.toFixed(2));
+      for (let t = a + CHECK_EVERY_SEC; t < b - READ_AFTER_SEC; t += CHECK_EVERY_SEC) times.add(+t.toFixed(2));
+      if (b - a > 2 * READ_AFTER_SEC + MIN_GAP_SEC) times.add(+(b - READ_AFTER_SEC).toFixed(2));
+    }
+    perClip.push({ clip: c, samples: [...times].sort((x, y) => x - y).map((t) => ({ t, code: undefined, sure: false })) });
+  }
+  if (looks > MAX_LOOKS) {
+    throw new Error(`The slate's code box changes ${looks} times — it doesn't look like a steady slate screen (pick another angle)`);
+  }
+
+  // reads every sample that has no code yet, batched
+  const readPending = async (label, barFrom, barTo) => {
+    const todo = [];
+    for (const pc of perClip) for (const s of pc.samples) if (s.code === undefined) todo.push({ pc, s });
+    for (let i = 0; i < todo.length; i += PER_REQUEST) {
+      check();
+      onProgress({ phase: `${label} (${Math.min(i + PER_REQUEST, todo.length)} of ${todo.length})`, bar: Math.round(barFrom + (i / todo.length) * (barTo - barFrom)) });
+      const group = todo.slice(i, i + PER_REQUEST);
+      const frames = [];
+      for (const { pc, s } of group) frames.push({ jpeg: await grab(ffmpeg, pc.clip.path, fileSec(pc.clip, s.t), box, onProc) });
+      const r = await readBatch({ client, model, frames, knownCodes });
+      usage = addUsage(usage, r.usage);
+      usedModel = r.model;
+      asked += frames.length;
+      group.forEach(({ s }, j) => { s.code = r.reads[j].code; s.sure = r.reads[j].sure; });
+    }
+    return todo.length;
+  };
+  await readPending('Reading the codes', 50, 80);
+
+  // 4. pin each change: more reads between neighbours that disagree
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    let added = 0;
+    for (const pc of perClip) {
+      const extra = [];
+      for (let i = 1; i < pc.samples.length; i++) {
+        const a = pc.samples[i - 1];
+        const b = pc.samples[i];
+        if (!a.code || !b.code || a.code === b.code || b.t - a.t <= MIN_GAP_SEC) continue;
+        for (const q of [0.25, 0.5, 0.75]) extra.push({ t: +(a.t + (b.t - a.t) * q).toFixed(2), code: undefined, sure: false });
+      }
+      if (extra.length) { pc.samples = [...pc.samples, ...extra].sort((x, y) => x.t - y.t); added += extra.length; }
+    }
+    if (!added) break;
+    await readPending('Pinning where codes change', 80, 98);
+  }
+
+  // 5. reads on the multicam
+  const reads = [];
+  for (const pc of perClip) {
+    if (!pc.samples.length) continue;
+    for (const g of segmentsOf(pc.samples, pc.clip)) {
+      reads.push({ from: Math.round(g.fromSec / frameSec), to: Math.round(g.toSec / frameSec), code: g.code || null, sure: Boolean(g.code && g.sure) });
+    }
   }
   reads.sort((a, b) => a.from - b.from);
   const unreadable = reads.filter((r) => !r.code).length;
-  const unsure = reads.filter((r) => r.code && !r.sure).length;
   const codes = new Set(reads.filter((r) => r.code).map((r) => r.code)).size;
   const seconds = (Date.now() - t0) / 1000;
   return {
-    reads, frames: looks.length, usage, model: usedModel, seconds: +seconds.toFixed(1),
-    report: `${looks.length} slate frames read: ${codes} codes, ${unreadable} unreadable, ${unsure} unsure, in ${seconds.toFixed(0)} s`
+    reads, box, frames: asked, usage, model: usedModel, seconds: +seconds.toFixed(1),
+    report: `${boxFrom === 'usual' ? 'usual code tile' : boxFrom === 'found' ? 'code box found by Claude' : 'no code box found (whole frame used)'}; ${asked} frames read: ${codes} codes, ` +
+      `${unreadable} unreadable stretches, in ${seconds.toFixed(0)} s`
   };
 }
 
-module.exports = { readSlate, looksOf, readThumbs, grabFrame, readBatch, diff, SAMPLE_FPS, THUMB_W, THUMB_H };
+module.exports = { SLATE_BOX, readSlate, looksOf, segmentsOf, readThumbs, grabFrame, readBatch, locateBox, cropFilter, diff, SAMPLE_FPS, THUMB_W, THUMB_H };
