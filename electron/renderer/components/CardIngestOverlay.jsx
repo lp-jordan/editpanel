@@ -33,7 +33,7 @@ function ciDuration(ms) {
 // Check-view file status → dot + label.
 const CI_CHECK_STATE = {
   'copy':        { dot: 'is-pending', cls: 'accent',  label: () => 'Copy' },
-  'rename':      { dot: 'is-pending', cls: 'info',    label: (f) => `Copy as ${f.destName}` },
+  'rename':      { dot: 'is-pending', cls: 'info',    label: (f) => `Name taken · copy as ${f.destName}` },
   'on-nas':      { dot: 'is-skipped', cls: 'dim',     label: () => 'On NAS' },
   'unfinalized': { dot: 'is-error warning', cls: 'warning', label: () => 'Unfinalized · repair in camera' },
   'error':       { dot: 'is-error',   cls: 'danger',  label: () => 'Unreadable' },
@@ -269,7 +269,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
             {r?.error && <span className="tag danger">{r.error}</span>}
             {s && s.toCopy > 0 && <span className="tag accent">{s.toCopy} to copy · {ciBytes(s.toCopyBytes)}</span>}
             {s && s.onNas > 0 && <span className="tag">{s.onNas} on NAS</span>}
-            {s && s.renamed > 0 && <span className="tag info">{s.renamed} renamed</span>}
+            {s && s.renamed > 0 && <span className="tag info" title="A different file already has this name in the folder">{s.renamed} name{s.renamed !== 1 ? 's' : ''} taken</span>}
             {s && s.unfinalized > 0 && <span className="tag warning">{s.unfinalized} unfinalized</span>}
             {s && s.safeToFormat && <span className="tag success">Safe to format</span>}
             {s && s.mediaCount === 0 && s.unfinalized === 0 && <span className="tag">No media</span>}
@@ -306,7 +306,8 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         )}
 
         {isOpen && r?.files && renderFiles(card.root, r.files.map(f => ({
-          f, st: CI_CHECK_STATE[f.status] || CI_CHECK_STATE.copy, name: f.name, title: f.where || f.error || f.relPath
+          f, st: CI_CHECK_STATE[f.status] || CI_CHECK_STATE.copy, name: f.name,
+          title: f.status === 'rename' ? `A different ${f.name} is already in this folder` : (f.where || f.error || f.relPath)
         })))}
       </section>
     );
