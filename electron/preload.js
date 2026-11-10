@@ -275,6 +275,15 @@ contextBridge.exposeInMainWorld('cardIngestAPI', {
   check(targets) { return ipcRenderer.invoke('card-ingest:check', targets); },
   /** Data URL of a card file's thumbnail, or null. */
   thumbnail(root, relPath) { return ipcRenderer.invoke('card-ingest:thumbnail', { root, relPath }); },
+  /** Search the remembered footage root (pick: choose a new one first) for these cards' files. */
+  deepScan(cardRoots, pick = false) { return ipcRenderer.invoke('card-ingest:deep-scan', { cardRoots, pick }); },
+  cancelDeepScan() { return ipcRenderer.invoke('card-ingest:cancel-deep-scan'); },
+  footageRoot() { return ipcRenderer.invoke('card-ingest:footage-root'); },
+  onDeepScan(callback) {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('card-ingest:deep-scan', handler);
+    return () => ipcRenderer.removeListener('card-ingest:deep-scan', handler);
+  },
   start(targets) { return ipcRenderer.invoke('card-ingest:start', targets); },
   cancel() { return ipcRenderer.invoke('card-ingest:cancel'); },
   snapshot() { return ipcRenderer.invoke('card-ingest:snapshot'); },

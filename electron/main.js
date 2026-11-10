@@ -3645,6 +3645,20 @@ app.whenReady().then(() => {
   ipcMain.handle('card-ingest:list', ciCall(() => cardIngest.refresh()));
   ipcMain.handle('card-ingest:check', ciCall((targets) => cardIngest.check(targets || [])));
   ipcMain.handle('card-ingest:thumbnail', ciCall((arg) => cardIngest.thumbnail(arg)));
+  ipcMain.handle('card-ingest:deep-scan', ciCall(async ({ cardRoots, pick } = {}) => {
+    // The folder is remembered (preference cardIngestFootageRoot); `pick`
+    // asks for a new one first.
+    let footageRoot = controlPlane?.getPreferences().cardIngestFootageRoot || '';
+    if (pick || !footageRoot) {
+      const res = await dialog.showOpenDialog({ title: 'Folder to deep scan', properties: ['openDirectory'], defaultPath: footageRoot || undefined });
+      if (res.canceled || !res.filePaths?.length) return { state: 'canceled' };
+      footageRoot = res.filePaths[0];
+      controlPlane?.setPreferences({ cardIngestFootageRoot: footageRoot });
+    }
+    return cardIngest.deepScan({ footageRoot, cardRoots: cardRoots || [] });
+  }));
+  ipcMain.handle('card-ingest:cancel-deep-scan', () => cardIngest.cancelDeepScan());
+  ipcMain.handle('card-ingest:footage-root', () => ({ ok: true, data: controlPlane?.getPreferences().cardIngestFootageRoot || '' }));
   ipcMain.handle('card-ingest:start', async (_e, targets) => {
     try {
       const res = await cardIngest.startIngest(targets || []);

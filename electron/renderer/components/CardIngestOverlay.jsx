@@ -91,6 +91,8 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
   const [starting, setStarting] = React.useState(false);
   const [error, setError]       = React.useState(null);
   const checkSeq = React.useRef(0);
+  const [recheck, setRecheck]   = React.useState(0);
+  const [deep, setDeep]         = React.useState(null);   // deep scan progress / result
 
   // Resolve import (report view)
   const [importBin, setImportBin]       = React.useState(CARD_IMPORT_DEFAULT_BIN);
@@ -109,7 +111,8 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
     window.cardIngestAPI.listCards().then(r => { if (r?.ok) setCards(r.data || []); });
     const offCards  = window.cardIngestAPI.onCards(({ cards: next }) => setCards(next || []));
     const offUpdate = window.cardIngestAPI.onUpdate((snap) => setRun(snap));
-    return () => { offCards(); offUpdate(); };
+    const offDeep   = window.cardIngestAPI.onDeepScan((p) => setDeep(p));
+    return () => { offCards(); offUpdate(); offDeep(); };
   }, [open]);
 
   // New cards start on the last-used destination.
@@ -142,7 +145,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         setError(null);
       })
       .finally(() => { if (seq === checkSeq.current) setChecking(false); });
-  }, [open, !!run, cardKey, destKey]);
+  }, [open, !!run, cardKey, destKey, recheck]);
 
   // Bins for the Resolve import (report view only).
   const reportReady = !!run && run.state !== 'running';
@@ -349,10 +352,45 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
     try { localStorage.setItem('cardIngest.view', next); } catch (_) {}
   }
 
+  // Deep scan: search the whole client-assets tree for files copied outside
+  // EditPanel. Hits go into the ledger, so the re-check then shows them.
+  async function handleDeepScan(pick = false) {
+    const res = await window.cardIngestAPI.deepScan(cards.map(c => c.root), pick);
+    if (!res?.ok) { setError(res?.error || 'Deep scan failed'); return; }
+    if (res.data?.state === 'canceled' && !res.data.root) return;   // folder picker closed
+    setDeep(res.data);
+    if (res.data?.state === 'done') setRecheck(n => n + 1);
+  }
+
+  function renderDeepScan() {
+    if (!deep) return null;
+    const folder = deep.root ? deep.root.split(/[\\/]/).filter(Boolean).pop() : '';
+    if (deep.state === 'running') {
+      return (
+        <p className="notice info ci-deep">
+          <span className="spinner small" />
+          <span>Deep scan · {folder} · {deep.dirs.toLocaleString()} folders · {deep.files.toLocaleString()} files</span>
+          <button type="button" className="btn ghost small notice-action" onClick={() => window.cardIngestAPI.cancelDeepScan()}>Stop</button>
+        </p>
+      );
+    }
+    if (deep.state === 'done') {
+      return (
+        <p className={`notice ${deep.found ? 'success' : 'info'} ci-deep`} title={deep.root}>
+          <span>Deep scan of {folder}: {deep.found ? `found ${deep.found} file${deep.found !== 1 ? 's' : ''}` : 'nothing new found'}</span>
+          <button type="button" className="btn ghost small notice-action" onClick={() => handleDeepScan(true)}>Change folder</button>
+        </p>
+      );
+    }
+    if (deep.state === 'failed') return <p className="notice error">{deep.error || 'Deep scan failed'}</p>;
+    return null;
+  }
+
   function renderCheck() {
     return (
       <>
         {error && <p className="notice error">{error}</p>}
+        {renderDeepScan()}
         {cards.length === 0 && <p className="run-empty">No camera cards found.</p>}
         {cards.map(renderCheckCard)}
       </>
@@ -546,6 +584,13 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
                   : `${startable.length} card${startable.length !== 1 ? 's' : ''} · ${startFiles} file${startFiles !== 1 ? 's' : ''} · ${ciBytes(startBytes)}`}
               </span>
             )}
+            <button
+              className="btn ghost"
+              onClick={() => handleDeepScan(false)}
+              disabled={cards.length === 0 || deep?.state === 'running'}
+            >
+              Deep scan
+            </button>
             <button className="btn ghost" onClick={() => onClose?.()}>Cancel</button>
             <button className="btn primary" onClick={handleStart} disabled={starting || checking || startable.length === 0 || missingDest}>
               {starting ? 'Starting…' : 'Start ingest'}

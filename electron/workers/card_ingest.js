@@ -249,6 +249,107 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
     return results;
   }
 
+  // ── Deep scan ───────────────────────────────────────────
+  // On demand, for files copied outside EditPanel (by hand, another machine,
+  // before this tool): walk a whole folder tree (the client assets root),
+  // match card files by size, confirm by sample hash, and add every hit to the
+  // ledger so normal checks see it from then on. Names don't need to match.
+
+  let deepScanToken = null;
+
+  async function deepScan({ footageRoot, cardRoots = [] } = {}) {
+    if (!footageRoot) throw new Error('No folder to scan');
+    if (deepScanToken) deepScanToken.canceled = true;
+    const token = { canceled: false };
+    deepScanToken = token;
+    const progress = { state: 'running', root: footageRoot, dirs: 0, files: 0, found: 0 };
+    let lastSent = 0;
+    const report = (force = false) => {
+      const now = Date.now();
+      if (force || now - lastSent > 250) { lastSent = now; broadcast('card-ingest:deep-scan', { ...progress }); }
+    };
+    report(true);
+
+    try {
+      // What we're looking for: card media not already in the ledger.
+      const wanted = new Map();   // size → [{ card, f }]
+      for (const root of cardRoots) {
+        const card = cards.find(c => c.root === root);
+        if (!card) continue;
+        for (const f of await scanCard(root)) {
+          if (f.kind === 'unfinalized') continue;
+          f.sample = await sampleHash(f.src, f.size);
+          if (await ledgerHit(f.size, f.sample)) continue;
+          if (!wanted.has(f.size)) wanted.set(f.size, []);
+          wanted.get(f.size).push({ card, f });
+        }
+      }
+      if (token.canceled) throw new Error('canceled');
+
+      // Walk the tree (8 folders at a time); stat only media files.
+      const candidates = [];   // { path, size }
+      const queue = [footageRoot];
+      async function worker() {
+        while (queue.length && !token.canceled) {
+          const dir = queue.shift();
+          let entries;
+          try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch (_) { continue; }
+          progress.dirs++;
+          for (const e of entries) {
+            if (e.name.startsWith('.') || e.name.startsWith('#') || e.name.startsWith('@')) continue;
+            const abs = path.join(dir, e.name);
+            if (e.isDirectory()) { queue.push(abs); continue; }
+            if (!e.isFile() || !MEDIA_EXT.has(path.extname(e.name).toLowerCase())) continue;
+            progress.files++;
+            const st = await statOrNull(abs);
+            if (st && wanted.has(st.size)) candidates.push({ path: abs, size: st.size });
+          }
+          report();
+        }
+      }
+      // Workers stop when the queue is momentarily empty, so keep starting
+      // rounds until nothing is left.
+      while (queue.length && !token.canceled) await Promise.all(Array.from({ length: 8 }, worker));
+      if (token.canceled) throw new Error('canceled');
+
+      // Confirm by sample hash; first match wins for each card file.
+      const matched = new Set();
+      for (const c of candidates) {
+        if (token.canceled) throw new Error('canceled');
+        let sample = null;
+        for (const { card, f } of wanted.get(c.size) || []) {
+          if (matched.has(f)) continue;
+          if (sample === null) { try { sample = await sampleHash(c.path, c.size); } catch (_) { sample = ''; } }
+          if (sample !== f.sample) continue;
+          matched.add(f);
+          progress.found++;
+          try {
+            jobsDb?.addCardIngestFile({
+              runId: 'deep-scan', cardLabel: card.label, originalName: f.name, srcRelPath: f.relPath,
+              destName: path.basename(c.path), destPath: c.path, sizeBytes: f.size, sampleHash: f.sample, fullHash: null
+            });
+          } catch (err) { log(`[Cards] ledger write failed for ${f.name}: ${err.message}`); }
+          break;
+        }
+      }
+      progress.state = 'done';
+      log(`[Cards] deep scan of ${footageRoot}: ${progress.dirs} folders, ${progress.files} media files, ${progress.found} card file(s) found`);
+    } catch (err) {
+      progress.state = token.canceled ? 'canceled' : 'failed';
+      progress.error = token.canceled ? null : err.message;
+      if (!token.canceled) log(`[Cards] deep scan failed: ${err.message}`);
+    } finally {
+      if (deepScanToken === token) deepScanToken = null;
+    }
+    report(true);
+    return { ...progress };
+  }
+
+  function cancelDeepScan() {
+    if (deepScanToken) deepScanToken.canceled = true;
+    return { ok: true };
+  }
+
   // ── Thumbnails ──────────────────────────────────────────
 
   const thumbCache = new Map();   // root|relPath → data URL or null
@@ -495,7 +596,7 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
   return {
     startWatching, stopWatching, poll,
     listCards: () => cards,
-    thumbnail,
+    thumbnail, deepScan, cancelDeepScan,
     refresh: async () => { await poll(); return cards; },
     check, startIngest, cancel, dismiss, snapshot
   };
