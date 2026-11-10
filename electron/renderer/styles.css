@@ -5044,6 +5044,57 @@ button.status-bar-chip-btn:disabled {
   overflow: hidden;
 }
 .ci-strip:focus-visible { box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+.ci-thumb--tile { width: 100%; height: auto; aspect-ratio: 16 / 9; }
+.ci-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  max-height: 520px;
+  overflow-y: auto;
+}
+.ci-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+  min-width: 0;
+}
+.ci-tile-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ci-tile-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
+.ci-tile-meta .ci-file-size { font-size: 11.5px; white-space: nowrap; flex: 0 0 auto; }
+.ci-tile-meta .ci-file-state { min-width: 0; }
+.ci-view {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+}
+.ci-view + .tool-close { margin-left: 8px; }
+.ci-view-btn {
+  width: 26px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.ci-view-btn:hover { background: var(--hover); color: var(--text); }
+.ci-view-btn.is-active { background: var(--hover-strong); color: var(--text-strong); }
+.ci-view-btn:focus-visible { box-shadow: var(--focus-ring); }
 .ci-strip-more { padding: 0 8px; font-size: 12px; color: var(--text-dim); white-space: nowrap; }
 @media (max-width: 720px) {
   .ci-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

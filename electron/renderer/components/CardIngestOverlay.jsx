@@ -85,6 +85,9 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
   const [expanded, setExpanded] = React.useState(() => new Set());
   const [lastDest, setLastDest] = React.useState('');
   const [run, setRun]           = React.useState(null);
+  const [view, setView]         = React.useState(() => {
+    try { return localStorage.getItem('cardIngest.view') === 'grid' ? 'grid' : 'list'; } catch (_) { return 'list'; }
+  });
   const [starting, setStarting] = React.useState(false);
   const [error, setError]       = React.useState(null);
   const checkSeq = React.useRef(0);
@@ -299,24 +302,51 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
           <p className="ci-done-where">{[...new Set(r.files.filter(f => f.where).map(f => f.where.replace(/[\\/][^\\/]*$/, '')))].join(' · ')}</p>
         )}
 
-        {isOpen && r?.files && (
-          <div className="ci-files">
-            {r.files.map(f => {
-              const st = CI_CHECK_STATE[f.status] || CI_CHECK_STATE.copy;
-              return (
-                <div key={f.relPath} className="ci-file" title={f.where || f.error || f.relPath}>
-                  <span className={`status-dot ${st.dot}`} />
-                  <CiThumb root={card.root} relPath={f.relPath} />
-                  <span className="ci-file-name">{f.name}</span>
-                  <span className="ci-file-size">{ciBytes(f.size)}</span>
-                  <span className={`ci-file-state ${st.cls}`}>{st.label(f)}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        {isOpen && r?.files && renderFiles(card.root, r.files.map(f => ({
+          f, st: CI_CHECK_STATE[f.status] || CI_CHECK_STATE.copy, name: f.name, title: f.where || f.error || f.relPath
+        })))}
       </section>
     );
+  }
+
+  // One card's files as rows (list) or thumbnail tiles (grid).
+  // items: [{ f, st, name, title }] — st from CI_CHECK_STATE / CI_RUN_STATE.
+  function renderFiles(root, items) {
+    if (view === 'grid') {
+      return (
+        <div className="ci-grid">
+          {items.map(({ f, st, name, title }) => (
+            <div key={f.relPath} className="ci-tile" title={title}>
+              <CiThumb root={root} relPath={f.relPath} size="tile" />
+              <span className="ci-tile-name">{name}</span>
+              <span className="ci-tile-meta">
+                <span className={`status-dot ${st.dot}`} />
+                <span className={`ci-file-state ${st.cls}`}>{st.label(f)}</span>
+                <span className="ci-file-size ci-push">{ciBytes(f.size)}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return (
+      <div className="ci-files">
+        {items.map(({ f, st, name, title }) => (
+          <div key={f.relPath} className="ci-file" title={title}>
+            <span className={`status-dot ${st.dot}`} />
+            <CiThumb root={root} relPath={f.relPath} />
+            <span className="ci-file-name">{name}</span>
+            <span className="ci-file-size">{ciBytes(f.size)}</span>
+            <span className={`ci-file-state ${st.cls}`}>{st.label(f)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function changeView(next) {
+    setView(next);
+    try { localStorage.setItem('cardIngest.view', next); } catch (_) {}
   }
 
   function renderCheck() {
@@ -373,20 +403,11 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
           <span className="ci-card-meta ci-push">{ciBytes(copied)} of {ciBytes(card.bytesTotal)}</span>
         </div>
         <div className="ci-pad"><div className="run-progress-track"><div className="run-progress-fill" style={{ width: `${pct}%` }} /></div></div>
-        <div className="ci-files">
-          {card.files.map(f => {
-            const st = CI_RUN_STATE[f.state] || CI_RUN_STATE.waiting;
-            return (
-              <div key={f.relPath} className="ci-file" title={f.error || f.where || f.relPath}>
-                <span className={`status-dot ${st.dot}`} />
-                <CiThumb root={card.root} relPath={f.relPath} />
-                <span className="ci-file-name">{f.name}{f.destName && f.destName !== f.name ? ` → ${f.destName}` : ''}</span>
-                <span className="ci-file-size">{ciBytes(f.size)}</span>
-                <span className={`ci-file-state ${st.cls}`}>{st.label(f)}</span>
-              </div>
-            );
-          })}
-        </div>
+        {renderFiles(card.root, card.files.map(f => ({
+          f, st: CI_RUN_STATE[f.state] || CI_RUN_STATE.waiting,
+          name: f.destName && f.destName !== f.name ? `${f.name} → ${f.destName}` : f.name,
+          title: f.error || f.where || f.relPath
+        })))}
       </section>
     );
   }
@@ -492,6 +513,16 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         <h2 className="tool-title">{title}</h2>
         {subtitle && <span className="tool-subtitle">{subtitle}</span>}
         {!run && checking && cards.length > 0 && <span className="spinner small" aria-label="Checking" />}
+        {!reportReady && (
+          <div className="ci-view" role="group" aria-label="View">
+            <button className={`ci-view-btn${view === 'list' ? ' is-active' : ''}`} onClick={() => changeView('list')} aria-label="List view" aria-pressed={view === 'list'} title="List">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M2 3.5h10M2 7h10M2 10.5h10" /></svg>
+            </button>
+            <button className={`ci-view-btn${view === 'grid' ? ' is-active' : ''}`} onClick={() => changeView('grid')} aria-label="Grid view" aria-pressed={view === 'grid'} title="Grid">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="2" y="2" width="4" height="4" rx="1" /><rect x="8" y="2" width="4" height="4" rx="1" /><rect x="2" y="8" width="4" height="4" rx="1" /><rect x="8" y="8" width="4" height="4" rx="1" /></svg>
+            </button>
+          </div>
+        )}
         <button className="tool-close" onClick={() => onClose?.()} aria-label="Close" title="Close">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" />
