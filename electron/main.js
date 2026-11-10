@@ -2652,7 +2652,8 @@ app.whenReady().then(() => {
     ffmpegPath,
     getLpos: () => lposClient,
     isPackaged: app.isPackaged,
-    appDir: path.join(__dirname, '..')
+    appDir: path.join(__dirname, '..'),
+    resourcesDir: process.resourcesPath
   });
 
   // --- Result items DB ---
@@ -3577,6 +3578,9 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:list-multicams', ctCall(() => cutThrough.listMulticams()));
   ipcMain.handle('cut-through:select', ctCall((a) => cutThrough.select(a)));
   ipcMain.handle('cut-through:settings', ctCall((a) => cutThrough.updateSettings(a)));
+  ipcMain.handle('cut-through:check-setup', ctCall(() => cutThrough.checkSetup()));
+  ipcMain.handle('cut-through:install-pack', ctCall(() => cutThrough.installPack()));
+  ipcMain.handle('cut-through:test-pack', ctCall(() => cutThrough.testPack()));
   ipcMain.handle('cut-through:angle-rules', ctCall((a) => cutThrough.saveAngleRules(a)));
   ipcMain.handle('cut-through:run-folder', ctCall((a) => cutThrough.setRunFolder(a)));
   ipcMain.handle('cut-through:prep', ctCall((a) => cutThrough.runPrep(a)));

@@ -36,6 +36,7 @@ const angleRulesLib = require('../shared/angle_rules');
 const videosLib = require('./cut_through_videos');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 const compare = require('./cut_through_compare');
+const packLib = require('./transcription_pack');
 
 const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check', 'compare'];
 const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
@@ -142,9 +143,10 @@ function parseSection(text, day) {
   throw new Error(`"${t}" is outside the multicam (${frameToTc(0, day)} – ${frameToTc(total, day)})`);
 }
 
-function defaultPipelineDir({ isPackaged, appDir }) {
+/** The scripts ship with EditPanel (extraResources → resources\\cut_through); dev runs use the checkout. */
+function defaultPipelineDir({ isPackaged, appDir, resourcesDir }) {
   if (!isPackaged) return path.join(appDir, 'cut_through');
-  return process.platform === 'win32' ? 'C:\\lp-app-ecosystem\\editpanel\\cut_through' : path.join(os.homedir(), 'lp-app-ecosystem', 'editpanel', 'cut_through');
+  return path.join(resourcesDir || process.resourcesPath || appDir, 'cut_through');
 }
 
 /** A folder saved before the rename (…\\editpanel\\spikes) → its cut_through sibling. */
@@ -220,6 +222,9 @@ function createCutThrough(opts) {
     getLpos = () => null,          // the LPOS client (slate notes, projects); main replaces it on reconnect
     isPackaged = false,
     appDir = path.join(__dirname, '..', '..'),
+    resourcesDir = null,           // packaged: process.resourcesPath (the bundled cut_through\)
+    packRoot = packLib.defaultInstallRoot(),   // where the transcription pack is installed
+    getPack = () => packLib.installedPack(packRoot),
     desktopDir = path.join(os.homedir(), 'Desktop'),  // where runs before 1.2.94 left their files
     filesDir = path.join(os.homedir(), 'Documents', 'Cut-through')   // default home of run files
   } = opts;
@@ -240,7 +245,9 @@ function createCutThrough(opts) {
     lposError: null,
     lposLoading: false,
     busy: null,                     // step key currently running
-    steps: Object.fromEntries(STEP_KEYS.map((k) => [k, emptyStep()]))
+    steps: Object.fromEntries(STEP_KEYS.map((k) => [k, emptyStep()])),
+    // this machine's readiness (Setup card): filled by checkSetup / installPack
+    setup: { checking: false, checkedAt: null, gpus: null, available: null, availableError: null, installing: null, test: null }
   };
   let child = null;                 // transcribe / plan child process
   let canceled = false;
@@ -248,9 +255,21 @@ function createCutThrough(opts) {
   function settings() {
     const p = (getPrefs() || {}).cutThrough || {};
     const runFolder = (s.project && (p.runFolders || {})[s.project]) || null;
+    const bundled = defaultPipelineDir({ isPackaged, appDir, resourcesDir });
+    const saved = pipelineDirFrom(p.pipelineDir || p.spikesDir, '');
+    // a saved folder (e.g. LP1's git checkout) only while it really holds the scripts
+    const pipelineDir = saved && fs.existsSync(path.join(saved, 'prepare_multicam.py')) ? saved : bundled;
+    const pack = getPack();
+    // a saved Python only while it exists; else the installed pack; else LP1's old venv
+    const wxPython = (p.wxPython && fs.existsSync(p.wxPython) ? p.wxPython : null) || (pack && pack.python)
+      || (process.platform === 'win32' ? DEFAULT_WX_PYTHON : 'python3');
     return {
-      pipelineDir: pipelineDirFrom(p.pipelineDir || p.spikesDir, defaultPipelineDir({ isPackaged, appDir })),
-      wxPython: p.wxPython || (process.platform === 'win32' ? DEFAULT_WX_PYTHON : 'python3'),
+      pipelineDir,
+      scriptsFound: fs.existsSync(path.join(pipelineDir, 'prepare_multicam.py')),
+      wxPython,
+      wxPythonFound: process.platform !== 'win32' || fs.existsSync(wxPython),
+      pack: pack ? { version: pack.version, python: pack.python } : null,
+      packFolder: p.packFolder || packLib.DEFAULT_PACK_FOLDER,
       seqBin: p.seqBin === undefined ? DEFAULT_SEQ_BIN : p.seqBin,
       claudeModel: p.claudeModel || claude.DEFAULT_MODEL,
       claudeEffort: p.claudeEffort || 'high',
@@ -391,6 +410,67 @@ function createCutThrough(opts) {
     const { errors } = angleRulesLib.check(angles, list, roles);
     if (errors.length) { pushLog('plan', `Angle rules not used: ${errors[0]}`); return []; }
     return list;
+  }
+
+  /** The transcription pack's Python reads its models from the pack, offline. */
+  function pythonEnv(command) {
+    const pack = getPack();
+    return pack && command === pack.python ? packLib.packEnv(pack) : {};
+  }
+
+  // ── setup (this machine) ──────────────────────────────────────
+  /** GPU, the pack on the NAS vs the one installed. Cheap; run when the page opens. */
+  async function checkSetup() {
+    if (s.setup.checking) return snapshot();
+    s.setup = { ...s.setup, checking: true };
+    emit();
+    try {
+      const { pack, error } = packLib.availablePack(settings().packFolder);
+      const gpus = process.platform === 'win32' ? await packLib.listGpus() : null;
+      s.setup = { ...s.setup, gpus, available: pack ? { version: pack.version, bytes: pack.bytes } : null, availableError: error, checkedAt: Date.now() };
+    } finally {
+      s.setup.checking = false;
+      emit();
+    }
+    return snapshot();
+  }
+
+  /** Copy the pack from the NAS, verify, unpack, then load both models once (self-test). */
+  async function installPack() {
+    if (s.busy) throw new Error(`${s.busy} is still running`);
+    if (s.setup.installing) throw new Error('Already installing');
+    const st = settings();
+    s.setup = { ...s.setup, installing: { phase: 'Starting', bar: 0, error: null }, test: null };
+    canceled = false;
+    emit();
+    try {
+      const pack = await packLib.installPack({
+        packFolder: st.packFolder,
+        root: packRoot,
+        onProgress: (pr) => { s.setup.installing = { ...s.setup.installing, ...pr }; emit(); },
+        isCanceled: () => canceled
+      });
+      s.setup.installing = { phase: 'Checking the models', bar: null, error: null };
+      emit();
+      const test = await packLib.selfTest(pack, path.join(st.pipelineDir, 'pack', 'selftest.py'));
+      s.setup = { ...s.setup, installing: null, test };
+    } catch (err) {
+      s.setup = { ...s.setup, installing: { phase: null, bar: null, error: errMsg(err) } };
+    }
+    emit();
+    await checkSetup().catch(() => {});
+    return snapshot();
+  }
+
+  /** Re-run the self-test on the installed pack. */
+  async function testPack() {
+    const pack = getPack();
+    if (!pack) throw new Error('No transcription pack installed');
+    s.setup = { ...s.setup, test: { running: true } };
+    emit();
+    s.setup.test = await packLib.selfTest(pack, path.join(settings().pipelineDir, 'pack', 'selftest.py'));
+    emit();
+    return snapshot();
   }
 
   function snapshot() {
@@ -650,9 +730,14 @@ function createCutThrough(opts) {
   function updateSettings(patch = {}) {
     const p = (getPrefs() || {}).cutThrough || {};
     const next = { ...p };
-    for (const k of ['pipelineDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort']) {
+    for (const k of ['pipelineDir', 'wxPython', 'seqBin', 'anthropicKey', 'claudeModel', 'claudeEffort', 'packFolder']) {
       if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
     }
+    // the field shows the default; saving it unchanged must not pin it
+    const cur = settings();
+    if (patch.pipelineDir !== undefined && next.pipelineDir === defaultPipelineDir({ isPackaged, appDir, resourcesDir })) next.pipelineDir = '';
+    if (patch.wxPython !== undefined && cur.pack && next.wxPython === cur.pack.python) next.wxPython = '';
+    if (patch.packFolder !== undefined && next.packFolder === packLib.DEFAULT_PACK_FOLDER) next.packFolder = '';
     if (patch.energyHints !== undefined) next.energyHints = !!patch.energyHints;
     if (patch.sliderMotion !== undefined) next.sliderMotion = !!patch.sliderMotion;
     // the LPOS project whose slate names this Resolve project's videos
@@ -940,7 +1025,7 @@ function createCutThrough(opts) {
         proc = spawn(command, args, {
           cwd: settings().pipelineDir,
           windowsHide: true,
-          env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {}) }
+          env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {}), ...pythonEnv(command) }
         });
       } catch (err) {
         resolve({ code: null, error: errMsg(err) });
@@ -1035,6 +1120,7 @@ function createCutThrough(opts) {
   }
 
   function cancel() {
+    if (s.setup.installing && s.setup.installing.phase) { canceled = true; return snapshot(); }
     if (!child) return snapshot();
     canceled = true;
     killTree(child);
@@ -1738,6 +1824,9 @@ function createCutThrough(opts) {
     onProject,
     setRunFolder,
     updateSettings,
+    checkSetup,
+    installPack,
+    testPack,
     saveAngleRules,
     runPrep,
     runTranscribe,

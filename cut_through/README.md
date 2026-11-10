@@ -1,8 +1,20 @@
 # Cut-through
 
 Turns a recorded multicam into a first-pass edit in Resolve. EditPanel's **Cut-through** page runs
-these steps on LP1. They are plain scripts, so a `git pull` on LP1 updates them without
-rebuilding EditPanel.
+these steps. The scripts ship inside EditPanel (`resources\cut_through`), so any machine with the
+installer has them; the page's **Cut-through folder** setting can point at a git checkout instead
+(LP1, for testing script changes without a rebuild) and is ignored if that folder doesn't hold them.
+
+**Transcription pack.** Transcribe needs its own Python (faster-whisper + CUDA libraries, WhisperX)
+and the Whisper large-v3 + alignment models — about 5 GB, too big for the installer. It is built on
+LP1 and published to the NAS (`N:\LPOS\editpanel dist\transcription-pack\`: `pack.json` +
+`transcription-pack-<version>.tar`); the page's **Setup** card installs it (copy, checksum, unpack
+into `%LOCALAPPDATA%\EditPanel\transcription\<version>\`, then `pack/selftest.py` loads both models).
+Models are read from the pack offline. A newer published pack shows as **Update**.
+Build / republish on LP1: `node scripts/build-transcription-pack.mjs` — locks LP1's working
+`C:\wxbench` versions into `pack/requirements.lock.txt` (commit it; `--lock` rebuilds from the
+committed lock), fetches the same Python from NuGet, installs, downloads the models, self-tests
+online and offline, writes the tar to the NAS, then `pack.json` last. Needs an NVIDIA GPU to run fast.
 
 | Step | File | What it does |
 |---|---|---|

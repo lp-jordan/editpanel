@@ -123,6 +123,56 @@ function CtRow({ label, children }) {
   );
 }
 
+/** This machine's readiness: scripts, transcription pack, GPU, Claude key. Shown only while
+ *  something is missing or an install is running; the pack's own row lives in Settings. */
+function CtSetup({ ct, now, onInstall, onCancel, onTest }) {
+  const su = ct.setup || {};
+  const set = ct.settings;
+  const inst = su.installing;
+  const avail = su.available;
+  const pack = set.pack;
+  const update = Boolean(pack && avail && avail.version !== pack.version);
+  const noPython = !pack && !set.wxPythonFound;
+  const noGpu = Array.isArray(su.gpus) && su.gpus.length === 0;
+  const testFailed = su.test && su.test.ok === false;
+  if (!(noPython || noGpu || !set.scriptsFound || !set.claudeKey || (inst && (inst.phase || inst.error)) || testFailed || update)) return null;
+  const sizeGb = avail && avail.bytes ? ` (${(avail.bytes / 1e9).toFixed(1)} GB)` : '';
+  return (
+    <section className="panel ct-step">
+      <div className="ct-step-head"><h3 className="ct-step-title">Setup</h3></div>
+      <div className="ct-grid">
+        {!set.scriptsFound && <CtRow label="Scripts"><span className="tag danger">Not found: {set.pipelineDir}</span></CtRow>}
+        {(noPython || update || inst || testFailed) && (
+          <CtRow label="Transcription">
+            {inst && inst.phase ? (
+              <>
+                <CtLive p={{ ...inst, phaseAt: null }} now={now} />
+                <button type="button" className="btn small ghost" onClick={onCancel}>Cancel</button>
+              </>
+            ) : (
+              <>
+                {noPython && <span className="tag warning">Not installed</span>}
+                {update && <span className="dim">{pack.version} → {avail.version}</span>}
+                {(noPython || update) && (
+                  <button type="button" className="btn small" disabled={!avail || Boolean(ct.busy)} onClick={onInstall}>
+                    {update ? 'Update' : 'Install'}{sizeGb}
+                  </button>
+                )}
+                {!avail && su.availableError && <span className="tag danger">{su.availableError}</span>}
+                {testFailed && <button type="button" className="btn small ghost" onClick={onTest}>Test again</button>}
+              </>
+            )}
+            {inst && inst.error && <div className="notice error">{inst.error}</div>}
+            {testFailed && <CtReport lines={su.test.lines || []} live={false} />}
+          </CtRow>
+        )}
+        {noGpu && <CtRow label="GPU"><span className="tag warning">No NVIDIA GPU found</span></CtRow>}
+        {!set.claudeKey && <CtRow label="Claude key"><span className="tag warning">Not set (Settings)</span></CtRow>}
+      </div>
+    </section>
+  );
+}
+
 const CT_ROLE_LABEL = { wide: 'Wide', closeup: 'Close-up', slider: 'Slider', side: 'Side', other: 'Other' };
 
 /** "Never cut from X to Y" for one multicam (Jordan 2026-11-10). Checks are shared with the main
@@ -226,9 +276,10 @@ function CutThroughPage({ connected }) {
       if (res?.data) {
         setCt(res.data);
         setLabelDraft(res.data.label || '');
-        setSettingsDraft({ pipelineDir: res.data.settings.pipelineDir, wxPython: res.data.settings.wxPython });
+        setSettingsDraft({ pipelineDir: res.data.settings.pipelineDir, wxPython: res.data.settings.wxPython, packFolder: res.data.settings.packFolder });
       }
     });
+    if (api.checkSetup) api.checkSetup();
     return api.onUpdate((data) => setCt(data));
   }, []);
 
@@ -723,6 +774,12 @@ function CutThroughPage({ connected }) {
         {ct.project && <span className="dim ct-project">{ct.project}</span>}
       </div>
 
+      <CtSetup ct={ct} now={now}
+        onInstall={() => call('setup', () => api.installPack())}
+        onCancel={() => call('setup', () => api.cancel())}
+        onTest={() => call('setup', () => api.testPack())} />
+      {errors.setup && <div className="notice error">{errors.setup}</div>}
+
       <section className="panel ct-panel">
         <div className="ct-form-row">
           <label className="ct-inline ct-grow">
@@ -843,6 +900,19 @@ function CutThroughPage({ connected }) {
               <input className="settings-input ct-grow-input" value={settingsDraft.pipelineDir}
                 onChange={(e) => setSettingsDraft({ ...settingsDraft, pipelineDir: e.target.value })}
                 onBlur={() => call('settings', () => api.updateSettings({ pipelineDir: settingsDraft.pipelineDir }))} />
+            </CtRow>
+            <CtRow label="Transcription pack">
+              <span className="dim">{ct.settings.pack ? ct.settings.pack.version : 'Not installed'}</span>
+              {ct.settings.pack && (
+                <button type="button" className="btn small ghost" disabled={Boolean(ct.setup && (ct.setup.installing || (ct.setup.test && ct.setup.test.running)))}
+                  onClick={() => call('settings', () => api.testPack())}>{ct.setup && ct.setup.test && ct.setup.test.running ? 'Testing…' : 'Test'}</button>
+              )}
+              {ct.setup && ct.setup.test && ct.setup.test.ok && <span className="tag success">OK</span>}
+            </CtRow>
+            <CtRow label="Pack folder">
+              <input className="settings-input ct-grow-input" value={settingsDraft.packFolder || ''}
+                onChange={(e) => setSettingsDraft({ ...settingsDraft, packFolder: e.target.value })}
+                onBlur={() => call('settings', () => api.updateSettings({ packFolder: settingsDraft.packFolder }).then((r) => { api.checkSetup(); return r; }))} />
             </CtRow>
             <CtRow label="Whisper Python">
               <input className="settings-input ct-grow-input" value={settingsDraft.wxPython}

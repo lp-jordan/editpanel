@@ -29,6 +29,15 @@ below.
    brings you back into EditPanel with an `X-EP-Token` stored. From then
    on it's connected.
 
+## Cut-through (transcription)
+
+The cut-through scripts ship with EditPanel. Transcribe also needs the transcription pack (~5 GB:
+Python + Whisper + models). Open **Edit → Cut-through**: the **Setup** card offers **Install**, which
+copies it from `N:\LPOS\editpanel dist\transcription-pack\` (the machine must reach the NAS as N:,
+or change **Settings → Pack folder**). Needs an NVIDIA GPU and ~11 GB free on C: during install.
+Also set **Settings → Claude API key** and choose a Run folder per Resolve project.
+How the pack is built: `cut_through/README.md`.
+
 ## Troubleshooting
 
 ### "Resolve disconnected" / advisory banner persists
