@@ -1475,7 +1475,6 @@ function createCutThrough(opts) {
     if (!s.day) throw new Error('Run Prep first');
     const angle = slateAngle();
     if (!angle) throw new Error('Pick the slate angle first');
-    if (!claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
     const clips = (s.day.picture_clips || []).filter((c) => c.angle === angle && c.path && c.to_sec > c.from_sec);
     if (!clips.length) throw new Error(`No clips found for ${angle} (run Prep again)`);
     const f = files();
@@ -1495,7 +1494,8 @@ function createCutThrough(opts) {
     const model = st0.claudeModel || claude.DEFAULT_MODEL;
     try {
       const r = await slateLib.readSlate({ ffmpeg: ffmpegPath || 'ffmpeg', clips, frameSec: s.day.frame_sec[0] / s.day.frame_sec[1],
-        client: claudeApi(), model, knownCodes: known,
+        // no Claude key: OCR only (frames it can't vouch for count as unreadable; notes fill in)
+        client: claudeKey() || claudeClient ? claudeApi() : null, model, knownCodes: known,
         onProgress: (p) => { s.slateRead = { ...s.slateRead, ...p }; emit(); },
         onProc: (p) => { child = p; }, isCanceled: () => canceled });
       const cost = claude.costOf(r.model, r.usage);

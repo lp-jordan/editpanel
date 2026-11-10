@@ -10,8 +10,10 @@
  *      screen doesn't count as a change, and a two-character code change does.
  *   2. ffmpeg samples the box at SAMPLE_FPS as tiny grey thumbnails; the samples fall into "looks"
  *      where the box stays the same (a new look = differs for PERSIST samples in a row).
- *   3. Claude reads the box at the START of every look (and at its end, and every CHECK_EVERY_SEC
- *      inside a long one — a change the thumbnails missed).
+ *   3. The box is read at the START of every look (and at its end, and every CHECK_EVERY_SEC
+ *      inside a long one — a change the thumbnails missed). Free first: local OCR
+ *      (cut_through_ocr.js), trusted when it matches a code on the slate's notes; Claude only
+ *      reads what OCR can't vouch for (a code never logged, a blurred frame).
  *   4. Where two neighbouring reads disagree and are more than MIN_GAP_SEC apart, more reads go in
  *      between (three per gap per round, all gaps batched together) until each change is pinned.
  *   5. The reads become { from, to, code } on the multicam (frames). Find videos treats the start of
@@ -21,11 +23,13 @@
  */
 
 const { spawn } = require('child_process');
+const ocr = require('./cut_through_ocr');
 
 const SAMPLE_FPS = 1;
-const THUMB_W = 96;
+const THUMB_W = 64;
 const THUMB_H = 32;
-const CHANGE = 12;            // mean |difference| (0–255) inside the code box that counts as a new look
+const CHANGE = 4;             // mean |difference| (0–255) in the code's text area that counts as a new look
+const NOISE_X = 4;            // …or this many times the footage's own sample-to-sample noise, if higher
 const PERSIST = 2;            // …for this many samples in a row
 const READ_AFTER_SEC = 1.5;   // read a look this far in (past the change itself)
 const CHECK_EVERY_SEC = 300;  // a long look is also read every 5 min, and at its end
@@ -38,7 +42,7 @@ const CROP_W = 640;           // a read of the box
 const PAD = 0.3;              // box padding, as a share of its size on each side
 // The LPOS Slate page's code tile (Jordan's screenshot 2026-11-10: every slate has this layout, the
 // tile left of Production Notes). Tried first; Claude finds the box only if nothing reads there.
-const SLATE_BOX = { x: 0.215, y: 0.495, w: 0.13, h: 0.235 };
+const SLATE_BOX = { x: 0.215, y: 0.495, w: 0.13, h: 0.235, ocrMargin: [0.1, 0.25] };
 
 function run(ffmpeg, args, onProc) {
   return new Promise((resolve, reject) => {
@@ -63,14 +67,29 @@ function cropFilter(box) {
   return `crop=iw*${f(box.w)}:ih*${f(box.h)}:iw*${f(box.x)}:ih*${f(box.y)},`;
 }
 
-/** ffmpeg → one grey THUMB_W×THUMB_H thumbnail of the box per sample. */
+/** The part of the box the code's text sits in (the tile minus its empty edges). */
+function textArea(box) {
+  if (!box) return null;
+  const [mx, my] = box.ocrMargin || [0.05, 0.05];
+  return { x: box.x + box.w * mx, y: box.y + box.h * my, w: box.w * (1 - 2 * mx), h: box.h * (1 - 2 * my) };
+}
+
+/** ffmpeg → one grey THUMB_W×THUMB_H thumbnail of the code's text area per sample. */
 async function readThumbs(ffmpeg, file, startSec, durSec, box, onProc = () => {}) {
   const buf = await run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-hwaccel', 'auto', '-ss', String(Math.max(0, startSec)), '-t', String(durSec), '-i', file,
-    '-vf', `fps=${SAMPLE_FPS},${cropFilter(box)}scale=${THUMB_W}:${THUMB_H}:flags=area,format=gray`, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], onProc);
+    '-vf', `fps=${SAMPLE_FPS},${cropFilter(textArea(box))}scale=${THUMB_W}:${THUMB_H}:flags=area,format=gray`, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], onProc);
   const size = THUMB_W * THUMB_H;
   const out = [];
   for (let o = 0; o + size <= buf.length; o += size) out.push(buf.subarray(o, o + size));
   return out;
+}
+
+/** The box of one frame, ready for OCR: inner part, black text on white, a white margin (PNG). */
+function grabForOcr(ffmpeg, file, sec, box, onProc = () => {}) {
+  const inner = textArea(box);
+  return run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', String(Math.max(0, sec)), '-i', file, '-frames:v', '1',
+    '-vf', `${cropFilter(inner)}scale=-2:120,format=gray,lutyuv=y='if(gt(val,140),0,255)',pad=iw+80:ih+80:40:40:white`,
+    '-f', 'image2pipe', '-c:v', 'png', '-'], onProc);
 }
 
 /** One frame (or the box of it) as a JPEG. */
@@ -87,8 +106,15 @@ function diff(a, b) {
 }
 
 /** Thumbnails → looks as [first sample, last sample] (indexes). */
-function looksOf(thumbs, { change = CHANGE, persist = PERSIST } = {}) {
+function looksOf(thumbs, { change = null, persist = PERSIST } = {}) {
   if (!thumbs.length) return [];
+  if (change === null) {
+    // the footage's own noise: the median change between neighbouring samples (a code changes rarely)
+    const d = [];
+    for (let i = 1; i < thumbs.length; i++) d.push(diff(thumbs[i - 1], thumbs[i]));
+    d.sort((a, b) => a - b);
+    change = Math.max(CHANGE, NOISE_X * (d.length ? d[d.length >> 1] : 0));
+  }
   const looks = [];
   let start = 0;
   let ref = thumbs[0];
@@ -239,11 +265,25 @@ function segmentsOf(samples, clip) {
  * clips: [{ path, file_zero_sec, from_sec, to_sec }] of the slate angle (multicam seconds).
  * Returns { reads: [{ from, to, code, sure }] (multicam frames), box, frames, usage, model, seconds, report }.
  */
-async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = [], onProgress = () => {}, onProc = () => {}, isCanceled = () => false, grab = grabFrame }) {
+async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = [], onProgress = () => {}, onProc = () => {}, isCanceled = () => false,
+  grab = grabFrame, grabOcr = grabForOcr, ocrRead = ocr.readCode }) {
   const t0 = Date.now();
   let usage = {};
   let usedModel = model;
-  let asked = 0;
+  let asked = 0;                 // frames Claude read
+  let byOcr = 0;                 // frames OCR read (free)
+  let ocrOff = null;             // why OCR isn't used (it failed to start)
+  const known = new Set((knownCodes || []).map((k) => String(k).trim().toUpperCase()).filter(Boolean));
+  /** OCR one frame's box → a trusted code or null; OCR trouble switches it off for the run. */
+  const tryOcr = async (clip, t, box_) => {
+    if (ocrOff || !box_) return null;
+    try {
+      return ocr.trusted(await ocrRead(await grabOcr(ffmpeg, clip.path, fileSec(clip, t), box_, onProc)), known);
+    } catch (err) {
+      ocrOff = err.message || String(err);
+      return null;
+    }
+  };
   const check = () => { if (isCanceled()) throw new Error('Canceled'); };
   const fileSec = (clip, t) => t - clip.file_zero_sec;
 
@@ -252,7 +292,11 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
   let box = null;
   let boxFrom = 'none';
   const probes = clips.slice(0, 3).map((c) => ({ c, t: c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2) }));
-  if (probes.length) {
+  for (const { c, t } of probes) {
+    if (box) break;
+    if (await tryOcr(c, t, SLATE_BOX)) { box = SLATE_BOX; boxFrom = 'usual'; byOcr += 1; }
+  }
+  if (probes.length && !box && client) {
     const frames = [];
     for (const { c, t } of probes) frames.push({ jpeg: await grab(ffmpeg, c.path, fileSec(c, t), SLATE_BOX, onProc) });
     const r = await readBatch({ client, model, frames, knownCodes });
@@ -261,7 +305,7 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
     asked += frames.length;
     if (r.reads.some((x) => x.code)) { box = SLATE_BOX; boxFrom = 'usual'; }
   }
-  for (const c of box ? [] : clips.slice(0, 4)) {
+  for (const c of box || !client ? [] : clips.slice(0, 4)) {
     check();
     const t = c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2);
     const found = await locateBox({ client, model, jpeg: await grab(ffmpeg, c.path, fileSec(c, t), null, onProc), knownCodes });
@@ -296,11 +340,20 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
 
   // reads every sample that has no code yet, batched
   const readPending = async (label, barFrom, barTo) => {
+    const pending = [];
+    for (const pc of perClip) for (const s of pc.samples) if (s.code === undefined) pending.push({ pc, s });
+    // free first: OCR, trusted only when it matches the slate's codes
     const todo = [];
-    for (const pc of perClip) for (const s of pc.samples) if (s.code === undefined) todo.push({ pc, s });
+    for (const [i, x] of pending.entries()) {
+      check();
+      if (i % 10 === 0) onProgress({ phase: `${label} (${i + 1} of ${pending.length})`, bar: Math.round(barFrom + (i / Math.max(1, pending.length)) * (barTo - barFrom) / 2) });
+      const code = await tryOcr(x.pc.clip, x.s.t, box);
+      if (code) { x.s.code = code; x.s.sure = true; byOcr += 1; } else todo.push(x);
+    }
+    if (!client) { for (const { s } of todo) { s.code = null; s.sure = false; } return pending.length; }
     for (let i = 0; i < todo.length; i += PER_REQUEST) {
       check();
-      onProgress({ phase: `${label} (${Math.min(i + PER_REQUEST, todo.length)} of ${todo.length})`, bar: Math.round(barFrom + (i / todo.length) * (barTo - barFrom)) });
+      onProgress({ phase: `${label}: asking Claude (${Math.min(i + PER_REQUEST, todo.length)} of ${todo.length})`, bar: Math.round(barFrom + (barTo - barFrom) / 2 + (i / todo.length) * (barTo - barFrom) / 2) });
       const group = todo.slice(i, i + PER_REQUEST);
       const frames = [];
       for (const { pc, s } of group) frames.push({ jpeg: await grab(ffmpeg, pc.clip.path, fileSec(pc.clip, s.t), box, onProc) });
@@ -310,7 +363,7 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
       asked += frames.length;
       group.forEach(({ s }, j) => { s.code = r.reads[j].code; s.sure = r.reads[j].sure; });
     }
-    return todo.length;
+    return pending.length;
   };
   await readPending('Reading the codes', 50, 80);
 
@@ -322,7 +375,7 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
       for (let i = 1; i < pc.samples.length; i++) {
         const a = pc.samples[i - 1];
         const b = pc.samples[i];
-        if (!a.code || !b.code || a.code === b.code || b.t - a.t <= MIN_GAP_SEC) continue;
+        if ((!a.code && !b.code) || a.code === b.code || b.t - a.t <= MIN_GAP_SEC) continue;
         for (const q of [0.25, 0.5, 0.75]) extra.push({ t: +(a.t + (b.t - a.t) * q).toFixed(2), code: undefined, sure: false });
       }
       if (extra.length) { pc.samples = [...pc.samples, ...extra].sort((x, y) => x.t - y.t); added += extra.length; }
@@ -343,11 +396,13 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
   const unreadable = reads.filter((r) => !r.code).length;
   const codes = new Set(reads.filter((r) => r.code).map((r) => r.code)).size;
   const seconds = (Date.now() - t0) / 1000;
+  await ocr.close();
   return {
-    reads, box, frames: asked, usage, model: usedModel, seconds: +seconds.toFixed(1),
-    report: `${boxFrom === 'usual' ? 'usual code tile' : boxFrom === 'found' ? 'code box found by Claude' : 'no code box found (whole frame used)'}; ${asked} frames read: ${codes} codes, ` +
+    reads, box, frames: asked + byOcr, byOcr, byClaude: asked, ocrOff, usage, model: usedModel, seconds: +seconds.toFixed(1),
+    report: `${boxFrom === 'usual' ? 'usual code tile' : boxFrom === 'found' ? 'code box found by Claude' : 'no code box found (whole frame used)'}; ` +
+      `${byOcr} frames read free (OCR), ${asked} by Claude${ocrOff ? ` (OCR off: ${ocrOff})` : ''}: ${codes} codes, ` +
       `${unreadable} unreadable stretches, in ${seconds.toFixed(0)} s`
   };
 }
 
-module.exports = { SLATE_BOX, readSlate, looksOf, segmentsOf, readThumbs, grabFrame, readBatch, locateBox, cropFilter, diff, SAMPLE_FPS, THUMB_W, THUMB_H };
+module.exports = { SLATE_BOX, readSlate, grabForOcr, looksOf, segmentsOf, readThumbs, grabFrame, readBatch, locateBox, cropFilter, diff, SAMPLE_FPS, THUMB_W, THUMB_H };
