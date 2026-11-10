@@ -65,7 +65,7 @@ CUES = [("sorry",), ("let", "me", "start"), ("start", "over"), ("one", "more", "
         ("one", "two", "three"), ("1", "2", "3"), ("take", "two")]
 
 
-def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24, allowed=None):
+def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24, allowed=None, nocut=frozenset()):
     """Claude's shots → the final angles, all at once (2026-11-05). Hard rule: the angle changes at
     every removal join. Flipping only the piece after a join made ping-pong — a 2 s shot of the other
     angle, the splice, straight back: 3–4 cuts in a few seconds. Instead: the cheapest assignment,
@@ -102,14 +102,14 @@ def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24, allowed=None):
     for g in angles:
         if ok(0, g) or not any(ok(0, x) for x in angles):
             layer[0][(g, run_key(pieces[0]["from"], pieces[0]["to"]))] = (dev(0, g), None)
-    for i in range(1, n):
-        p, prev_to = pieces[i], pieces[i - 1]["to"]
-        free = not any(ok(i, x) for x in angles)
+    def fill(i, p, prev_to, free, rules):
         for (g, r), (c, _) in layer[i - 1].items():
             for h in angles:
                 if h == g and p["join"]:
                     continue                                   # never the same angle across a removal
                 if not free and not ok(i, h):
+                    continue
+                if h != g and (g, h) in rules:
                     continue
                 if h == g:
                     key, cc = (h, run_key(r, p["to"])), c
@@ -119,6 +119,15 @@ def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24, allowed=None):
                 cc += dev(i, h)
                 if cc < layer[i].get(key, (INF,))[0]:
                     layer[i][key] = (cc, (g, r))
+
+    for i in range(1, n):
+        p, prev_to = pieces[i], pieces[i - 1]["to"]
+        free = not any(ok(i, x) for x in angles)
+        # nocut: Jordan's "never cut from X to Y" (hard); a piece with no legal way in ignores it
+        for rules in (nocut, frozenset()):
+            fill(i, p, prev_to, free, rules)
+            if layer[i] or not rules:
+                break
     key = min(layer[-1], key=lambda k: layer[-1][k][0] + short(k[1], pieces[-1]["to"]))
     pick = [None] * n
     for i in range(n - 1, -1, -1):
@@ -167,6 +176,9 @@ def main(argv) -> None:
     if o.get("motion") and os.path.isfile(o["motion"]):
         motion = {a: [tuple(x) for x in (v or {}).get("moving") or []]
                   for a, v in json.load(open(o["motion"], encoding="utf-8")).items() if a in angles}
+
+    # nocut=X>Y: Jordan's per-multicam "never cut from X to Y" (EditPanel Angle rules, 2026-11-10)
+    nocut = frozenset(tuple(v.split(">", 1)) for k, v in opts if k == "nocut" and ">" in v)
 
     def moving_ok(angle, a, b):
         win = motion.get(angle)
@@ -589,7 +601,8 @@ def main(argv) -> None:
             if motion:
                 shots = slider_split(shots, hold)
             shots = fit_angles(shots, [a for a in prefer if a in known], hold=hold,
-                               allowed=(lambda i, g: moving_ok(g, shots[i]["from"], shots[i]["to"])) if motion else None)
+                               allowed=(lambda i, g: moving_ok(g, shots[i]["from"], shots[i]["to"])) if motion else None,
+                               nocut=nocut)
 
             def cut_between(lo, hi):
                 """A picture cut in (lo, hi): the first breath before a word (≥ 3 fr gap), else any word."""
@@ -714,8 +727,30 @@ def main(argv) -> None:
             else:
                 joined.append(sh)
         shots = joined
+    if nocut and len(shots) > 1:
+        # last guard: a cut Jordan never makes (X → Y) takes another angle for Y
+        pool = [a for a in [punch, wide] + sorted(angles, key=cam_no) if a]
+        for k in range(1, len(shots)):
+            x, y = shots[k - 1], shots[k]
+            if (x["angle"], y["angle"]) not in nocut:
+                continue
+            nxt = shots[k + 1] if k + 1 < len(shots) else None
+
+            def fits(a):
+                return (a != x["angle"] and (x["angle"], a) not in nocut and moving_ok(a, y["from"], y["to"]) and
+                        (not nxt or ((a, nxt["angle"]) not in nocut and (a != nxt["angle"] or not nxt["join"]))))
+            pick = next((a for a in pool if fits(a)), None)
+            if pick:
+                y.update(angle=pick, kind="rule")
+        joined = []
+        for sh in shots:
+            if joined and not sh["join"] and joined[-1]["angle"] == sh["angle"]:
+                joined[-1]["to"] = sh["to"]
+            else:
+                joined.append(sh)
+        shots = joined
     why = {"wide": "wide", "punch": "punch-in", "extra": "insert", "claude": "claude shot",
-           "forced": "angle changed around a removal", "slider": "slider not moving here"}
+           "forced": "angle changed around a removal", "slider": "slider not moving here", "rule": "angle rule"}
     video = [{"in": s["from"], "out": s["to"], "angle": s["angle"],
               "why": why[s["kind"]] + (" (after a removal)" if s["join"] else "")} for s in shots]
     if not claude_shots:

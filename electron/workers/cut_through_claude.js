@@ -361,7 +361,7 @@ function makeClient(apiKey) {
  * same video again. Throws on an empty or too-long range.
  */
 function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model, effort, delivery = 'scripted', roles = {}, direction = '',
-  talker: only = null, energy: useEnergy = true, sliderMoving = false }) {
+  talker: only = null, energy: useEnergy = true, sliderMoving = false, noCut = [] }) {
   const words = JSON.parse(fs.readFileSync(wordsPath, 'utf8'));
   const day = JSON.parse(fs.readFileSync(dayPath, 'utf8'));
   const frameSec = day.frame_sec[0] / day.frame_sec[1];
@@ -400,6 +400,10 @@ function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model,
     `Delivery: ${DELIVERY[delivery] || DELIVERY.scripted}`,
     `Angles:\n${roster.map((x) => `- ${x}`).join('\n')}`,
     ...(insertNote ? [insertNote] : []),
+    // Jordan's per-multicam "never cut from X to Y" (2026-11-10): hard rules, the program enforces them
+    ...((noCut || []).filter((r) => r.split('>').every((a) => angles.includes(a))).length
+      ? [`Never cut directly between these angles (the program enforces it; go through another angle): ${noCut.filter((r) => r.split('>').every((a) => angles.includes(a))).map((r) => r.replace('>', ' → ')).join(', ')}.`]
+      : []),
     // Jordan's own words for this recording — they steer the guidelines, not the hard rules
     ...(String(direction || '').trim() ? ['', `Direction from Jordan for this recording (follow it; where it disagrees with the guidelines in your brief, it wins):`,
       String(direction).trim()] : [])

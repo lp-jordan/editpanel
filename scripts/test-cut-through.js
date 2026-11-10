@@ -721,6 +721,28 @@ print(json.dumps(out))
   assert.ok(sl.every(([, a, b]) => (a >= 25 && b <= 40) || (a >= 85 && b <= 95)), JSON.stringify(slOut.on));
   assert.ok(slOut.on.every((v, k) => !k || v[0] !== slOut.on[k - 1][0]), JSON.stringify(slOut.on));
   assert.ok(slOut.off.some((v) => v[0] === 'Angle 4' && v[1] < 25), 'without motion, Claude\'s slider shot is untouched');
+  // angle rules (2026-11-10): "never Angle 2 ↔ Angle 4" — Claude's 1 → 4 → 2 → 4 → 1 never cuts 2 ↔ 4
+  const nc = JSON.parse(execFileSync(PY, ['-c', String.raw`
+import json, os, sys, subprocess
+os.chdir(sys.argv[2])
+for name, extra in (("rules", ["nocut=Angle 2>Angle 4", "nocut=Angle 4>Angle 2"]), ("none", [])):
+    subprocess.run([sys.executable, os.path.join(sys.argv[1], "place_cuts.py"), "words_L.json", "day_L.json", f"N_{name}.json", "removals=removals_L.json",
+                    "extra=Angle 4"] + extra, check=True, stdout=subprocess.DEVNULL)
+print(json.dumps({n: [v["angle"] for v in json.load(open(f"N_{n}.json"))["video"]] for n in ("rules", "none")}))
+`, PIPELINE, slDir], { encoding: 'utf8' }));
+  const pairs = (xs) => xs.slice(1).map((a, k) => `${xs[k]}>${a}`);
+  assert.ok(pairs(nc.none).some((x) => x === 'Angle 4>Angle 2' || x === 'Angle 2>Angle 4'), JSON.stringify(nc));
+  assert.ok(!pairs(nc.rules).some((x) => x === 'Angle 4>Angle 2' || x === 'Angle 2>Angle 4'), JSON.stringify(nc));
+  assert.ok(nc.rules.includes('Angle 4'), 'the slider is still used, via the wide');
+  const AR = require('../electron/shared/angle_rules');
+  const four = ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4'];
+  const roles = { 'Camera 1': 'wide', 'Camera 2': 'closeup', 'Camera 3': 'side', 'Camera 4': 'slider' };
+  assert.deepStrictEqual(AR.check(four, ['Camera 2>Camera 3', 'Camera 3>Camera 2'], roles), { errors: [], warnings: [] });
+  assert.ok(/can't cut to any angle/.test(AR.check(four, ['Camera 3>Camera 1', 'Camera 3>Camera 2', 'Camera 3>Camera 4'], roles).errors[0]));
+  assert.ok(/No angle can cut to Camera 4/.test(AR.check(four, ['Camera 1>Camera 4', 'Camera 2>Camera 4', 'Camera 3>Camera 4'], roles).errors[0]));
+  assert.ok(AR.check(['A', 'B', 'C'], ['A>C', 'B>C', 'C>A'], { A: 'wide' }).errors.length, 'C reachable only from nothing');
+  assert.ok(/side angle/.test(AR.check(four, ['Camera 1>Camera 3'], roles).warnings[0]));
+  assert.deepStrictEqual(AR.clean(['Camera 2>Camera 3', 'Camera 2>Camera 3', 'Camera 9>Camera 1', 'Camera 1>Camera 1'], four), ['Camera 2>Camera 3']);
   console.log('✓ place_cuts.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio, no ping-pong at removals, slider only while moving');
 }
 
@@ -1357,7 +1379,13 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.ok(!fs.existsSync(path.join(DESKTOP, 'day_Solo2.json')) && fs.existsSync(RUN('Solo2', 'day_Solo2.json')), 'Desktop files not moved');
   assert.ok(!fs.existsSync(path.join(DESKTOP, 'words_Solo2.json')) && fs.existsSync(RUN('Solo2', 'words_Solo2.json')));
   assert.ok(!fs.existsSync(RUN('Solo2', 'levels_Solo2.json')));
+  // angle rules: saved per project + multicam, checked, sent to Claude and the placer
+  if (!c3.snapshot().project) c3.onProject('ProjT');
+  assert.throws(() => c3.saveAngleRules({ rules: ['Camera 1>Camera 2', 'Camera 1>Camera 3', 'Camera 1>Camera 4'] }), /can't cut to any angle/);
+  c3.saveAngleRules({ rules: ['Camera 2>Camera 3', 'Camera 3>Camera 2', 'Camera 9>Camera 1'] });
+  assert.deepStrictEqual(c3.snapshot().angleRules, ['Camera 2>Camera 3', 'Camera 3>Camera 2']);
   const cl = (await c3.runPlan({ extra: 'Camera 4', delivery: 'scripted', direction: 'Use the wide only to hide cuts.' })).steps.plan;
+  assert.ok(/Never cut directly between these angles[^\n]*Camera 2 → Camera 3, Camera 3 → Camera 2/.test(requests[0].messages[0].content), 'rules not sent to Claude');
   assert.strictEqual(c3.snapshot().direction, 'Use the wide only to hide cuts.');
   assert.strictEqual(cl.status, 'done', `${cl.error}\n${cl.log.join('\n')}`);
   assert.ok(fs.existsSync(RUN('Solo2', 'levels_Solo2.json')), 'no levels-only pass');

@@ -32,6 +32,7 @@ const { spawn, execFile } = require('child_process');
 const { randomUUID } = require('crypto');
 const claude = require('./cut_through_claude');
 const motion = require('./cut_through_motion');
+const angleRulesLib = require('../shared/angle_rules');
 const videosLib = require('./cut_through_videos');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 const compare = require('./cut_through_compare');
@@ -353,8 +354,47 @@ function createCutThrough(opts) {
     setPrefs({ cutThrough: next });
   }
 
+  /** "Never cut from X to Y" rules for this project's multicam (Jordan 2026-11-10). */
+  function angleRules() {
+    const p = (getPrefs() || {}).cutThrough || {};
+    const saved = (s.project && s.mc && ((p.angleRules || {})[s.project] || {})[s.mc]) || [];
+    return angleRulesLib.clean(saved, (s.day && s.day.angles) || []);
+  }
+
+  /** The angles a cut can use (not "Don't use") and their roles, for checking rules. */
+  function usableAngles() {
+    const roles = angleRoles();
+    return { angles: ((s.day && s.day.angles) || []).filter((a) => roles[a] !== 'skip'), roles };
+  }
+
+  function saveAngleRules({ rules, roles: roleMap } = {}) {
+    if (!s.project || !s.mc || !s.day) throw new Error('Pick a multicam and run Prep first');
+    if (roleMap && typeof roleMap === 'object') saveAngleRoles(roleMap);
+    const list = angleRulesLib.clean(rules, s.day.angles || []);
+    const { angles, roles } = usableAngles();
+    const { errors } = angleRulesLib.check(angles, list, roles);
+    if (errors.length) throw new Error(errors[0]);
+    const p = (getPrefs() || {}).cutThrough || {};
+    const all = { ...(p.angleRules || {}) };
+    all[s.project] = { ...(all[s.project] || {}), [s.mc]: list };
+    setPrefs({ cutThrough: { ...p, angleRules: all } });
+    emit();
+    return snapshot();
+  }
+
+  /** The rules a Plan uses: only between usable angles; a set that no longer checks out (roles
+   *  changed since) is reported and left out rather than trap the placer. */
+  function planRules() {
+    const { angles, roles } = usableAngles();
+    const list = angleRulesLib.clean(angleRules(), angles);
+    if (!list.length) return [];
+    const { errors } = angleRulesLib.check(angles, list, roles);
+    if (errors.length) { pushLog('plan', `Angle rules not used: ${errors[0]}`); return []; }
+    return list;
+  }
+
   function snapshot() {
-    return { ...s, direction: direction(), angleRoles: angleRoles(), settings: settings(), files: s.label ? files() : null,
+    return { ...s, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
       videosReady: videosToBuild().length, now: Date.now() };
   }
 
@@ -1004,7 +1044,8 @@ function createCutThrough(opts) {
   // The placer: takes the day + words files (+ Claude's edit and the levels) and writes
   // <run folder>/<LABEL>_plan.json (the build's input).
   const PLANNERS = {
-    solo: { script: 'place_cuts.py', args: ({ wide, extra, punch, skip, removalsFile, levelsFile, motionFile, talker, reviewFile }) => [...(motionFile ? [`motion=${motionFile}`] : []),...(wide ? [`wide=${wide}`] : []),
+    solo: { script: 'place_cuts.py', args: ({ wide, extra, punch, skip, removalsFile, levelsFile, motionFile, nocut, talker, reviewFile }) => [...(motionFile ? [`motion=${motionFile}`] : []),
+      ...(nocut || []).map((r) => `nocut=${r}`),...(wide ? [`wide=${wide}`] : []),
       ...(punch ? [`punch=${punch}`] : []), ...[].concat(extra || []).map((x) => `extra=${x}`), ...(skip || []).map((x) => `skip=${x}`),
       ...(removalsFile ? [`removals=${removalsFile}`] : []), ...(levelsFile ? [`levels=${levelsFile}`] : []),
       ...(talker ? [`talker=${talker}`] : []), ...(reviewFile ? [`review=${reviewFile}`] : [])] }
@@ -1142,6 +1183,7 @@ function createCutThrough(opts) {
       }
       o.levelsFile = f.levels;
       if (st0.sliderMotion && fs.existsSync(f.motion)) o.motionFile = f.motion;
+      o.nocut = planRules();
       // Claude edits like Z8 — every removal and every shot; place_cuts.py places the cuts
       st.progress = { phase: 'Claude is reading the transcript', phaseAt: Date.now(), bar: null };
       emit();
@@ -1149,7 +1191,7 @@ function createCutThrough(opts) {
         const out = await claude.planWithClaude({
           label: s.label, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: settings().filesDir,
           promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
-          start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: !!o.motionFile,
+          start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: !!o.motionFile, noCut: o.nocut,
           delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
           roles: { wide: o.wide || undefined, punch: o.punch || undefined, extra: o.extra, slider: o.roles.slider, side: o.roles.side,
             other: o.roles.other, skip: o.skip },
@@ -1346,7 +1388,7 @@ function createCutThrough(opts) {
     return {
       label: vf.tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
       promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
-      start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: st0.sliderMotion, delivery,
+      start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: st0.sliderMotion, noCut: planRules(), delivery,
       talker: kind === 'solo' ? v.talker || null : null,
       roles: { wide: R.wide || undefined, punch: R.punch || undefined, extra: R.extra, slider: R.slider, side: R.side, other: R.other, skip: R.skip },
       direction: direction(), kind
@@ -1364,7 +1406,8 @@ function createCutThrough(opts) {
     const extras = [...new Set([...R.slider, ...R.side, ...R.other])].filter((x) => x !== R.punch && x !== R.wide);
     const o = { files: files(), planFile: vf.plan, reviewFile: vf.review, start: v.from, end: v.to, wide: R.wide, punch: R.punch || null,
       extra: extras, skip: R.skip, roles: R, cuts: (v.gaps || []).map(([a, b]) => `${a}-${b}`), talker: args.talker,
-      levelsFile: files().levels, removalsFile, motionFile: settings().sliderMotion && fs.existsSync(files().motion) ? files().motion : null };
+      levelsFile: files().levels, removalsFile, motionFile: settings().sliderMotion && fs.existsSync(files().motion) ? files().motion : null,
+      nocut: planRules() };
     const started = Date.now();
     const res = await runPlanner('solo', o);
     let error = res.error;
@@ -1695,6 +1738,7 @@ function createCutThrough(opts) {
     onProject,
     setRunFolder,
     updateSettings,
+    saveAngleRules,
     runPrep,
     runTranscribe,
     cancel,

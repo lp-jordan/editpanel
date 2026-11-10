@@ -205,6 +205,7 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   listMulticams: () => ipcRenderer.invoke('cut-through:list-multicams'),
   select: (payload) => ipcRenderer.invoke('cut-through:select', payload),
   updateSettings: (patch) => ipcRenderer.invoke('cut-through:settings', patch),
+  saveAngleRules: (payload) => ipcRenderer.invoke('cut-through:angle-rules', payload),
   setRunFolder: (payload) => ipcRenderer.invoke('cut-through:run-folder', payload),
   runPrep: (payload) => ipcRenderer.invoke('cut-through:prep', payload),
   runTranscribe: (payload) => ipcRenderer.invoke('cut-through:transcribe', payload),

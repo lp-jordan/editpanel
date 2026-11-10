@@ -123,6 +123,70 @@ function CtRow({ label, children }) {
   );
 }
 
+const CT_ROLE_LABEL = { wide: 'Wide', closeup: 'Close-up', slider: 'Slider', side: 'Side', other: 'Other' };
+
+/** "Never cut from X to Y" for one multicam (Jordan 2026-11-10). Checks are shared with the main
+ *  process (electron/shared/angle_rules.js), which refuses a set that fails them. */
+function AngleRulesDialog({ mc, angles, roles, rules, busy, error, onSave, onCancel }) {
+  const [no, setNo] = React.useState(() => new Set(rules));
+  const [both, setBoth] = React.useState(true);
+  const AR = window.AngleRules;
+  const key = (a, b) => `${a}>${b}`;
+  const res = AR ? AR.check(angles, [...no], roles) : { errors: [], warnings: [] };
+  const short = (a) => a.replace(/^Camera\s+/i, 'Cam ');
+  function toggle(a, b) {
+    const next = new Set(no);
+    const on = !next.has(key(a, b));
+    for (const k of [key(a, b), ...(both ? [key(b, a)] : [])]) (on ? next.add(k) : next.delete(k));
+    setNo(next);
+  }
+  return (
+    <div className="export-picker-overlay" role="dialog" aria-modal="true" aria-label="Angle rules">
+      <div className="export-picker ct-rules-dialog">
+        <header className="export-picker-head">
+          <h3>Angle rules{mc ? ` · ${mc}` : ''}</h3>
+        </header>
+        <div className="export-picker-body">
+          <div className="ct-rules-grid" style={{ gridTemplateColumns: `max-content repeat(${angles.length}, 52px)` }}>
+            <div className="ct-rules-corner dim">From ↓ To →</div>
+            {angles.map((b) => (
+              <div key={b} className="ct-rules-head">{short(b)}<span className="dim">{CT_ROLE_LABEL[roles[b]] || ''}</span></div>
+            ))}
+            {angles.map((a) => (
+              <React.Fragment key={a}>
+                <div className="ct-rules-row">{short(a)} <span className="dim">{CT_ROLE_LABEL[roles[a]] || ''}</span></div>
+                {angles.map((b) => (a === b ? <div key={b} className="ct-rule-cell self" /> : (
+                  <button key={b} type="button" className={`ct-rule-cell${no.has(key(a, b)) ? ' blocked' : ''}`}
+                    aria-pressed={no.has(key(a, b))} title={`${a} → ${b}`} onClick={() => toggle(a, b)}>
+                    {no.has(key(a, b)) ? '✕' : '→'}
+                  </button>
+                )))}
+              </React.Fragment>
+            ))}
+          </div>
+          <label className="ct-pair">
+            <input type="checkbox" checked={both} onChange={(e) => setBoth(e.target.checked)} /> Both ways
+          </label>
+          <div className="ct-rules-checks">
+            {res.errors.map((t) => <div key={t} className="notice error">{t}</div>)}
+            {res.warnings.map((t) => <div key={t} className="notice warning">{t}</div>)}
+            {!res.errors.length && !res.warnings.length && (
+              <div className="dim">{no.size ? `${no.size} cut${no.size === 1 ? '' : 's'} blocked` : 'No cuts blocked'}</div>
+            )}
+          </div>
+          {error && <div className="notice error">{error}</div>}
+        </div>
+        <footer className="export-picker-foot">
+          <button type="button" className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button type="button" className="btn primary" disabled={busy || res.errors.length > 0} onClick={() => onSave([...no])}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function CutThroughPage({ connected }) {
   const api = window.cutThroughAPI;
   const [ct, setCt] = React.useState(null);
@@ -131,6 +195,8 @@ function CutThroughPage({ connected }) {
   const [minutes, setMinutes] = React.useState('');
   const [planForm, setPlanForm] = React.useState({ start: '', end: '', delivery: 'scripted', useMarks: false });
   const [rolesDraft, setRolesDraft] = React.useState({});
+  const [rulesOpen, setRulesOpen] = React.useState(false);
+  const [rulesBusy, setRulesBusy] = React.useState(false);
   const [bins, setBins] = React.useState([]);
   const [timelines, setTimelines] = React.useState([]);
   const [checkTimeline, setCheckTimeline] = React.useState('');
@@ -262,6 +328,9 @@ function CutThroughPage({ connected }) {
   // what each angle is (saved per Resolve project in the main process; the draft is this page's edits)
   const roles = { ...(ct.angleRoles || {}), ...rolesDraft };
   const micAngles = solo ? [] : (day?.micAngles || []);
+  // angle rules: only between angles a cut can use (not "Don't use"); mic angles are close-ups
+  const usable = sortedAngles.filter((a) => roles[a] !== 'skip' || micAngles.includes(a));
+  const ruleCount = (ct.angleRules || []).filter((r) => r.split('>').every((a) => usable.includes(a))).length;
   const seqBin = ct.settings.seqBin;
   const binChoices = bins.includes(seqBin) || !seqBin ? bins : [seqBin, ...bins];
 
@@ -454,6 +523,23 @@ function CutThroughPage({ connected }) {
                     </label>
                   ))}
                 </CtRow>
+              )}
+              {ct.mc && sortedAngles.length > 1 && (
+                <CtRow label="Angle rules">
+                  <span className={ruleCount ? '' : 'dim'}>{ruleCount ? `${ruleCount} cut${ruleCount === 1 ? '' : 's'} blocked` : 'None'}</span>
+                  <button type="button" className="btn small ghost" onClick={() => { setErrors((e) => ({ ...e, rules: null })); setRulesOpen(true); }}>Edit</button>
+                </CtRow>
+              )}
+              {rulesOpen && (
+                <AngleRulesDialog mc={ct.mc} angles={usable} roles={roles} rules={ct.angleRules || []} busy={rulesBusy} error={errors.rules}
+                  onCancel={() => setRulesOpen(false)}
+                  onSave={(list) => {
+                    setRulesBusy(true);
+                    call('rules', () => api.saveAngleRules({ rules: list, roles })).then((r) => {
+                      setRulesBusy(false);
+                      if (r) setRulesOpen(false);
+                    });
+                  }} />
               )}
               <CtRow label="Direction">
                 <textarea className="settings-input ct-direction" rows={3} value={directionDraft} aria-label="Direction for Claude"
