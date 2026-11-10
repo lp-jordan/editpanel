@@ -375,6 +375,8 @@ function CutThroughPage({ connected }) {
   const lposPick = ct.settings.lposProject;
   const delivery = solo ? (planForm.delivery === 'convo' ? 'scripted' : planForm.delivery) : (planForm.delivery === 'stage' ? 'stage' : 'convo');
   const angleNo = (a) => Number((/(\d+)\s*$/.exec(a) || [])[1] || 999);
+  // Build finds angles by the names Prep saved, so they should be final (and "Camera N") before Transcribe
+  const oddAngle = (a) => !/^Camera \d+$/.test(a) && !/slate/i.test(a);
   const sortedAngles = [...(day?.angles || [])].sort((x, y) => angleNo(x) - angleNo(y));
   // what each angle is (saved per Resolve project in the main process; the draft is this page's edits)
   const roles = { ...(ct.angleRoles || {}), ...rolesDraft };
@@ -472,7 +474,10 @@ function CutThroughPage({ connected }) {
             <CtRow label="Length"><span>{day.lengthMin.toFixed(1)} min</span><span className="dim">{day.fps?.toFixed(3)} fps · {day.frames} fr</span></CtRow>
           )}
           <CtRow label="Angles">
-            {day.angles.map((a) => <span key={a} className={`tag${day.micAngles.includes(a) ? ' info' : ''}`}>{a}</span>)}
+            {day.angles.map((a) => (
+              <span key={a} className={`tag${oddAngle(a) ? ' warning' : day.micAngles.includes(a) ? ' info' : ''}`}>{a}</span>
+            ))}
+            {day.angles.some(oddAngle) && <span className="dim">Not "Camera N": rename now and rerun Prep (renaming later breaks Build)</span>}
           </CtRow>
           <CtRow label="Audio">
             {(day.cameraAudioAngles.length > 0 || day.wavMics > 0) && (
