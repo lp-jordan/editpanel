@@ -724,12 +724,38 @@ function ResolveProjectGroup({
 }
 
 // ── Panel ──────────────────────────────────────────────────────
-function ExportsPanel({ focusToken, focusFilter = 'unassigned' } = {}) {
+function ExportsPanel({ focusToken, focusFilter = 'unassigned', resolveProject = '' } = {}) {
   // Expanded by default (the history should be visible); the heading toggles.
   const [open, setOpen]       = React.useState(true);
   const [filter, setFilter]   = React.useState('all');
-  const [rows, setRows]       = React.useState([]);
+  const [fetchedRows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
+
+  // Scope: 'project' = only exports from the open Resolve project; 'all' =
+  // every project, grouped by project with the open one first. Remembered
+  // per machine. With no project open there is nothing to scope to.
+  const [scope, setScopeState] = React.useState(() => {
+    try { return localStorage.getItem('exports.scope') === 'all' ? 'all' : 'project'; }
+    catch (_) { return 'project'; }
+  });
+  function setScope(next) {
+    setScopeState(next);
+    try { localStorage.setItem('exports.scope', next); } catch (_) {}
+  }
+  const currentProject = resolveProject || null;
+  const scopedToProject = scope === 'project' && Boolean(currentProject);
+  // Rows in display order. In All scope they are flattened project-group by
+  // project-group so shift-click ranges follow what's on screen.
+  const rows = React.useMemo(() => {
+    if (scopedToProject) return fetchedRows.filter(r => resolveProjectNameOf(r) === currentProject);
+    if (!currentProject) return fetchedRows;
+    const groups = groupByResolveProject(fetchedRows);
+    const i = groups.findIndex(g => g.projectName === currentProject);
+    if (i > 0) groups.unshift(groups.splice(i, 1)[0]);
+    return groups.flatMap(g => g.rows);
+  }, [fetchedRows, scopedToProject, currentProject]);
+  // In All scope (with a project open), label each project's run of rows.
+  const showProjectHeads = !scopedToProject && Boolean(currentProject);
   const [error, setError]     = React.useState(null);
   const [pickerForRow, setPickerForRow] = React.useState(null);
   const [pushBusy, setPushBusy]         = React.useState(false);
@@ -1119,6 +1145,25 @@ function ExportsPanel({ focusToken, focusFilter = 'unassigned' } = {}) {
               </button>
             ))}
             <span className="exports-filter-spacer" />
+            {currentProject && (
+              <div className="exports-scope" role="group" aria-label="Projects">
+                <button
+                  type="button"
+                  className={`exports-filter${scope === 'project' ? ' active' : ''}`}
+                  onClick={() => setScope('project')}
+                  title={currentProject}
+                >
+                  This project
+                </button>
+                <button
+                  type="button"
+                  className={`exports-filter${scope === 'all' ? ' active' : ''}`}
+                  onClick={() => setScope('all')}
+                >
+                  All projects
+                </button>
+              </div>
+            )}
             <button type="button" className="btn ghost small" onClick={refresh}>
               Refresh
             </button>
@@ -1174,17 +1219,28 @@ function ExportsPanel({ focusToken, focusFilter = 'unassigned' } = {}) {
               </div>
             ) : (
               <div className="exports-list">
-                {rows.map(r => (
-                  <ExportRow
-                    key={r.export_id}
-                    row={r}
-                    selected={selectedIds.has(r.export_id)}
-                    selectable={isSelectableState(r.state)}
-                    onRowClick={handleRowClick}
-                    onPushClick={setPickerForRow}
-                    onOpenFolderClick={handleOpenFolder}
-                  />
-                ))}
+                {rows.map((r, i) => {
+                  const name = resolveProjectNameOf(r);
+                  const prevName = i > 0 ? resolveProjectNameOf(rows[i - 1]) : undefined;
+                  const head = showProjectHeads && (i === 0 || name !== prevName);
+                  return (
+                    <React.Fragment key={r.export_id}>
+                      {head && (
+                        <p className="exports-project-head">
+                          {name || 'Unknown project'}{name && name === currentProject ? ' · open' : ''}
+                        </p>
+                      )}
+                      <ExportRow
+                        row={r}
+                        selected={selectedIds.has(r.export_id)}
+                        selectable={isSelectableState(r.state)}
+                        onRowClick={handleRowClick}
+                        onPushClick={setPickerForRow}
+                        onOpenFolderClick={handleOpenFolder}
+                      />
+                    </React.Fragment>
+                  );
+                })}
               </div>
             )
           )}

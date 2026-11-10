@@ -248,7 +248,7 @@ function RenderingExportRow({
 // render reaches a terminal state, the row falls back to the compact display.
 const RENDERING_STATES = new Set(['queued', 'rendering', 'uploading']);
 
-function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThroughRun, exportVersion, onViewResults, onReviewExports }) {
+function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThroughRun, exportVersion, onViewResults, onReviewExports, resolveProject, peers = [] }) {
   const [runs, setRuns] = React.useState([]);
   const [loadingRuns, setLoadingRuns] = React.useState(false);
   const [recentExports, setRecentExports] = React.useState([]);
@@ -273,6 +273,14 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThr
     if (!focusRequest) return;
     if (focusRequest.tab) setActiveTab(focusRequest.tab);
     setHighlightId(focusRequest.highlightId || null);
+    if (focusRequest.section === 'peers') {
+      // Wait for the slide-up so the section is laid out before scrolling.
+      const t = setTimeout(() => {
+        const el = document.querySelector('.job-panel [data-section="peers"]');
+        if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }, 150);
+      return () => clearTimeout(t);
+    }
     if (!focusRequest.highlightId) return;
     const t = setTimeout(() => setHighlightId(null), 2500);
     return () => clearTimeout(t);
@@ -326,7 +334,7 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThr
   React.useEffect(() => {
     if (!open || !window.resultsAPI) return;
     setLoadingRuns(true);
-    window.resultsAPI.listRuns(10)
+    window.resultsAPI.listRuns(40)
       .then(res => setRuns(res?.data ?? []))
       .catch(() => setRuns([]))
       .finally(() => setLoadingRuns(false));
@@ -335,28 +343,72 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThr
   // Reload recent exports on open, on delete/prune, and when one completes
   React.useEffect(() => {
     if (!open || !window.exportsAPI) return;
-    window.exportsAPI.getRecent(8)
+    window.exportsAPI.getRecent(30)
       .then(res => setRecentExports(res?.data ?? []))
       .catch(() => setRecentExports([]));
   }, [open, reloadTick, exportVersion]);
 
   const runningJobs = (dashboard?.jobs ?? []).filter(j => j.state === 'running');
-  const recentJobs  = (dashboard?.jobs ?? []).filter(j => j.state !== 'running').slice(0, 5);
+  const allRecentJobs = (dashboard?.jobs ?? []).filter(j => j.state !== 'running');
 
-  // Per-tab counts. Surfaced as small chips next to the tab labels so the
-  // editor can tell at a glance whether there's anything in a category before
-  // clicking. We deliberately leave a chip-less tab visible at 0 — stable
-  // layout beats appearing/disappearing tabs.
-  const spellcheckRuns   = runs.filter(r => r.item_type === 'spellcheck');
-  const commentPullRuns  = runs.filter(r => r.item_type === 'comment_pull');
-  const otherRuns        = runs.filter(r => r.item_type !== 'spellcheck' && r.item_type !== 'comment_pull');
-  const exportsCount     = (activeExport ? 1 : 0) + recentExports.filter(e => e.export_id !== activeExport?.exportId).length;
-  const tabCounts = {
-    all:        exportsCount + runs.length + recentJobs.length + runningJobs.length,
-    exports:    exportsCount,
-    spellcheck: spellcheckRuns.length,
-    comments:   commentPullRuns.length
+  // ── This project vs other projects ────────────────────────────────────
+  // Rows are filed by the Resolve project they ran in. In-flight exports
+  // (queued / rendering / uploading) always count as "now". With no Resolve
+  // project open there is nothing to split by, so everything is "here".
+  const currentProject = resolveProject || null;
+  const exportProjectOf = (e) => ((e.jobs || []).map(j => j && j.resolveProjectName).find(Boolean)) || null;
+  const exportIsHere = (e) => !currentProject || RENDERING_STATES.has(e.state) || exportProjectOf(e) === currentProject;
+  const runIsHere    = (r) => !currentProject || r.project_name === currentProject;
+  const jobIsHere    = (j) => !currentProject || j.resolve_project === currentProject;
+
+  const here = {
+    live: true,
+    exports: recentExports.filter(exportIsHere),
+    runs: runs.filter(runIsHere),
+    recentJobs: allRecentJobs.filter(jobIsHere).slice(0, 5)
   };
+  // Other projects, grouped by project name (unknown project last).
+  const otherGroups = React.useMemo(() => {
+    if (!currentProject) return [];
+    const byName = new Map();
+    const bucket = (name) => {
+      const key = name || '';
+      if (!byName.has(key)) byName.set(key, { name: name || null, live: false, exports: [], runs: [], recentJobs: [] });
+      return byName.get(key);
+    };
+    recentExports.filter(e => !exportIsHere(e)).forEach(e => bucket(exportProjectOf(e)).exports.push(e));
+    runs.filter(r => !runIsHere(r)).forEach(r => bucket(r.project_name).runs.push(r));
+    allRecentJobs.filter(j => !jobIsHere(j)).slice(0, 10).forEach(j => bucket(j.resolve_project).recentJobs.push(j));
+    return [...byName.values()].sort((x, y) => {
+      if (!x.name) return 1;
+      if (!y.name) return -1;
+      return x.name.localeCompare(y.name);
+    });
+  }, [recentExports, runs, dashboard, currentProject]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [otherOpen, setOtherOpen] = React.useState(false);
+
+  // Count of a group's rows under a given tab (drives tab chips + empty state).
+  function groupCount(g, tab) {
+    const exp = g.exports.filter(e => e.export_id !== activeExport?.exportId).length
+      + (g.live && activeExport ? 1 : 0);
+    const spell = g.runs.filter(r => r.item_type === 'spellcheck').length;
+    const pulls = g.runs.filter(r => r.item_type === 'comment_pull').length;
+    if (tab === 'exports')    return exp;
+    if (tab === 'spellcheck') return spell;
+    if (tab === 'comments')   return pulls;
+    return exp + g.runs.length + g.recentJobs.length + (g.live ? runningJobs.length : 0);
+  }
+
+  // Per-tab counts for THIS project. Surfaced as small chips next to the tab
+  // labels. We deliberately leave a chip-less tab visible at 0 — stable
+  // layout beats appearing/disappearing tabs.
+  const tabCounts = {
+    all:        groupCount(here, 'all'),
+    exports:    groupCount(here, 'exports'),
+    spellcheck: groupCount(here, 'spellcheck'),
+    comments:   groupCount(here, 'comments')
+  };
+  const otherCount = otherGroups.reduce((n, g) => n + groupCount(g, activeTab), 0);
 
   // Which sections render under the current tab. 'all' shows everything;
   // category tabs scope to their content and hide Running/Recent engine job
@@ -366,12 +418,20 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThr
   const showComments   = activeTab === 'all' || activeTab === 'comments';
   const showRunning    = activeTab === 'all';
   const showRecent     = activeTab === 'all';
-  // The runs subset to feed into the Results section depends on the active
-  // tab. 'all' shows everything; per-category tabs narrow to their type.
-  const filteredRuns =
-      activeTab === 'spellcheck' ? spellcheckRuns
-    : activeTab === 'comments'   ? commentPullRuns
-    : runs;
+  // The runs subset for the Results section depends on the active tab.
+  function runsForTab(list) {
+    return activeTab === 'spellcheck' ? list.filter(r => r.item_type === 'spellcheck')
+      : activeTab === 'comments'      ? list.filter(r => r.item_type === 'comment_pull')
+      : list;
+  }
+
+  // Other online machines. Same-project machines first.
+  const peersSorted = [...(peers || [])].sort((x, y) => {
+    const xs = currentProject && x.resolveProject === currentProject ? 0 : 1;
+    const ys = currentProject && y.resolveProject === currentProject ? 0 : 1;
+    if (xs !== ys) return xs - ys;
+    return String(x.displayName || '').localeCompare(String(y.displayName || ''));
+  });
 
   // Status dot + optional short label for compact rows. "Done" is implied by
   // the green dot, so only non-success states print a label.
@@ -574,6 +634,420 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThr
     try { await window.exportsAPI.stopRendering(exportId); } catch (_) {}
   }
 
+  // One group of Jobs rows. The "This project" group is `live` (it also gets
+  // the in-flight export, running jobs, Cut-through and the unassigned pill);
+  // each "Other projects" group only lists finished/queued history rows.
+  function renderGroup(g) {
+    return (
+      <React.Fragment>
+              {/* Phase 3.5: clearable pill for orphans awaiting LPOS assignment.
+                  Component is defined in ExportsPanel.jsx (loaded before App.jsx
+                  in index.html, so it's resolvable here as a global). Renders
+                  nothing when there's nothing fresh to nudge about. Only on the
+                  All tab — the per-category tabs have their own focus. */}
+              {g.live && activeTab === 'all' && typeof UnassignedExportsPill !== 'undefined' && (
+                <UnassignedExportsPill onClick={onReviewExports} />
+              )}
+
+              {g.live && activeTab === 'all' && cutThroughRun && (
+                <section className="job-panel-section">
+                  <div className="job-panel-row active">
+                    <div className="job-panel-row-top">
+                      <span className="job-panel-name" title={cutThroughRun.label}>
+                        Cut-through{cutThroughRun.label ? ` · ${cutThroughRun.label}` : ''}
+                      </span>
+                      <div className="job-panel-row-actions">
+                        <span className="job-panel-step-badge">
+                          {cutThroughRun.step}{cutThroughRun.pct != null ? ` ${cutThroughRun.pct}%` : ''}
+                        </span>
+                      </div>
+                    </div>
+                    {cutThroughRun.pct != null && (
+                      <div className="job-panel-progress-track">
+                        <div className="job-panel-progress-fill" style={{ width: `${cutThroughRun.pct}%` }} />
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {/* ── Exports / renders ── */}
+              {showExports && ((g.live && activeExport) || g.exports.some(e => e.export_id !== activeExport?.exportId)) && (
+                <section className="job-panel-section">
+                  <p className="job-panel-section-label">Exports</p>
+
+                  {/* Several queued batches: tick them and start them back-to-back
+                      with one button. Hidden while an export is in flight (one run
+                      at a time). A single queued batch gets a per-row Start instead. */}
+                  {g.live && multiQueued && !exportBusy && (
+                    <div className="job-panel-chain-bar">
+                      <button
+                        className="btn small"
+                        disabled={selectedQueued.size === 0}
+                        onClick={handleStartChain}
+                        title="Export the selected batches one after another"
+                      >
+                        Start ({selectedQueued.size})
+                      </button>
+                    </div>
+                  )}
+                  {g.live && exportBusy && pendingChain.size > 0 && (
+                    <p className="job-panel-chain-note">
+                      {pendingChain.size} more up next.
+                    </p>
+                  )}
+
+                  {g.live && activeExport && (
+                    <RenderingExportRow
+                      headline={activeExport.projectName || 'Export'}
+                      unassigned={false}
+                      state={activeExport.state}
+                      percent={activeExport.percent ?? 0}
+                      uploadPercent={activeExport.uploadPercent ?? 0}
+                      jobs={activeExport.jobs.map(j => {
+                        const m = exportJobMark(j);
+                        return {
+                          id: j.job_id,
+                          name: j.name || 'Untitled timeline',
+                          mark: m.mark,
+                          done: m.done,
+                          error: m.error
+                        };
+                      })}
+                      jobsDone={activeExport.jobsDone}
+                      jobCount={activeExport.jobs.length}
+                      targetDir={activeExport.targetDir}
+                      projectName={activeExport.projectName}
+                      collapsed={collapsedExports.has(activeExport.exportId)}
+                      onToggleCollapse={() => toggleExportCollapsed(activeExport.exportId)}
+                      onStart={handleStartExport}
+                      onStop={handleCancelExport}
+                      onClearQueued={handleCancelExport}
+                    />
+                  )}
+
+                  {g.exports
+                    .filter(e => e.export_id !== activeExport?.exportId)
+                    .map(e => {
+                      // Orphan = caught from Resolve's render queue, not queued via
+                      // editpanel. Until the editor assigns an LPOS project the row
+                      // stays in this in-between state. The UnassignedExportsPill
+                      // is the visible treatment; rows only carry it in a tooltip.
+                      const isUnassignedOrphan = e.source === 'reconciled' && !e.project_name;
+
+                      // Editpanel-queued batch awaiting a start. With several
+                      // queued batches it gets a checkbox (started via the
+                      // "Start (N)" bar); a lone batch gets a per-row Start. A
+                      // pending member of the running chain shows "Up next".
+                      // (Orphans are never in 'queued' — they're discovered
+                      // already rendering — so this branch is editpanel-queued
+                      // batches only.)
+                      if (e.state === 'queued' && e.source !== 'reconciled') {
+                        const inChain = pendingChain.has(e.export_id);
+                        return (
+                          <RenderingExportRow
+                            key={e.export_id}
+                            headline={exportRowLabel(e)}
+                            unassigned={false}
+                            state="queued"
+                            percent={0}
+                            jobs={(e.jobs || []).map(j => ({
+                              id: String(j.job_id || j.JobId || ''),
+                              name: j.name || j.TimelineName || j.CustomName || 'Untitled timeline',
+                              mark: ''
+                            }))}
+                            jobsDone={0}
+                            jobCount={e.job_count ?? (e.jobs || []).length}
+                            targetDir={e.target_dir}
+                            projectName={e.project_name}
+                            collapsed={!expandedQueued.has(e.export_id)}
+                            onToggleCollapse={() => toggleQueuedCollapsed(e.export_id)}
+                            onStart={exportBusy || multiQueued ? null : () => handleStartOneQueued(e.export_id)}
+                            onClearQueued={exportBusy ? null : () => handleDeleteExportRun(e.export_id)}
+                            selectable={!exportBusy && multiQueued}
+                            selected={selectedQueued.has(e.export_id)}
+                            onToggleSelect={() => toggleQueuedSelected(e.export_id)}
+                            upNext={inChain}
+                          />
+                        );
+                      }
+
+                      // Non-terminal rows (orphan rendering through the reconcile
+                      // tick, post-assignment uploads) get the chunky in-flight
+                      // presentation that mirrors the editpanel-queued activeExport
+                      // row — progress bar, badge, per-timeline breakdown, Stop
+                      // button. Once the row goes terminal it falls back to compact.
+                      if (RENDERING_STATES.has(e.state)) {
+                        // Normalize the jobs_json shape (uppercased keys) into the
+                        // {id, name, mark} contract RenderingExportRow expects.
+                        // Per-job percent inside jobs_json isn't kept fresh by the
+                        // reconciler — only the row-level `percent` is — so we
+                        // synthesise each timeline's mark from the row-level value.
+                        // For the typical single-timeline orphan this is exactly
+                        // what the editor would expect to see.
+                        const rowPct = e.percent ?? 0;
+                        const normalizedJobs = (e.jobs || []).map(j => ({
+                          id: String(j.JobId || j.job_id || ''),
+                          name: j.TimelineName || j.CustomName || j.OutputFilename || j.RenderJobName || j.name || 'Untitled timeline',
+                          mark: e.state === 'uploading'
+                            ? `Uploading ${rowPct}%`
+                            : e.state === 'rendering'
+                            ? `${rowPct}%`
+                            : ''
+                        }));
+                        const headline = exportRowLabel(e);
+                        return (
+                          <RenderingExportRow
+                            key={e.export_id}
+                            headline={headline}
+                            unassigned={isUnassignedOrphan}
+                            state={e.state}
+                            percent={rowPct}
+                            uploadPercent={rowPct}
+                            jobs={normalizedJobs}
+                            jobsDone={e.jobs_done ?? 0}
+                            jobCount={e.job_count ?? normalizedJobs.length}
+                            targetDir={e.target_dir}
+                            projectName={e.project_name}
+                            collapsed={collapsedExports.has(e.export_id)}
+                            onToggleCollapse={() => toggleExportCollapsed(e.export_id)}
+                            onStart={null}
+                            onStop={() => handleStopOrphan(e.export_id)}
+                            onClearQueued={null}
+                          />
+                        );
+                      }
+
+                      // Compact finished row: status dot (+ label when not Done),
+                      // name, age. Timeline count only when partial; duration and
+                      // destination live in the tooltip.
+                      const doneCount  = e.jobs_done ?? 0;
+                      const totalCount = e.job_count ?? 0;
+                      const isPartialCount = totalCount > 0 && doneCount < totalCount;
+                      const statusState = e.state === 'completed' && e.lpos_delivery ? 'delivered' : e.state;
+                      const titleParts = [];
+                      if (e.project_name) titleParts.push(`LPOS: ${e.project_name}`);
+                      if (e.target_dir)   titleParts.push(`Output: ${e.target_dir}`);
+                      if (isUnassignedOrphan) titleParts.push('Unassigned');
+                      if (e.finished_at && e.started_at) titleParts.push(`Took ${formatDuration(e.finished_at - e.started_at)}`);
+                      const rowTitle = titleParts.join('\n') || undefined;
+                      return (
+                        <div
+                          key={e.export_id}
+                          className="job-panel-row compact"
+                          title={rowTitle}
+                        >
+                          {renderStatus(statusState)}
+                          <span className="job-panel-name">{exportRowLabel(e)}</span>
+                          {isPartialCount && (
+                            <span className="job-panel-age">{doneCount}/{totalCount}</span>
+                          )}
+                          <span className="job-panel-age">{formatAge(e.finished_at || e.started_at)}</span>
+                          <button
+                            className="job-panel-delete-btn"
+                            onClick={() => handleDeleteExportRun(e.export_id)}
+                            title="Clear from Jobs"
+                            aria-label="Clear from Jobs"
+                          >
+                            {xIcon}
+                          </button>
+                        </div>
+                      );
+                    })}
+                </section>
+              )}
+
+              {/* ── Active jobs ── */}
+              {g.live && showRunning && runningJobs.length > 0 && (
+                <section className="job-panel-section">
+                  <p className="job-panel-section-label">Running</p>
+                  {runningJobs.map(job => {
+                    const prog = stepProgress(job);
+                    const stepName = friendlyStepName(job.active_step);
+                    // Raw ids stay available on hover for debugging.
+                    const rawTitle = [job.preset_id, job.job_id, job.active_step?.cmd || job.active_step?.worker]
+                      .filter(Boolean).join('\n');
+                    return (
+                      <div key={job.job_id} className="job-panel-row active">
+                        <div className="job-panel-row-top">
+                          <span className="job-panel-name" title={rawTitle}>{friendlyJobName(job)}</span>
+                          <div className="job-panel-row-actions">
+                            {prog && (
+                              <span className="job-panel-step-badge">Step {prog.done} of {prog.total}</span>
+                            )}
+                            <button
+                              className="btn danger small"
+                              onClick={() => handleCancelJob(job.job_id)}
+                              title="Cancel job"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                        {prog && (
+                          <div className="job-panel-progress-track">
+                            <div
+                              className="job-panel-progress-fill"
+                              style={{ width: `${prog.pct}%` }}
+                            />
+                          </div>
+                        )}
+                        {stepName && (
+                          <p className="job-panel-substep">{stepName}…</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </section>
+              )}
+
+              {/* ── Result runs ── */}
+              {(showSpellcheck || showComments) && ((g.live && loadingRuns) || runsForTab(g.runs).length > 0) && (
+                <section className="job-panel-section">
+                  <p className="job-panel-section-label">
+                    {activeTab === 'spellcheck' ? 'Spellcheck runs'
+                      : activeTab === 'comments' ? 'Comment pulls'
+                      : 'Results'}
+                  </p>
+                  {g.live && loadingRuns && <p className="job-panel-empty">Loading…</p>}
+                  {!(g.live && loadingRuns) && runsForTab(g.runs).map(run => {
+                    // Phase 5c.8 (2026-06-02): comment_pull runs aren't a per-item
+                    // review flow — every item is informational (state stays
+                    // 'pending' because nothing's resolved or skipped). Show a
+                    // 'View Report' button and a one-line summary instead of
+                    // resolved/skipped/pending counts + a progress bar that never
+                    // moves.
+                    const isCommentPull = run.item_type === 'comment_pull';
+                    if (isCommentPull) {
+                      return (
+                        <div key={run.job_id} data-run-id={run.job_id} className={`job-panel-row comment-pull-row${highlightId === run.job_id ? ' is-highlighted' : ''}`}>
+                          <div className="job-panel-row-top">
+                            <div>
+                              <span className="job-panel-name">{run.label}</span>
+                              <span className="job-panel-age">{formatAge(run.created_at)}</span>
+                            </div>
+                            <div className="job-panel-row-actions">
+                              <button
+                                className="btn ghost small"
+                                onClick={() => onViewResults(run.job_id)}
+                              >
+                                View report
+                              </button>
+                              <button
+                                className="job-panel-delete-btn"
+                                onClick={() => handleDeleteRun(run.job_id)}
+                                title="Clear from Jobs"
+                                aria-label="Clear from Jobs"
+                              >
+                                {xIcon}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Spellcheck-with-zero-issues: register that the run happened
+                    // (so the editor has proof) but skip the Review button and the
+                    // resolved/skipped/pending substep — there's nothing to review.
+                    // Shows a green status dot + "No issues" in line with the success
+                    // color used elsewhere in this panel.
+                    const noItems = run.total === 0;
+                    if (noItems) {
+                      return (
+                        <div key={run.job_id} data-run-id={run.job_id} className={`job-panel-row compact${highlightId === run.job_id ? ' is-highlighted' : ''}`}>
+                          {renderStatus('succeeded')}
+                          <span className="job-panel-name">{run.label}</span>
+                          <span className="job-panel-age">No issues</span>
+                          <span className="job-panel-age">{formatAge(run.created_at)}</span>
+                          <button
+                            className="job-panel-delete-btn"
+                            onClick={() => handleDeleteRun(run.job_id)}
+                            title="Clear from Jobs"
+                            aria-label="Clear from Jobs"
+                          >
+                            {xIcon}
+                          </button>
+                        </div>
+                      );
+                    }
+
+                    const pct = run.total > 0
+                      ? Math.round(((run.resolved + run.skipped) / run.total) * 100)
+                      : 0;
+                    const isDone = run.pending === 0 && run.total > 0;
+                    return (
+                      <div key={run.job_id} data-run-id={run.job_id} className={`job-panel-row${highlightId === run.job_id ? ' is-highlighted' : ''}`}>
+                        <div className="job-panel-row-top">
+                          <div>
+                            <span className="job-panel-name">{run.label}</span>
+                            <span className="job-panel-age">{formatAge(run.created_at)}</span>
+                          </div>
+                          <div className="job-panel-row-actions">
+                            <button
+                              className="btn ghost small"
+                              onClick={() => onViewResults(run.job_id)}
+                            >
+                              {!isDone && run.pending > 0 ? `Resume (${run.pending})` : 'Review'}
+                            </button>
+                            <button
+                              className="job-panel-delete-btn"
+                              onClick={() => handleDeleteRun(run.job_id)}
+                              title="Clear from Jobs"
+                              aria-label="Clear from Jobs"
+                            >
+                              {xIcon}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="job-panel-progress-track">
+                          <div
+                            className="job-panel-progress-fill result"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <p className="job-panel-substep">
+                          {run.resolved} resolved, {run.skipped} skipped, {run.pending} pending
+                        </p>
+                      </div>
+                    );
+                  })}
+                </section>
+              )}
+
+              {/* ── Recent engine jobs ── */}
+              {showRecent && g.recentJobs.length > 0 && (
+                <section className="job-panel-section">
+                  <p className="job-panel-section-label">Recent</p>
+                  {g.recentJobs.map(job => (
+                    <div
+                      key={job.job_id}
+                      className="job-panel-row compact"
+                      title={[
+                        job.preset_id,
+                        job.job_id,
+                        job.finished_at && job.started_at ? `Took ${formatDuration(job.finished_at - job.started_at)}` : null
+                      ].filter(Boolean).join('\n')}
+                    >
+                      {renderStatus(job.state)}
+                      <span className="job-panel-name">{friendlyJobName(job)}</span>
+                      <span className="job-panel-age">{formatAge(job.finished_at || job.created_at)}</span>
+                      <button
+                        className="job-panel-delete-btn"
+                        onClick={() => handleDeleteJob(job.job_id)}
+                        title="Clear from Jobs"
+                        aria-label="Clear from Jobs"
+                      >
+                        {xIcon}
+                      </button>
+                    </div>
+                  ))}
+                </section>
+              )}
+      </React.Fragment>
+    );
+  }
+
   return (
     <div className={`job-panel${open ? ' open' : ''}`} role="dialog" aria-label="Jobs">
       <div className="job-panel-inner" ref={panelRef}>
@@ -613,431 +1087,91 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThr
             })}
           </div>
 
-          {/* Phase 3.5: clearable pill for orphans awaiting LPOS assignment.
-              Component is defined in ExportsPanel.jsx (loaded before App.jsx
-              in index.html, so it's resolvable here as a global). Renders
-              nothing when there's nothing fresh to nudge about. Only on the
-              All tab — the per-category tabs have their own focus. */}
-          {activeTab === 'all' && typeof UnassignedExportsPill !== 'undefined' && (
-            <UnassignedExportsPill onClick={onReviewExports} />
+          {currentProject && (
+            <p className="job-panel-group-label" title={currentProject}>
+              This project · {currentProject}
+            </p>
           )}
 
-          {activeTab === 'all' && cutThroughRun && (
-            <section className="job-panel-section">
-              <div className="job-panel-row active">
-                <div className="job-panel-row-top">
-                  <span className="job-panel-name" title={cutThroughRun.label}>
-                    Cut-through{cutThroughRun.label ? ` · ${cutThroughRun.label}` : ''}
-                  </span>
-                  <div className="job-panel-row-actions">
-                    <span className="job-panel-step-badge">
-                      {cutThroughRun.step}{cutThroughRun.pct != null ? ` ${cutThroughRun.pct}%` : ''}
-                    </span>
-                  </div>
-                </div>
-                {cutThroughRun.pct != null && (
-                  <div className="job-panel-progress-track">
-                    <div className="job-panel-progress-fill" style={{ width: `${cutThroughRun.pct}%` }} />
-                  </div>
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* ── Exports / renders ── */}
-          {showExports && (activeExport || recentExports.some(e => e.export_id !== activeExport?.exportId)) && (
-            <section className="job-panel-section">
-              <p className="job-panel-section-label">Exports</p>
-
-              {/* Several queued batches: tick them and start them back-to-back
-                  with one button. Hidden while an export is in flight (one run
-                  at a time). A single queued batch gets a per-row Start instead. */}
-              {multiQueued && !exportBusy && (
-                <div className="job-panel-chain-bar">
-                  <button
-                    className="btn small"
-                    disabled={selectedQueued.size === 0}
-                    onClick={handleStartChain}
-                    title="Export the selected batches one after another"
-                  >
-                    Start ({selectedQueued.size})
-                  </button>
-                </div>
-              )}
-              {exportBusy && pendingChain.size > 0 && (
-                <p className="job-panel-chain-note">
-                  {pendingChain.size} more up next.
-                </p>
-              )}
-
-              {activeExport && (
-                <RenderingExportRow
-                  headline={activeExport.projectName || 'Export'}
-                  unassigned={false}
-                  state={activeExport.state}
-                  percent={activeExport.percent ?? 0}
-                  uploadPercent={activeExport.uploadPercent ?? 0}
-                  jobs={activeExport.jobs.map(j => {
-                    const m = exportJobMark(j);
-                    return {
-                      id: j.job_id,
-                      name: j.name || 'Untitled timeline',
-                      mark: m.mark,
-                      done: m.done,
-                      error: m.error
-                    };
-                  })}
-                  jobsDone={activeExport.jobsDone}
-                  jobCount={activeExport.jobs.length}
-                  targetDir={activeExport.targetDir}
-                  projectName={activeExport.projectName}
-                  collapsed={collapsedExports.has(activeExport.exportId)}
-                  onToggleCollapse={() => toggleExportCollapsed(activeExport.exportId)}
-                  onStart={handleStartExport}
-                  onStop={handleCancelExport}
-                  onClearQueued={handleCancelExport}
-                />
-              )}
-
-              {recentExports
-                .filter(e => e.export_id !== activeExport?.exportId)
-                .map(e => {
-                  // Orphan = caught from Resolve's render queue, not queued via
-                  // editpanel. Until the editor assigns an LPOS project the row
-                  // stays in this in-between state. The UnassignedExportsPill
-                  // is the visible treatment; rows only carry it in a tooltip.
-                  const isUnassignedOrphan = e.source === 'reconciled' && !e.project_name;
-
-                  // Editpanel-queued batch awaiting a start. With several
-                  // queued batches it gets a checkbox (started via the
-                  // "Start (N)" bar); a lone batch gets a per-row Start. A
-                  // pending member of the running chain shows "Up next".
-                  // (Orphans are never in 'queued' — they're discovered
-                  // already rendering — so this branch is editpanel-queued
-                  // batches only.)
-                  if (e.state === 'queued' && e.source !== 'reconciled') {
-                    const inChain = pendingChain.has(e.export_id);
-                    return (
-                      <RenderingExportRow
-                        key={e.export_id}
-                        headline={exportRowLabel(e)}
-                        unassigned={false}
-                        state="queued"
-                        percent={0}
-                        jobs={(e.jobs || []).map(j => ({
-                          id: String(j.job_id || j.JobId || ''),
-                          name: j.name || j.TimelineName || j.CustomName || 'Untitled timeline',
-                          mark: ''
-                        }))}
-                        jobsDone={0}
-                        jobCount={e.job_count ?? (e.jobs || []).length}
-                        targetDir={e.target_dir}
-                        projectName={e.project_name}
-                        collapsed={!expandedQueued.has(e.export_id)}
-                        onToggleCollapse={() => toggleQueuedCollapsed(e.export_id)}
-                        onStart={exportBusy || multiQueued ? null : () => handleStartOneQueued(e.export_id)}
-                        onClearQueued={exportBusy ? null : () => handleDeleteExportRun(e.export_id)}
-                        selectable={!exportBusy && multiQueued}
-                        selected={selectedQueued.has(e.export_id)}
-                        onToggleSelect={() => toggleQueuedSelected(e.export_id)}
-                        upNext={inChain}
-                      />
-                    );
-                  }
-
-                  // Non-terminal rows (orphan rendering through the reconcile
-                  // tick, post-assignment uploads) get the chunky in-flight
-                  // presentation that mirrors the editpanel-queued activeExport
-                  // row — progress bar, badge, per-timeline breakdown, Stop
-                  // button. Once the row goes terminal it falls back to compact.
-                  if (RENDERING_STATES.has(e.state)) {
-                    // Normalize the jobs_json shape (uppercased keys) into the
-                    // {id, name, mark} contract RenderingExportRow expects.
-                    // Per-job percent inside jobs_json isn't kept fresh by the
-                    // reconciler — only the row-level `percent` is — so we
-                    // synthesise each timeline's mark from the row-level value.
-                    // For the typical single-timeline orphan this is exactly
-                    // what the editor would expect to see.
-                    const rowPct = e.percent ?? 0;
-                    const normalizedJobs = (e.jobs || []).map(j => ({
-                      id: String(j.JobId || j.job_id || ''),
-                      name: j.TimelineName || j.CustomName || j.OutputFilename || j.RenderJobName || j.name || 'Untitled timeline',
-                      mark: e.state === 'uploading'
-                        ? `Uploading ${rowPct}%`
-                        : e.state === 'rendering'
-                        ? `${rowPct}%`
-                        : ''
-                    }));
-                    const headline = exportRowLabel(e);
-                    return (
-                      <RenderingExportRow
-                        key={e.export_id}
-                        headline={headline}
-                        unassigned={isUnassignedOrphan}
-                        state={e.state}
-                        percent={rowPct}
-                        uploadPercent={rowPct}
-                        jobs={normalizedJobs}
-                        jobsDone={e.jobs_done ?? 0}
-                        jobCount={e.job_count ?? normalizedJobs.length}
-                        targetDir={e.target_dir}
-                        projectName={e.project_name}
-                        collapsed={collapsedExports.has(e.export_id)}
-                        onToggleCollapse={() => toggleExportCollapsed(e.export_id)}
-                        onStart={null}
-                        onStop={() => handleStopOrphan(e.export_id)}
-                        onClearQueued={null}
-                      />
-                    );
-                  }
-
-                  // Compact finished row: status dot (+ label when not Done),
-                  // name, age. Timeline count only when partial; duration and
-                  // destination live in the tooltip.
-                  const doneCount  = e.jobs_done ?? 0;
-                  const totalCount = e.job_count ?? 0;
-                  const isPartialCount = totalCount > 0 && doneCount < totalCount;
-                  const statusState = e.state === 'completed' && e.lpos_delivery ? 'delivered' : e.state;
-                  const titleParts = [];
-                  if (e.project_name) titleParts.push(`LPOS: ${e.project_name}`);
-                  if (e.target_dir)   titleParts.push(`Output: ${e.target_dir}`);
-                  if (isUnassignedOrphan) titleParts.push('Unassigned');
-                  if (e.finished_at && e.started_at) titleParts.push(`Took ${formatDuration(e.finished_at - e.started_at)}`);
-                  const rowTitle = titleParts.join('\n') || undefined;
-                  return (
-                    <div
-                      key={e.export_id}
-                      className="job-panel-row compact"
-                      title={rowTitle}
-                    >
-                      {renderStatus(statusState)}
-                      <span className="job-panel-name">{exportRowLabel(e)}</span>
-                      {isPartialCount && (
-                        <span className="job-panel-age">{doneCount}/{totalCount}</span>
-                      )}
-                      <span className="job-panel-age">{formatAge(e.finished_at || e.started_at)}</span>
-                      <button
-                        className="job-panel-delete-btn"
-                        onClick={() => handleDeleteExportRun(e.export_id)}
-                        title="Clear from Jobs"
-                        aria-label="Clear from Jobs"
-                      >
-                        {xIcon}
-                      </button>
-                    </div>
-                  );
-                })}
-            </section>
-          )}
-
-          {/* ── Active jobs ── */}
-          {showRunning && runningJobs.length > 0 && (
-            <section className="job-panel-section">
-              <p className="job-panel-section-label">Running</p>
-              {runningJobs.map(job => {
-                const prog = stepProgress(job);
-                const stepName = friendlyStepName(job.active_step);
-                // Raw ids stay available on hover for debugging.
-                const rawTitle = [job.preset_id, job.job_id, job.active_step?.cmd || job.active_step?.worker]
-                  .filter(Boolean).join('\n');
-                return (
-                  <div key={job.job_id} className="job-panel-row active">
-                    <div className="job-panel-row-top">
-                      <span className="job-panel-name" title={rawTitle}>{friendlyJobName(job)}</span>
-                      <div className="job-panel-row-actions">
-                        {prog && (
-                          <span className="job-panel-step-badge">Step {prog.done} of {prog.total}</span>
-                        )}
-                        <button
-                          className="btn danger small"
-                          onClick={() => handleCancelJob(job.job_id)}
-                          title="Cancel job"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                    {prog && (
-                      <div className="job-panel-progress-track">
-                        <div
-                          className="job-panel-progress-fill"
-                          style={{ width: `${prog.pct}%` }}
-                        />
-                      </div>
-                    )}
-                    {stepName && (
-                      <p className="job-panel-substep">{stepName}…</p>
-                    )}
-                  </div>
-                );
-              })}
-            </section>
-          )}
-
-          {/* ── Result runs ── */}
-          {(showSpellcheck || showComments) && (loadingRuns || filteredRuns.length > 0) && (
-            <section className="job-panel-section">
-              <p className="job-panel-section-label">
-                {activeTab === 'spellcheck' ? 'Spellcheck runs'
-                  : activeTab === 'comments' ? 'Comment pulls'
-                  : 'Results'}
-              </p>
-              {loadingRuns && <p className="job-panel-empty">Loading…</p>}
-              {!loadingRuns && filteredRuns.map(run => {
-                // Phase 5c.8 (2026-06-02): comment_pull runs aren't a per-item
-                // review flow — every item is informational (state stays
-                // 'pending' because nothing's resolved or skipped). Show a
-                // 'View Report' button and a one-line summary instead of
-                // resolved/skipped/pending counts + a progress bar that never
-                // moves.
-                const isCommentPull = run.item_type === 'comment_pull';
-                if (isCommentPull) {
-                  return (
-                    <div key={run.job_id} data-run-id={run.job_id} className={`job-panel-row comment-pull-row${highlightId === run.job_id ? ' is-highlighted' : ''}`}>
-                      <div className="job-panel-row-top">
-                        <div>
-                          <span className="job-panel-name">{run.label}</span>
-                          <span className="job-panel-age">{formatAge(run.created_at)}</span>
-                        </div>
-                        <div className="job-panel-row-actions">
-                          <button
-                            className="btn ghost small"
-                            onClick={() => onViewResults(run.job_id)}
-                          >
-                            View report
-                          </button>
-                          <button
-                            className="job-panel-delete-btn"
-                            onClick={() => handleDeleteRun(run.job_id)}
-                            title="Clear from Jobs"
-                            aria-label="Clear from Jobs"
-                          >
-                            {xIcon}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                }
-
-                // Spellcheck-with-zero-issues: register that the run happened
-                // (so the editor has proof) but skip the Review button and the
-                // resolved/skipped/pending substep — there's nothing to review.
-                // Shows a green status dot + "No issues" in line with the success
-                // color used elsewhere in this panel.
-                const noItems = run.total === 0;
-                if (noItems) {
-                  return (
-                    <div key={run.job_id} data-run-id={run.job_id} className={`job-panel-row compact${highlightId === run.job_id ? ' is-highlighted' : ''}`}>
-                      {renderStatus('succeeded')}
-                      <span className="job-panel-name">{run.label}</span>
-                      <span className="job-panel-age">No issues</span>
-                      <span className="job-panel-age">{formatAge(run.created_at)}</span>
-                      <button
-                        className="job-panel-delete-btn"
-                        onClick={() => handleDeleteRun(run.job_id)}
-                        title="Clear from Jobs"
-                        aria-label="Clear from Jobs"
-                      >
-                        {xIcon}
-                      </button>
-                    </div>
-                  );
-                }
-
-                const pct = run.total > 0
-                  ? Math.round(((run.resolved + run.skipped) / run.total) * 100)
-                  : 0;
-                const isDone = run.pending === 0 && run.total > 0;
-                return (
-                  <div key={run.job_id} data-run-id={run.job_id} className={`job-panel-row${highlightId === run.job_id ? ' is-highlighted' : ''}`}>
-                    <div className="job-panel-row-top">
-                      <div>
-                        <span className="job-panel-name">{run.label}</span>
-                        <span className="job-panel-age">{formatAge(run.created_at)}</span>
-                      </div>
-                      <div className="job-panel-row-actions">
-                        <button
-                          className="btn ghost small"
-                          onClick={() => onViewResults(run.job_id)}
-                        >
-                          {!isDone && run.pending > 0 ? `Resume (${run.pending})` : 'Review'}
-                        </button>
-                        <button
-                          className="job-panel-delete-btn"
-                          onClick={() => handleDeleteRun(run.job_id)}
-                          title="Clear from Jobs"
-                          aria-label="Clear from Jobs"
-                        >
-                          {xIcon}
-                        </button>
-                      </div>
-                    </div>
-                    <div className="job-panel-progress-track">
-                      <div
-                        className="job-panel-progress-fill result"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                    <p className="job-panel-substep">
-                      {run.resolved} resolved, {run.skipped} skipped, {run.pending} pending
-                    </p>
-                  </div>
-                );
-              })}
-            </section>
-          )}
-
-          {/* ── Recent engine jobs ── */}
-          {showRecent && recentJobs.length > 0 && (
-            <section className="job-panel-section">
-              <p className="job-panel-section-label">Recent</p>
-              {recentJobs.map(job => (
-                <div
-                  key={job.job_id}
-                  className="job-panel-row compact"
-                  title={[
-                    job.preset_id,
-                    job.job_id,
-                    job.finished_at && job.started_at ? `Took ${formatDuration(job.finished_at - job.started_at)}` : null
-                  ].filter(Boolean).join('\n')}
-                >
-                  {renderStatus(job.state)}
-                  <span className="job-panel-name">{friendlyJobName(job)}</span>
-                  <span className="job-panel-age">{formatAge(job.finished_at || job.created_at)}</span>
-                  <button
-                    className="job-panel-delete-btn"
-                    onClick={() => handleDeleteJob(job.job_id)}
-                    title="Clear from Jobs"
-                    aria-label="Clear from Jobs"
-                  >
-                    {xIcon}
-                  </button>
-                </div>
-              ))}
-            </section>
-          )}
+          {renderGroup(here)}
 
           {tabCounts[activeTab] === 0 && !loadingRuns && !(activeTab === 'all' && cutThroughRun) && (
             <p className="job-panel-empty">
-              {activeTab === 'all'        ? 'No jobs yet.'
-                : activeTab === 'exports'   ? 'No exports yet.'
+              {currentProject ? 'Nothing for this project yet.'
+                : activeTab === 'all'        ? 'No jobs yet.'
+                : activeTab === 'exports'    ? 'No exports yet.'
                 : activeTab === 'spellcheck' ? 'No spellcheck runs yet.'
                 : activeTab === 'comments'   ? 'No comment pulls yet.'
                 : 'Nothing here.'}
             </p>
           )}
 
+          {/* ── Other machines (live, from LPOS) ── */}
+          {activeTab === 'all' && peersSorted.length > 0 && (
+            <section className="job-panel-section job-panel-peers" data-section="peers">
+              <p className="job-panel-group-label">Other machines</p>
+              {peersSorted.map(p => {
+                const sameProject = Boolean(currentProject) && p.resolveProject === currentProject;
+                const jobs = p.activeJobs || [];
+                return (
+                  <div key={p.instanceId} className={`job-panel-peer${sameProject ? ' is-same-project' : ''}`}>
+                    <div className="job-panel-peer-head">
+                      <span className={`status-dot ${jobs.length > 0 ? 'is-pending' : 'is-done'}`} />
+                      <span className="job-panel-name" title={p.instanceId}>{p.displayName}</span>
+                      <span className="job-panel-age" title={p.resolveTimeline || undefined}>
+                        {sameProject ? 'Same project'
+                          : p.resolveProject ? p.resolveProject
+                          : p.resolveConnected ? 'No project' : 'Resolve offline'}
+                      </span>
+                    </div>
+                    {jobs.map((j, i) => (
+                      <div key={i} className="job-panel-peer-job">
+                        <span className="job-panel-export-job-name" title={j.resolveProject || undefined}>{j.label || 'Job'}</span>
+                        <span className="job-panel-export-job-mark">
+                          {j.state === 'uploading' ? 'Uploading' : j.state === 'queued' ? 'Queued' : j.kind === 'export' ? 'Exporting' : 'Running'}
+                          {j.percent != null ? ` ${j.percent}%` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </section>
+          )}
+
+          {/* ── Other projects (collapsed history) ── */}
+          {otherCount > 0 && (
+            <section className="job-panel-section job-panel-other">
+              <button
+                type="button"
+                className="job-panel-other-toggle"
+                onClick={() => setOtherOpen(v => !v)}
+                aria-expanded={otherOpen}
+              >
+                <span className={`job-panel-collapse-btn${otherOpen ? ' open' : ''}`} aria-hidden="true">{CHEVRON_ICON}</span>
+                <span className="job-panel-group-label">Other projects</span>
+                <span className="job-panel-tab-count">{otherCount > 99 ? '99+' : otherCount}</span>
+              </button>
+              {otherOpen && otherGroups.filter(g => groupCount(g, activeTab) > 0).map(g => (
+                <div key={g.name || '__none'} className="job-panel-other-group">
+                  <p className="job-panel-section-label">{g.name || 'Unknown project'}</p>
+                  {renderGroup(g)}
+                </div>
+              ))}
+            </section>
+          )}
+
+
         </div>
 
-        {(tabCounts[activeTab] > 0 || (activeTab === 'exports' && onReviewExports)) && (
+        {(tabCounts[activeTab] > 0 || otherCount > 0 || (activeTab === 'exports' && onReviewExports)) && (
           <footer className="job-panel-footer">
             {activeTab === 'exports' && onReviewExports && (
               <button className="job-panel-clear-old-btn" onClick={() => onReviewExports('all')}>
                 See all exports
               </button>
             )}
-            {tabCounts[activeTab] > 0 && (
+            {(tabCounts[activeTab] > 0 || otherCount > 0) && (
             <button
               className="job-panel-clear-old-btn"
               onClick={handleClearAll}

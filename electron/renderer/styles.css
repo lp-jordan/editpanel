@@ -5030,3 +5030,110 @@ button.status-bar-chip-btn:disabled {
   .ci-file { grid-template-columns: 10px minmax(0, 1fr) 70px; }
   .ci-file-state { grid-column: 2 / -1; }
 }
+
+/* ─── Jobs drawer: This project / Other machines / Other projects ─── */
+.job-panel-group-label {
+  margin: 4px 0 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text);
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-panel-peer {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.job-panel-peer.is-same-project {
+  border-color: var(--accent-soft);
+}
+
+.job-panel-peer.is-same-project .job-panel-age {
+  color: var(--accent-strong);
+}
+
+.job-panel-peer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.job-panel-peer-head .job-panel-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.job-panel-peer-job {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  padding-left: 16px;
+}
+
+.job-panel-other-toggle {
+  appearance: none;
+  border: none;
+  background: none;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.job-panel-other-toggle .job-panel-group-label {
+  margin: 0;
+  color: var(--muted);
+}
+
+.job-panel-other-toggle:hover .job-panel-group-label {
+  color: var(--text);
+}
+
+.job-panel-other-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* Status bar: other machines busy */
+.status-bar-peers-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ─── Exports page: This project / All projects ─── */
+.exports-scope {
+  display: inline-flex;
+  gap: 4px;
+  margin-right: 8px;
+}
+
+.exports-project-head {
+  margin: 10px 0 2px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 0 4px;
+}
+
+.exports-project-head:first-child {
+  margin-top: 0;
+}

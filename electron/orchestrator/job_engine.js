@@ -54,6 +54,9 @@ class JobEngine {
   constructor(options) {
     this.sendStepRequest = options.sendStepRequest;
     this.forceKillWorker = options.forceKillWorker;
+    // Resolve project open when a job is submitted — stamped on the job so the
+    // Jobs drawer can file it under "This project" vs "Other projects".
+    this.getProject = typeof options.getProject === 'function' ? options.getProject : () => null;
     this.persistence = createPersistence(options.persistencePath);
     this.stepCache = new StepCacheStore(options.stepCachePath || path.join(path.dirname(options.persistencePath), 'step-cache.json'));
     this.emitter = new EventEmitter();
@@ -172,6 +175,7 @@ class JobEngine {
     const job = {
       job_id: plan.job_id || randomUUID(),
       preset_id: plan.preset_id || null,
+      resolve_project: plan.resolve_project || this.getProject() || null,
       idempotency_key: plan.idempotency_key || null,
       dependencies: Array.isArray(plan.dependencies) ? plan.dependencies : [],
       retry_policy: plan.retry_policy || { max_attempts: 1, backoff_ms: 0 },

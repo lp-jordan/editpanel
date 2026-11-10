@@ -1044,6 +1044,91 @@ function broadcastExport(channel, payload) {
   BrowserWindow.getAllWindows().forEach(w => w.webContents.send(channel, payload));
 }
 
+// ── Other machines (Jobs drawer) ─────────────────────────────────────────
+// Live work on THIS machine, sent with every heartbeat so other editpanels
+// can show it. Kept short: in-flight exports/uploads, running engine jobs,
+// and a running Cut-through step. Finished work is never sent.
+const PEER_JOB_NAMES = {
+  lp_base_export_round1: 'Queue exports',
+  prepare_project:       'Project setup'
+};
+const CUT_THROUGH_STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check', 'compare'];
+
+function exportRunLabel(row, jobs) {
+  const first = (jobs && jobs[0]) || {};
+  const tl = first.name || first.TimelineName || first.CustomName || first.OutputFilename || '';
+  const count = (jobs || []).length;
+  const base = tl || row?.projectName || row?.project_name || 'Export';
+  return count > 1 ? `${base} +${count - 1}` : base;
+}
+
+function collectActiveJobs(engineJobs) {
+  const out = [];
+  if (activeExport && activeExport.state !== 'queued') {
+    out.push({
+      kind: activeExport.state === 'uploading' ? 'upload' : 'export',
+      label: exportRunLabel(activeExport, activeExport.jobs),
+      state: activeExport.state,
+      percent: activeExport.state === 'uploading'
+        ? (activeExport.uploadPercent ?? 0)
+        : (activeExport.percent ?? 0),
+      resolve_project: (activeExport.jobs || []).map(j => j?.resolveProjectName).find(Boolean) || resolveProject || null
+    });
+  }
+  if (jobsDb) {
+    try {
+      const rows = jobsDb.listExportRuns({ state: ['rendering', 'uploading'], limit: 10 });
+      for (const r of rows) {
+        if (activeExport && r.export_id === activeExport.exportId) continue;
+        out.push({
+          kind: r.state === 'uploading' ? 'upload' : 'export',
+          label: exportRunLabel(r, r.jobs),
+          state: r.state,
+          percent: r.percent ?? 0,
+          resolve_project: (r.jobs || []).map(j => j?.resolveProjectName).find(Boolean) || null
+        });
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+  for (const j of (engineJobs || []).filter(j => j.state === 'running')) {
+    const total = j.steps_total ?? 0;
+    out.push({
+      kind: 'job',
+      label: PEER_JOB_NAMES[j.preset_id] || 'Job',
+      state: 'running',
+      percent: total > 0 ? Math.round(((j.steps_done ?? 0) / total) * 100) : null,
+      resolve_project: resolveProject || null
+    });
+  }
+  if (cutThrough) {
+    try {
+      const ct = cutThrough.snapshot();
+      const key = CUT_THROUGH_STEP_KEYS.find(k => ct?.steps?.[k]?.status === 'running');
+      if (key) {
+        const p = ct.steps[key].progress || {};
+        const pct = p.bar ?? p.overall ?? null;
+        out.push({
+          kind: 'cut_through',
+          label: `Cut-through · ${key[0].toUpperCase()}${key.slice(1)}${ct.label ? ` · ${ct.label}` : ''}`,
+          state: 'running',
+          percent: pct == null ? null : Math.round(pct),
+          resolve_project: resolveProject || null
+        });
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+  return out.slice(0, 20);
+}
+
+// Other online machines, as last pulled from LPOS. Broadcast only on change.
+let peers = [];
+function setPeers(next) {
+  const list = Array.isArray(next) ? next : [];
+  if (JSON.stringify(list) === JSON.stringify(peers)) return;
+  peers = list;
+  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('ep-peers', peers));
+}
+
 function exportSnapshot() {
   if (!activeExport) return null;
   // chainPending lets the renderer badge the queued batches that will run after
@@ -2518,6 +2603,7 @@ app.whenReady().then(() => {
 
   jobEngine = new JobEngine({
     sendStepRequest: payload => sendWorkerRequest(payload),
+    getProject: () => resolveProject || null,
     forceKillWorker: (worker, reason) => {
       if (worker === WORKERS.media) {
         restartMediaWorker(reason);
@@ -2607,13 +2693,18 @@ app.whenReady().then(() => {
     handleEpLinkCallback(url);
   }
 
-  // 10-second heartbeat — pushes current machine state to LPOS.
-  // Failures are intentionally silent; LPOS marks us offline after 30s.
+  // 10-second heartbeat — pushes current machine state (incl. live jobs) to
+  // LPOS, then pulls the other online machines for the Jobs drawer's "Other
+  // machines" section. Failures are intentionally silent; LPOS marks us
+  // offline after 30s.
   lposHeartbeatTimer = setInterval(async () => {
-    if (!lposClient || !lposClient.isConfigured()) return;
+    if (!lposClient || !lposClient.isConfigured()) {
+      setPeers([]);
+      return;
+    }
+    const prefs = controlPlane ? controlPlane.getPreferences() : {};
+    const instanceId = os.hostname();
     try {
-      const prefs = controlPlane ? controlPlane.getPreferences() : {};
-      const instanceId = os.hostname();
       const jobs = jobEngine ? jobEngine.listJobs() : [];
       await lposClient.pushStatus({
         instance_id: instanceId,
@@ -2622,10 +2713,19 @@ app.whenReady().then(() => {
         resolve_project: resolveProject || null,
         resolve_timeline: resolveTimeline || null,
         jobs_queued: jobs.filter(j => j.state === 'queued').length,
-        jobs_running: jobs.filter(j => j.state === 'running').length
+        jobs_running: jobs.filter(j => j.state === 'running').length,
+        active_jobs: collectActiveJobs(jobs)
       });
     } catch (_err) {
       // silent — transient network failures are expected
+    }
+    try {
+      const res = await lposClient.getPeers();
+      const list = Array.isArray(res?.peers) ? res.peers : [];
+      setPeers(list.filter(p => p && p.instanceId !== instanceId));
+    } catch (_err) {
+      // Older LPOS without /api/ep/peers, or offline: show no other machines.
+      setPeers([]);
     }
   }, 10_000);
 
@@ -2654,6 +2754,7 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('jobs:list', async () => ({ ok: true, data: jobEngine.listJobs() }));
+  ipcMain.handle('peers:list', async () => ({ ok: true, data: peers }));
   ipcMain.handle('dashboard:snapshot', async () => ({ ok: true, data: controlPlane.buildDashboard() }));
   ipcMain.handle('jobs:get', async (_, jobId) => ({ ok: true, data: jobEngine.getJob(jobId) }));
   // Manual reconnect: tear down the resolve worker so the restart logic
@@ -3350,7 +3451,9 @@ app.whenReady().then(() => {
                       || (Array.isArray(r.assetErrors) && r.assetErrors.length > 0)
                       || r.error)
             .map(r => ({ key: r.timelineUid, data: { kind: 'timeline', ...r } }));
-          jobsDb.initRun(jobId, 'comment_pull', label, [summaryItem, ...timelineItems], { projectName: projectLabel });
+          // project_name = the Resolve project the pull ran in, so the Jobs
+          // drawer can file it under "This project" (the label keeps the LPOS side).
+          jobsDb.initRun(jobId, 'comment_pull', label, [summaryItem, ...timelineItems], { projectName: resolveProjectName || resolveProject || projectLabel });
         } catch (_) { /* non-fatal */ }
       }
 

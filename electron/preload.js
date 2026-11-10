@@ -287,6 +287,18 @@ contextBridge.exposeInMainWorld('cardIngestAPI', {
   }
 });
 
+// Other online editpanel machines (pulled from LPOS with each heartbeat).
+contextBridge.exposeInMainWorld('peersAPI', {
+  list() {
+    return ipcRenderer.invoke('peers:list');
+  },
+  onChange(callback) {
+    const handler = (_event, peers) => callback(peers);
+    ipcRenderer.on('ep-peers', handler);
+    return () => ipcRenderer.removeListener('ep-peers', handler);
+  }
+});
+
 contextBridge.exposeInMainWorld('resultsAPI', {
   init(jobId, itemType, label, items, scope = {}) {
     return ipcRenderer.invoke('results:init', jobId, itemType, label, items, scope);

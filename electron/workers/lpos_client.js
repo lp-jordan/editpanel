@@ -143,9 +143,18 @@ class LposClient {
    * @param {string|null} [payload.resolve_timeline]
    * @param {number} [payload.jobs_queued]
    * @param {number} [payload.jobs_running]
+   * @param {Array<{kind,label,state,percent,resolve_project}>} [payload.active_jobs]
    */
   async pushStatus(payload) {
     return this._request('POST', '/api/ep/status', { body: payload });
+  }
+
+  /**
+   * Online EditPanel instances (including this one) with their open Resolve
+   * project and live jobs. Returns { peers: [...] }.
+   */
+  async getPeers() {
+    return this._request('GET', '/api/ep/peers');
   }
 
   /** List all LPOS projects. */

@@ -228,10 +228,20 @@ function App() {
   // so the panel lands on THAT task rather than whichever tab was last open.
   // The status-bar Jobs button still toggles without changing the tab.
   const [jobPanelFocus, setJobPanelFocus] = React.useState(null);
-  const openJobsTo = React.useCallback((tab, highlightId = null) => {
-    setJobPanelFocus({ tab, highlightId, n: Date.now() });
+  const openJobsTo = React.useCallback((tab, highlightId = null, section = null) => {
+    setJobPanelFocus({ tab, highlightId, section, n: Date.now() });
     setJobPanelOpen(true);
   }, []);
+
+  // Other online editpanel machines (from LPOS, refreshed with each heartbeat).
+  const [peers, setPeers] = React.useState([]);
+  React.useEffect(() => {
+    const api = window.peersAPI;
+    if (!api) return undefined;
+    api.list().then(res => setPeers(res?.data ?? [])).catch(() => {});
+    return api.onChange(list => setPeers(Array.isArray(list) ? list : []));
+  }, []);
+  const busyPeers = peers.filter(p => (p.activeJobs || []).length > 0);
 
   const dismissToast = React.useCallback(() => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -1105,8 +1115,19 @@ function App() {
             {lposStatus === 'unconfigured' && <span className="status-bar-chip">{lposUrl ? 'Connecting…' : 'Not configured'}</span>}
           </div>
 
-          {/* Right: Feedback + Console toggles */}
+          {/* Right: other busy machines, Feedback + Console toggles */}
           <div className="status-bar-right">
+            {busyPeers.length > 0 && (
+              <button
+                type="button"
+                className="status-bar-console-btn status-bar-peers-btn"
+                onClick={() => openJobsTo('all', null, 'peers')}
+                title={busyPeers.map(p => `${p.displayName}${p.resolveProject ? ` · ${p.resolveProject}` : ''}`).join('\n')}
+              >
+                <span className="status-bar-spinner" />
+                {busyPeers.length} busy
+              </button>
+            )}
             <button
               type="button"
               className="status-bar-console-btn status-bar-feedback-btn"
@@ -1167,7 +1188,7 @@ function App() {
               to browse every render (editpanel-queued + reconciled orphans).
               focusToken lets the Jobs-tab pill (above) snap the panel open +
               filter to Unassigned in one motion. */}
-          {route === '/deliver' && <ExportsPanel focusToken={exportsFocusToken} focusFilter={exportsFocusFilter} />}
+          {route === '/deliver' && <ExportsPanel focusToken={exportsFocusToken} focusFilter={exportsFocusFilter} resolveProject={project} />}
         </main>
       </div>
     );
@@ -1480,6 +1501,8 @@ function App() {
         activeExport={activeExport}
         cutThroughRun={cutThroughRun}
         exportVersion={exportVersion}
+        resolveProject={project}
+        peers={peers}
         onViewResults={(runId) => {
           setJobPanelOpen(false);
           setActiveResultJobId(runId);
