@@ -105,14 +105,11 @@ function slateOffset(day, notes) {
 function notesFrom(day, notes, firstCode) {
   const want = String(firstCode || '').trim().toLowerCase();
   if (!want) return null;
-  // a shoot day = one slate tab (untabbed notes together), split again where the time of day
-  // jumps backwards (several days in one tab, or no tabs at all)
-  const byTab = new Map();
-  for (const n of notes || []) {
-    const tab = n.tabId || '';
-    if (!byTab.has(tab)) byTab.set(tab, []);
-    byTab.get(tab).push(n);
-  }
+  // a shoot day = one slate tab plus the untabbed rows (LPOS's ATEM rows never carry a tab),
+  // split again where the time of day jumps backwards (several days in one tab, or no tabs)
+  const all = notes || [];
+  const tabs = [...new Set(all.map((n) => n.tabId).filter(Boolean))];
+  const byTab = new Map(tabs.length ? tabs.map((t) => [t, all.filter((n) => !n.tabId || n.tabId === t)]) : [['', all]]);
   const runs = [];
   for (const list of byTab.values()) {
     let last = null;
