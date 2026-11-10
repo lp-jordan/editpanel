@@ -120,41 +120,69 @@ def camera_audio_refs(resources: str) -> dict:
 
 
 def fold_camera_audio(media_xml: str, cam_refs: dict):
-    """Put a camera's own audio back INSIDE its picture clip (<video><audio lane="-1" …/></video>,
+    """Put a camera's own audio back INSIDE the picture clips (<video><audio lane="-1" …/></video>,
     the layout Resolve exports when the audio isn't on its own track). Imported as a separate clip
     of an audio-only asset, Resolve made an EMPTY compound clip of it and the copy's A1 was silent
-    (Bill Smith mc_1, 2026-11-05, twice). Only folds when the audio lines up with the picture clip
-    (same file, same place, same length). Returns (media xml, set of folded audio asset ids)."""
+    (Bill Smith mc_1, 2026-11-05, twice; Elevate ELEVATE_MC_3, 2026-11-10).
+    The sound doesn't have to line up with its picture: Elevate's sat 4 frames later than the
+    picture (a sync nudge), and the 4K MXF covered most of CAM 1 01's picture. So each sound piece
+    is cut at the picture clips it overlaps and each part rides inside that picture clip at the
+    same place and source time (still pointing at the sound's own file). Sound over a gap in the
+    picture (the slide's last few frames past a recording's end) is dropped. Returns (media xml,
+    set of audio asset ids no longer used)."""
     if not cam_refs:
         return media_xml, set()
     root = ET.fromstring(media_xml)
-    folded = set()
+    used_by_unfolded, touched = set(), set()
     for ang in root.iter("mc-angle"):
-        kids = [el for el in ang if "offset" in el.attrib]
-        for el in kids:
+        run, end, items = 0, Fraction(0), []           # (run no., element), like split_off_angle_tracks
+        for el in list(ang):
+            if "offset" not in el.attrib:
+                continue
+            o = secs(el.get("offset"))
+            if o < end:
+                run += 1
+            end = o + secs(el.get("duration", "0s"))
+            items.append((run, el))
+        pics = [el for _, el in items if el.find("video") is not None]
+        angle_pic_refs = {p.find("video").get("ref") for p in pics}
+        for k, (rn, el) in enumerate(items):
             aud = next((x for x in el.iter("audio") if x.get("ref") in cam_refs), None)
-            if aud is None or el.find("video") is not None or any(el.get("ref") in v for v in cam_refs.values()):
+            if aud is None or el.find("video") is not None:
                 continue
-            pic_refs = cam_refs[aud.get("ref")]
-            pic = next((p for p in kids if p is not el and p.find("video") is not None
-                        and p.find("video").get("ref") in pic_refs
-                        and abs(secs(p.get("offset")) - secs(el.get("offset"))) < FD
-                        and abs(secs(p.get("duration")) - secs(el.get("duration"))) < FD), None)
-            if pic is None:
+            refs = cam_refs[aud.get("ref")]
+            file_ref = next(iter(sorted(refs & angle_pic_refs) or sorted(refs)))   # picture asset of the SAME file
+            a0 = secs(el.get("offset"))
+            a1 = a0 + secs(el.get("duration"))
+            src0 = secs(aud.get("start")) + (secs(el.get("start", "0s")) - secs(aud.get("offset", aud.get("start"))))
+            parts = 0
+            for p in pics:
+                p0 = secs(p.get("offset"))
+                p1 = p0 + secs(p.get("duration"))
+                lo, hi = max(a0, p0), min(a1, p1)
+                if hi - lo < FD:                        # under a frame of overlap: nothing to carry
+                    continue
+                lo = p0 if abs(lo - p0) < FD else lo    # within a frame of the picture's edges = the edges
+                hi = p1 if abs(hi - p1) < FD else hi
+                vid = p.find("video")
+                local = secs(vid.get("offset")) + (lo - p0)   # the picture clip's own time at `lo`
+                src = src0 + (lo - a0)
+                if vid.get("ref") in refs:              # same file as this picture: within a frame of the
+                    pic_src = secs(vid.get("start")) + (lo - p0)   # picture's own time = that time (sample-
+                    src = pic_src if abs(src - pic_src) < FD else src  # rounded audio times otherwise)
+                ET.SubElement(vid, "audio", {"lane": "-1", "srcCh": aud.get("srcCh") or "1",
+                                             "offset": fmt_s(local), "start": fmt_s(src),
+                                             "duration": fmt_s(hi - lo), "ref": file_ref})
+                parts += 1
+            if not parts:
+                used_by_unfolded.add(aud.get("ref"))
                 continue
-            vid = pic.find("video")
-            if any(x.tag == "audio" for x in vid):
-                continue
-            attrs_ = {k: vid.get(k) for k in ("offset", "duration", "start")}
-            ET.SubElement(vid, "audio", {"lane": "-1", "srcCh": aud.get("srcCh") or "1", **attrs_, "ref": vid.get("ref")})
-            # the audio's own run (a gap up to it, then the clip) goes; the picture's run stays
-            run = list(ang)
-            k = run.index(el)
-            if k > 0 and run[k - 1].tag == "gap" and run.index(pic) < k - 1:
-                ang.remove(run[k - 1])
+            # the sound's own run (a gap up to it, then the clip) goes; the picture's run stays
+            if rn and k > 0 and items[k - 1][0] == rn and items[k - 1][1].tag == "gap":
+                ang.remove(items[k - 1][1])
             ang.remove(el)
-            folded.add(aud.get("ref"))
-    return ET.tostring(root, encoding="unicode"), folded
+            touched.add(aud.get("ref"))
+    return ET.tostring(root, encoding="unicode"), touched - used_by_unfolded
 
 
 def split_off_angle_tracks(media_xml: str, remove: bool = True, keep_refs: set = frozenset()):
