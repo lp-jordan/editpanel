@@ -65,7 +65,7 @@ CUES = [("sorry",), ("let", "me", "start"), ("start", "over"), ("one", "more", "
         ("one", "two", "three"), ("1", "2", "3"), ("take", "two")]
 
 
-def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24):
+def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24, allowed=None):
     """Claude's shots → the final angles, all at once (2026-11-05). Hard rule: the angle changes at
     every removal join. Flipping only the piece after a join made ping-pong — a 2 s shot of the other
     angle, the splice, straight back: 3–4 cuts in a few seconds. Instead: the cheapest assignment,
@@ -96,14 +96,21 @@ def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24):
 
     # layer[i]: {(angle, start of the current shot if it is still short): (cost, previous key)}
     layer = [{} for _ in range(n)]
+    # allowed(i, angle): an angle this piece can't use (a slider that isn't moving then); a piece
+    # left with no angle at all ignores it rather than break the no-jump-cut rule
+    ok = lambda i, g: allowed is None or allowed(i, g)
     for g in angles:
-        layer[0][(g, run_key(pieces[0]["from"], pieces[0]["to"]))] = (dev(0, g), None)
+        if ok(0, g) or not any(ok(0, x) for x in angles):
+            layer[0][(g, run_key(pieces[0]["from"], pieces[0]["to"]))] = (dev(0, g), None)
     for i in range(1, n):
         p, prev_to = pieces[i], pieces[i - 1]["to"]
+        free = not any(ok(i, x) for x in angles)
         for (g, r), (c, _) in layer[i - 1].items():
             for h in angles:
                 if h == g and p["join"]:
                     continue                                   # never the same angle across a removal
+                if not free and not ok(i, h):
+                    continue
                 if h == g:
                     key, cc = (h, run_key(r, p["to"])), c
                 else:
@@ -154,6 +161,16 @@ def main(argv) -> None:
     cuts = [tuple(map(int, v.split("-"))) for k, v in opts if k == "cut"]
     trims = [tuple(map(int, v.split("-"))) for k, v in opts if k == "trim"]
     keeps = [tuple(map(int, v.split("-"))) for k, v in opts if k == "keep"]
+    # motion=<file>: when each slider angle is actually moving (EditPanel, on trial 2026-11-10):
+    # a slider shot only inside a moving stretch, never on the stop / reset before it reverses
+    motion = {}
+    if o.get("motion") and os.path.isfile(o["motion"]):
+        motion = {a: [tuple(x) for x in (v or {}).get("moving") or []]
+                  for a, v in json.load(open(o["motion"], encoding="utf-8")).items() if a in angles}
+
+    def moving_ok(angle, a, b):
+        win = motion.get(angle)
+        return win is None or any(x - 2 <= a and b <= y + 2 for x, y in win)
 
     # one talker (solo), or — with Claude's edit — a conversation: every mic is a person (angle N =
     # the person on camera N, Jordan's rule) and everyone's words count
@@ -522,6 +539,38 @@ def main(argv) -> None:
                 cur = x["angle"]
             return cur
 
+        def breath(lo, hi, late=False):
+            """A cut point in (lo, hi): the middle of a gap between kept words (≥ 3 fr)."""
+            gaps = [(q["e"] + w["s"]) / 2 for q, w in zip(W, W[1:])
+                    if w["s"] - q["e"] >= 3 and lo < (q["e"] + w["s"]) / 2 < hi and not removed(int(w["s"]))]
+            return int(gaps[-1] if late else gaps[0]) if gaps else None
+
+        def slider_split(shots, hold):
+            """Claude's slider shot that runs past a moving stretch keeps the longest stretch inside
+            it (cut at a breath) and gives the rest to the close-up (the slider's usual way in / out)."""
+            out = []
+            for sh in shots:
+                g = sh["angle"]
+                if moving_ok(g, sh["from"], sh["to"]):
+                    out.append(sh)
+                    continue
+                alt = punch if punch not in (g, None) else wide
+                best = max(((max(x, sh["from"]), min(y, sh["to"])) for x, y in motion[g]),
+                           key=lambda r: r[1] - r[0], default=None)
+                a = b = None
+                if best and best[1] - best[0] >= hold:
+                    a = sh["from"] if best[0] <= sh["from"] + 2 else breath(best[0], best[0] + hold)
+                    b = sh["to"] if best[1] >= sh["to"] - 2 else breath(best[1] - hold, best[1], late=True)
+                if a is None or b is None or b - a < hold:
+                    out.append({**sh, "angle": alt, "kind": "slider"})
+                    continue
+                if a > sh["from"]:
+                    out.append({**sh, "to": a, "angle": alt, "kind": "slider"})
+                out.append({**sh, "from": a, "to": b, "join": sh["join"] and a == sh["from"]})
+                if b < sh["to"]:
+                    out.append({**sh, "from": b, "join": False, "angle": alt, "kind": "slider"})
+            return out
+
         shots = []
         for si, (a, b) in enumerate(kept):
             cuts = [a] + [x["at"] for x in marks if a < x["at"] < b]
@@ -537,7 +586,10 @@ def main(argv) -> None:
             hold = 40 if multi else (72 if (given or {}).get("delivery") == "stage" else 48)
             prefer = [wide, punch] + [e for e in extra if e not in (wide, punch)]
             prefer += [a for a in sorted(known, key=cam_no) if a not in prefer]
-            shots = fit_angles(shots, [a for a in prefer if a in known], hold=hold)
+            if motion:
+                shots = slider_split(shots, hold)
+            shots = fit_angles(shots, [a for a in prefer if a in known], hold=hold,
+                               allowed=(lambda i, g: moving_ok(g, shots[i]["from"], shots[i]["to"])) if motion else None)
 
             def cut_between(lo, hi):
                 """A picture cut in (lo, hi): the first breath before a word (≥ 3 fr gap), else any word."""
@@ -642,8 +694,28 @@ def main(argv) -> None:
         for x, y in zip(shots, shots[1:]):
             if y["angle"] == x["angle"] and punch != wide:
                 y["angle"], y["kind"] = (punch, "punch") if x["angle"] == wide else (wide, "wide")
+    if motion and len(shots) > 1:
+        # last guard: a slider shot outside a moving stretch takes another angle (close-up first)
+        for k, sh in enumerate(shots):
+            if moving_ok(sh["angle"], sh["from"], sh["to"]):
+                continue
+            prev = shots[k - 1] if k else None
+            nxt = shots[k + 1] if k + 1 < len(shots) else None
+            cands = [a for a in [punch, wide] + sorted(angles, key=cam_no) if a not in motion]
+            clash = lambda a, strict: ((prev and a == prev["angle"] and (strict or sh["join"])) or
+                                       (nxt and a == nxt["angle"] and (strict or nxt["join"])))
+            pick = next((a for a in cands if not clash(a, True)), None) or next((a for a in cands if not clash(a, False)), None)
+            if pick:
+                sh.update(angle=pick, kind="slider")
+        joined = []
+        for sh in shots:
+            if joined and not sh["join"] and joined[-1]["angle"] == sh["angle"]:
+                joined[-1]["to"] = sh["to"]
+            else:
+                joined.append(sh)
+        shots = joined
     why = {"wide": "wide", "punch": "punch-in", "extra": "insert", "claude": "claude shot",
-           "forced": "angle changed around a removal"}
+           "forced": "angle changed around a removal", "slider": "slider not moving here"}
     video = [{"in": s["from"], "out": s["to"], "angle": s["angle"],
               "why": why[s["kind"]] + (" (after a removal)" if s["join"] else "")} for s in shots]
     if not claude_shots:

@@ -57,6 +57,9 @@ const ANGLE_HABITS = {
   other: 'another angle — use only where it clearly helps'
 };
 
+// the slider's moving stretches are read from its video (on trial 2026-11-10); the placer enforces them
+const SLIDER_MOVING = '; only usable while it is moving — the program keeps your slider shots to its moving stretches (a few seconds each) and gives the rest to the close-up, so keep slider shots short';
+
 function buildSchema(angles) {
   return {
   type: 'object',
@@ -358,7 +361,7 @@ function makeClient(apiKey) {
  * same video again. Throws on an empty or too-long range.
  */
 function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model, effort, delivery = 'scripted', roles = {}, direction = '',
-  talker: only = null, energy: useEnergy = true }) {
+  talker: only = null, energy: useEnergy = true, sliderMoving = false }) {
   const words = JSON.parse(fs.readFileSync(wordsPath, 'utf8'));
   const day = JSON.parse(fs.readFileSync(dayPath, 'utf8'));
   const frameSec = day.frame_sec[0] / day.frame_sec[1];
@@ -380,7 +383,7 @@ function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model,
   const punch = roles.punch || angles.find((a) => a !== wide) || wide;
   const slider = roles.slider || [];
   const side = roles.side || [];
-  const insert = (a) => (slider.includes(a) ? ANGLE_HABITS.slider : side.includes(a) ? ANGLE_HABITS.side
+  const insert = (a) => (slider.includes(a) ? ANGLE_HABITS.slider + (sliderMoving ? SLIDER_MOVING : '') : side.includes(a) ? ANGLE_HABITS.side
     : (roles.extra || []).includes(a) ? ANGLE_HABITS.insert : ANGLE_HABITS.other);
   const roster = multi
     ? angles.map((a) => `${a} = ${a === wide ? `the wide (everyone in shot)` : people.includes(a) ? `close-up of the person speaking on the ${a} mic` :

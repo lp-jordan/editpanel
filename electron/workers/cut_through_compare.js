@@ -18,6 +18,7 @@
 
 const { checkTimeline, planTimeline, tcPlus } = require('./cut_through_check');
 const { energyModel, rhythmStats, rhythmOf } = require('./cut_through_energy');
+const { sliderFit } = require('./cut_through_motion');
 
 const MIN_FRAMES = 2;          // a difference shorter than this is rounding
 const SHIFT_FRAMES = 12;       // an angle difference this short is a moved cut, not a new angle
@@ -129,7 +130,7 @@ function shotStats(pieces, fps) {
  * levels: the levels file, optional
  * kind / pauses / beats: as for Check, to recompute Check's flags on the plan
  */
-function compareTimeline({ timeline, plan, words: wordsFile, removals = null, review = null, levels = null, kind = 'solo', pauses = null, beats = [] }) {
+function compareTimeline({ timeline, plan, words: wordsFile, removals = null, review = null, levels = null, kind = 'solo', pauses = null, beats = [], motion = null }) {
   const fps = timeline.fps || plan.fps || 24;
   const pieces = picturePieces(timeline, plan.multicam);
   if (!pieces.length) throw new Error(`No multicam pieces in ${timeline.name}`);
@@ -308,6 +309,11 @@ function compareTimeline({ timeline, plan, words: wordsFile, removals = null, re
     const em = energyModel((wordsFile && wordsFile.words) || [], 1 / fps);
     stats.rhythm = { plan: rhythmStats(planned.pieces, em, fps), now: rhythmStats(pieces, em, fps) };
   } catch (_) { stats.rhythm = null; }
+  // slider check (on trial, 2026-11-10): how many slider shots sit inside a moving stretch
+  stats.slider = {};
+  for (const [angle, m] of Object.entries(motion || {})) {
+    stats.slider[angle] = { now: sliderFit(pieces, angle, m.moving || []), plan: sliderFit(planned.pieces, angle, m.moving || []) };
+  }
   const changed = events.length + angleEvents.length > 0 || reorderedAt >= 0;
   return { timeline: timeline.name, fps, changed, angleRead, reordered: reorderedAt >= 0, split, stats, events: events.sort((a, b) => a.from - b.from),
     angles: angleEvents, flags, flagStats, transcript, keptPlan: P, keptNow: N, range: [lo, hi] };
@@ -339,6 +345,13 @@ function totals(results) {
   // energy check pooled over every timeline (touched or not: an untouched cut is the editor's too)
   const pool = (k) => rhythmOf(results.flatMap((r) => (r.stats.rhythm && r.stats.rhythm[k] ? r.stats.rhythm[k].rows : [])));
   out.rhythm = { plan: pool('plan'), now: pool('now') };
+  out.slider = {};
+  for (const r of results) {
+    for (const [a, x] of Object.entries(r.stats.slider || {})) {
+      const t = out.slider[a] || (out.slider[a] = { now: { shots: 0, inside: 0 }, plan: { shots: 0, inside: 0 } });
+      for (const k of ['now', 'plan']) { t[k].shots += x[k].shots; t[k].inside += x[k].inside; }
+    }
+  }
   out.airTrimmedMedian = median(out.frames.airTrimmed);
   out.airAddedMedian = median(out.frames.airAdded);
   delete out.frames;
@@ -351,6 +364,9 @@ function reportLines(results, sum) {
   const lines = [`Compared ${sum.timelines} timeline(s): ${sum.changed} changed`, ''];
   const rh = (x) => (x && x.shots ? `${x.shots} shots · shorter when faster ρ ${x.rhoPace ?? '–'} · shorter when louder ρ ${x.rhoLevel ?? '–'} · ` +
     `median s by pace ${['fast', 'normal', 'slow'].map((k) => `${k} ${x.byPace[k] ? x.byPace[k].medianSec : '–'}`).join(' / ')}` : 'not enough words');
+  for (const [a, x] of Object.entries(sum.slider || {})) {
+    lines.push(`Slider check (${a}): editor ${x.now.inside}/${x.now.shots} slider shots inside a moving stretch · plan ${x.plan.inside}/${x.plan.shots}`, '');
+  }
   if (sum.rhythm) {
     lines.push('Energy check (negative ρ = the cut gets quicker as the talk gets faster / louder):');
     lines.push(`  editor: ${rh(sum.rhythm.now)}`, `  plan:   ${rh(sum.rhythm.plan)}`, '');

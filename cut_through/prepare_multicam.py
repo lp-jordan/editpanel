@@ -98,7 +98,7 @@ def describe(xml: str, mc_name: str = None) -> dict:
         rep = a.find("media-rep") if a is not None else None
         return unquote((rep.get("src") if rep is not None else "").replace("file://localhost/", ""))
 
-    angles, mics, cams, length = [], [], [], Fraction(0)
+    angles, mics, cams, pics, length = [], [], [], [], Fraction(0)
     # an audio-only asset of a file that is also a picture asset = that camera's own sound on its
     # own track (Bill Smith mc_1, 2026-11-05): camera audio, not a mic WAV
     pic_paths = {path(i) for i, a in assets.items() if a.get("hasVideo") == "1"}
@@ -112,6 +112,13 @@ def describe(xml: str, mc_name: str = None) -> dict:
             ref = ch.get("ref")
             a = assets.get(ref)
             cam_track = a is not None and a.get("hasVideo") != "1" and a.get("hasAudio") == "1" and path(ref) in pic_paths
+            if a is not None and a.get("hasVideo") == "1":
+                # every picture clip, for reading the slider's movement (Cut-through, 2026-11-10)
+                start = _s(ch.get("start")) - _s(a.get("start"))
+                pic = {"angle": angle, "path": path(ref), "file_zero_sec": float(pos - start),
+                       "from_sec": float(pos), "to_sec": float(pos + dur)}
+                if not any(x["angle"] == angle and x["path"] == pic["path"] and x["from_sec"] == pic["from_sec"] for x in pics):
+                    pics.append(pic)
             if a is not None and a.get("hasVideo") != "1" and a.get("hasAudio") == "1" and not cam_track:
                 start = _s(ch.get("start"))
                 mics.append({"name": a.get("name"), "angle": angle, "path": path(ref),
@@ -146,7 +153,7 @@ def describe(xml: str, mc_name: str = None) -> dict:
                     pictures.append((_s(ch.get("offset")), _s(ch.get("offset")) + _s(ch.get("duration"))))
     return {"multicam": media.get("name"), "fps": float(1 / fd), "frame_sec": [fd.numerator, fd.denominator],
             "tc_start_sec": float(_s(mc.get("tcStart"))), "length_sec": float(length),
-            "angles": angles, "mics": mics, "camera_audio": cams, "recordings": recordings(pictures)}
+            "angles": angles, "mics": mics, "camera_audio": cams, "picture_clips": pics, "recordings": recordings(pictures)}
 
 
 def recordings(pictures, join_sec: float = 0.5) -> list:

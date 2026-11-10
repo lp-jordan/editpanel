@@ -363,6 +363,9 @@ print(json.dumps({"mcs": mcs, "res": res, "bat": bat, "events": events}))
   const day = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_PyT.json'), 'utf8'));
   assert.deepStrictEqual(day.mics.map((m) => m.angle), ['Camera 2', 'Camera 3']);
   assert.strictEqual(day.mics[1].file_zero_sec, -1);
+  // every angle's picture clips are listed (for reading the slider's movement)
+  assert.ok(Array.isArray(day.picture_clips) && day.picture_clips.length && day.picture_clips.every((c) => c.angle && c.path && c.to_sec > c.from_sec),
+    JSON.stringify(day.picture_clips));
   console.log('✓ python: multicam list, step exec + print capture, real day prep on a fake Resolve');
 }
 
@@ -686,7 +689,39 @@ print(json.dumps({k: [[x["from"], x["to"], x["angle"]] for x in v] for k, v in o
   assert.ok(fit.across.every((x, k) => !k || x[2] !== fit.across[k - 1][2]) && fit.across.length <= 3, JSON.stringify(fit.across));
   assert.deepStrictEqual(fit.flip.map((x) => x[2]), ['A', 'B']);   // the opening stays; the shot after the removal changes
   assert.ok(fit.pick.every((x) => x[2] !== 'C'), JSON.stringify(fit.pick));
-  console.log('✓ place_cuts.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio, no ping-pong at removals');
+  // slider motion (2026-11-10): Claude's slider shots are kept only inside the moving stretches
+  const slDir = path.join(TMP, 'slider');
+  fs.mkdirSync(slDir, { recursive: true });
+  const slOut = JSON.parse(execFileSync(PY, ['-c', String.raw`
+import json, os, sys, subprocess
+os.chdir(sys.argv[2])
+fps = 24
+words = []
+t = 1.0
+while t < 120:
+    words.append({"mic": "Angle 1", "w": "word", "s": round(t * fps, 1), "e": round(t * fps + 8, 1), "p": 0.9, "own": True, "clear": True})
+    t += 0.5
+A = ["Angle 1", "Angle 2", "Angle 4"]
+json.dump({"label": "L", "multicam": "mc", "fps": fps, "frame_sec": [1, 24], "angles": A, "mics": ["Angle 1"], "words": words}, open("words_L.json", "w"))
+json.dump({"multicam": "mc", "fps": fps, "frame_sec": [1, 24], "tc_start_sec": 0, "length_sec": 125, "angles": A,
+  "mics": [{"name": "c.mxf", "angle": "Angle 1", "path": "x", "file_zero_sec": 0, "from_sec": 0, "to_sec": 125, "channels": 1, "camera": True}],
+  "audio_source": "camera", "label": "L"}, open("day_L.json", "w"))
+st = lambda sec, a: {"at": int(sec * fps), "start": sec * fps, "prev_end": sec * fps - 4, "angle": a}
+json.dump({"start": 0, "end": 125 * fps, "delivery": "scripted", "removals": [], "review": [],
+  "shots": [{**st(1, "Angle 1"), "prev_end": None}, st(20, "Angle 4"), st(50, "Angle 2"), st(80, "Angle 4"), st(100, "Angle 1")]}, open("removals_L.json", "w"))
+json.dump({"Angle 4": {"moving": [[25 * fps, 40 * fps], [85 * fps, 95 * fps]]}}, open("motion_L.json", "w"))
+for name, extra in (("on", ["motion=motion_L.json"]), ("off", [])):
+    subprocess.run([sys.executable, os.path.join(sys.argv[1], "place_cuts.py"), "words_L.json", "day_L.json", f"L_{name}.json", "removals=removals_L.json",
+                    "extra=Angle 4"] + extra, check=True, stdout=subprocess.DEVNULL)
+out = {n: [[v["angle"], round(v["in"] / fps, 1), round(v["out"] / fps, 1)] for v in json.load(open(f"L_{n}.json"))["video"]] for n in ("on", "off")}
+print(json.dumps(out))
+`, PIPELINE, slDir], { encoding: 'utf8' }));
+  const sl = slOut.on.filter((v) => v[0] === 'Angle 4');
+  assert.strictEqual(sl.length, 2, JSON.stringify(slOut));
+  assert.ok(sl.every(([, a, b]) => (a >= 25 && b <= 40) || (a >= 85 && b <= 95)), JSON.stringify(slOut.on));
+  assert.ok(slOut.on.every((v, k) => !k || v[0] !== slOut.on[k - 1][0]), JSON.stringify(slOut.on));
+  assert.ok(slOut.off.some((v) => v[0] === 'Angle 4' && v[1] < 25), 'without motion, Claude\'s slider shot is untouched');
+  console.log('✓ place_cuts.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio, no ping-pong at removals, slider only while moving');
 }
 
 // ── 2e. removal joins on aligned word times (Elevate, 2026-11-06) ──
@@ -1063,6 +1098,35 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
 }
 
 (async () => {
+  {
+    let FFMPEG = null;
+    try { FFMPEG = require('ffmpeg-static'); } catch (_) {}
+    let hasFfmpeg = false;
+    for (const c of [FFMPEG, 'ffmpeg'].filter(Boolean)) {
+      try { execFileSync(c, ['-hide_banner', '-version'], { stdio: 'ignore' }); FFMPEG = c; hasFfmpeg = true; break; } catch (_) {}
+    }
+    const slDir = path.join(TMP, 'slider');
+    fs.mkdirSync(slDir, { recursive: true });
+    // slider detector: a synthetic slide (move 8 s, stop 2 s, back 8 s, stop 2 s) and a static shot
+    if (hasFfmpeg) {
+      const { sliderMotion } = require('../electron/workers/cut_through_motion');
+      const clip = path.join(slDir, 'slide.mp4');
+      const still = path.join(slDir, 'still.mp4');
+      execFileSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=1200x360:r=24:d=40', '-vf',
+        "crop=640:360:x='if(lt(mod(t,20),8),70*mod(t,20),if(lt(mod(t,20),10),560,if(lt(mod(t,20),18),560-70*(mod(t,20)-10),0)))':y=0",
+        '-c:v', 'libx264', '-preset', 'ultrafast', clip]);
+      execFileSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=24:d=20', '-c:v', 'libx264', '-preset', 'ultrafast', still]);
+      const mv = await sliderMotion({ ffmpeg: FFMPEG, clips: [{ path: clip, file_zero_sec: 100, from_sec: 100, to_sec: 140 }], frameSec: 1 / 24 });
+      const secs = mv.moving.map(([a, b]) => [a / 24 - 100, b / 24 - 100]);
+      assert.strictEqual(secs.length, 4, JSON.stringify(secs));
+      secs.forEach(([a, b], k) => assert.ok(a >= k * 10 && a <= k * 10 + 1.5 && b <= k * 10 + 8 && b >= k * 10 + 6.5, JSON.stringify(secs)));
+      const st = await sliderMotion({ ffmpeg: FFMPEG, clips: [{ path: still, file_zero_sec: 0, from_sec: 0, to_sec: 20 }], frameSec: 1 / 24 });
+      assert.strictEqual(st.moving.length, 0, st.report);
+    } else {
+      console.log('- slider detector check skipped (no ffmpeg)');
+    }
+    if (hasFfmpeg) console.log('✓ slider motion: a synthetic slide (move 8 s, stop, back) found, a static shot with movement in it not');
+  }
   let prefs = {};
   const updates = [];
   const w = fakeWorker();

@@ -31,6 +31,7 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { randomUUID } = require('crypto');
 const claude = require('./cut_through_claude');
+const motion = require('./cut_through_motion');
 const videosLib = require('./cut_through_videos');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 const compare = require('./cut_through_compare');
@@ -252,7 +253,8 @@ function createCutThrough(opts) {
       seqBin: p.seqBin === undefined ? DEFAULT_SEQ_BIN : p.seqBin,
       claudeModel: p.claudeModel || claude.DEFAULT_MODEL,
       claudeEffort: p.claudeEffort || 'high',
-      energyHints: p.energyHints !== false,      // pace / loudness hints in Claude's transcript (on trial 2026-11-10)
+      energyHints: p.energyHints !== false,
+      sliderMotion: p.sliderMotion !== false,    // slider shots only while the slider moves (on trial 2026-11-10)      // pace / loudness hints in Claude's transcript (on trial 2026-11-10)
       // this Resolve project's data folder (chosen on the page, no default: see needRunFolder);
       // until it's chosen, earlier runs are still read from the old shared location
       runFolder,
@@ -288,6 +290,7 @@ function createCutThrough(opts) {
       prepReport: path.join(dir, `day_prep_${label}.txt`),
       words: path.join(dir, `words_${label}.json`),
       levels: path.join(dir, `levels_${label}.json`),
+      motion: path.join(dir, `motion_${label}.json`),
       align: path.join(dir, `align_${label}.txt`),
       transcript: path.join(dir, `transcript_${label}.txt`),
       transcribeReport: path.join(dir, `transcribe_${label}.txt`),
@@ -611,6 +614,7 @@ function createCutThrough(opts) {
       if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
     }
     if (patch.energyHints !== undefined) next.energyHints = !!patch.energyHints;
+    if (patch.sliderMotion !== undefined) next.sliderMotion = !!patch.sliderMotion;
     // the LPOS project whose slate names this Resolve project's videos
     if (patch.lposProject !== undefined && s.project) {
       const lp = patch.lposProject && patch.lposProject.id ? { id: String(patch.lposProject.id), name: String(patch.lposProject.name || '') } : null;
@@ -856,7 +860,7 @@ function createCutThrough(opts) {
         if (!best || best.score < 0.5) { skipped.push(name); continue; }
         const removals = readJson(best.p.removals);
         results.push(compare.compareTimeline({ timeline: tl, plan: best.p.data, words, removals, review: readJson(best.p.review), levels,
-          kind: best.p.kind, pauses: (removals && removals.pauses) || null, beats: (removals && removals.beats) || [] }));
+          kind: best.p.kind, pauses: (removals && removals.pauses) || null, beats: (removals && removals.beats) || [], motion: readJson(f.motion) }));
         used[name] = best.p.data;
       }
       if (!results.length) throw new Error(`No plan matches ${names.join(', ')}`);
@@ -1000,7 +1004,7 @@ function createCutThrough(opts) {
   // The placer: takes the day + words files (+ Claude's edit and the levels) and writes
   // <run folder>/<LABEL>_plan.json (the build's input).
   const PLANNERS = {
-    solo: { script: 'place_cuts.py', args: ({ wide, extra, punch, skip, removalsFile, levelsFile, talker, reviewFile }) => [...(wide ? [`wide=${wide}`] : []),
+    solo: { script: 'place_cuts.py', args: ({ wide, extra, punch, skip, removalsFile, levelsFile, motionFile, talker, reviewFile }) => [...(motionFile ? [`motion=${motionFile}`] : []),...(wide ? [`wide=${wide}`] : []),
       ...(punch ? [`punch=${punch}`] : []), ...[].concat(extra || []).map((x) => `extra=${x}`), ...(skip || []).map((x) => `skip=${x}`),
       ...(removalsFile ? [`removals=${removalsFile}`] : []), ...(levelsFile ? [`levels=${levelsFile}`] : []),
       ...(talker ? [`talker=${talker}`] : []), ...(reviewFile ? [`review=${reviewFile}`] : [])] }
@@ -1058,7 +1062,37 @@ function createCutThrough(opts) {
         return lv.error || exitError('plan', 'transcribe.py levels_only', lv.code);
       }
     }
+    await ensureSliderMotion(st, f, st0);
     return null;
+  }
+
+  /** When each slider angle is actually moving (Jordan 2026-11-10, on trial): read once per angle
+   *  per label from the slider's own video. A failure only logs — Plan carries on without it. */
+  async function ensureSliderMotion(st, f, st0) {
+    if (!st0.sliderMotion || !s.day) return;
+    const sliders = rolesOf(angleRoles(), s.day.angles || []).slider;
+    if (!sliders.length) return;
+    const have = readJson(f.motion) || {};
+    const ff = ffmpegPath || 'ffmpeg';
+    const frameSec = s.day.frame_sec[0] / s.day.frame_sec[1];
+    for (const angle of sliders) {
+      if (have[angle] || canceled) continue;
+      // the angle's picture clips (Prep from 1.2.126); an older day: its camera clips with sound
+      const clips = (s.day.picture_clips || s.day.camera_audio || []).filter((c) => c.angle === angle && c.path && c.to_sec > c.from_sec);
+      if (!clips.length) { pushLog('plan', `Slider motion: no clips found for ${angle} (run Prep again)`); continue; }
+      st.progress = { phase: `Reading when the slider moves (${angle})`, phaseAt: Date.now(), bar: 0 };
+      emit();
+      try {
+        const r = await motion.sliderMotion({ ffmpeg: ff, clips, frameSec,
+          onProgress: (k, n) => { st.progress = { ...st.progress, bar: Math.round((k / n) * 100) }; emit(); },
+          onProc: (p) => { child = p; } });
+        have[angle] = r;
+        fs.writeFileSync(f.motion, JSON.stringify(have, null, 1), 'utf8');
+        pushLog('plan', `Slider motion (${angle}): ${r.report}`);
+      } catch (err) {
+        if (!canceled) pushLog('plan', `Slider motion (${angle}) not read: ${err.message} — Plan carries on without it`);
+      }
+    }
   }
 
   async function runPlan({ start, end, extra, punch, roles: roleMap, delivery, direction: note, useMarks = false } = {}) {
@@ -1107,6 +1141,7 @@ function createCutThrough(opts) {
         return snapshot();
       }
       o.levelsFile = f.levels;
+      if (st0.sliderMotion && fs.existsSync(f.motion)) o.motionFile = f.motion;
       // Claude edits like Z8 — every removal and every shot; place_cuts.py places the cuts
       st.progress = { phase: 'Claude is reading the transcript', phaseAt: Date.now(), bar: null };
       emit();
@@ -1114,7 +1149,7 @@ function createCutThrough(opts) {
         const out = await claude.planWithClaude({
           label: s.label, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: settings().filesDir,
           promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
-          start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints,
+          start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: !!o.motionFile,
           delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
           roles: { wide: o.wide || undefined, punch: o.punch || undefined, extra: o.extra, slider: o.roles.slider, side: o.roles.side,
             other: o.roles.other, skip: o.skip },
@@ -1311,7 +1346,7 @@ function createCutThrough(opts) {
     return {
       label: vf.tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
       promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
-      start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, delivery,
+      start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: st0.sliderMotion, delivery,
       talker: kind === 'solo' ? v.talker || null : null,
       roles: { wide: R.wide || undefined, punch: R.punch || undefined, extra: R.extra, slider: R.slider, side: R.side, other: R.other, skip: R.skip },
       direction: direction(), kind
@@ -1329,7 +1364,7 @@ function createCutThrough(opts) {
     const extras = [...new Set([...R.slider, ...R.side, ...R.other])].filter((x) => x !== R.punch && x !== R.wide);
     const o = { files: files(), planFile: vf.plan, reviewFile: vf.review, start: v.from, end: v.to, wide: R.wide, punch: R.punch || null,
       extra: extras, skip: R.skip, roles: R, cuts: (v.gaps || []).map(([a, b]) => `${a}-${b}`), talker: args.talker,
-      levelsFile: files().levels, removalsFile };
+      levelsFile: files().levels, removalsFile, motionFile: settings().sliderMotion && fs.existsSync(files().motion) ? files().motion : null };
     const started = Date.now();
     const res = await runPlanner('solo', o);
     let error = res.error;

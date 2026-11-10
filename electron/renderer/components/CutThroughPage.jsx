@@ -740,6 +740,10 @@ function CutThroughPage({ connected }) {
               <input type="checkbox" checked={ct.settings.energyHints !== false}
                 onChange={(e) => call('settings', () => api.updateSettings({ energyHints: e.target.checked }))} />
             </CtRow>
+            <CtRow label="Slider motion">
+              <input type="checkbox" checked={ct.settings.sliderMotion !== false}
+                onChange={(e) => call('settings', () => api.updateSettings({ sliderMotion: e.target.checked }))} />
+            </CtRow>
             <CtRow label="Claude API key">
               <input className="settings-input ct-grow-input" type="password" autoComplete="off" value={keyDraft}
                 placeholder={ct.settings.claudeKey || 'Not set'}
