@@ -265,6 +265,28 @@ contextBridge.exposeInMainWorld('atemAPI', {
   }
 });
 
+contextBridge.exposeInMainWorld('cardIngestAPI', {
+  listCards() { return ipcRenderer.invoke('card-ingest:list'); },
+  /** targets: [{ root, dest|null }] */
+  check(targets) { return ipcRenderer.invoke('card-ingest:check', targets); },
+  start(targets) { return ipcRenderer.invoke('card-ingest:start', targets); },
+  cancel() { return ipcRenderer.invoke('card-ingest:cancel'); },
+  snapshot() { return ipcRenderer.invoke('card-ingest:snapshot'); },
+  dismiss() { return ipcRenderer.invoke('card-ingest:dismiss'); },
+  lastDest() { return ipcRenderer.invoke('card-ingest:last-dest'); },
+  openFolder(p) { return ipcRenderer.invoke('card-ingest:open-folder', p); },
+  onCards(callback) {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('card-ingest:cards', handler);
+    return () => ipcRenderer.removeListener('card-ingest:cards', handler);
+  },
+  onUpdate(callback) {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('card-ingest:update', handler);
+    return () => ipcRenderer.removeListener('card-ingest:update', handler);
+  }
+});
+
 contextBridge.exposeInMainWorld('resultsAPI', {
   init(jobId, itemType, label, items, scope = {}) {
     return ipcRenderer.invoke('results:init', jobId, itemType, label, items, scope);

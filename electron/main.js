@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell, Tray, nativeImage, utilityProcess, Notification } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const { spawn, execFile } = require('child_process');
@@ -14,6 +14,7 @@ const {
 const { LposClient } = require('./workers/lpos_client');
 const { JobsDb } = require('./store/jobs-db');
 const { listSessions: atemListSessions, ingestSessions: atemIngestSessions } = require('./workers/atem_ftp');
+const { createCardIngest } = require('./workers/card_ingest');
 const { createCutThrough } = require('./workers/cut_through');
 const { createGraphics } = require('./workers/graphics');
 const {
@@ -132,6 +133,7 @@ let lposClient = null;
 let lposHeartbeatTimer = null;
 let jobsDb = null;
 let atemCancelToken = null; // { canceled: boolean }
+let cardIngest = null;      // camera card ingest (workers/card_ingest.js)
 let graphics = null; // Graphics: Remotion overlays — see workers/graphics.js
 let cutThrough = null; // Cut-through (beta) orchestrator — see workers/cut_through.js
 let resolveAutoConnectDone = false; // attempt auto-connect once per app session only
@@ -2571,6 +2573,7 @@ app.whenReady().then(() => {
   try {
     jobsDb = new JobsDb(path.join(app.getPath('userData'), 'jobs-history.db'));
     jobsDb.clearStaleAtemLogs();   // mark any interrupted ingest runs from prior session
+    jobsDb.clearStaleCardIngestRuns();
     // Exports left rendering/uploading by the previous session: remembered so
     // they resume once Resolve reconnects (see maybeResumeExports).
     pendingResumeIds = jobsDb.clearStaleExportRuns() || [];
@@ -3500,6 +3503,54 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
+  // --- Camera card ingest IPC ---
+  // The engine (workers/card_ingest.js) polls for mounted cards and pushes the
+  // list on 'card-ingest:cards'; a running ingest pushes 'card-ingest:update'.
+  cardIngest = createCardIngest({
+    broadcast: (channel, payload) => BrowserWindow.getAllWindows().forEach(w => w.webContents.send(channel, payload)),
+    jobsDb,
+    utilityProcess,
+    log: (line) => {
+      console.log(line);
+      BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', line));
+    },
+    // The renderer opens the overlay itself; this tells an editor working in
+    // Resolve (EditPanel hidden in the tray) that a card was noticed.
+    onCardsAdded: (added) => {
+      if (!Notification.isSupported()) return;
+      const n = new Notification({ title: 'Camera card detected', body: added.map(c => c.label).join(', ') });
+      n.on('click', () => { if (win) { win.show(); win.focus(); } });
+      n.show();
+    }
+  });
+  cardIngest.startWatching();
+  const ciCall = (fn) => async (_e, arg) => {
+    try { return { ok: true, data: await fn(arg) }; } catch (err) { return { ok: false, error: err.message || String(err) }; }
+  };
+  ipcMain.handle('card-ingest:list', ciCall(() => cardIngest.refresh()));
+  ipcMain.handle('card-ingest:check', ciCall((targets) => cardIngest.check(targets || [])));
+  ipcMain.handle('card-ingest:start', async (_e, targets) => {
+    try {
+      const res = await cardIngest.startIngest(targets || []);
+      if (res.ok && controlPlane) {
+        const dest = (targets || []).map(t => t.dest).filter(Boolean).pop();
+        if (dest) controlPlane.setPreferences({ cardIngestLastDest: dest });
+      }
+      return res;
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+  ipcMain.handle('card-ingest:cancel', () => cardIngest.cancel());
+  ipcMain.handle('card-ingest:snapshot', () => ({ ok: true, data: cardIngest.snapshot() }));
+  ipcMain.handle('card-ingest:dismiss', () => cardIngest.dismiss());
+  ipcMain.handle('card-ingest:last-dest', () => ({ ok: true, data: (controlPlane && controlPlane.getPreferences().cardIngestLastDest) || '' }));
+  ipcMain.handle('card-ingest:open-folder', async (_e, p) => {
+    if (typeof p !== 'string' || !p) return { ok: false, error: 'no path' };
+    const err = await shell.openPath(p);
+    return err ? { ok: false, error: err } : { ok: true };
+  });
+
   // --- ATEM FTP IPC ---
 
   ipcMain.handle('atem:list-sessions', async (_, host) => {
@@ -4325,6 +4376,7 @@ app.on('before-quit', () => {
   if (lposHeartbeatTimer) { clearInterval(lposHeartbeatTimer); lposHeartbeatTimer = null; }
   stopReconcileLoop();
   lposClient = null;
+  if (cardIngest) { cardIngest.stopWatching(); cardIngest.cancel(); }
   if (jobsDb) { jobsDb.close(); jobsDb = null; }
   if (controlPlane) { controlPlane.dispose(); controlPlane = null; }
   Object.values(workers).forEach(stopWorker);

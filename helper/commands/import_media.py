@@ -17,7 +17,9 @@ Payload:
   }
 
 Each file lands in <parent_bin> / <session> / CAM <n>, an exact mirror of the
-disk structure the ingest wrote. Missing bins (incl. the parent) are created —
+disk structure the ingest wrote. A file may instead carry "bin_segments" (a
+list of sub-bin names, empty = the parent bin itself); camera card ingest
+sends [] because it copies flat. Missing bins (incl. the parent) are created —
 mirrors create_project_bins' AddSubFolder pattern; the parent path is resolved
 with bin_tree.resolve_folder_by_path first so an existing FOOTAGE/ATEM is reused.
 
@@ -105,11 +107,14 @@ def handle_import_media(payload: Dict[str, Any]) -> Dict[str, Any]:
         local_path = f.get("local_path")
         if not local_path:
             continue
-        session = _sanitize(f.get("session"), "UnknownSession")
-        cam = f.get("cam_number")
-        cam_folder = f"CAM {cam}" if cam not in (None, "") else "Unknown"
-        key = f"{session}\x00{cam_folder}"
-        g = groups.setdefault(key, {"segments": [session, cam_folder], "paths": []})
+        if isinstance(f.get("bin_segments"), list):
+            segments = [_sanitize(seg, "Unknown") for seg in f["bin_segments"]]
+        else:
+            session = _sanitize(f.get("session"), "UnknownSession")
+            cam = f.get("cam_number")
+            segments = [session, f"CAM {cam}" if cam not in (None, "") else "Unknown"]
+        key = "\x00".join(segments)
+        g = groups.setdefault(key, {"segments": segments, "paths": []})
         g["paths"].append(local_path)
 
     rh.log(f"[import_media] {len(files)} file(s) → {parent_bin} across {len(groups)} bin(s)")

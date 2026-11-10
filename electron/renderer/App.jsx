@@ -142,6 +142,7 @@ function App() {
   const [feedbackOpen, setFeedbackOpen] = React.useState(false);
   const [activeResultJobId, setActiveResultJobId] = React.useState(null);
   const [atemIngestOpen, setAtemIngestOpen]   = React.useState(false);
+  const [cardIngestOpen, setCardIngestOpen]   = React.useState(false);
   const [createMulticamOpen, setCreateMulticamOpen] = React.useState(false);
   const [exportOpen, setExportOpen]           = React.useState(false);
   const [activeExport, setActiveExport]       = React.useState(null);
@@ -204,6 +205,15 @@ function App() {
 
   const appendLog = React.useCallback((msg) => {
     setLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-250));
+  }, []);
+
+  // A newly inserted camera card opens Card ingest (first poll at launch
+  // reports no additions, so cards already mounted don't pop it).
+  React.useEffect(() => {
+    if (!window.cardIngestAPI) return undefined;
+    return window.cardIngestAPI.onCards(({ added }) => {
+      if (added && added.length) setCardIngestOpen(true);
+    });
   }, []);
 
   const showToast = React.useCallback((text, opts = {}) => {
@@ -835,6 +845,15 @@ function App() {
           description: 'Copy ISO recordings from the ATEM.',
           actionLabel: 'Browse',
           onClick: () => setAtemIngestOpen(true),
+          requiresResolve: false,
+          comingSoon: false
+        },
+        {
+          key: 'card-ingest',
+          label: 'Camera cards',
+          description: 'Copy media from camera cards to the NAS.',
+          actionLabel: 'Open',
+          onClick: () => setCardIngestOpen(true),
           requiresResolve: false,
           comingSoon: false
         },
@@ -1488,6 +1507,15 @@ function App() {
           open={atemIngestOpen}
           onClose={() => setAtemIngestOpen(false)}
           atemHost={settingsDraft.atemHost || '172.20.10.241'}
+          resolveConnected={connected}
+          resolveProject={project}
+          onLog={appendLog}
+        />
+      )}
+      {cardIngestOpen && (
+        <CardIngestOverlay
+          open={cardIngestOpen}
+          onClose={() => setCardIngestOpen(false)}
           resolveConnected={connected}
           resolveProject={project}
           onLog={appendLog}

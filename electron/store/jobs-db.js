@@ -87,6 +87,33 @@ class JobsDb {
 
       CREATE INDEX IF NOT EXISTS idx_atem_log_session ON atem_ingest_log(session);
 
+      -- Camera card ingest (2026-11-10). card_ingest_files is the ledger: one
+      -- row per file copied off a card, keyed by content (size + sample hash),
+      -- never by card or camera. card_ingest_runs keeps each run's report.
+      CREATE TABLE IF NOT EXISTS card_ingest_runs (
+        id          TEXT    PRIMARY KEY,
+        state       TEXT    NOT NULL DEFAULT 'running',
+        started_at  INTEGER NOT NULL,
+        finished_at INTEGER,
+        report_json TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS card_ingest_files (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id        TEXT    NOT NULL,
+        card_label    TEXT,
+        original_name TEXT    NOT NULL,
+        src_rel_path  TEXT,
+        dest_name     TEXT    NOT NULL,
+        dest_path     TEXT    NOT NULL,
+        size_bytes    INTEGER NOT NULL,
+        sample_hash   TEXT    NOT NULL,
+        full_hash     TEXT,
+        ingested_at   INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_card_ingest_files_key ON card_ingest_files(size_bytes, sample_hash);
+
       CREATE TABLE IF NOT EXISTS export_runs (
         export_id    TEXT    PRIMARY KEY,
         target_dir   TEXT,
@@ -460,6 +487,43 @@ class JobsDb {
     this.db.prepare(
       `UPDATE atem_ingest_log SET state = 'interrupted', finished_at = ?
        WHERE state = 'running'`
+    ).run(Date.now());
+  }
+
+  // ─── Camera card ingest ───────────────────────────────────
+
+  createCardIngestRun(id, startedAt) {
+    this.db.prepare(
+      `INSERT OR REPLACE INTO card_ingest_runs (id, state, started_at) VALUES (?, 'running', ?)`
+    ).run(id, startedAt);
+  }
+
+  finishCardIngestRun(id, state, report) {
+    this.db.prepare(
+      `UPDATE card_ingest_runs SET state = ?, finished_at = ?, report_json = ? WHERE id = ?`
+    ).run(state, Date.now(), JSON.stringify(report), id);
+  }
+
+  addCardIngestFile({ runId, cardLabel, originalName, srcRelPath, destName, destPath, sizeBytes, sampleHash, fullHash }) {
+    this.db.prepare(
+      `INSERT INTO card_ingest_files
+         (run_id, card_label, original_name, src_rel_path, dest_name, dest_path, size_bytes, sample_hash, full_hash, ingested_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(runId, cardLabel ?? null, originalName, srcRelPath ?? null, destName, destPath,
+      sizeBytes, sampleHash, fullHash ?? null, Date.now());
+  }
+
+  /** Ledger rows for this content, newest first. */
+  findCardIngestFiles(sizeBytes, sampleHash) {
+    return this.db.prepare(
+      `SELECT * FROM card_ingest_files WHERE size_bytes = ? AND sample_hash = ? ORDER BY ingested_at DESC`
+    ).all(sizeBytes, sampleHash);
+  }
+
+  /** Mark runs left 'running' by a crashed session as interrupted. */
+  clearStaleCardIngestRuns() {
+    this.db.prepare(
+      `UPDATE card_ingest_runs SET state = 'interrupted', finished_at = ? WHERE state = 'running'`
     ).run(Date.now());
   }
 
