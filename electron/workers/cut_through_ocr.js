@@ -6,22 +6,60 @@
  * confident (or doesn't look like a code) is left for Claude by the caller.
  */
 
+const path_ = (pkg, ...rest) => require('path').join(require('path').dirname(require.resolve(pkg)), ...rest);
+
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const MIN_CONFIDENCE = 75;
 const CODE_RE = /^[A-Z0-9]{1,6}$/;
 
+const INIT_MS = 60000;
+const READ_MS = 20000;
+
 let workerP = null;
+let workerError = null;
+
+/**
+ * tesseract.js starts a worker thread with no 'error' listener, so a crash in it (e.g. a dependency
+ * this Electron can't parse — wasm-feature-detect 1.10.0, 2026-11-10) became an uncaught exception
+ * in EditPanel's main process. Swap in a spawner that listens: the error is kept, the run's OCR
+ * stops (the caller falls back to Claude), and the app keeps going.
+ */
+function guardWorkerThread() {
+  const path = require('path');
+  const { Worker } = require('worker_threads');
+  const file = path.join(path.dirname(require.resolve('tesseract.js')), 'worker', 'node', 'spawnWorker.js');
+  require(file);
+  require.cache[file].exports = ({ workerPath }) => {
+    const w = new Worker(workerPath);
+    w.on('error', (err) => { workerError = err; workerP = null; });
+    return w;
+  };
+}
+
+/** A promise that gives up after ms, or as soon as the worker thread has failed. */
+function guarded(promise, ms, what) {
+  return new Promise((resolve, reject) => {
+    const fail = (err) => { clearInterval(tick); clearTimeout(timer); reject(err); };
+    const timer = setTimeout(() => fail(new Error(`OCR ${what} timed out`)), ms);
+    const tick = setInterval(() => { if (workerError) fail(new Error(`OCR stopped: ${workerError.message || workerError}`)); }, 200);
+    promise.then((v) => { clearInterval(tick); clearTimeout(timer); resolve(v); }, fail);
+  });
+}
 
 function worker() {
   if (!workerP) {
-    workerP = (async () => {
+    workerError = null;
+    workerP = guarded((async () => {
+      guardWorkerThread();
+      // what the worker thread loads first: a module this Electron can't parse fails here, caught
+      require(path_('tesseract.js', 'worker-script', 'node', 'getCore.js'));
       const T = require('tesseract.js');
       const eng = require('@tesseract.js-data/eng');
       const w = await T.createWorker(eng.code, T.OEM.LSTM_ONLY, { langPath: eng.langPath, gzip: eng.gzip, cacheMethod: 'none' });
       await w.setParameters({ tessedit_char_whitelist: CHARS, tessedit_pageseg_mode: T.PSM.SINGLE_LINE,
         debug_file: '/dev/null' });   // tesseract's own (virtual) file system: no stats dump on a blank tile
       return w;
-    })();
+    })(), INIT_MS, 'start');
     workerP.catch(() => { workerP = null; });
   }
   return workerP;
@@ -30,7 +68,7 @@ function worker() {
 /** A prepared image (dark text on light, PNG) → { code | null, confidence, ok }. */
 async function readCode(png) {
   const w = await worker();
-  const { data } = await w.recognize(png);
+  const { data } = await guarded(w.recognize(png), READ_MS, 'read');
   const code = String(data.text || '').replace(/\s+/g, '').toUpperCase();
   const confidence = Math.round(data.confidence || 0);
   const ok = CODE_RE.test(code) && confidence >= MIN_CONFIDENCE;

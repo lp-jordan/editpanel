@@ -1,6 +1,6 @@
 {
   "name": "editpanel",
-  "version": "1.2.138",
+  "version": "1.2.139",
   "description": "EditPanel — DaVinci Resolve companion app for the LPOS ecosystem",
   "author": "LeaderPass <tools@leaderpass.com>",
   "main": "electron/main.js",
@@ -115,5 +115,8 @@
     "@remotion/transitions": "4.0.542",
     "electron": "42.2.0",
     "electron-builder": "^26.0.12"
+  },
+  "overrides": {
+    "wasm-feature-detect": "1.9.0"
   }
 }
