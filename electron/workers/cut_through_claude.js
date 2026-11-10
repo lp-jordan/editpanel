@@ -39,8 +39,8 @@ const DELIVERY = {
 // that much (or a shot change already sits in the pause) — Bill Smith 2026-11-05: 0.5 s trims forced 8 extra cuts
 // scripted: gaps over ~0.8 s go down to ~0.5 s (Elevate, Jordan 2026-11-06: 19–26 fr gaps after a line read long)
 // scripted joins and ends, from Compare on Jordan's edits (Chad Volkert 2026-11-09): ~10 fr after the outgoing word,
-// ~2 before the incoming one; ~6 fr before the first word, 24 after the last
-const PAUSES = { scripted: { max: 20, left: 12, min_save: 0, before: 2, join_after: 10, head: 6, tail: 24 }, stage: { max: 36, left: 18, min_save: 36 }, convo: { max: 48, left: 18, min_save: 24 } };
+// ~2 before the incoming one (raised to 3, Jordan 2026-11-10); ~6 fr before the first word, 24 after the last
+const PAUSES = { scripted: { max: 20, left: 12, min_save: 0, before: 3, join_after: 10, head: 6, tail: 24 }, stage: { max: 36, left: 18, min_save: 36 }, convo: { max: 48, left: 18, min_save: 24 } };
 const LINE_GAP_SEC = 0.6;
 const MAX_WORDS = 15000;           // ≈ 2.4 h of talk ≈ $1.75 on Opus: the most one Claude pass may take
 const SHOW_PAUSE_SEC = 1.5;
