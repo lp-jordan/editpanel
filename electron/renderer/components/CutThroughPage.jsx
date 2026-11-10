@@ -396,6 +396,7 @@ function CutThroughPage({ connected }) {
   function renderVideos() {
     const locked = busy || batchLive || batchDraft;
     const list = (vids && vids.videos) || [];
+    const slateRun = ct.slateInfo && ct.slateInfo.running;
     const ticked = list.filter((v) => v.include);
     const offset = vids && vids.offset;
     return (
@@ -427,6 +428,23 @@ function CutThroughPage({ connected }) {
           <CtRow label="First code">
             <input className="settings-input ct-num" aria-label="First J-code on this multicam" disabled={locked}
               placeholder="All" value={firstCode} onChange={(e) => setFirstCodeDraft(e.target.value)} />
+          </CtRow>
+        )}
+        {day && (
+          <CtRow label="Slate angle">
+            <select className="settings-input" aria-label="Slate angle" disabled={locked} value={ct.slateAngle || ''}
+              onChange={(e) => call('plan', () => api.setSlateAngle(e.target.value))}>
+              <option value="">Off</option>
+              {sortedAngles.map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+            <button type="button" className="btn small ghost" disabled={locked || !ct.slateAngle}
+              onClick={() => call('plan', () => api.readSlate())}>{ct.slateInfo && ct.slateInfo.frames ? 'Read again' : 'Read slate'}</button>
+            {slateRun && <button type="button" className="btn small danger" onClick={() => call('plan', () => api.cancel())}>Cancel</button>}
+            {slateRun
+              ? <span className="dim ct-num-text">{slateRun.phase}{slateRun.bar ? ` · ${slateRun.bar}%` : ''}</span>
+              : ct.slateInfo && ct.slateInfo.frames
+                ? <span className="dim ct-num-text">{ct.slateInfo.codes} codes · {ct.slateInfo.unreadable} unreadable{ct.slateInfo.cost != null ? ` · $${ct.slateInfo.cost.toFixed(2)}` : ''}</span>
+                : null}
           </CtRow>
         )}
         {list.length > 0 && (

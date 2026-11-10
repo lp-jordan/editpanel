@@ -144,6 +144,24 @@ function codeEvents(day, notes, offsetSec) {
     .sort((a, b) => a.frame - b.frame);
 }
 
+/**
+ * Slate-angle reads (cut_through_slate.js) + slate-note events → one event list. Where the slate
+ * screen was readable, what it showed wins; where it wasn't (or there's no slate footage), the
+ * notes fill in. A repeat of the code before it is dropped.
+ */
+function mergeReads(reads, events) {
+  const R = (reads || []).filter((r) => r.to > r.from);
+  const inRead = (f) => R.find((r) => f >= r.from && f < r.to);
+  const all = [];
+  for (const r of R) if (r.code) all.push({ frame: r.from, code: r.code, src: 'frame' });
+  for (const e of events || []) {
+    const r = inRead(e.frame);
+    if (!r || !r.code) all.push({ ...e, src: 'slate' });
+  }
+  all.sort((a, b) => a.frame - b.frame);
+  return all.filter((e, i) => i === 0 || e.code !== all[i - 1].code);
+}
+
 /** Every mic's own words, sorted by start (frames). */
 function wordList(words) {
   return ((words && words.words) || []).filter((w) => w.own !== false && !w.ghost).sort((a, b) => a.s - b.s);
@@ -202,12 +220,13 @@ function tcLabel(day, f) {
  *   label     the run label (names videos that have no J-code)
  *   firstCode the editor says the multicam starts on this code (notes already cut by notesFrom)
  */
-function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'video', firstCode = '' }) {
+function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'video', firstCode = '', reads = null }) {
   const fs_ = frameSec(day);
   const sec = (x) => Math.round(x / fs_);
   const W = wordList(words);
   const mics = (words && words.mics) || [...new Set(W.map((w) => w.mic))];
-  const events = codeEvents(day, notes || [], offsetSec);
+  const noteEvents = codeEvents(day, notes || [], offsetSec);
+  const events = reads && reads.length ? mergeReads(reads, noteEvents) : noteEvents;
   const recs = recordingsOf(day);
 
   // 1. pieces: each recording, split where the code changes inside it
@@ -260,6 +279,15 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
     if (v.restarts) flags.push(v.restarts > 1 ? `${v.restarts} restarts` : 'Restart');
     const who = speakersIn(W, v.from, v.to);
     if (W.length && who.words < FEW_WORDS) flags.push('Few words');
+    if (reads && reads.length) {
+      const seen_ = reads.filter((r) => r.to > v.from && r.from < v.to);
+      if (seen_.length && !seen_.some((r) => r.code)) flags.push('Slate unreadable');
+      else if (seen_.some((r) => r.code === v.code && !r.sure)) flags.push('Slate read unsure');
+      // a code noted during this video that no video ended up with: the frames and the notes disagree
+      const noted = [...new Set(noteEvents.filter((e) => e.frame >= v.from && e.frame < v.to).map((e) => e.code))]
+        .filter((c) => c !== v.code && !merged.some((x) => x.code === c));
+      if (noted.length) flags.push(`Notes say ${noted.join(', ')}`);
+    }
     const later = merged.slice(i + 1).find((x) => x.code && x.code === v.code);
     if (later) flags.push(`${v.code} again at ${tcLabel(day, later.from)}`);
     const kind = mics.length > 1 && who.speakers.length >= 2 ? 'convo' : 'solo';
@@ -301,4 +329,4 @@ function spanTimelines({ day, notes = [], offsetSec = 0, label = 'video' }) {
   });
 }
 
-module.exports = { spanTimelines, findVideos, notesFrom, slateOffset, codeEvents, recordingsOf, slateSeconds, longestPause, speakersIn, tcSecOfFrame, frameOfTcSec, cleanName, safeId, tcLabel };
+module.exports = { spanTimelines, findVideos, mergeReads, notesFrom, slateOffset, codeEvents, recordingsOf, slateSeconds, longestPause, speakersIn, tcSecOfFrame, frameOfTcSec, cleanName, safeId, tcLabel };

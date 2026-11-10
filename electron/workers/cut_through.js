@@ -34,6 +34,7 @@ const claude = require('./cut_through_claude');
 const motion = require('./cut_through_motion');
 const angleRulesLib = require('../shared/angle_rules');
 const videosLib = require('./cut_through_videos');
+const slateLib = require('./cut_through_slate');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 const compare = require('./cut_through_compare');
 const packLib = require('./transcription_pack');
@@ -320,6 +321,7 @@ function createCutThrough(opts) {
       compareJson: path.join(dir, `compare_${label}.json`),
       compareHtml: path.join(dir, `compare_${label}.html`),
       videos: path.join(dir, `videos_${label}.json`),
+      slate: path.join(dir, `slate_${label}.json`),
       batchDraft: path.join(dir, `batch_${label}.json`)
     };
   }
@@ -371,6 +373,41 @@ function createCutThrough(opts) {
     const next = { ...p, lastAngleRoles: { ...(p.lastAngleRoles || {}), ...clean } };
     if (s.project) next.angleRoles = { ...(p.angleRoles || {}), [s.project]: { ...((p.angleRoles || {})[s.project] || {}), ...clean } };
     setPrefs({ cutThrough: next });
+  }
+
+  /** The angle that films the slate screen, per Resolve project (default: an angle named "…slate…"). */
+  function slateAngle() {
+    const angles = (s.day && s.day.angles) || [];
+    const p = (getPrefs() || {}).cutThrough || {};
+    const saved = s.project ? (p.slateAngles || {})[s.project] : undefined;
+    if (saved === '') return null;                     // turned off
+    if (saved && angles.includes(saved)) return saved;
+    return angles.find((a) => /slate/i.test(a)) || null;
+  }
+
+  function setSlateAngle(angle) {
+    if (!s.project || !s.day) throw new Error('Pick a multicam and run Prep first');
+    const a = angle && (s.day.angles || []).includes(angle) ? angle : '';
+    const p = (getPrefs() || {}).cutThrough || {};
+    setPrefs({ cutThrough: { ...p, slateAngles: { ...(p.slateAngles || {}), [s.project]: a } } });
+    emit();
+    return snapshot();
+  }
+
+  /** The saved slate read for this label, when it's of the current slate angle. */
+  function slateReads() {
+    if (!s.label) return null;
+    const d = readJson(files().slate);
+    return d && d.angle === slateAngle() && Array.isArray(d.reads) ? d : null;
+  }
+
+  function slateInfo() {
+    const d = slateReads();
+    const live = s.slateRead || null;
+    if (!d) return live ? { running: live } : null;
+    const read = d.reads.filter((r) => r.code);
+    return { running: live, angle: d.angle, frames: d.reads.length, codes: new Set(read.map((r) => r.code)).size,
+      unreadable: d.reads.length - read.length, cost: d.cost, madeAt: d.madeAt };
   }
 
   /** "Never cut from X to Y" rules for this project's multicam (Jordan 2026-11-10). */
@@ -475,6 +512,7 @@ function createCutThrough(opts) {
 
   function snapshot() {
     return { ...s, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
+      slateAngle: slateAngle(), slateInfo: slateInfo(),
       videosReady: videosToBuild().length, now: Date.now() };
   }
 
@@ -1408,7 +1446,8 @@ function createCutThrough(opts) {
     const auto = videosLib.slateOffset(s.day, notes);
     const manual = offsetSec !== undefined && offsetSec !== null && String(offsetSec).trim() !== '' && Number.isFinite(Number(offsetSec));
     const used = manual ? Number(offsetSec) : auto.offsetSec;
-    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first });
+    const slate = slateReads();
+    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first, reads: slate && slate.reads });
     const old = new Map(((s.videos && s.videos.videos) || []).map((v) => [v.id, v]));
     const videos = found.map((v) => {
       const o = old.get(v.id);
@@ -1423,6 +1462,60 @@ function createCutThrough(opts) {
       active: Boolean(s.videos && s.videos.active), batch: null, videos
     });
     emit();
+    return snapshot();
+  }
+
+  /**
+   * Read the J-code off the slate angle's footage (cut_through_slate.js): slate_<LABEL>.json, then
+   * Find videos again with it. Costs a little (Claude reads one frame per code change).
+   */
+  async function readSlate() {
+    if (s.busy) throw new Error(`${s.busy} is still running`);
+    needRunFolder();
+    if (!s.day) throw new Error('Run Prep first');
+    const angle = slateAngle();
+    if (!angle) throw new Error('Pick the slate angle first');
+    if (!claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
+    const clips = (s.day.picture_clips || []).filter((c) => c.angle === angle && c.path && c.to_sec > c.from_sec);
+    if (!clips.length) throw new Error(`No clips found for ${angle} (run Prep again)`);
+    const f = files();
+    const st0 = settings();
+    let known = [];
+    const lp = st0.lposProject;
+    if (lp && lposClient()) {
+      try {
+        const data = await lposClient().getSlateNotes(lp.id);
+        known = (Array.isArray(data?.notes) ? data.notes : []).map((n) => String(n.code || '').trim()).filter((c) => c && c !== 'ATEM');
+      } catch (_) { /* the hint is optional */ }
+    }
+    s.busy = 'Reading the slate';
+    canceled = false;
+    s.slateRead = { phase: 'Starting', bar: 0, startedAt: Date.now() };
+    emit();
+    const model = st0.claudeModel || claude.DEFAULT_MODEL;
+    try {
+      const r = await slateLib.readSlate({ ffmpeg: ffmpegPath || 'ffmpeg', clips, frameSec: s.day.frame_sec[0] / s.day.frame_sec[1],
+        client: claudeApi(), model, knownCodes: known,
+        onProgress: (p) => { s.slateRead = { ...s.slateRead, ...p }; emit(); },
+        onProc: (p) => { child = p; }, isCanceled: () => canceled });
+      const cost = claude.costOf(r.model, r.usage);
+      claude.logCost({ costsDir: settings().filesDir, outDir: f.dir, label: s.label, step: 'slate', model: r.model, effort: 'low', usage: r.usage, seconds: r.seconds });
+      fs.mkdirSync(f.dir, { recursive: true });
+      fs.writeFileSync(f.slate, JSON.stringify({ angle, madeAt: Date.now(), model: r.model, cost, seconds: r.seconds, report: r.report, reads: r.reads }, null, 1), 'utf8');
+    } catch (err) {
+      if (err && err.usage) claude.logCost({ costsDir: settings().filesDir, outDir: f.dir, label: s.label, step: 'slate', model, effort: 'low', usage: err.usage });
+      throw canceled ? new Error('Slate read canceled') : err;
+    } finally {
+      s.busy = null;
+      s.slateRead = null;
+      child = null;
+      emit();
+    }
+    // the videos again, with the codes from the slate (same offset / first code as last time)
+    if (s.videos && readJson(f.words)) {
+      const off = s.videos.offset && s.videos.offset.manual ? s.videos.offset.used : '';
+      return findVideos({ offsetSec: off, firstCode: s.videos.firstCode || '' });
+    }
     return snapshot();
   }
 
@@ -1837,6 +1930,8 @@ function createCutThrough(opts) {
     listLposProjects,
     nameMulticamTimelines,
     findVideos,
+    readSlate,
+    setSlateAngle,
     updateVideo,
     planVideos,
     prepareBatch,
