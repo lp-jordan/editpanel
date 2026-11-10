@@ -83,17 +83,26 @@ const shape = (c) => [...String(c || '').toUpperCase()].map((ch) => LOOKALIKE[ch
  * An OCR read → the code to trust, or null (ask Claude). Known codes (the slate's notes) are what
  * make OCR safe: an exact match, or the one known code with the same shape (O10 read as 010). A
  * code not on the slate goes to Claude unless OCR is very sure and has no look-alike characters.
+ * A code that isn't on the slate (nobody logged it, or no slate picked): a confident letters-and-digits
+ * read (H6, J12) is taken but marked unsure (Find videos flags it) — real reads were 79–90
+ * confident (2026-11-10); look-alike mistakes like 010 / DO / FS lack a letter or a digit.
+ * Returns { code, sure } or null.
  */
 function trusted(read, known) {
   const code = read && read.code;
   if (!code || !CODE_RE.test(code)) return null;
   const K = known instanceof Set ? known : new Set((known || []).map((k) => String(k).toUpperCase()));
-  if (K.has(code) && read.confidence >= 20) return code;
+  if (K.has(code) && read.confidence >= 20) return { code, sure: true };
   const same = [...K].filter((k) => k.length === code.length && shape(k) === shape(code));
-  if (same.length === 1 && read.confidence >= 40) return same[0];
-  if (!same.length && read.confidence >= 90 && !/[ODQILSZBG012568]/.test(code)) return code;
+  if (same.length === 1 && read.confidence >= 40) return { code: same[0], sure: true };
+  if (!same.length && read.confidence >= 90 && !/[ODQILSZBG012568]/.test(code)) return { code, sure: true };
+  // a code nobody logged (or no slate loaded): a confident letters-and-digits read, marked unsure
+  if (!same.length && read.confidence >= 75 && /[A-Z]/.test(code) && /[0-9]/.test(code)) return { code, sure: false };
   return null;
 }
+
+/** A read that looks like a code at all (for finding the tile, not for trusting the code). */
+const looksLikeCode = (read) => Boolean(read && read.code && CODE_RE.test(read.code) && read.confidence >= 60);
 
 async function close() {
   const p = workerP;
@@ -101,4 +110,4 @@ async function close() {
   if (p) { try { await (await p).terminate(); } catch (_) { /* already gone */ } }
 }
 
-module.exports = { readCode, trusted, shape, close, MIN_CONFIDENCE, CODE_RE };
+module.exports = { readCode, trusted, looksLikeCode, shape, close, MIN_CONFIDENCE, CODE_RE };

@@ -28,12 +28,14 @@ const ocr = require('./cut_through_ocr');
 const SAMPLE_FPS = 1;
 const THUMB_W = 64;
 const THUMB_H = 32;
-const CHANGE = 4;             // mean |difference| (0–255) in the code's text area that counts as a new look
-const NOISE_X = 4;            // …or this many times the footage's own sample-to-sample noise, if higher
+// Real slate (Elevate 10-08, ATEM feed): noise median 0.11; one changed character (J5→J6) = 2.0
+const CHANGE = 1;             // mean |difference| (0–255) in the code's text area that counts as a new look
+const NOISE_X = 6;            // …or this many times the footage's own sample-to-sample noise, if higher
 const PERSIST = 2;            // …for this many samples in a row
 const READ_AFTER_SEC = 1.5;   // read a look this far in (past the change itself)
 const CHECK_EVERY_SEC = 300;  // a long look is also read every 5 min, and at its end
 const MIN_GAP_SEC = 3.5;      // a change between two reads closer than this is pinned
+const TYPING_SEC = 8;         // a stray read between two good codes this close together = someone typing
 const MAX_ROUNDS = 8;
 const MAX_LOOKS = 600;        // safety: more looks than this = the box isn't a steady code box
 const PER_REQUEST = 8;        // frames per Claude request
@@ -274,11 +276,13 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
   let byOcr = 0;                 // frames OCR read (free)
   let ocrOff = null;             // why OCR isn't used (it failed to start)
   const known = new Set((knownCodes || []).map((k) => String(k).trim().toUpperCase()).filter(Boolean));
-  /** OCR one frame's box → a trusted code or null; OCR trouble switches it off for the run. */
-  const tryOcr = async (clip, t, box_) => {
+  /** OCR one frame's box → { code, sure } it can vouch for, or null; raw: any code-like read at all
+   *  (finding the tile). OCR trouble switches it off for the run. */
+  const tryOcr = async (clip, t, box_, raw = false) => {
     if (ocrOff || !box_) return null;
     try {
-      return ocr.trusted(await ocrRead(await grabOcr(ffmpeg, clip.path, fileSec(clip, t), box_, onProc)), known);
+      const r = await ocrRead(await grabOcr(ffmpeg, clip.path, fileSec(clip, t), box_, onProc));
+      return raw ? (ocr.looksLikeCode(r) ? r : null) : ocr.trusted(r, known);
     } catch (err) {
       ocrOff = err.message || String(err);
       return null;
@@ -294,7 +298,7 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
   const probes = clips.slice(0, 3).map((c) => ({ c, t: c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2) }));
   for (const { c, t } of probes) {
     if (box) break;
-    if (await tryOcr(c, t, SLATE_BOX)) { box = SLATE_BOX; boxFrom = 'usual'; byOcr += 1; }
+    if (await tryOcr(c, t, SLATE_BOX, true)) { box = SLATE_BOX; boxFrom = 'usual'; byOcr += 1; }
   }
   if (probes.length && !box && client) {
     const frames = [];
@@ -355,8 +359,8 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
     for (const [i, x] of pending.entries()) {
       check();
       if (i % 10 === 0) onProgress({ phase: `${label} (${i + 1} of ${pending.length})`, bar: Math.round(barFrom + (i / Math.max(1, pending.length)) * (barTo - barFrom) / 2) });
-      const code = await tryOcr(x.pc.clip, x.s.t, box);
-      if (code) { x.s.code = code; x.s.sure = true; byOcr += 1; } else todo.push(x);
+      const got = await tryOcr(x.pc.clip, x.s.t, box);
+      if (got) { x.s.code = got.code; x.s.sure = got.sure; byOcr += 1; } else todo.push(x);
     }
     if (!client) { for (const { s } of todo) { s.code = null; s.sure = false; } return pending.length; }
     for (let i = 0; i < todo.length; i += PER_REQUEST) {
@@ -390,6 +394,20 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
     }
     if (!added) break;
     await readPending('Pinning where codes change', 80, 98);
+  }
+
+  // someone typing in the code box (J2 → "J" → J5, Elevate 2026-11-10): an unread or partial read
+  // squeezed between two good reads within TYPING_SEC is the edit in progress, not a code — dropped
+  // a good read: a slate code (or, with none loaded, letters and digits like H6 / J12)
+  const good = (y) => Boolean(y.code) && (known.size ? known.has(y.code) : /[A-Z]/.test(y.code) && /[0-9]/.test(y.code));
+  for (const pc of perClip) {
+    pc.samples = pc.samples.filter((x, i, all) => {
+      if (good(x)) return true;
+      const before = all.slice(0, i).reverse().find(good);
+      const after = all.slice(i + 1).find(good);
+      if (!before || !after || after.t - before.t > TYPING_SEC) return true;
+      return Boolean(x.code) && (x.code === before.code || x.code === after.code);
+    });
   }
 
   // 5. reads on the multicam
