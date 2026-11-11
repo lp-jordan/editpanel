@@ -2,26 +2,27 @@
 """
 Cut-through step 2 (Transcribe): transcribe the day's mics on LP1's GPU.
 
-Reads Desktop\\day_<LABEL>.json (written by prepare_multicam.py in Resolve), transcribes every mic
+Reads <run folder>\\day_<LABEL>.json (written by prepare_multicam.py in Resolve), transcribes every mic
 WAV over the stretch it covers in the multicam with faster-whisper large-v3 (WhisperX's engine)
 on the NVIDIA GPU, pins every word to the audio (WhisperX alignment), puts it on the multicam's frame grid, and decides who said it: each
 mic hears the other person faintly, so a word belongs to the mic where it's loudest.
-Writes (client words — Desktop only, never into git):
-  Desktop\\words_<LABEL>.json  — every word: mic angle, multicam start/end frame, probability,
-                                level on its own mic and on the loudest other mic, own=True/False
-  Desktop\\transcript_<LABEL>.txt — readable turns: [frame | mm:ss] ANGLE: text
-  Desktop\\transcribe_<LABEL>.txt — timings only
-Send all three (plus day_<LABEL>.json) back to the Mac.
+Writes into the same run folder (client words — never into git):
+  words_<LABEL>.json  — every word: mic angle, multicam start/end frame, probability,
+                        level on its own mic and on the loudest other mic, own=True/False
+  levels_<LABEL>.json — per-frame level of every mic (place_cuts.py places cuts from it)
+  transcript_<LABEL>.txt — readable turns: [frame | mm:ss] ANGLE: text
+  transcribe_<LABEL>.txt — timings only
 
-Uses the C:\\wxbench environment from bench_whisper.py (already set up on LP1).
-Run (normal Command Prompt):
-    C:\\wxbench\\Scripts\\python C:\\lp-app-ecosystem\\editpanel\\cut_through\\transcribe.py Convo2
+EditPanel runs it with the transcription pack's Python (Cut-through page → Transcribe; the pack
+carries faster-whisper, WhisperX and the models). By hand, with that Python:
+    <pack python> C:\\lp-app-ecosystem\\editpanel\\cut_through\\transcribe.py Convo2 dir=<run folder>
+(without dir= it reads and writes the Desktop)
 Quick test first (first 3 minutes of each mic): add  minutes=3
 Second, verbatim pass (restarts, "uh"s, cut-off words; ~2× the GPU time): add  verbatim=1
 Already transcribed, just measure the audio (levels + loud-without-words marks, no Whisper): add  levels_only=1
 Already transcribed before alignment existed, pin the words to the audio (no Whisper): add  align_only=1
-Every run ends with WhisperX forced alignment (wav2vec2, `pip install whisperx` in C:\\wxbench): word
-times to within a frame or two instead of Whisper's own (3–25 frames off); align_<LABEL>.txt says it ran.
+Every run ends with WhisperX forced alignment (wav2vec2): word times to within a frame or two
+instead of Whisper's own (3–25 frames off); align_<LABEL>.txt says it ran.
 Days without mic WAVs: the day file lists one angle's camera clips instead (ATEM mix or in-camera
 audio); those are decoded with PyAV or ffmpeg (first audio track) and every source on one angle becomes one
 track on the multicam clock.
@@ -36,7 +37,7 @@ import wave
 
 import numpy as np
 
-DESKTOP = os.path.expanduser("~/Desktop")
+RUN_DIR = os.path.expanduser("~/Desktop")             # main() sets it from dir= (EditPanel: the run folder)
 SR = 16000
 OWN_MARGIN_DB = 3.0          # "clear" = its mic is this much louder than any other mic ("own" = just louder)
 TURN_GAP_SEC = 1.0           # a new transcript line when the speaker changes or after this pause
@@ -80,7 +81,7 @@ def read_progress(tag: str, pct: int, mb: float, final: bool = False) -> None:
 
 def decode_av(path: str, until: float = None, tag: str = "") -> np.ndarray:
     """First audio track → 16 kHz mono via PyAV, called directly: faster-whisper's own
-    decode_audio passes av.open(metadata_errors=…), which newer PyAV (LP1's wxbench) rejects.
+    decode_audio passes av.open(metadata_errors=…), which newer PyAV (the transcription pack's) rejects.
     A camera file is read end to end (audio sits between the video), so a long one takes a
     while off the NAS: progress is printed; `until` (file seconds) stops early for quick tests."""
     import av
@@ -360,12 +361,12 @@ def align_words(words: list, mics: list, fs: float, progress=None) -> str:
 
 def write_align_note(label: str, line: str) -> None:
     """align_<LABEL>.txt: says the words were aligned (EditPanel aligns an older transcript before Plan)."""
-    with open(os.path.join(DESKTOP, f"align_{label}.txt"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(RUN_DIR, f"align_{label}.txt"), "w", encoding="utf-8") as fh:
         fh.write(line + "\n")
 
 
 def write_levels(label: str, mics: list, fs: float) -> str:
-    p = os.path.join(DESKTOP, f"levels_{label}.json")
+    p = os.path.join(RUN_DIR, f"levels_{label}.json")
     json.dump({"label": label, "frame_sec": fs, "mics": {m["angle"]: frame_levels(m, fs) for m in mics}},
               open(p, "w", encoding="utf-8"))
     return p
@@ -379,10 +380,10 @@ def main() -> None:
     args = [a for a in sys.argv[1:] if "=" not in a]
     opts = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
     label = args[0] if args else "Convo2"
-    global DESKTOP
-    DESKTOP = opts.get("dir", DESKTOP)                     # dir=<folder> reads/writes there instead
+    global RUN_DIR
+    RUN_DIR = opts.get("dir", RUN_DIR)                     # dir=<folder> reads/writes there instead
     limit = float(opts.get("minutes", 0)) * 60 * SR        # minutes=N: quick test on the first N minutes
-    day = json.load(open(os.path.join(DESKTOP, f"day_{label}.json"), encoding="utf-8"))
+    day = json.load(open(os.path.join(RUN_DIR, f"day_{label}.json"), encoding="utf-8"))
     fs = day["frame_sec"][0] / day["frame_sec"][1]
     report = [f"Transcribe {label} — multicam '{day['multicam']}', {day['length_sec'] / 60:.1f} min, "
               f"{len(day['mics'])} mic(s)"]
@@ -432,7 +433,7 @@ def main() -> None:
     if opts.get("align_only") == "1":
         # an already transcribed day (before alignment was added): pin its words to the audio,
         # then re-measure what depends on word times — no Whisper, the text stays as it was
-        wp = os.path.join(DESKTOP, f"words_{label}.json")
+        wp = os.path.join(RUN_DIR, f"words_{label}.json")
         data = json.load(open(wp, encoding="utf-8"))
         print("Aligning words to the audio…", flush=True)
         line = align_words(data["words"], mics, fs, align_progress)
@@ -451,7 +452,7 @@ def main() -> None:
     if opts.get("levels_only") == "1":
         # an already transcribed day: measure the audio only (no Whisper) — per-frame levels for
         # cutting from the waveform, plus the loud-without-words marks — and keep the words
-        wp = os.path.join(DESKTOP, f"words_{label}.json")
+        wp = os.path.join(RUN_DIR, f"words_{label}.json")
         data = json.load(open(wp, encoding="utf-8"))
         print("Measuring loudness frame by frame (for cut placement)…", flush=True)
         clipped = sum(clip_stretched(data["words"], m, fs) for m in mics)
@@ -532,11 +533,11 @@ def main() -> None:
     json.dump({"label": label, "multicam": day["multicam"], "fps": day["fps"], "frame_sec": day["frame_sec"],
                "angles": day["angles"], "mics": [m["angle"] for m in mics], "words": words, "unheard": unheard,
                "aligned": align_line.startswith("Aligned")},
-              open(os.path.join(DESKTOP, f"words_{label}.json"), "w", encoding="utf-8"))
+              open(os.path.join(RUN_DIR, f"words_{label}.json"), "w", encoding="utf-8"))
     if align_line.startswith("Aligned"):
         write_align_note(label, align_line)
-    elif os.path.exists(os.path.join(DESKTOP, f"align_{label}.txt")):
-        os.remove(os.path.join(DESKTOP, f"align_{label}.txt"))     # an older run's note: no longer true
+    elif os.path.exists(os.path.join(RUN_DIR, f"align_{label}.txt")):
+        os.remove(os.path.join(RUN_DIR, f"align_{label}.txt"))     # an older run's note: no longer true
 
     lines, cur = [], None
     for w in own:
@@ -549,14 +550,14 @@ def main() -> None:
         cur = {"mic": w["mic"], "s": w["s"], "e": w["e"], "text": [w["w"]]}
     if cur:
         lines.append(cur)
-    with open(os.path.join(DESKTOP, f"transcript_{label}.txt"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(RUN_DIR, f"transcript_{label}.txt"), "w", encoding="utf-8") as fh:
         for ln in lines:
             fh.write(f"[{int(ln['s'])}–{int(ln['e'])} | {mmss(ln['s'] * fs)}] {ln['mic']}: {' '.join(ln['text'])}\n")
     report.append(f"{len(lines)} transcript lines")
-    with open(os.path.join(DESKTOP, f"transcribe_{label}.txt"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(RUN_DIR, f"transcribe_{label}.txt"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(report) + "\n")
     print("\n".join(report))
-    print(f"Saved words_{label}.json, levels_{label}.json, transcript_{label}.txt, transcribe_{label}.txt on the Desktop")
+    print(f"Saved words_{label}.json, levels_{label}.json, transcript_{label}.txt, transcribe_{label}.txt in {RUN_DIR}")
 
 
 if __name__ == "__main__":

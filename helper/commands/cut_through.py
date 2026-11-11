@@ -1,12 +1,17 @@
 """Cut-through (beta) — Resolve-side steps for the Cut-through page.
 
-The pipeline lives in `editpanel/cut_through/` (plain Python scripts, so a
-git pull updates them without an EditPanel rebuild); these handlers run its
-Resolve-side steps inside the Resolve worker instead of Resolve's Py3 console.
+The pipeline lives in `editpanel/cut_through/` (plain Python scripts, shipped
+with EditPanel; Settings can point the page at another pipeline folder); these
+handlers run its Resolve-side steps inside the Resolve worker instead of
+Resolve's Py3 console.
 
   ct_list_multicams  {}  → {"multicams": [{name, bin, duplicate}]}
       Every multicam clip in the open project outside the archive bins
       (MC ORIGINAL / MC QUARANTINE), same walk as the pipeline uses.
+
+  ct_mark_in_out  {name}  → {in, out, bin, multicams}
+      The In/Out marked on that multicam in Resolve's source viewer (working
+      bins first, then the archive bins).
 
   ct_read_timeline  {name}  → {name, fps, track, pieces, start_frame, start_tc}
   ct_set_markers  {name, tag, markers [{frame, color, name, note}]}  → {removed, placed, failed}
@@ -15,8 +20,9 @@ Resolve-side steps inside the Resolve worker instead of Resolve's Py3 console.
   ct_run_step  {pipeline_dir, script, settings}  → {lines, stopped, error, seconds}
       Exec one allow-listed step script with `settings` as its run-line globals
       (LABEL, MC, SEQ_BIN, …) and the worker's Resolve handle, exactly as the
-      console run line does. Every print() from the script (and the scripts it
-      runs) is streamed back as a log event carrying the request's trace_id.
+      console run line does, plus __file__ (the build finds its sibling scripts
+      from it). Every print() from the script (and the scripts it runs) is
+      streamed back as a log event carrying the request's trace_id.
 
 stdout is the worker's JSON channel, so a step's prints must never reach it
 raw: builtins.print is swapped for the run, and only calls made on this
@@ -36,9 +42,6 @@ from typing import Any, Dict, List
 
 ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
 ALLOWED_STEPS = {"prepare_multicam.py", "build_rough_cut.py"}
-# The build script hard-codes the LP1 checkout; point it at the pipeline folder
-# the page uses so a different checkout location still works.
-_REPO_LINE = re.compile(r'^REPO\s*=\s*r?["\'][^"\'\n]*["\']\s*$', re.M)
 _run_lock = threading.Lock()
 
 
@@ -108,11 +111,9 @@ class _PrintCapture:
         self.buf = ""
 
 
-def run_step(path: str, settings: Dict[str, Any], resolve: Any, emit, repo_dir: str = None) -> Dict[str, Any]:
+def run_step(path: str, settings: Dict[str, Any], resolve: Any, emit) -> Dict[str, Any]:
     """Exec a step script the way its console run line does and return its report."""
     src = open(path, encoding="utf-8").read()
-    if repo_dir:
-        src = _REPO_LINE.sub(lambda _m: f"REPO = {repo_dir!r}", src, count=1)
     g: Dict[str, Any] = {"__name__": "__main__", "__file__": path, "resolve": resolve, **settings}
     capture = _PrintCapture(emit)
     t0 = time.time()
@@ -141,7 +142,7 @@ def handle_ct_run_step(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]
     pipeline_dir = str(payload.get("pipeline_dir") or "")
     path = os.path.join(pipeline_dir, script)
     if not os.path.isfile(path):
-        raise RuntimeError(f"Step not found: {path} (git pull on this machine?)")
+        raise RuntimeError(f"Step not found: {path} (check the pipeline folder in Cut-through settings)")
     if not rh.resolve or not rh.project:
         raise RuntimeError("Resolve not connected or no project open")
     settings = payload.get("settings") or {}
@@ -157,7 +158,7 @@ def handle_ct_run_step(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]
     if not _run_lock.acquire(blocking=False):
         raise RuntimeError("A cut-through step is already running")
     try:
-        return run_step(path, settings, rh.resolve, emit, repo_dir=os.path.dirname(os.path.normpath(os.path.abspath(pipeline_dir))))
+        return run_step(path, settings, rh.resolve, emit)
     finally:
         _run_lock.release()
 

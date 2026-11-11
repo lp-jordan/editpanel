@@ -8,9 +8,10 @@ command dispatch so the editor clicks once and watches the console instead of
 pasting a script into Resolve's Py3 console.
 
 DELIBERATELY READ-ONLY. It does not place markers, create timelines, or touch the
-project in any way — safe to run on a live edit. Creating the actual per-span
-sequences (and pulling the slate codes to name them) is the next step, gated on
-eyeballing this report against the slate.
+project in any way — safe to run on a live edit. The per-span timelines it was the
+first step towards have shipped elsewhere: create_multicam.py derives the recordings
+and makes their timelines, and the Cut-through page's Videos mode names each from
+its LPOS slate code (cut_through_videos.js). This report is kept as a diagnostic.
 
 Why boundaries come from clip edges, not the LPOS slate's ATEM events: the slate
 `timestamp` is the LPOS server system clock (createTimestamp() in atem-utils.ts),

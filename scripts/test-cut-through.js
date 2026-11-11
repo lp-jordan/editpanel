@@ -375,7 +375,8 @@ const CLEAN = 'Leadership starts with listening to your team every single day. T
 
 // The batch needs Resolve for real; the worker side is faked below, so a
 // placeholder is enough for the allow-list path check.
-fs.writeFileSync(path.join(FAKE_PIPELINE, 'build_rough_cut.py'), 'REPO = r"C:\\lp-app-ecosystem\\editpanel"\n_lines = []\nprint("repo", REPO)\n_lines.append("✗ STOPPED after 0.1s: fake")\n');
+// It prints the folder it finds its sibling scripts in (the real build takes it from __file__).
+fs.writeFileSync(path.join(FAKE_PIPELINE, 'build_rough_cut.py'), 'import os\n_lines = []\nprint("pipeline", os.path.dirname(os.path.abspath(__file__)))\n_lines.append("✗ STOPPED after 0.1s: fake")\n');
 
 const PY_ENV = { ...process.env, HOME, USERPROFILE: HOME, PYTHONPATH: `${REPO}${path.delimiter}${TMP}`, PYTHONIOENCODING: 'utf-8' };
 
@@ -391,7 +392,7 @@ events = []
 real_print = builtins.print
 res = run_step(${JSON.stringify(path.join(FAKE_PIPELINE, 'prepare_multicam.py'))}, {"LABEL": "PyT", "MC": "mc_test"}, r, events.append)
 assert builtins.print is real_print
-bat = run_step(${JSON.stringify(path.join(FAKE_PIPELINE, 'build_rough_cut.py'))}, {"LABEL": "PyT"}, r, events.append, repo_dir="/some/repo")
+bat = run_step(${JSON.stringify(path.join(FAKE_PIPELINE, 'build_rough_cut.py'))}, {"LABEL": "PyT"}, r, events.append)
 print(json.dumps({"mcs": mcs, "res": res, "bat": bat, "events": events}))
 `], { env: PY_ENV, encoding: 'utf8' });
   const lines = out.trim().split('\n');
@@ -401,7 +402,7 @@ print(json.dumps({"mcs": mcs, "res": res, "bat": bat, "events": events}))
   assert.strictEqual(r.res.error, null, r.res.lines.join('\n'));
   assert.ok(r.res.lines.some((l) => l.includes("Multicam 'mc_test'")), r.res.lines.join('\n'));
   assert.ok(r.events.some((l) => l.includes('audio clip 02MIC2.WAV under Camera 2')));
-  assert.ok(r.events.includes('repo /some/repo'), 'REPO line not pointed at the pipeline checkout');
+  assert.ok(r.events.includes(`pipeline ${path.resolve(FAKE_PIPELINE)}`), 'step run without __file__ (the build finds its pipeline folder from it)');
   assert.ok(r.events.some((e) => /^▸ Reading mc_test's layout from Resolve$/.test(e)) && !r.res.lines.some((l) => l.startsWith('▸')), 'phase line missing, or in the report');
   assert.ok(r.bat.stopped && r.bat.error.startsWith('✗ STOPPED'));
   const day = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'day_PyT.json'), 'utf8'));
@@ -572,14 +573,28 @@ class WhisperModel:
   console.log('- transcribe.py check skipped (set CT_TEST_PYTHON to a Python with numpy)');
 }
 
-// ── 2d. place_cuts.py on a scripted take: count retake, repeat retake, stutter, long pause ──
+// ── 2d. place_cuts.py on a scripted take: Claude's removals (two retakes, a stutter), no shot list ──
 {
   const { words, fps, seconds: t } = scriptedTake();
   const angles = ['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4'];
   const wp = path.join(TMP, 'solo_words.json'), dp = path.join(TMP, 'solo_day.json'), pp = path.join(TMP, 'solo_plan.json');
+  const rp = path.join(TMP, 'removals_solo.json');
   fs.writeFileSync(wp, JSON.stringify({ label: 'SoloT', multicam: 'mc_x', fps, frame_sec: [1001, 24000], angles, mics: ['Camera 1'], words }));
   fs.writeFileSync(dp, JSON.stringify({ multicam: 'mc_x', fps, frame_sec: [1001, 24000], length_sec: t + 5, angles, audio_source: 'camera', mics: [{ angle: 'Camera 1' }] }));
-  const out = execFileSync(PY, [path.join(PIPELINE, 'place_cuts.py'), wp, dp, pp, 'extra=Camera 4'], { encoding: 'utf8' });
+  // Claude's edit as word ranges [first, last] → frame spans (~6 fr after the kept word before,
+  // ~5 fr before the kept word after); no shots, so the picture is the rule rhythm
+  const nth = (w, n = 0) => words.map((x, k) => [x.w, k]).filter(([x]) => x === w)[n][1];
+  const start = Math.floor(words[0].s) - 18, end = Math.floor(words[words.length - 1].e) + 24;
+  const span = (i, j, why) => {
+    const a = Math.floor(words[i - 1].e + Math.min(6, Math.max(0, words[i].s - words[i - 1].e)));
+    const n = words[j + 1];
+    const b = Math.min(Math.ceil(n.s - Math.min(5, Math.max(0, n.s - words[j].e))), Math.floor(n.s));
+    return { from: a, to: Math.max(a, b), why };
+  };
+  fs.writeFileSync(rp, JSON.stringify({ start, end, review: [], removals: [
+    span(nth('The'), nth('three.'), 'retake'), span(nth('you'), nth('you'), 'false_start'),
+    span(nth('Feedback'), nth('people', 1), 'retake')] }));
+  const out = execFileSync(PY, [path.join(PIPELINE, 'place_cuts.py'), wp, dp, pp, 'extra=Camera 4', `removals=${rp}`], { encoding: 'utf8' });
   const plan = JSON.parse(fs.readFileSync(pp, 'utf8'));
   const cut = (f) => plan.removals.some((r) => r.from <= f && f < r.to);
   const kept = words.filter((w) => !cut(w.s)).map((w) => w.w).join(' ');
@@ -588,6 +603,7 @@ class WhisperModel:
   const v = plan.video;
   assert.strictEqual(v[0].angle, 'Camera 1');
   assert.strictEqual(v[v.length - 1].angle, 'Camera 1');
+  assert.deepStrictEqual([v[0].why, v[v.length - 1].why], ['open on the wide', 'close on the wide']);   // the rule rhythm
   assert.ok(v.every((x, k) => k === 0 || x.angle !== v[k - 1].angle), 'jump cut');
   assert.deepStrictEqual(plan.audio, { source: 'camera', angle: 'Camera 1' });
   assert.deepStrictEqual(plan.mics, {});
@@ -787,7 +803,7 @@ print(json.dumps({n: [v["angle"] for v in json.load(open(f"N_{n}.json"))["video"
   assert.ok(AR.check(['A', 'B', 'C'], ['A>C', 'B>C', 'C>A'], { A: 'wide' }).errors.length, 'C reachable only from nothing');
   assert.ok(/side angle/.test(AR.check(four, ['Camera 1>Camera 3'], roles).warnings[0]));
   assert.deepStrictEqual(AR.clean(['Camera 2>Camera 3', 'Camera 2>Camera 3', 'Camera 9>Camera 1', 'Camera 1>Camera 1'], four), ['Camera 2>Camera 3']);
-  console.log('✓ place_cuts.py: last take kept, stutter + count removed, topic repeat kept, no jump cuts, camera audio, no ping-pong at removals, slider only while moving');
+  console.log('✓ place_cuts.py: Claude\'s removals placed (last take kept, no word cut in half), rule-rhythm shots, no jump cuts, camera audio, no ping-pong at removals, slider only while moving');
 }
 
 // ── 2e. removal joins on aligned word times (Elevate, 2026-11-06) ──

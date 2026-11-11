@@ -14,14 +14,14 @@ Cut-through step 4 (Build): the whole build in one run, nothing copied between m
   3. import_into_resolve.py imports it (one multicam copy → primary in the MC bin; the original
      goes to "MC ORIGINAL").
   4. split_into_videos.py cuts it into one timeline per video in SEQ_BIN.
-Generated files go to OUT_DIR (EditPanel: the run folder; by hand: the Desktop) (they name client media — never into git).
+Generated files go to OUT_DIR (EditPanel: the run folder; by hand without OUT_DIR: the Desktop) (they name client media — never into git).
 
-HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
-    LABEL="ConvoTest"; MICS={"host": "Camera 2", "guest": "Camera 3"}; SPLIT=3; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\build_rough_cut.py", encoding="utf-8").read())
-Plans from plan_convo.py carry their mic angles, so MICS can be left out:
-    LABEL="Convo2"; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\build_rough_cut.py", encoding="utf-8").read())
+EditPanel runs this inside its Resolve worker (Cut-through page → Build). By hand in Resolve's Py3
+console (project open), the same settings as globals:
+    LABEL="ConvoTest"; PLAN_FILE=r"<run folder>\\ConvoTest_plan.json"; OUT_DIR=r"<run folder>"; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\build_rough_cut.py", encoding="utf-8").read())
+Plans carry their mic angles (mic_angles), so MICS={"host": "Camera 2", ...} is only needed for one that doesn't.
 Optional: RAW="*" (or names) moves the original's timelines into "MC ORIGINAL" too.
-Report saved to Desktop\\cut_through_<LABEL>.txt (includes the import and split reports).
+Report saved to OUT_DIR\\cut_through_<LABEL>.txt (includes the import and split reports).
 """
 
 import importlib.util
@@ -37,11 +37,12 @@ from urllib.parse import unquote
 
 LABEL = globals().get("LABEL", "ConvoTest")
 MICS = globals().get("MICS") or {}                     # role → angle carrying that person's mic
-SPLIT = int(globals().get("SPLIT", 1))                 # one plan cut into N videos (test only)
 SEQ_BIN = globals().get("SEQ_BIN")
 RAW = globals().get("RAW")
-REPO = r"C:\lp-app-ecosystem\editpanel"
-PIPELINE = os.path.join(REPO, "cut_through")
+# the pipeline folder is this script's own (EditPanel's Resolve worker sets __file__); a console
+# exec(open(...).read()) has no __file__, so it falls back to the LP1 checkout
+PIPELINE = (os.path.dirname(os.path.abspath(globals()["__file__"])) if globals().get("__file__")
+            else r"C:\lp-app-ecosystem\editpanel\cut_through")
 PLAN_FILE = globals().get("PLAN_FILE") or os.path.join(PIPELINE, "plans", f"{LABEL}_plan.json")
 # one plan per video (EditPanel's Videos list): [[plan file, timeline name], ...], all of one multicam
 PLAN_FILES = [list(x) for x in (globals().get("PLAN_FILES") or [])]
@@ -140,7 +141,7 @@ def bundle_xml(path: str):
 
 
 def run_script(name: str, settings: dict, r: Any) -> dict:
-    """Run a sibling spike in its own namespace and fold its report into this one."""
+    """Run a sibling step script in its own namespace and fold its report into this one."""
     g = {"__name__": "__main__", "resolve": r, **settings}
     exec(open(os.path.join(PIPELINE, name), encoding="utf-8").read(), g)
     _lines.extend("    " + x for x in g.get("_lines", []))
@@ -241,7 +242,7 @@ def main() -> None:
     spec.loader.exec_module(mk)
     out = os.path.join(OUT_DIR, f"{LABEL}_joined.fcpxml")
     plan_args = [f"{p}:{n}" for p, n in videos]
-    args = [src, out, *(f"{k}={v}" for k, v in MICS.items()), f"split={1 if PLAN_FILES else SPLIT}", f"joined={joined}", *plan_args]
+    args = [src, out, *(f"{k}={v}" for k, v in MICS.items()), f"joined={joined}", *plan_args]
     ranges = mk.main(args)
     say(f"2. Built {os.path.basename(out)} (written as FCPXML 1.14): {len(ranges)} video(s) in one timeline "
         f"({time.time() - t1:.1f}s)")
@@ -249,7 +250,7 @@ def main() -> None:
     # 3. import → one copy (primary); original archived
     phase("Importing into Resolve")
     t1 = time.time()
-    g = run_script("import_into_resolve.py", {"XML": os.path.basename(out), "LABEL": LABEL, "BATCH": True, "OUT_DIR": OUT_DIR,
+    g = run_script("import_into_resolve.py", {"XML": os.path.basename(out), "LABEL": LABEL, "OUT_DIR": OUT_DIR,
                                           "ARCHIVE": True, "RAW": RAW, "MICS": MICS, "PLAN_FILE": PLAN_FILE,
                                               "MIC_FILES": {n: a for n, (_, a, _) in wavs.items()},
                                               "ATEM_FILE": getattr(mk, "LAST_ATEM", None)}, r)
@@ -280,5 +281,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("LABEL", "MICS", "SPLIT", "SEQ_BIN", "RAW", "OUT_DIR", "PLAN_FILE", "PLAN_FILES"):   # the console keeps run-line settings between runs
+    for _k in ("LABEL", "MICS", "SEQ_BIN", "RAW", "OUT_DIR", "PLAN_FILE", "PLAN_FILES"):   # the console keeps run-line settings between runs
         globals().pop(_k, None)

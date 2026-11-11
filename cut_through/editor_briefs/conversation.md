@@ -26,7 +26,7 @@ Remove:
 
 Keep:
 - **Interruptions and overlap that are part of the exchange** — that's a conversation.
-- **Short backchannels** ("yeah", "mm-hm", "right") as words — the program keeps the listener's mic closed when one steps on the talker, so you don't need to remove them.
+- **Short backchannels** ("yeah", "mm-hm", "right") as words — when one steps on the talker, the program opens the listener's mic quieter (−2.5 dB, crossfaded), so you don't need to remove them.
 - Laughter, reactions, and the rhythm between people.
 
 On a **live stage** (a panel or on-stage interview with an audience): lighter still — mostly dead air, walk-on / walk-off and real interruptions go; audience laughter, applause and questions that are part of the event stay.
