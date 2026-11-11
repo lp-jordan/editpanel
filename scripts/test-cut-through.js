@@ -1275,7 +1275,17 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   // a section plan switches Build back to the one rough cut
   snap = await c2.runPlan({});
   assert.ok(snap.steps.plan.status === 'done' && !snap.videos.active && snap.videosReady === 0, snap.steps.plan.error);
-  console.log('✓ videos end to end: slate J-codes → A1 / S1 (restart) / B2 → plan now (solo keeps both mic tracks, gap cut) → build PLAN_FILES → batch priced, sent, survives a restart, canceled, collected at half price, failed one re-sent');
+  // the visual slate read wins over the notes, and Join keeps what the last Find used: not the
+  // LPOS notes, not the slate file again (Jordan 2026-11-11: a join put the LPOS codes back)
+  const third = snap.videos.videos[2];
+  fs.writeFileSync(c2.snapshot().files.slate, JSON.stringify({ angle: 'Camera 1', reads: [{ from: third.from, to: third.to, code: 'R7', sure: true }] }));
+  c2.setSlateAngle('Camera 1');
+  snap = await c2.findVideos({});
+  assert.ok(snap.videos.videos.some((v) => v.code === 'R7'), JSON.stringify(snap.videos.videos.map((v) => v.code)));
+  c2.setSlateAngle('');                // the file no longer counts …
+  snap = await c2.joinVideos([snap.videos.videos[0].id, snap.videos.videos[1].id]);
+  assert.deepStrictEqual(snap.videos.videos.map((v) => v.code), ['A1', 'R7'], 'Join dropped the slate read');   // … Join still uses it
+  console.log('✓ videos end to end: slate J-codes → A1 / S1 (restart) / B2 → plan now (solo keeps both mic tracks, gap cut) → build PLAN_FILES → batch priced, sent, survives a restart, canceled, collected at half price, failed one re-sent; Join keeps the slate read');
 }
 
 (async () => {

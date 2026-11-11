@@ -457,6 +457,7 @@ function createCutThrough(opts) {
     const a = angle && (s.day.angles || []).includes(angle) ? angle : '';
     const p = (getPrefs() || {}).cutThrough || {};
     setPrefs({ cutThrough: { ...p, slateAngles: { ...(p.slateAngles || {}), [s.project]: a } } });
+    forgetDisk();
     emit();
     return snapshot();
   }
@@ -583,7 +584,7 @@ function createCutThrough(opts) {
 
   function snapshot() {
     // the saved slate notes stay in the worker (Join / Split use them); the page doesn't need them
-    const videos = s.videos && s.videos.slateNotes ? (({ slateNotes, ...rest }) => rest)(s.videos) : s.videos;
+    const videos = s.videos && (s.videos.slateNotes || s.videos.slateCodes) ? (({ slateNotes, slateCodes, ...rest }) => rest)(s.videos) : s.videos;
     return { ...s, videos, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
       slateAngle: slateAngle(), slateInfo: slateInfo(), estimate: costEstimate(),
       videosReady: videosToBuild().length,
@@ -1608,9 +1609,10 @@ function createCutThrough(opts) {
       offset = { used: manual ? Number(offsetSec) : auto.offsetSec, auto: auto.offsetSec, manual, hours: auto.hours, seconds: auto.seconds, matched: auto.matched };
     }
     const used = offset.used;
-    const slate = slateReads();
+    // the visual slate read: Join / Split use the one the last Find used (not the file again)
+    const reads = again ? (again.slateCodes || null) : ((slateReads() || {}).reads || null);
     const joins = (s.videos && Array.isArray(s.videos.joins)) ? s.videos.joins : [];
-    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first, reads: slate && slate.reads, joins });
+    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first, reads, joins });
     const before = (s.videos && s.videos.videos) || [];
     const old = new Map(before.map((v) => [v.id, v]));
     // a video whose range didn't move keeps its id (its plan file is named by it), even when a join
@@ -1637,7 +1639,7 @@ function createCutThrough(opts) {
     const codes = notes.filter((n) => n.code && n.code !== 'ATEM').length;
     writeVideos({
       label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes, firstCode: first, offset,
-      slateNotes: notes, active: Boolean(s.videos && s.videos.active), batch: null, videos, joins
+      slateNotes: notes, slateCodes: reads, active: Boolean(s.videos && s.videos.active), batch: null, videos, joins
     });
     emit();
     return snapshot();
@@ -1671,11 +1673,12 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
-  /** Join / Split: the videos again from the last Find's slate notes + offset (no LPOS read).
+  /** Join / Split: the videos again from the last Find's slate notes, visual slate read and offset
+   *  (no LPOS read, no slate file read).
    *  A videos file from before 1.2.153 has no saved notes: Find again as before. */
   function refind() {
     const v = s.videos || {};
-    return Array.isArray(v.slateNotes) && v.offset ? findVideos({ again: v }) : findAgain();
+    return Array.isArray(v.slateNotes) && v.offset && 'slateCodes' in v ? findVideos({ again: v }) : findAgain();
   }
 
   /** Undo the join a video came from. */
