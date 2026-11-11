@@ -31,6 +31,7 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { randomUUID } = require('crypto');
 const claude = require('./cut_through_claude');
+const estimateLib = require('./cut_through_estimate');
 const motion = require('./cut_through_motion');
 const angleRulesLib = require('../shared/angle_rules');
 const videosLib = require('./cut_through_videos');
@@ -246,6 +247,7 @@ function createCutThrough(opts) {
     lposError: null,
     lposLoading: false,
     busy: null,                     // step key currently running
+    sending: false,                 // a batch is being sent to Anthropic (Submit can't go twice)
     steps: Object.fromEntries(STEP_KEYS.map((k) => [k, emptyStep()])),
     // this machine's readiness (Setup card): filled by checkSetup / installPack
     setup: { checking: false, checkedAt: null, gpus: null, available: null, availableError: null, installing: null, test: null }
@@ -338,6 +340,72 @@ function createCutThrough(opts) {
     fs.mkdirSync(files().dir, { recursive: true });
     fs.writeFileSync(files().videos, JSON.stringify(m, null, 1), 'utf8');
     s.videos = m;
+    noteBatch(m && m.batch);
+  }
+
+  // ---- Batches in the queue, across labels (saved in prefs), so a second batch for the same
+  // multicam can't go out by accident while one is still waiting at Anthropic (1.2.144).
+  function queuedBatches() {
+    return ((getPrefs() || {}).cutThrough || {}).queuedBatches || {};
+  }
+
+  function setQueuedBatches(q) {
+    const p = (getPrefs() || {}).cutThrough || {};
+    setPrefs({ cutThrough: { ...p, queuedBatches: q } });
+  }
+
+  /** Keep the list in step with this label's batch: in it while live, out once it isn't. */
+  function noteBatch(b) {
+    if (!b || !b.id) return;
+    const q = queuedBatches();
+    const live = BATCH_LIVE.includes(b.status);
+    if (live === Boolean(q[b.id])) return;
+    const next = { ...q };
+    if (live) {
+      next[b.id] = { project: s.project, mc: s.mc || (s.day && s.day.multicam) || null, label: s.label,
+        videos: Object.keys(b.items || {}).length, submittedAt: b.submittedAt || Date.now() };
+    } else delete next[b.id];
+    setQueuedBatches(next);
+  }
+
+  function whenText(ts) {
+    const d = new Date(ts);
+    return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+  }
+
+  function queuedHere() {
+    const b = s.videos.batch;
+    return `A batch is already in the queue for ${s.label} (${Object.keys(b.items || {}).length} videos, sent ${whenText(b.submittedAt)}). Wait for it or cancel it.`;
+  }
+
+  /**
+   * Throws when a batch for this multicam is already in the queue (this label or another), or
+   * this label's last batch ended without being collected. Another label's entry is checked with
+   * Anthropic first, so one that has finished doesn't block.
+   */
+  async function assertNoQueuedBatch() {
+    const b = s.videos && s.videos.batch;
+    if (b && BATCH_LIVE.includes(b.status)) throw new Error(queuedHere());
+    if (b && b.id && b.status === 'ended' && !b.collected) throw new Error('The last batch has ended: Collect it first');
+    const mc = s.mc || (s.day && s.day.multicam) || null;
+    const q = queuedBatches();
+    for (const [id, e] of Object.entries(q)) {
+      if (b && b.id === id) continue;
+      if (e.project !== s.project || e.mc !== mc) continue;
+      let status = 'in_progress';
+      try {
+        const got = await claudeApi().messages.batches.retrieve(id);
+        status = got.processing_status;
+      } catch (err) {
+        if (err && err.status === 404) status = 'gone';
+      }
+      if (BATCH_LIVE.includes(status)) {
+        throw new Error(`A batch for ${mc} is already in the queue: ${e.label} (${e.videos} videos, sent ${whenText(e.submittedAt)}). Wait for it or cancel it from that label.`);
+      }
+      const next = { ...queuedBatches() };
+      delete next[id];
+      setQueuedBatches(next);
+    }
   }
 
   /** Videos mode is on (the last Plan was per video) and these are ready to build. */
@@ -513,8 +581,49 @@ function createCutThrough(opts) {
 
   function snapshot() {
     return { ...s, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
-      slateAngle: slateAngle(), slateInfo: slateInfo(),
+      slateAngle: slateAngle(), slateInfo: slateInfo(), estimate: costEstimate(),
       videosReady: videosToBuild().length, now: Date.now() };
+  }
+
+  // ---- Cost + time estimate (1.2.144): learned from this folder's cost log and transcribe reports.
+  // Re-read at most every 30 s (snapshot runs many times a second while a step logs).
+  let ratesMemo = null;
+  function learnedRates() {
+    const st0 = settings();
+    const key = `${st0.filesDir}|${st0.claudeEffort}|${process.platform === 'win32' ? (s.setup.gpus || []).length : 0}`;
+    if (ratesMemo && ratesMemo.key === key && Date.now() - ratesMemo.at < 30 * 1000) return ratesMemo;
+    let rows = [];
+    try { rows = estimateLib.parseCsv(fs.readFileSync(path.join(st0.filesDir, 'cut_through_costs.csv'), 'utf8')); } catch (_) { /* no runs yet */ }
+    const lookup = ratesMemo && ratesMemo.dir === st0.filesDir ? ratesMemo.lookup : estimateLib.makeLookup(st0.filesDir);
+    const rates = estimateLib.learnRates(rows, { costOf: (m, u) => claude.costOf(m, u), lookup, effort: st0.claudeEffort });
+    const gpu = process.platform === 'win32' && (s.setup.gpus || []).length > 0;
+    const transcribe = estimateLib.transcribeRate(estimateLib.transcribeReports(st0.filesDir), { gpu });
+    ratesMemo = { key, at: Date.now(), dir: st0.filesDir, lookup, rates, transcribe };
+    return ratesMemo;
+  }
+
+  /** Whole day (after Prep), the ticked videos, and what the planned ones actually cost. */
+  function costEstimate() {
+    if (!s.day) return null;
+    try {
+      const { rates, transcribe } = learnedRates();
+      const st0 = settings();
+      const opts = { model: st0.claudeModel, prices: claude.PRICES };
+      const kind = planKind(s.day);
+      const dayMin = s.day.length_sec ? s.day.length_sec / 60 : 0;
+      const tracks = Math.max(1, micAngles(s.day).length);
+      const day = { minutes: dayMin, kind, tracks, ...estimateLib.estimateCost([{ minutes: dayMin, kind }], rates, opts),
+        transcribeMin: Math.ceil((dayMin * tracks * transcribe.secPerTrackMin) / 60), transcribeLearned: transcribe.learned };
+      const vids = (s.videos && s.videos.videos) || [];
+      const tickedList = vids.filter((v) => v.include);
+      const ticked = tickedList.length ? { videos: tickedList.length, minutes: tickedList.reduce((t, v) => t + (v.minutes || 0), 0),
+        ...estimateLib.estimateCost(tickedList.map((v) => ({ minutes: v.minutes, kind: v.kind })), rates, opts) } : null;
+      const planned = tickedList.filter((v) => v.plan && v.plan.status === 'planned' && Number.isFinite(v.plan.cost));
+      const spent = planned.length ? { videos: planned.length, usd: Math.round(planned.reduce((t, v) => t + v.plan.cost, 0) * 100) / 100 } : null;
+      return { day, ticked, spent, runs: { solo: rates.solo.runs, convo: rates.convo.runs } };
+    } catch (_) {
+      return null;
+    }
   }
 
   // Log lines can arrive many per second; coalesce pushes to ~8/s.
@@ -598,6 +707,7 @@ function createCutThrough(opts) {
     s.planKind = s.day ? planKind(s.day) : null;
     s.planExists = fs.existsSync(f.plan);
     s.videos = readJson(f.videos);
+    noteBatch(s.videos && s.videos.batch);
     if (s.day && s.steps.prep.status !== 'running') s.steps.prep.data = prepData(s.day);
   }
 
@@ -1318,6 +1428,7 @@ function createCutThrough(opts) {
           label: s.label, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: settings().filesDir,
           promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
           start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: !!o.motionFile, noCut: o.nocut,
+          kind, minutes: (o.end - o.start) * tcClock(s.day).fsec / 60,
           delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
           roles: { wide: o.wide || undefined, punch: o.punch || undefined, extra: o.extra, slider: o.roles.slider, side: o.roles.side,
             other: o.roles.other, skip: o.skip },
@@ -1432,6 +1543,8 @@ function createCutThrough(opts) {
     const words = readJson(f.words);
     if (!words) throw new Error('Run Transcribe first');
     if (batchLive()) throw new Error('A batch is still running for these videos — cancel it or wait');
+    const ended = s.videos && s.videos.batch;
+    if (ended && ended.id && ended.status === 'ended' && !ended.collected) throw new Error('The last batch has ended: Collect it first');
     const lp = settings().lposProject;
     let notes = [];
     if (lp) {
@@ -1580,7 +1693,7 @@ function createCutThrough(opts) {
       start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: st0.sliderMotion, noCut: planRules(), delivery,
       talker: kind === 'solo' ? v.talker || null : null,
       roles: { wide: R.wide || undefined, punch: R.punch || undefined, extra: R.extra, slider: R.slider, side: R.side, other: R.other, skip: R.skip },
-      direction: direction(), kind
+      direction: direction(), kind, minutes: v.minutes
     };
   }
 
@@ -1611,7 +1724,7 @@ function createCutThrough(opts) {
     if (!s.day) throw new Error('Run Prep first');
     if (!fs.existsSync(files().words)) throw new Error('Run Transcribe first');
     if (!s.videos || !s.videos.videos.length) throw new Error('Find the videos first');
-    if (batchLive()) throw new Error('A batch is still running for these videos');
+    if (batchLive()) throw new Error(queuedHere());
     if (!claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
     if (note !== undefined) {
       const p = (getPrefs() || {}).cutThrough || {};
@@ -1631,6 +1744,7 @@ function createCutThrough(opts) {
   /** Plan the ticked videos now, one Claude call after another (ids: just those, e.g. a re-send). */
   async function planVideos({ ids, roles, direction: note, delivery } = {}) {
     const { list, R } = videosPlanSetup({ ids, roles, direction: note });
+    await assertNoQueuedBatch();
     const st = begin('plan');
     st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
     emit();
@@ -1699,6 +1813,7 @@ function createCutThrough(opts) {
    */
   async function prepareBatch({ ids, roles, direction: note, delivery } = {}) {
     const { list, R } = videosPlanSetup({ ids, roles, direction: note });
+    await assertNoQueuedBatch();
     const st = begin('plan');
     st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
     emit();
@@ -1744,8 +1859,10 @@ function createCutThrough(opts) {
     // the requests quote client words: they stay in the run folder until sent
     fs.writeFileSync(f.batchDraft, JSON.stringify({ requests }), 'utf8');
     const total = Object.values(items).reduce((t, x) => t + x.usd, 0);
+    // videos that already have a plan go again only if the editor means it: the draft says so
+    const replans = list.filter((v) => items[v.id] && v.plan && v.plan.status === 'planned').map((v) => v.name);
     writeVideos({ ...s.videos, batch: { status: 'draft', preparedAt: Date.now(), model: st0.claudeModel, effort: st0.claudeEffort,
-      items, skipped, estimate: Math.round(total * 100) / 100, liveEstimate: Math.round(total * 200) / 100 } });
+      items, skipped, replans, estimate: Math.round(total * 100) / 100, liveEstimate: Math.round(total * 200) / 100 } });
     pushLog('plan', `Batch ready: ${requests.length} video(s), about $${total.toFixed(2)} at the batch price` +
       (skipped.length ? `; left out: ${skipped.join('; ')}` : '') + '. Submit or discard.');
     finish('plan', { report: st.log.slice(), data: videosSummary() });
@@ -1763,11 +1880,24 @@ function createCutThrough(opts) {
   /** Batch, step 2: send it. The id is saved with the videos, so a restart keeps track of it. */
   async function submitBatch() {
     if (s.busy) throw new Error(`${s.busy} is still running`);
+    if (s.sending) throw new Error('The batch is already being sent');
     const b = s.videos && s.videos.batch;
-    if (!b || b.status !== 'draft') throw new Error('Prepare a batch first');
+    if (!b || b.status !== 'draft') {
+      if (b && BATCH_LIVE.includes(b.status)) throw new Error(`This batch is already in the queue (sent ${whenText(b.submittedAt)})`);
+      throw new Error('Prepare a batch first');
+    }
     const draft = readJson(files().batchDraft);
     if (!draft || !Array.isArray(draft.requests) || !draft.requests.length) throw new Error('The prepared batch is missing — prepare it again');
-    const created = await claudeApi().messages.batches.create({ requests: draft.requests });
+    s.sending = true;
+    emit();
+    let created;
+    try {
+      await assertNoQueuedBatch();
+      created = await claudeApi().messages.batches.create({ requests: draft.requests });
+    } finally {
+      s.sending = false;
+      emit();
+    }
     try { fs.rmSync(files().batchDraft, { force: true }); } catch (_) { /* sent */ }
     const videos = s.videos.videos.map((v) => (b.items[v.id] ? { ...v, plan: { status: 'queued', via: 'batch', at: Date.now() } } : v));
     writeVideos({ ...s.videos, active: true, videos, batch: { ...b, status: created.processing_status || 'in_progress', id: created.id,
@@ -1842,7 +1972,8 @@ function createCutThrough(opts) {
         const msg = result.message;
         try {
           const res = claude.readMessage(msg, b.model);
-          claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan', model: res.model, effort: args.effort, usage: res.usage, factor: 0.5 });
+          claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan', model: res.model, effort: args.effort, usage: res.usage, factor: 0.5,
+            minutes: item.args.minutes || v.minutes, kind: item.args.kind });
           cost = claude.costOf(res.model, res.usage, 0.5);
           spent += cost;
           const ctx = claude.preparePlan(args);
@@ -1852,7 +1983,8 @@ function createCutThrough(opts) {
         } catch (err) {
           if (err.usage) {
             const c = claude.costOf(err.model || b.model, err.usage, 0.5);
-            claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan_failed', model: err.model || b.model, effort: args.effort, usage: err.usage, factor: 0.5 });
+            claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan_failed', model: err.model || b.model, effort: args.effort, usage: err.usage, factor: 0.5,
+              minutes: item.args.minutes || v.minutes, kind: item.args.kind });
             spent += c;
             err.message += ` (billed $${c})`;
           }

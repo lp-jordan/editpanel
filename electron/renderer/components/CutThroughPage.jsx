@@ -366,6 +366,7 @@ function CutThroughPage({ connected }) {
   const dupe = mcOptions.find((m) => m.name === ct.mc && m.duplicate);
   const solo = ct.planKind === 'solo';
   const vids = ct.videos;
+  const est = ct.estimate;
   const firstCode = firstCodeDraft !== null ? firstCodeDraft : ((vids && vids.firstCode) || '');
   const mode = planMode || (vids && vids.active ? 'videos' : 'section');
   const batch = vids && vids.batch;
@@ -467,7 +468,11 @@ function CutThroughPage({ connected }) {
                   onPatch={(patch) => call('plan', () => api.updateVideo(v.id, patch))}
                   onRetry={() => call('plan', () => api.planVideos({ ids: [v.id], roles, direction: directionDraft, delivery: soloDefault }))} />
               ))}
-              <div className="dim ct-num-text">{ticked.length} of {list.length} ticked · {ticked.reduce((t, v) => t + v.minutes, 0).toFixed(1)} min</div>
+              <div className="dim ct-num-text">
+                {ticked.length} of {list.length} ticked · {ticked.reduce((t, v) => t + v.minutes, 0).toFixed(1)} min
+                {est && est.ticked ? ` · ≈ ${ctMoney(est.ticked.live)} live · ${ctMoney(est.ticked.batch)} batch` : ''}
+                {est && est.spent ? ` · spent ${ctMoney(est.spent.usd)} on ${est.spent.videos} planned` : ''}
+              </div>
             </div>
           </CtRow>
         )}
@@ -477,9 +482,12 @@ function CutThroughPage({ connected }) {
               <span>{Object.keys(batch.items || {}).length} videos · ≈ {ctMoney(batch.estimate)} <span className="dim">(live ≈ {ctMoney(batch.liveEstimate)})</span></span>
             )}
             {batchDraft && (batch.skipped || []).map((x) => <span key={x} className="tag warning">{x}</span>)}
+            {batchDraft && (batch.replans || []).length > 0 && (
+              <span className="tag warning" title={batch.replans.join(', ')}>{batch.replans.length} already planned</span>
+            )}
             {!batchDraft && (
               <span>
-                {batch.status === 'ended' ? (batch.collected ? 'Collected' : 'Ended') : batch.status === 'canceling' ? 'Canceling' : 'Running'}
+                {batch.status === 'ended' ? (batch.collected ? 'Collected' : 'Ended') : batch.status === 'canceling' ? 'Canceling' : 'In the queue'}
                 {batch.counts ? ` · ${batch.counts.succeeded + batch.counts.errored + batch.counts.canceled + batch.counts.expired}/${Object.keys(batch.items || {}).length} done` : ''}
                 {batch.submittedAt ? ` · sent ${ctWhen(batch.submittedAt)}` : ''}
                 {batch.spent != null ? ` · ${ctMoney(batch.spent)}` : ''}
@@ -528,6 +536,13 @@ function CutThroughPage({ connected }) {
               ))}
             </div>
           </CtRow>
+          {est && est.day && (
+            <CtRow label="Estimate">
+              <span>≈ {ctMoney(est.day.live)} live · {ctMoney(est.day.batch)} batch</span>
+              {est.day.guess && <span className="tag warning" title="No conversation runs yet">Guess</span>}
+              <span className="dim">{est.day.kind === 'convo' ? 'Conversation' : 'Solo'} · transcribe ≈ {est.day.transcribeMin} min{est.day.tracks > 1 ? ` (${est.day.tracks} tracks)` : ''}</span>
+            </CtRow>
+          )}
         </div>
       );
     }
@@ -734,8 +749,8 @@ function CutThroughPage({ connected }) {
       if (batchDraft) {
         return (
           <>
-            <button type="button" className="btn small ghost" disabled={busy} onClick={() => call(key, () => api.discardBatch())}>Discard</button>
-            <button type="button" className="btn small" disabled={busy} onClick={() => call(key, () => api.submitBatch())}>Submit batch</button>
+            <button type="button" className="btn small ghost" disabled={busy || ct.sending} onClick={() => call(key, () => api.discardBatch())}>Discard</button>
+            <button type="button" className="btn small" disabled={busy || ct.sending} onClick={() => call(key, () => api.submitBatch())}>{ct.sending ? 'Sending…' : 'Submit batch'}</button>
           </>
         );
       }

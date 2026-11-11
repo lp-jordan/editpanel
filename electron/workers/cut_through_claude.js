@@ -419,14 +419,24 @@ function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model,
     model: model || DEFAULT_MODEL, effort, delivery, direction, energy: !!energy, params };
 }
 
-/** Appends one Claude call to <costs folder>/cut_through_costs.csv. */
-function logCost({ costsDir, outDir, label, step, model, effort, usage, seconds = 0, factor = 1 }) {
+const COST_HEADER = 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds,minutes,kind';
+
+/** Appends one Claude call to <costs folder>/cut_through_costs.csv. minutes + kind (1.2.144) feed the
+ *  cost estimate (cut_through_estimate.js); a file from before gets the two columns added to its header. */
+function logCost({ costsDir, outDir, label, step, model, effort, usage, seconds = 0, factor = 1, minutes = null, kind = '' }) {
   fs.mkdirSync(costsDir || outDir, { recursive: true });
   const csv = path.join(costsDir || outDir, 'cut_through_costs.csv');
   const u = usage || {};
-  if (!fs.existsSync(csv)) fs.writeFileSync(csv, 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds\n');
+  if (!fs.existsSync(csv)) fs.writeFileSync(csv, `${COST_HEADER}\n`);
+  else {
+    const text = fs.readFileSync(csv, 'utf8');
+    const nl = text.indexOf('\n');
+    const head = (nl < 0 ? text : text.slice(0, nl)).trim();
+    if (head && head !== COST_HEADER && !head.includes(',minutes')) fs.writeFileSync(csv, `${COST_HEADER}${nl < 0 ? '\n' : text.slice(nl)}`);
+  }
+  const mins = Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 100) / 100 : '';
   fs.appendFileSync(csv, `${new Date().toISOString()},${label},${step},${model},${effort},${u.input_tokens || 0},${u.output_tokens || 0},` +
-    `${u.cache_read_input_tokens || 0},${u.cache_creation_input_tokens || 0},${costOf(model, usage, factor)},${Math.round(seconds)}\n`);
+    `${u.cache_read_input_tokens || 0},${u.cache_creation_input_tokens || 0},${costOf(model, usage, factor)},${Math.round(seconds)},${mins},${kind || ''}\n`);
 }
 
 /**
@@ -447,13 +457,15 @@ async function planWithClaude(o) {
   } catch (err) {
     if (err.usage) {
       const m = err.model || ctx.model;
-      logCost({ costsDir, outDir, label: ctx.label, step: 'solo_plan_failed', model: m, effort: ctx.effort, usage: err.usage, seconds: (Date.now() - t0) / 1000 });
+      logCost({ costsDir, outDir, label: ctx.label, step: 'solo_plan_failed', model: m, effort: ctx.effort, usage: err.usage, seconds: (Date.now() - t0) / 1000,
+        minutes: o.minutes || ctx.minutes, kind: o.kind });
       err.message += ` (billed $${costOf(m, err.usage)})`;
     }
     throw err;
   }
   const seconds = Math.round((Date.now() - t0) / 1000);
-  logCost({ costsDir, outDir, label: ctx.label, step: 'solo_plan', model: res.model, effort: ctx.effort, usage: res.usage, seconds });
+  logCost({ costsDir, outDir, label: ctx.label, step: 'solo_plan', model: res.model, effort: ctx.effort, usage: res.usage, seconds,
+    minutes: o.minutes || ctx.minutes, kind: o.kind || (ctx.delivery === 'convo' ? 'convo' : 'solo') });
   return finishPlan(ctx, res, { outDir, seconds });
 }
 
@@ -508,4 +520,4 @@ function finishPlan(ctx, res, { outDir, seconds = 0, factor = 1, via = '' }) {
 }
 
 module.exports = { planWithClaude, preparePlan, finishPlan, readMessage, requestParams, makeClient, logCost, buildTokens, renderTranscript,
-  validateRemovals, validateShots, toFrameSpans, toFrameShots, costOf, askClaude, buildSchema, SCHEMA, DEFAULT_MODEL, DELIVERY, PAUSES, MAX_WORDS };
+  validateRemovals, validateShots, toFrameSpans, toFrameShots, costOf, askClaude, buildSchema, SCHEMA, DEFAULT_MODEL, DELIVERY, PAUSES, MAX_WORDS, PRICES };

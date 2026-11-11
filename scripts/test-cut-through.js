@@ -34,6 +34,50 @@ fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
 
 // ── 1. pure helpers ────────────────────────────────────────────
 {
+  // cost estimate (1.2.144): a line per kind learned from the cost log, else the starting rates
+  const est = require('../electron/workers/cut_through_estimate');
+  const claudeLib = require('../electron/workers/cut_through_claude');
+  const costOf = (m, u) => claudeLib.costOf(m, u);
+  const head = 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds';
+  const rows = est.parseCsv([`${head},minutes,kind`,
+    ...[2, 4, 6, 8, 10, 12].map((m, i) => `t,D__v${i},solo_plan,claude-opus-5-5,high,${1000 + 1400 * m},${500 + 1000 * m},0,0,0,1,${m},solo`),
+    't,D,slate,claude-opus-5-5,low,9999,9999,0,0,0,1,,',
+    `t,OLD__v1,batch_plan,claude-opus-5-5,high,${1000 + 1400 * 5},${500 + 1000 * 5},0,0,0,1`].join('\n'));
+  assert.strictEqual(rows[7].minutes, '');
+  let looked = 0;
+  const rates = est.learnRates(rows, { costOf, effort: 'high', lookup: (label) => { looked += 1; return label === 'OLD__v1' ? { minutes: 5, kind: 'solo' } : null; } });
+  assert.strictEqual(looked, 1, 'only the old row is looked up');
+  assert.ok(rates.solo.learned && rates.solo.runs === 7, JSON.stringify(rates.solo));
+  // usd ≈ (1000·4 + 500·20)/1e6 + m·(1400·4 + 1000·20)/1e6 = 0.014 + 0.0256·m
+  assert.ok(Math.abs(rates.solo.fixed - 0.014) < 5e-4 && Math.abs(rates.solo.perMin - 0.0256) < 1e-4, JSON.stringify(rates.solo));   // costOf rounds to 0.001
+  assert.ok(!rates.convo.learned && rates.convo.guess && rates.convo.runs === 0);
+  const opts = { model: 'claude-opus-5-5', prices: claudeLib.PRICES };
+  const e1 = est.estimateCost([{ minutes: 10, kind: 'solo' }, { minutes: 20, kind: 'solo' }], rates, opts);
+  assert.deepStrictEqual([e1.live, e1.batch, e1.guess], [0.8, 0.4, false]);       // 2·0.014 + 30·0.0256 = 0.796
+  assert.strictEqual(est.estimateCost([{ minutes: 10, kind: 'solo' }], rates, { ...opts, model: 'claude-sonnet-5-5' }).live, 0.14);   // half the price
+  assert.ok(est.estimateCost([{ minutes: 10, kind: 'convo' }], rates, opts).guess);
+  // too few rows → the starting rates
+  assert.deepStrictEqual(est.learnRates(rows.slice(0, 3), { costOf }).solo.fixed, est.START.solo.fixed);
+  // transcribe time: the report's read + passes + align over the track minutes (verbatim pass not counted twice)
+  const rep = ['Read audio in 136s (camera audio, 1 track(s))', '  Camera 1: 12255 words, 99.0 min in 299s = 19.9x real time (raised 26 dB)',
+    '  Camera 1 (verbatim): 12327 words, 99.0 min in 291s = 20.4x real time (raised 26 dB)', 'Aligned 12303 of 12303 words to the audio on cpu in 461s (x)'].join('\n');
+  assert.deepStrictEqual(est.transcribeTiming(rep), { seconds: 1187, trackMin: 99 });
+  assert.ok(Math.abs(est.transcribeRate([rep, 'junk'], { gpu: false }).secPerTrackMin - 1187 / 99) < 1e-9);
+  assert.strictEqual(est.transcribeRate([], { gpu: true }).secPerTrackMin, est.START_TRANSCRIBE.gpu);
+  // an old cost log gets the two new columns on its header, rows kept
+  const dir = path.join(TMP, 'costlog');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'cut_through_costs.csv'), `${head}\nt,X,solo_plan,claude-opus-5-5,high,1,1,0,0,0,1\n`);
+  claudeLib.logCost({ costsDir: dir, label: 'Y', step: 'solo_plan', model: 'claude-opus-5-5', effort: 'high', usage: { input_tokens: 1, output_tokens: 1 }, minutes: 3.456, kind: 'convo' });
+  const csvLines = fs.readFileSync(path.join(dir, 'cut_through_costs.csv'), 'utf8').trim().split('\n');
+  assert.ok(csvLines[0].endsWith(',minutes,kind') && csvLines[1] === 't,X,solo_plan,claude-opus-5-5,high,1,1,0,0,0,1' && csvLines[2].endsWith(',3.46,convo'), csvLines.join('\n'));
+  // the lookup finds an old row's minutes in its run folder
+  fs.mkdirSync(path.join(dir, 'Proj', 'DAY'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'Proj', 'DAY', 'videos_DAY.json'), JSON.stringify({ videos: [{ id: 'v02_B', minutes: 7.5, kind: 'convo' }] }));
+  assert.deepStrictEqual(est.makeLookup(dir)('DAY__v02_B'), { minutes: 7.5, kind: 'convo' });
+  console.log('✓ cost estimate: line per kind from the cost log (old rows looked up), starting rates, other model scaled, transcribe time, old log header upgraded');
+}
+{
   const p = ct.parseProgress('  Camera 2 [######-------------------]  24%  5.4/22.6 min  41s');
   assert.deepStrictEqual(p, { angle: 'Camera 2', pct: 24, doneMin: 5.4, totalMin: 22.6, seconds: 41 });
   assert.strictEqual(ct.parseProgress('Loading the model on cuda…'), null);
@@ -1108,6 +1152,11 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.strictEqual(draft.status, 'draft');
   assert.deepStrictEqual(Object.keys(draft.items), [a1.id, s1.id, b2.id]);
   assert.ok(draft.items[a1.id].input === 5000 && draft.estimate > 0 && Math.abs(draft.liveEstimate - 2 * draft.estimate) < 0.02, JSON.stringify(draft));
+  assert.deepStrictEqual(draft.replans, ['A1', 'S1']);
+  // the page's estimate: whole day after Prep, the ticked videos, what the planned ones cost
+  assert.ok(snap.estimate && snap.estimate.day.live > 0 && snap.estimate.ticked.videos === 3 && snap.estimate.spent.videos === 2, JSON.stringify(snap.estimate));
+  assert.ok(new RegExp(`Vids__${a1.id},solo_plan,claude-opus-5-5,high,4000,2000,0,0,0\\.056,\\d+,[\\d.]+,solo`).test(fs.readFileSync(path.join(FILES, 'cut_through_costs.csv'), 'utf8')),
+    'the cost row has no minutes / kind');
   assert.throws(() => c.updateVideo(a1.id, { include: false }), /Discard or finish the batch/);
   snap = c.discardBatch();
   assert.strictEqual(snap.videos.batch, null);
@@ -1120,6 +1169,33 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.strictEqual(snap.videos.batch.id, 'msgbatch_test');
   assert.ok(snap.videos.videos.every((v) => v.plan.status === 'queued'));
   await assert.rejects(c.findVideos({}), /batch is still running/);
+  // nothing can send it again while it's in the queue (1.2.144)
+  await assert.rejects(c.submitBatch(), /already in the queue/);
+  await assert.rejects(c.prepareBatch({ delivery: 'scripted' }), /already in the queue/);
+  await assert.rejects(c.planVideos({ delivery: 'scripted' }), /already in the queue/);
+  assert.ok(getPrefs().cutThrough.queuedBatches.msgbatch_test.label === 'Vids', JSON.stringify(getPrefs().cutThrough));
+  // … nor from another label on the same multicam (Anthropic is asked first: still in the queue)
+  for (const n of ['day_Vids.json', 'words_Vids.json', 'levels_Vids.json']) {
+    if (fs.existsSync(RUN('Vids', n))) { fs.mkdirSync(RUN('Vids2', ''), { recursive: true }); fs.copyFileSync(RUN('Vids', n), RUN('Vids2', n.replace('Vids', 'Vids2'))); }
+  }
+  const vids2 = JSON.parse(fs.readFileSync(RUN('Vids', 'videos_Vids.json'), 'utf8'));
+  fs.writeFileSync(RUN('Vids2', 'videos_Vids2.json'), JSON.stringify({ ...vids2, batch: null, videos: vids2.videos.map((v) => ({ ...v, plan: null })) }));
+  const realRetrieve = api.messages.batches.retrieve;
+  api.messages.batches.retrieve = async () => ({ processing_status: 'in_progress' });
+  c.select({ mc: 'mc_test', label: 'Vids2' });
+  await assert.rejects(c.prepareBatch({ delivery: 'scripted' }), /already in the queue: Vids \(3 videos/);
+  // once Anthropic says it has ended, the other label may send
+  api.messages.batches.retrieve = async () => ({ processing_status: 'ended' });
+  snap = await c.prepareBatch({ delivery: 'scripted' });
+  assert.strictEqual(snap.videos.batch.status, 'draft', snap.steps.plan.error);
+  assert.ok(!getPrefs().cutThrough.queuedBatches.msgbatch_test);
+  c.discardBatch();
+  api.messages.batches.retrieve = async () => ({ processing_status: 'in_progress' });
+  c.select({ mc: 'mc_test', label: 'Vids' });
+  await new Promise((r) => setTimeout(r, 20));          // its status check on opening
+  api.messages.batches.retrieve = realRetrieve;
+  // (the registry entry comes back when Vids is opened: its own batch is still live)
+  assert.ok(getPrefs().cutThrough.queuedBatches.msgbatch_test);
   assert.ok(!fs.existsSync(RUN('Vids', 'batch_Vids.json')), 'the draft (client words) was kept after sending');
   // EditPanel restarted while it runs: the batch is picked up from the run folder
   const c2 = ct.createCutThrough({ sendWorkerRequest: w.send, broadcast: () => {}, getPrefs, setPrefs, pythonCmd: PY, desktopDir: DESKTOP,
