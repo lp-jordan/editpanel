@@ -36,6 +36,19 @@ function ctMoney(x) {
   return Number.isFinite(x) ? `$${x < 10 ? x.toFixed(2) : x.toFixed(0)}` : '';
 }
 
+/** A batch still points at this label's transcript (prepared, at Anthropic, or ended and not collected). */
+function ctBatchWaiting(vids) {
+  const b = vids && vids.batch;
+  return Boolean(b && (['draft', 'in_progress', 'canceling'].includes(b.status) || (b.status === 'ended' && !b.collected)));
+}
+
+/** Videos or section. A waiting batch keeps the label in videos, where its Discard / Cancel / Collect live
+ *  (the switch is locked while it waits, so section mode would hide them with no way back). */
+function ctPlanMode(picked, vids) {
+  if (ctBatchWaiting(vids)) return 'videos';
+  return picked || (vids && vids.active ? 'videos' : 'section');
+}
+
 /** "Done · 4m 12s", "Failed · Nov 9 3:30 PM", … for an engine step. */
 function ctStatusText(st, now) {
   if (!st) return '';
@@ -402,7 +415,7 @@ function CutThroughPage({ connected }) {
   const buildFinished = ct && ct.steps && ct.steps.build && ct.steps.build.finishedAt;
   React.useEffect(() => { if (connected && buildFinished) loadTimelines(); }, [buildFinished]);
 
-  const showVideos = ct && (planMode || (ct.videos && ct.videos.active ? 'videos' : 'section')) === 'videos';
+  const showVideos = ct && ctPlanMode(planMode, ct.videos) === 'videos';
   React.useEffect(() => {
     if (showVideos && api && api.listLposProjects && !(ct.lposProjects || []).length && !ct.lposLoading) api.listLposProjects().then((res) => apply(res, 'lpos'));
   }, [showVideos]);
@@ -434,12 +447,12 @@ function CutThroughPage({ connected }) {
   const list = (vids && vids.videos) || [];
   const est = ct.estimate;
   const firstCode = firstCodeDraft !== null ? firstCodeDraft : ((vids && vids.firstCode) || '');
-  const mode = planMode || (vids && vids.active ? 'videos' : 'section');
+  const mode = ctPlanMode(planMode, vids);
   const batch = vids && vids.batch;
   const batchLive = Boolean(batch && ['in_progress', 'canceling'].includes(batch.status));
   const batchDraft = Boolean(batch && batch.status === 'draft');
   const batchToCollect = Boolean(batch && batch.status === 'ended' && !batch.collected);
-  const batchWaiting = batchLive || batchDraft || batchToCollect;   // a batch still points at this transcript
+  const batchWaiting = ctBatchWaiting(vids);   // a batch still points at this transcript
   const soloDefault = ['scripted', 'free', 'stage'].includes(planForm.delivery) ? planForm.delivery : 'scripted';
   const lposPick = ct.settings.lposProject;
   const delivery = solo ? (planForm.delivery === 'convo' ? 'scripted' : planForm.delivery) : (planForm.delivery === 'stage' ? 'stage' : 'convo');
