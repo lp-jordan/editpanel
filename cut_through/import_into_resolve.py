@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cut-through: import a generated FCPXML so its clips use the EXISTING day multicam.
+Cut-through (Build, step 3): import the joined FCPXML write_timeline_xml.py wrote.
 
-The menu import (File → Import → Timeline) made a second "mc1" in the media pool, which
-breaks the one-multicam-per-day rule (grade lives on one multicam). This imports through
-the scripting API with importSourceClips=False and points it at the bin that already holds
-the multicam (sourceClipsFolders), then checks:
-  - how many multicams with that name exist before/after (a new one = failed),
-  - whether the new timeline's clips point at the ORIGINAL multicam (unique ID),
-  - picture angles vs the plan, and each audio track's angle.
+Every import makes a new copy of the day multicam (tested 2026-11-04), so the build imports
+ONE joined timeline (one copy) and split_into_videos.py cuts it up afterwards. That copy
+becomes the primary: ARCHIVE=True moves the original multicam to its own root bin ORIG_BIN
+(default "MC ORIGINAL"), renamed <name>_original, where it stays the source of the raw/prep
+timelines; the copy stays in the multicam's bin. RAW="*" (or a list of names) moves the
+timelines that use the original into ORIG_BIN too.
 
-A file whose timeline names come from the file (write_timeline_xml.py split/joined): add BATCH=True.
-Every import makes a new copy of the multicam (tested 2026-11-04), so a batch is imported as
-one joined timeline and cut up with split_into_videos.py.
-ARCHIVE=True (once a copy exists): the original multicam moves to its own root bin
-ORIG_BIN (default "MC ORIGINAL") and stays the source of the raw/prep timelines; the imported
-copy stays in the multicam's bin as the primary. Timelines that use the original are listed;
-RAW="*" (or a list of names) moves those timelines into ORIG_BIN too.
+The import goes through the scripting API with importSourceClips=False and sourceClipsFolders
+= only the bins holding the exact files the FCPXML names, then:
+  - puts every mic clip on its person's track (A1 = the multicam's audio angle when there is one),
+  - checks every audio clip uses the file the multicam uses,
+  - self-checks the copy (a frame per picture angle: red = Media Offline; each audio track's
+    loudness: -100 LUFS = silent). A failed check leaves the original in place, nothing archived,
+    and CHECK_OK=False tells build_rough_cut.py not to split.
 
-HOW TO RUN (Windows Resolve machine, project open, FCPXML on the Desktop, after `git pull`):
-    XML="ConvoTest_xml.fcpxml"; LABEL="ConvoTest"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\import_into_resolve.py", encoding="utf-8").read())
-Report saved to Desktop\\import_<LABEL>.txt.
+Run by build_rough_cut.py (settings as globals: XML, LABEL, OUT_DIR, ARCHIVE, RAW, MICS,
+PLAN_FILE, MIC_FILES, ATEM_FILE). Report saved to OUT_DIR/import_<LABEL>.txt.
 """
 
 import base64
@@ -34,15 +32,15 @@ from typing import Any, List
 
 XML = globals().get("XML", "ConvoTest_xml.fcpxml")
 LABEL = globals().get("LABEL", "ConvoTest")
-BATCH = bool(globals().get("BATCH"))                   # the file holds several timelines (names come from it)
-ARCHIVE = bool(globals().get("ARCHIVE") or globals().get("QUARANTINE"))  # original multicam → its own bin
+ARCHIVE = bool(globals().get("ARCHIVE"))               # original multicam → its own bin
 ORIG_BIN = globals().get("ORIG_BIN", "MC ORIGINAL")
-RAW = globals().get("RAW")
+RAW = globals().get("RAW")                             # "*" or [names]: timelines on the original to move with it
 MICS = globals().get("MICS") or {}                     # role → mic angle; puts each person's clips on their track
-ATEM_FILE = globals().get("ATEM_FILE")                 # the ATEM mix clip's file (cut on A1), if any
-MIC_FILES = globals().get("MIC_FILES") or {}           # mic WAV file → the angle it sits under                             # "*" or [names]: timelines on the original to move with it
-SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}                # the original is out of play in these
-REPO = r"C:\lp-app-ecosystem\editpanel"
+ATEM_FILE = globals().get("ATEM_FILE")                 # the angle whose multicam audio is cut on A1 (write_timeline_xml LAST_ATEM), if any
+MIC_FILES = globals().get("MIC_FILES") or {}           # mic WAV file → the angle it sits under
+# the original is out of play in these. "MC QUARANTINE" is the archive bin's old name: projects
+# built before it was renamed still have their original multicam there
+SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}
 OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
 os.makedirs(OUT_DIR, exist_ok=True)
 _lines: List[str] = []
@@ -264,21 +262,6 @@ def reference_levels(project: Any, mc_id: str, skip: set, angles: set) -> dict:
     return out
 
 
-def mix_level(project: Any, mp: Any, mc: Any, frame: int, tag: str):
-    """Loudness of a multicam's own audio (the ATEM mix on Camera 1) over 10 s from `frame`,
-    via a throwaway timeline (deleted again)."""
-    tl = mp.CreateEmptyTimeline(f"Cut-through temp mix check {tag} {int(time.time()) % 100000}")
-    if not tl:
-        return None
-    project.SetCurrentTimeline(tl)
-    its = _safe(lambda: mp.AppendToTimeline([{"mediaPoolItem": mc, "startFrame": frame,
-                                               "endFrame": frame + 240, "mediaType": 2}]), []) or []
-    modes = [m for m in (_safe(lambda: tl.GetNormalizeAudioModes(), []) or []) if "Peak" not in m]
-    lv = (_safe(lambda: its[0].AnalyzeAudioLevels(modes[0]), {}) or {}) if its and modes else {}
-    _safe(lambda: mp.DeleteTimelines([tl]))
-    return lv.get("Integrated")
-
-
 def uses(tl: Any) -> set:
     """Unique IDs of the media pool items a timeline's clips come from."""
     ids = set()
@@ -309,7 +292,7 @@ def main() -> None:
         r = dvr.scriptapp("Resolve")
     project = r.GetProjectManager().GetCurrentProject()
     mp = project.GetMediaPool()
-    plan = json.load(open(globals().get("PLAN_FILE") or os.path.join(REPO, "cut_through", "plans", f"{LABEL}_plan.json"), encoding="utf-8"))
+    plan = json.load(open(globals()["PLAN_FILE"], encoding="utf-8"))
     name = plan["multicam"]
     say(f"Resolve {_safe(lambda: r.GetVersionString(), '?')} — project '{project.GetName()}' — import {XML}")
 
@@ -334,9 +317,7 @@ def main() -> None:
         say("    " + n_)
     if any(n_.startswith("✗") for n_ in notes):
         globals()["CHECK_OK"] = False
-    opts = {"importSourceClips": False, "sourceClipsFolders": folders}
-    if not BATCH:
-        opts["timelineName"] = f"Cut-through temp {LABEL} {int(time.time()) % 100000}"
+    opts = {"importSourceClips": False, "sourceClipsFolders": folders}   # timeline name: from the file
     mp.SetCurrentFolder(orig_folder)
     t1 = time.time()
     phase("Importing the timeline (Resolve makes one multicam copy)")
@@ -385,28 +366,8 @@ def main() -> None:
         phase("Checking picture and sound on the copy")
         good = self_check(project, t) and not wrong
         globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and good
-    copy = next((c for _, c in after if c.GetUniqueId() not in {b.GetUniqueId() for _, b in before}), None)
-    if copy and plan.get("mics") and not ATEM_FILE:   # with ATEM_FILE the mix is cut as plain clips (A1 check above)
-        opens = sorted(o for o in plan["mics"][next(iter(plan["mics"]))] if len(o) == 2) or [[0, 0]]
-        frame = opens[0][0] + 24                         # inside the first talking stretch (not a quiet "yeah")
-        back = new[0] if new else None
-        lc, lo = mix_level(project, mp, copy, frame, "copy"), mix_level(project, mp, orig, frame, "orig")
-        if back:
-            project.SetCurrentTimeline(back)
-        bad = (lc is None or lc <= -90) and lo is not None and lo > -90
-        globals()["CHECK_OK"] = globals().get("CHECK_OK", True) and not bad
-        say(f"    check ATEM mix (multicam audio): copy {lc} LUFS vs original {lo} LUFS "
-            f"{'✗ offline in the copy' if bad else '✓'}")
     say(f"Multicam copies used across the new timeline(s): {len(copies)}" +
         ("  ✓ one copy for the whole batch" if len(copies) == 1 else ""))
-    if len(after) == len(before) and set(copies) <= {orig_id}:
-        say(f"✓ REUSED the existing {name} [{orig_id[:8]}] — no new copy")
-    elif len(after) > len(before):
-        say(f"✗ made another copy (existing {name} [{orig_id[:8]}] was not reused)")
-    if len(new) == 1 and not BATCH:
-        v1 = sorted(_safe(lambda: new[0].GetItemListInTrack("video", 1), []) or [], key=lambda x: x.GetStart())
-        hits = sum(1 for p, it in zip(plan["video"], v1) if angle_of(it) == p["angle"])
-        say(f"Picture angles matching the plan: {hits}/{len(plan['video'])}")
     if not globals().get("CHECK_OK", True) and MICS:
         ref = reference_levels(project, orig_id, {x.GetName() for x in new}, set(MICS.values()))
         for ang, (tname, lufs) in sorted(ref.items()):
@@ -446,7 +407,7 @@ def main() -> None:
             moved = sum(1 for c in tl_items if where.get(c.GetUniqueId()) == ORIG_BIN)
             say(f"Raw timelines moved with it: {moved}/{len(pick)}"
                 + ("" if len(tl_items) == len(pick) else f" (only {len(tl_items)} found in the media pool)"))
-    say(f"\nOpen the new timeline(s) and check angles + mics. Grade is shared with the original (checked before).")
+    say(f"\nOpen the new timeline(s) and check angles + mics.")
 
 
 try:
@@ -462,5 +423,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "ATEM_FILE", "OUT_DIR", "PLAN_FILE"):  # CHECK_OK / IMPORT_ERROR stay for the caller; the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "ATEM_FILE", "OUT_DIR", "PLAN_FILE"):  # CHECK_OK / IMPORT_ERROR stay for the caller; the console keeps run-line settings between runs
         globals().pop(_k, None)

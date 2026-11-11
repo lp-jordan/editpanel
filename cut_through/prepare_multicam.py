@@ -3,18 +3,19 @@
 """
 Cut-through step 1 (Prep): describe the day multicam for transcription.
 
-Run in Resolve's console with the new project open. It exports the day multicam's description
-(a throwaway timeline holding just the multicam → FCPXML, then deleted), finds every audio-only
-clip inside it (the mic WAVs on your person tracks) and where each sits in the multicam, and saves:
-  Desktop\\day_<LABEL>.json   — multicam name, fps, length, angles, and per mic WAV: file path,
-                               angle, and the multicam time where the WAV's 0:00 sits
-  Desktop\\mcdef_<LABEL>.fcpxml(d) — the export itself
+EditPanel runs it inside its Resolve worker (Cut-through page → Prep). It exports the day
+multicam's description (a throwaway timeline holding just the multicam → FCPXML, then deleted),
+finds every audio-only clip inside it (the mic WAVs on your person tracks) and where each sits in
+the multicam, and saves into OUT_DIR (EditPanel: the run folder; by hand without OUT_DIR: the Desktop):
+  day_<LABEL>.json   — multicam name, fps, length, angles, and per mic WAV: file path,
+                       angle, and the multicam time where the WAV's 0:00 sits
+  mcdef_<LABEL>.fcpxml(d) — the export itself
 Nothing in the project changes (the throwaway timeline is deleted again).
 
-Then transcribe on LP1 with transcribe.py (see its docstring).
+Then transcribe.py (step 2) transcribes the day file's mics (see its docstring).
 
-HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
-    LABEL="Convo2"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\prepare_multicam.py", encoding="utf-8").read())
+By hand in Resolve's Py3 console (project open):
+    LABEL="Convo2"; OUT_DIR=r"<run folder>"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\prepare_multicam.py", encoding="utf-8").read())
 Optional: MC="name" when the project has more than one multicam.
 No mic WAVs in the multicam (only the ATEM mix or in-camera audio on track 1): the day's audio is
 that camera audio — Camera 1 by default, AUDIO_ANGLE="Camera 3" to pick another — one angle, so

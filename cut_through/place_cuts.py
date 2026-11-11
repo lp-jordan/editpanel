@@ -1,30 +1,26 @@
 #!/usr/bin/env python3
 """
-Cut-through step 3 (Plan, second half): place Claude's edit on exact frames from the waveform
-(without a Claude edit: a rule-based one-speaker draft).
+Cut-through step 3 (Plan, second half): place Claude's edit on exact frames from the waveform.
 
-Input: words_<LABEL>.json + day_<LABEL>.json (transcribe.py / prepare_multicam.py).
-Output: plans/<LABEL>_plan.json for build_rough_cut.py (same shape as plan_convo.py's).
-The removal list with its words goes to stdout only (client words: never into the plan / git).
+Input: words_<LABEL>.json + day_<LABEL>.json (transcribe.py / prepare_multicam.py), and
+removals=<file>: Claude's edit (EditPanel's Cut-through, cut_through_claude.js) — what goes
+(retakes, false starts, chatter …), its shot list, beats and the delivery's pause rule.
+Output: <out_plan.json> (EditPanel: <run folder>/<LABEL>_plan.json) for build_rough_cut.py, plus
+the review markers beside the words file (they quote client words: never in the plan / git).
 
-Rules (docs/ai-rough-cut-style-guide.md, "One speaker, scripted with retakes" + Bryan Brown):
-  * Retakes = the repeat: the same words said again shortly after → everything from the earlier
-    attempt up to the retake goes, the LAST take stays. That also keeps "the clean start of a
-    sentence from one take + the rest from the retake". A repeat = 3 words (2+ not filler/stop
-    words) within 8 s with no sentence finished in between, or 5+ words in a row within 60 s; a cue between the takes ("one two three",
-    "sorry", "let me start", "one more time", "again") accepts any 3-word repeat within 4 min.
-    (Free talk repeats topic phrases, so a long span needs a real re-read.)
-  * A count ("one, two, three") with no repeat: the sentence before it through the count goes.
-  * Stutters / quick restarts ("so here so here", "the the"): the first copy goes.
-  * Pauses longer than 30 fr are trimmed to ~11 fr across the join.
-  * Picture: open and close on the wide; wide (~9.5 s) ↔ punch-in (~8.7 s) backbone; extra angles
-    (side / slider) as ~5.5 s inserts; every removal sits on an angle change (no jump cuts).
-  * Audio: a WAV day keeps its one mic open over everything kept; a camera-audio day (no WAVs)
-    marks the plan audio = camera, and the build turns the ATEM mix (Camera 1 audio) on.
-removals=<file>: Claude's edit (EditPanel's Cut-through, cut_through_claude.js) replaces the
-rule-based retake/stutter/count detection; pause trims, picture and audio still run here.
-NOT handled by the rules alone (Claude's job): producer notes / off-camera chatter, a retake reworded rather
-than repeated, deliberate emphasis repeats ("let me say that again" with no count) — check those.
+What runs here (docs/ai-rough-cut-style-guide.md):
+  * Claude's removals, each join placed from the waveform (levels=<file>) around the aligned word times.
+  * Pauses over the delivery's rule (removals file "pauses"; default: longer than 30 fr) are
+    trimmed to its `left` (default ~11 fr) across the join.
+  * Picture: Claude's shots, keeping the hard rules — an angle change at every removal join (no
+    jump cuts), no blink-length shots, a slider only while it moves, Jordan's never-cut rules.
+    With no usable shot list, a rule rhythm: open and close on the wide; wide (~9.5 s) ↔
+    punch-in (~8.7 s) backbone; extra angles (side / slider) as ~5.5 s inserts.
+  * Audio: a WAV day keeps the talker's mic open over everything kept (a conversation gates each
+    mic to its owner's talking, quiet backchannels opened at -2.5 dB); a camera-audio day (no
+    WAVs) marks the plan audio = camera, and the build puts the angle Prep picked as the audio
+    (plan audio.angle) on A1.
+Without removals= nothing is removed but cut= / trim= spans and long pauses (a hand-run draft).
 
 Usage:
     python place_cuts.py <words.json> <day.json> <out_plan.json> [start=<frame>] [end=<frame>] [removals=<file>]
@@ -46,23 +42,13 @@ import re
 import sys
 from collections import Counter
 
-PAUSE_MAX, PAUSE_LEFT = 30, 11            # frames: silences longer than this are trimmed to this
+PAUSE_MAX, PAUSE_LEFT = 30, 11            # frames: silences longer than this are trimmed to this (defaults; the
+                                           # removals file's "pauses" sets them per delivery)
 LEN = {"wide": 228, "punch": 209, "extra": 132}   # 9.5 s / 8.7 s / 5.5 s at 24 fps
 MIN_SHOT = 60                              # 2.5 s
 OPEN_WIDE = 96                             # the opening wide holds ~4 s
 HEAD, TAIL = 18, 24                        # frames kept before the first / after the last word
 BEAT = 6                                   # extra air after a finished thought (Claude's `beats`; Jordan: 5–6 fr)
-REPEAT_N = 3
-WINDOW_SEC, CUE_WINDOW_SEC = 60, 240
-FILLER = {"uh", "um", "umm", "uhm", "er", "ah", "mm", "hmm", "mhm"}
-STOP = {"the", "a", "an", "and", "or", "but", "so", "to", "of", "in", "on", "at", "for", "with", "is",
-        "it", "its", "it's", "that", "this", "i", "you", "we", "they", "he", "she", "be", "are", "was",
-        "were", "as", "if", "then", "just", "like", "my", "your", "our", "me", "do", "not", "what",
-        "there", "here", "have", "has", "can", "will", "all", "about", "from", "by", "up", "out", "know",
-        "okay", "ok", "yeah", "right", "well", "really", "very", "gonna", "going"}
-COUNT = [("one", "1"), ("two", "2"), ("three", "3")]
-CUES = [("sorry",), ("let", "me", "start"), ("start", "over"), ("one", "more", "time"), ("again",),
-        ("one", "two", "three"), ("1", "2", "3"), ("take", "two")]
 
 
 def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24, allowed=None, nocut=frozenset()):
@@ -200,29 +186,6 @@ def main(argv) -> None:
         raise SystemExit("No words in that range")
     start = max(lo_req, int(W[0]["s"]) - HEAD)
     end = min(hi_req, int(W[-1]["e"]) + TAIL)
-    T = [norm(w["w"]) for w in W]
-
-    def secs(i, j):
-        return (W[j]["s"] - W[i]["s"]) * frame_sec
-
-    def has_cue(i, j):
-        seq = T[i:j]
-        return any(tuple(seq[k:k + len(c)]) == c for c in CUES for k in range(len(seq) - len(c) + 1))
-
-    def cut_span(i, j):
-        """Remove words i..j-1: from just after the word before i to just before word j."""
-        # ~6 fr of air after the word before, ~5 fr before the word after (≈11 fr across the
-        # join, the pause rule); tighter when the words themselves sit closer than that
-        if i > 0:
-            pe = W[i - 1]["e"]
-            a = int(pe + min(6, max(0, W[i]["s"] - pe)))
-        else:
-            a = start
-        if j < len(W):
-            b = min(math.ceil(W[j]["s"] - min(5, max(0, W[j]["s"] - W[j - 1]["e"]))), int(W[j]["s"]))
-        else:
-            b = end
-        return a, max(a, b)
 
     # Z8: cuts are placed from the waveform, not from Whisper's word times (which run a few frames
     # early or late). levels=<file> is transcribe.py's per-frame level of the talker's track.
@@ -330,9 +293,8 @@ def main(argv) -> None:
                 b = max(math.ceil(r.get("cut_end", r["to"])) + 1, b - (BEAT - room))
         return (a, b) if b > a else (int(r["from"]), int(r["to"]))
 
-    removals, floor = [], 0
     # removals=<file>: the edit decisions come from Claude (cut_through_claude.js) as frame
-    # spans; the rule-based detection below is skipped and the rest (pauses, picture, audio) runs
+    # spans (word anchors for the waveform placement beside them); pauses, picture and audio run here
     given = json.load(open(o["removals"], encoding="utf-8")) if o.get("removals") else None
     # the delivery's join shape (scripted, Jordan's edits 2026-11-09: ~10 fr after the outgoing word,
     # ~2 before the incoming one); other deliveries keep 3 and 3, and split a pause evenly
@@ -346,66 +308,14 @@ def main(argv) -> None:
         return any(abs(word_end - x) < 1.5 for x in beat_ends)
     if given:
         start, end = given["start"], given["end"]
-    else:
-        # 1. the repeat (+ cue words widen the look-back)
-        content = [k for k, t in enumerate(T) if t and t not in FILLER]
-        key_at = {}
-        for n, k in enumerate(content[:len(content) - REPEAT_N + 1]):
-            key = tuple(T[x] for x in content[n:n + REPEAT_N])
-            if sum(1 for t in key if t not in STOP) < 2:
-                continue
-            hits = key_at.setdefault(key, [])
-            for i in hits:                                    # earliest earlier attempt in the window
-                if i < floor:
-                    continue
-                cue = has_cue(i, k)
-                win = CUE_WINDOW_SEC if cue else WINDOW_SEC
-                if not 0 < secs(i, k) <= win:
-                    continue
-                # free talk repeats its topic phrases: a long span needs a real re-read (5+ words
-                # in a row again) or a cue between the takes
-                ci, ck = content.index(i), n
-                run = 0
-                while ck + run < len(content) and ci + run < ck and T[content[ci + run]] == T[content[ck + run]]:
-                    run += 1
-                # a quick restart breaks off mid-sentence; a finished sentence in between = a callback
-                ended = any(re.search(r"[.?!]$", W[x]["w"].strip()) for x in range(i, k))
-                if cue or run >= 5 or (secs(i, k) <= 8 and run >= REPEAT_N and not ended):
-                    removals.append((i, k, "retake (repeat)"))
-                    floor = k
-                    break
-            hits.append(k)
-        # 2. stutters / quick restarts: "the the", "so here so here"
-        for k in range(1, len(T)):
-            for n in (1, 2):
-                if k - 2 * n + 1 < 0 or k + 1 < 2 * n:
-                    continue
-                a, b = T[k - 2 * n + 1:k - n + 1], T[k - n + 1:k + 1]
-                if a == b and all(a) and not any(t in FILLER or t.isdigit() for t in a) and \
-                        (W[k - n + 1]["s"] - W[k - n]["e"]) * frame_sec < 1.5:
-                    removals.append((k - 2 * n + 1, k - n + 1, "stutter"))
-        # 3. a count with no repeat after it: the sentence before it through the count
-        for k in range(len(T) - 2):
-            if all(T[k + x] in COUNT[x] for x in range(3)):
-                if any(i <= k < j for i, j, _ in removals):
-                    continue
-                s = k
-                while s > 0 and not re.search(r"[.?!]$", W[s - 1]["w"].strip()) and secs(s - 1, k) < 60:
-                    s -= 1
-                removals.append((s, k + 3, "count"))
 
-    spans = []
-    for i, j, why in removals:
-        a, b = cut_span(i, j)
-        if b > a:
-            spans.append({"from": a, "to": b, "why": why, "words": (i, j)})
-    spans += [{"from": a, "to": b, "why": "editorial (listed)", "words": None} for a, b in cuts]
-    spans += [{"from": a, "to": b, "why": "pause (second pass)", "words": None} for a, b in trims if b > a]
+    spans = [{"from": a, "to": b, "why": "editorial (listed)"} for a, b in cuts]
+    spans += [{"from": a, "to": b, "why": "pause (second pass)"} for a, b in trims if b > a]
     if given:
         for r in given["removals"]:
             a, b = snap_removal(r)
             if b > a:
-                spans.append({"from": a, "to": b, "why": f"claude {r['why']}", "words": None,
+                spans.append({"from": a, "to": b, "why": f"claude {r['why']}",
                               "reason": r.get("reason") or "", "said": r.get("words") or ""})
     spans.sort(key=lambda r: r["from"])
     merged = []
@@ -418,8 +328,6 @@ def main(argv) -> None:
             for k in ("reason", "said"):
                 if r.get(k):
                     m[k] = (m.get(k) + " / " if m.get(k) else "") + r[k]
-            if r["words"] and m["words"]:
-                m["words"] = (min(m["words"][0], r["words"][0]), max(m["words"][1], r["words"][1]))
         else:
             merged.append(dict(r))
 
@@ -452,7 +360,7 @@ def main(argv) -> None:
             else:
                 a, b = last + 6, s - (pause_left - 6)
             if not any(r["from"] <= a < r["to"] or r["from"] < b <= r["to"] for r in merged):
-                merged.append({"from": a, "to": b, "why": f"pause {s - last} fr → {pause_left}", "words": None})
+                merged.append({"from": a, "to": b, "why": f"pause {s - last} fr → {pause_left}"})
         last = e if last is None else max(last, e)
     merged.sort(key=lambda r: r["from"])
     # second pass: give back the rest of a word a cut went through
@@ -479,8 +387,8 @@ def main(argv) -> None:
         return out
 
     # every removal costs an angle change, so a scrap of speech shorter than a shot between two
-    # removals would flash on screen: give back the optional removal (stutter / pause) beside it
-    optional = lambda r: r["why"].startswith(("stutter", "pause"))
+    # removals would flash on screen: give back the optional removal (a pause trim) beside it
+    optional = lambda r: r["why"].startswith("pause")
     changed = True
     while changed:
         changed = False
@@ -866,7 +774,7 @@ def main(argv) -> None:
     json.dump({"label": data["label"], "markers": markers}, open(review_p, "w", encoding="utf-8"), indent=1)
     plan = {"label": data["label"], "multicam": data["multicam"], "fps": fps, "review_file": review_p,
             "note": ("Edit by Claude (removals) + place_cuts.py (pauses, picture, audio)." if given else
-                     "Draft by place_cuts.py (style-guide solo rules from the words file; no LLM)."),
+                     "Draft by place_cuts.py (no Claude edit: listed cuts, pause trims and rule-rhythm shots only)."),
             "mic_angles": {} if camera else {p: p for p in mics}, "video": video, "mics": mics,
             "audio": {"source": "camera" if camera else "wav", "angle": talker},
             "removals": [{"from": r["from"], "to": r["to"], "why": r["why"]} for r in merged]}
@@ -886,15 +794,6 @@ def main(argv) -> None:
           + (f"; {sum(1 for v in video if v['why'].startswith('angle changed around'))} shot(s) changed around removals"
              if claude_shots else "") + f"; pauses > {pause_max} fr → {pause_left} fr"
           + ("; cuts placed from the waveform" if LV else "; cuts on word times (no levels file)"))
-
-    print("Removed (check these):")
-    for r in merged:
-        if not r["words"]:
-            continue
-        i, j = r["words"]
-        text = " ".join(w["w"] for w in W[i:j])
-        mm = r["from"] * frame_sec
-        print(f"  [{r['from']}–{r['to']} | {int(mm // 60):02d}:{mm % 60:04.1f}] {r['why']}: {text[:160]}{'…' if len(text) > 160 else ''}")
 
 
 if __name__ == "__main__":

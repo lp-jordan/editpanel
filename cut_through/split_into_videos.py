@@ -13,10 +13,9 @@ ONE timeline (write_timeline_xml.py joined=NAME → one copy). This script then,
   - moves the cut timelines into SEQ_BIN (e.g. "MASTER / SEQUENCES"; left in place if not given),
   - deletes the joined timeline once every video split cleanly (KEEP_JOINED=True keeps it).
 
-HOW TO RUN (Windows Resolve machine, project open, ranges JSON on the Desktop, after `git pull`,
-after importing the joined FCPXML with import_into_resolve.py):
-    RANGES="ConvoTest_joined_ranges.json"; SEQ_BIN="MASTER / SEQUENCES"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\cut_through\\split_into_videos.py", encoding="utf-8").read())
-Report saved to Desktop\\split_<timeline>.txt.
+Run by build_rough_cut.py (step 4, after import_into_resolve.py) with RANGES (the ranges file's
+name inside OUT_DIR), SEQ_BIN and OUT_DIR (EditPanel: the run folder; without it: the Desktop).
+Report saved to OUT_DIR/split_<timeline>.txt.
 """
 
 import json
