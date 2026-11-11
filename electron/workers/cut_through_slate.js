@@ -45,6 +45,13 @@ const PER_REQUEST = 8;        // frames per Claude request
 const GRAB_W = 1280;          // the whole frame, to find the box
 const CROP_W = 640;           // a read of the box
 const PAD = 0.3;              // box padding, as a share of its size on each side
+// The page can sit higher or lower on the slate camera (Jordan 2026-11-11): when the box stops
+// reading, local OCR tries it shifted up and down (free) and moves it to where a code reads.
+const SHIFT_STEP = 0.02;      // share of the frame height per try
+const SHIFT_MAX = 0.2;        // furthest shift tried, up or down
+const MISS_RUN = 2;           // reads in a row OCR can't vouch for (a code's first and last) before searching again mid-clip
+const CLIP_SEARCHES = 4;      // mid-clip searches per clip at most
+const MAX_SEARCHES = 40;      // searches per run at most (a slate with no code on it stays cheap)
 // The LPOS Slate page's code tile (Jordan's screenshot 2026-11-10: every slate has this layout, the
 // tile left of Production Notes). Tried first; Claude finds the box only if nothing reads there.
 const SLATE_BOX = { x: 0.215, y: 0.495, w: 0.13, h: 0.235, ocrMargin: [0.1, 0.25] };
@@ -310,10 +317,41 @@ async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes
   };
   const check = () => { if (isCanceled()) throw new Error('Canceled'); };
   const fileSec = (clip, t) => t - clip.file_zero_sec;
+  let searches = 0;              // shifted-box searches run
+  let moves = 0;                 // times the box was moved
+  const shifted = (b, dy) => ({ ...b, y: +(b.y + dy).toFixed(4) });
+  const fits = (b) => b.y >= 0 && b.y + b.h <= 1;
+  const readsAt = async (clip, t, b) => Boolean(await tryOcr(clip, t, b));
+  /** The box moved up or down to where a code reads at t (centred on the run of shifts that read), or null. */
+  const reSearch = async (clip, t, base) => {
+    if (!base || ocrOff || searches >= MAX_SEARCHES) return null;
+    searches += 1;
+    const n = Math.round(SHIFT_MAX / SHIFT_STEP);
+    for (let k = 1; k <= n; k++) {
+      for (const dy of [k * SHIFT_STEP, -k * SHIFT_STEP]) {
+        if (!fits(shifted(base, dy))) continue;
+        check();
+        if (!(await readsAt(clip, t, shifted(base, dy)))) continue;
+        let lo = dy;
+        let hi = dy;
+        while (Math.abs(lo - SHIFT_STEP) <= SHIFT_MAX && fits(shifted(base, lo - SHIFT_STEP)) && await readsAt(clip, t, shifted(base, lo - SHIFT_STEP))) lo -= SHIFT_STEP;
+        while (Math.abs(hi + SHIFT_STEP) <= SHIFT_MAX && fits(shifted(base, hi + SHIFT_STEP)) && await readsAt(clip, t, shifted(base, hi + SHIFT_STEP))) hi += SHIFT_STEP;
+        moves += 1;
+        return shifted(base, (lo + hi) / 2);
+      }
+    }
+    return null;
+  };
+  /** The box a clip uses at multicam time t (it can move mid-clip). */
+  const boxAt = (pc, t) => {
+    let b = pc.boxes[0].box;
+    for (const x of pc.boxes) if (x.from <= t) b = x.box;
+    return b;
+  };
 
   // 1. the code box: the Slate page's usual tile if a code reads there, else Claude finds it
   onProgress({ phase: 'Finding the code box', bar: 0 });
-  // the box the editor drew on a slate frame (Set code box) is used as is: no search, no Claude
+  // the box the editor drew on a slate frame (Set code box) is the start: no Claude search (it can still shift up/down below)
   let box = userBox ? cleanBox(userBox) : null;
   let boxFrom = box ? 'set' : 'none';
   const probes = box ? [] : clips.slice(0, 3).map((c) => ({ c, t: c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2) }));
@@ -351,10 +389,17 @@ async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes
   // 2. looks per clip (inside the box)
   const perClip = [];
   let looks = 0;
+  let cur = box;                 // carried clip to clip: a page that moved stays moved
   for (const [k, c] of clips.entries()) {
     check();
     onProgress({ phase: 'Looking for code changes on the slate', bar: Math.round((k / clips.length) * 50) });
-    const thumbs = await readThumbs(ffmpeg, c.path, fileSec(c, c.from_sec), c.to_sec - c.from_sec, box, onProc);
+    // the box still on the code at this clip's start? if not, look up and down for it
+    const probeT = c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2);
+    if (cur && !ocrOff && !(await readsAt(c, probeT, cur))) {
+      const moved = await reSearch(c, probeT, cur);
+      if (moved) cur = moved;
+    }
+    const thumbs = await readThumbs(ffmpeg, c.path, fileSec(c, c.from_sec), c.to_sec - c.from_sec, cur, onProc);
     const L = looksOf(thumbs).map(([a, b]) => [c.from_sec + a / SAMPLE_FPS, Math.min(c.to_sec, c.from_sec + (b + 1) / SAMPLE_FPS)]);
     looks += L.length;
     // 3. where to read: each look's start, then every CHECK_EVERY_SEC and its end when it's long
@@ -365,7 +410,7 @@ async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes
       for (let t = a + CHECK_EVERY_SEC; t < b - READ_AFTER_SEC; t += CHECK_EVERY_SEC) times.add(+t.toFixed(2));
       if (b - a > 2 * READ_AFTER_SEC + MIN_GAP_SEC) times.add(+(b - READ_AFTER_SEC).toFixed(2));
     }
-    perClip.push({ clip: c, samples: [...times].sort((x, y) => x - y).map((t) => ({ t, code: undefined, sure: false })) });
+    perClip.push({ clip: c, boxes: [{ from: -Infinity, box: cur }], searched: 0, samples: [...times].sort((x, y) => x - y).map((t) => ({ t, code: undefined, sure: false })) });
   }
   if (looks > MAX_LOOKS) {
     throw new Error(`The slate's code box changes ${looks} times — it doesn't look like a steady slate screen (pick another angle)`);
@@ -376,20 +421,35 @@ async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes
     const pending = [];
     for (const pc of perClip) for (const s of pc.samples) if (s.code === undefined) pending.push({ pc, s });
     // free first: OCR, trusted only when it matches the slate's codes
-    const todo = [];
+    // MISS_RUN reads in a row it can't vouch for: the page may have moved — search, and from the
+    // first of those reads on, use the moved box (those reads are tried again with it)
+    const streak = new Map();
     for (const [i, x] of pending.entries()) {
       check();
       if (i % 10 === 0) onProgress({ phase: `${label} (${i + 1} of ${pending.length})`, bar: Math.round(barFrom + (i / Math.max(1, pending.length)) * (barTo - barFrom) / 2) });
-      const got = await tryOcr(x.pc.clip, x.s.t, box);
-      if (got) { x.s.code = got.code; x.s.sure = got.sure; byOcr += 1; } else todo.push(x);
+      const got = await tryOcr(x.pc.clip, x.s.t, boxAt(x.pc, x.s.t));
+      if (got) { x.s.code = got.code; x.s.sure = got.sure; byOcr += 1; streak.set(x.pc, []); continue; }
+      const run_ = [...(streak.get(x.pc) || []), x];
+      streak.set(x.pc, run_);
+      if (run_.length < MISS_RUN || x.pc.searched >= CLIP_SEARCHES || ocrOff) continue;
+      x.pc.searched += 1;
+      streak.set(x.pc, []);
+      const moved = await reSearch(x.pc.clip, x.s.t, boxAt(x.pc, x.s.t));
+      if (!moved) continue;
+      x.pc.boxes = [...x.pc.boxes, { from: run_[0].s.t, box: moved }].sort((a, b) => a.from - b.from);
+      for (const y of run_) {
+        const g = await tryOcr(y.pc.clip, y.s.t, moved);
+        if (g) { y.s.code = g.code; y.s.sure = g.sure; byOcr += 1; }
+      }
     }
+    const todo = pending.filter((x) => x.s.code === undefined);
     if (!client) { for (const { s } of todo) { s.code = null; s.sure = false; } return pending.length; }
     for (let i = 0; i < todo.length; i += PER_REQUEST) {
       check();
       onProgress({ phase: `${label}: asking Claude (${Math.min(i + PER_REQUEST, todo.length)} of ${todo.length})`, bar: Math.round(barFrom + (barTo - barFrom) / 2 + (i / todo.length) * (barTo - barFrom) / 2) });
       const group = todo.slice(i, i + PER_REQUEST);
       const frames = [];
-      for (const { pc, s } of group) frames.push({ jpeg: await grab(ffmpeg, pc.clip.path, fileSec(pc.clip, s.t), box, onProc) });
+      for (const { pc, s } of group) frames.push({ jpeg: await grab(ffmpeg, pc.clip.path, fileSec(pc.clip, s.t), boxAt(pc, s.t), onProc) });
       const r = await readBatch({ client, model, frames, knownCodes, signal });
       usage = addUsage(usage, r.usage);
       usedModel = r.model;
@@ -447,8 +507,8 @@ async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes
   // free pass (no client): the frames OCR couldn't vouch for are what Claude would be asked to read
   const needsClaude = client ? 0 : perClip.reduce((n, pc) => n + pc.samples.filter((x) => !x.code).length, 0);
   return {
-    reads, box, needsClaude, frames: asked + byOcr, byOcr, byClaude: asked, ocrOff, usage, model: usedModel, seconds: +seconds.toFixed(1),
-    report: `${boxFrom === 'set' ? 'code box set by hand' : boxFrom === 'usual' ? 'usual code tile' : boxFrom === 'found' ? 'code box found by Claude' : 'no code box found (whole frame used)'}; ` +
+    reads, box, moves, needsClaude, frames: asked + byOcr, byOcr, byClaude: asked, ocrOff, usage, model: usedModel, seconds: +seconds.toFixed(1),
+    report: `${boxFrom === 'set' ? 'code box set by hand' : boxFrom === 'usual' ? 'usual code tile' : boxFrom === 'found' ? 'code box found by Claude' : 'no code box found (whole frame used)'}${moves ? `, moved ${moves} time${moves === 1 ? '' : 's'}` : ''}; ` +
       `${byOcr} frames read free (OCR), ${asked} by Claude${ocrOff ? ` (OCR off: ${ocrOff})` : ''}` +
       `${needsClaude ? `, ${needsClaude} left for Claude` : ''}: ${codes} codes, ` +
       `${unreadable} unreadable stretches, in ${seconds.toFixed(0)} s`
