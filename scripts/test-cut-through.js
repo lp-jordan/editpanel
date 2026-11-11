@@ -1015,6 +1015,10 @@ const vlib = require('../electron/workers/cut_through_videos');
   const plain = vlib.findVideos({ day, words, notes: [], label: 'Day' });
   assert.deepStrictEqual(plain.map((x) => [x.name, x.flags.includes('No J-code')]), [['Day video 1', true], ['Day video 2', true], ['Day video 3', true]]);
   assert.strictEqual(vlib.cleanName('A1: "intro" = x'), 'A1 intro x');
+  // the editor joins videos the slate split: one video, the stop between cut, kept by a join range
+  const j = vlib.findVideos({ day, words, notes, offsetSec: off.offsetSec, label: 'Day', joins: [[v[0].from, v[1].to]] });
+  assert.deepStrictEqual(j.map((x) => [x.name, Boolean(x.joined)]), [['A1 (1)', true], ['A1 (2)', false]], JSON.stringify(j.map((x) => x.name)));
+  assert.ok(j[0].to === v[1].to && !j[0].flags.some((f) => /^Notes say/.test(f)), JSON.stringify(j[0]));
   // "starts at H6": a project shot over several days, only that day from H6 on
   const dayM = { frame_sec: [1, 24], tc_start_sec: 36000, length_sec: 1300, recordings: [{ from_sec: 0, to_sec: 600 }, { from_sec: 700, to_sec: 1200 }] };
   const N = (timestamp, code, note = '') => ({ timestamp, code, note });
@@ -1133,6 +1137,16 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.ok(s1.gaps.length === 1 && s1.flags.includes('Restart'), JSON.stringify(s1));
   assert.strictEqual(b2.kind, 'convo');
   assert.ok(fs.existsSync(RUN('Vids', 'videos_Vids.json')));
+  // Join two videos (the slate split one in two) and Split them again; a video that didn't move keeps its id
+  snap = await c.joinVideos([a1.id, s1.id]);
+  assert.deepStrictEqual(snap.videos.videos.map((v) => [v.name, Boolean(v.joined)]), [['A1', true], ['B2', false]], JSON.stringify(snap.videos.videos.map((v) => v.name)));
+  assert.strictEqual(snap.videos.videos[1].id, b2.id, 'B2 renumbered by the join');
+  snap = await c.findVideos({});
+  assert.strictEqual(snap.videos.videos.length, 2, 'Find again lost the join');
+  await assert.rejects(c.joinVideos([b2.id]), /Pick two/);
+  snap = await c.splitVideo(snap.videos.videos[0].id);
+  assert.deepStrictEqual(snap.videos.videos.map((v) => v.name), ['A1', 'S1', 'B2']);
+  assert.deepStrictEqual(snap.videos.joins, []);
   // a type changed by hand sticks when the videos are found again
   c.updateVideo(s1.id, { delivery: 'free' });
   snap = await c.findVideos({});

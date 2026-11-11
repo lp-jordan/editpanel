@@ -557,7 +557,9 @@ function createCutThrough(opts) {
   function snapshot() {
     return { ...s, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
       slateAngle: slateAngle(), slateInfo: slateInfo(), estimate: costEstimate(),
-      videosReady: videosToBuild().length };
+      videosReady: videosToBuild().length,
+      // Cancel can stop it: a child process (Transcribe, the placer, ffmpeg) or the slate read; not a Claude call or a Resolve step
+      cancelable: Boolean(child) || Boolean(s.slateRead) };
   }
 
   // ---- Cost + time estimate (1.2.144): learned from this folder's cost log and transcribe reports.
@@ -1203,6 +1205,9 @@ function createCutThrough(opts) {
 
   async function runTranscribe({ minutes } = {}) {
     if (!s.day) throw new Error('Run Prep first');
+    // Build finds angles by the names Prep saved: rename first, never after
+    const odd = (s.day.angles || []).filter((a) => !/^Camera \d+$/.test(a) && !/slate/i.test(a));
+    if (odd.length) throw new Error(`Rename ${odd.join(', ')} to "Camera N" in Resolve, then Prep again`);
     // a batch's answers point at this words file by token number: a new transcript would put
     // Claude's cuts on the wrong words, so it waits until the batch is collected or discarded
     const b = s.videos && s.videos.batch;
@@ -1272,6 +1277,7 @@ function createCutThrough(opts) {
 
   function cancel() {
     if (s.setup.installing && s.setup.installing.phase) { canceled = true; return snapshot(); }
+    if (s.slateRead) canceled = true;                 // the slate read checks this between frames (OCR has no child)
     if (!child) return snapshot();
     canceled = true;
     killTree(child);
@@ -1557,8 +1563,25 @@ function createCutThrough(opts) {
     const manual = offsetSec !== undefined && offsetSec !== null && String(offsetSec).trim() !== '' && Number.isFinite(Number(offsetSec));
     const used = manual ? Number(offsetSec) : auto.offsetSec;
     const slate = slateReads();
-    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first, reads: slate && slate.reads });
-    const old = new Map(((s.videos && s.videos.videos) || []).map((v) => [v.id, v]));
+    const joins = (s.videos && Array.isArray(s.videos.joins)) ? s.videos.joins : [];
+    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first, reads: slate && slate.reads, joins });
+    const before = (s.videos && s.videos.videos) || [];
+    const old = new Map(before.map((v) => [v.id, v]));
+    // a video whose range didn't move keeps its id (its plan file is named by it), even when a join
+    // earlier in the day renumbered the ones after it
+    const byRange = new Map(before.map((v) => [`${v.from}-${v.to}`, v]));
+    const taken = new Set();
+    for (const v of found) {
+      const o = byRange.get(`${v.from}-${v.to}`);
+      if (o && !taken.has(o.id)) { v.id = o.id; taken.add(o.id); }
+    }
+    for (const v of found) {
+      if (taken.has(v.id) && byRange.get(`${v.from}-${v.to}`)?.id === v.id) continue;
+      let id = v.id;
+      for (let k = 2; taken.has(id); k += 1) id = `${v.id}_${k}`;
+      v.id = id;
+      taken.add(id);
+    }
     const videos = found.map((v) => {
       const o = old.get(v.id);
       if (!o || o.from !== v.from || o.to !== v.to) return { ...v, plan: { status: 'none' } };
@@ -1569,10 +1592,44 @@ function createCutThrough(opts) {
     writeVideos({
       label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes, firstCode: first,
       offset: { used, auto: auto.offsetSec, manual, hours: auto.hours, seconds: auto.seconds, matched: auto.matched },
-      active: Boolean(s.videos && s.videos.active), batch: null, videos
+      active: Boolean(s.videos && s.videos.active), batch: null, videos, joins
     });
     emit();
     return snapshot();
+  }
+
+  /** The same offset / first code as the last Find videos. */
+  function findAgain() {
+    const v = s.videos || {};
+    return findVideos({ offsetSec: v.offset && v.offset.manual ? v.offset.used : '', firstCode: v.firstCode || '' });
+  }
+
+  /** Join videos into one (Jordan 2026-11-11: the slate split one video in three). The join is a
+   *  frame range kept with the videos, so Find again keeps it. */
+  async function joinVideos(ids = []) {
+    if (!s.videos) throw new Error('Find the videos first');
+    if (batchLive() || (s.videos.batch && s.videos.batch.status === 'draft')) throw new Error('Discard or finish the batch first');
+    const pick = s.videos.videos.filter((v) => ids.includes(v.id));
+    if (pick.length < 2) throw new Error('Pick two videos to join');
+    let lo = Math.min(...pick.map((v) => v.from));
+    let hi = Math.max(...pick.map((v) => v.to));
+    const keep = [];
+    for (const r of s.videos.joins || []) {                 // overlapping joins become one
+      if (r[1] >= lo && r[0] <= hi) { lo = Math.min(lo, r[0]); hi = Math.max(hi, r[1]); } else keep.push(r);
+    }
+    writeVideos({ ...s.videos, joins: [...keep, [lo, hi]] });
+    return findAgain();
+  }
+
+  /** Undo the join a video came from. */
+  async function splitVideo(id) {
+    if (!s.videos) throw new Error('Find the videos first');
+    if (batchLive() || (s.videos.batch && s.videos.batch.status === 'draft')) throw new Error('Discard or finish the batch first');
+    const v = s.videos.videos.find((x) => x.id === id);
+    if (!v) throw new Error('No such video');
+    const joins = (s.videos.joins || []).filter((r) => !(r[1] >= v.from && r[0] <= v.to));
+    writeVideos({ ...s.videos, joins });
+    return findAgain();
   }
 
   /**
@@ -2091,6 +2148,8 @@ function createCutThrough(opts) {
     readSlate,
     setSlateAngle,
     updateVideo,
+    joinVideos,
+    splitVideo,
     planVideos,
     prepareBatch,
     discardBatch,

@@ -204,7 +204,7 @@ const tcLabel = (day, f) => frameToTc(f, day);
  *   label     the run label (names videos that have no J-code)
  *   firstCode the editor says the multicam starts on this code (notes already cut by notesFrom)
  */
-function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'video', firstCode = '', reads = null }) {
+function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'video', firstCode = '', reads = null, joins = [] }) {
   const fs_ = frameSec(day);
   const sec = (x) => Math.round(x / fs_);
   const W = wordList(words);
@@ -252,9 +252,29 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
     }
   }
 
+  // 2b. the editor's joins: every piece whose middle falls inside one joined range [from, to]
+  // becomes one video (a stop between them is cut like a restart); survives Find again
+  const joined = [];
+  for (const p of merged) {
+    const mid = (p.from + p.to) / 2;
+    const j = (joins || []).findIndex((r) => Array.isArray(r) && mid >= r[0] && mid <= r[1]);
+    const last = joined[joined.length - 1];
+    if (j >= 0 && last && last.joinIdx === j) {
+      if (p.from > last.to) last.gaps.push([last.to, p.from]);
+      last.gaps.push(...p.gaps);
+      last.to = p.to;
+      last.restarts += p.restarts;
+      last.recEnd = p.recEnd;
+      last.code = last.code || p.code;
+      last.joined = true;
+    } else {
+      joined.push({ ...p, gaps: [...p.gaps], joinIdx: j >= 0 ? j : null, joined: false });
+    }
+  }
+
   // 3. names, flags, who talks
   const seen = {};
-  const videos = merged.map((v, i) => {
+  const videos = joined.map((v, i) => {
     const n = i + 1;
     const flags = [];
     const span = (v.to - v.from - v.gaps.reduce((t, [g0, g1]) => t + (g1 - g0), 0)) * fs_;
@@ -269,10 +289,10 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
       else if (seen_.some((r) => r.code === v.code && !r.sure)) flags.push('Slate read unsure');
       // a code noted during this video that no video ended up with: the frames and the notes disagree
       const noted = [...new Set(noteEvents.filter((e) => e.frame >= v.from && e.frame < v.to).map((e) => e.code))]
-        .filter((c) => c !== v.code && !merged.some((x) => x.code === c));
-      if (noted.length) flags.push(`Notes say ${noted.join(', ')}`);
+        .filter((c) => c !== v.code && !joined.some((x) => x.code === c));
+      if (noted.length && !v.joined) flags.push(`Notes say ${noted.join(', ')}`);
     }
-    const later = merged.slice(i + 1).find((x) => x.code && x.code === v.code);
+    const later = joined.slice(i + 1).find((x) => x.code && x.code === v.code);
     if (later) flags.push(`${v.code} again at ${tcLabel(day, later.from)}`);
     const kind = mics.length > 1 && who.speakers.length >= 2 ? 'convo' : 'solo';
     const talker = kind === 'solo' ? (who.speakers[0] || who.top || mics[0] || null) : null;
@@ -283,7 +303,8 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
       id: `v${String(n).padStart(2, '0')}${v.code ? `_${safeId(v.code)}` : ''}`,
       n, name, code: v.code || null, from: v.from, to: v.to, gaps: v.gaps,
       fromTc: tcLabel(day, v.from), toTc: tcLabel(day, v.to), minutes: span / 60,
-      words: who.words, kind, talker, delivery: kind === 'convo' ? 'convo' : null, flags, include: true
+      words: who.words, kind, talker, delivery: kind === 'convo' ? 'convo' : null, flags, include: true,
+      ...(v.joined ? { joined: true } : {})
     };
   });
   // a name used twice: the first gets "(1)" too, so neither is a plain J-code
