@@ -4,6 +4,7 @@
  *
  *   day_<LABEL>.json recordings (Prep: where the cameras rolled, from every angle's clips)
  *   + LPOS slate notes (J-codes typed live, on the LPOS server's clock)
+ *   + slate-angle reads (slate_<LABEL>.json, cut_through_slate.js), which win over the notes
  *   + words_<LABEL>.json (to put a split in a pause, and to say who talks)
  *   → videos: [{ id, name, code, from, to, gaps, kind, talker, flags, ... }] in multicam frames.
  *
@@ -12,8 +13,9 @@
  *     recording also starts a new video, at the longest pause just before the note (codes are
  *     typed late).
  *   - The same J-code across a stop = one video with a restart (the gap is cut out); flagged.
- *   - The slate is a hint: flags only (no J-code, short, few words, J-code again later = an
- *     earlier take). Nothing is ever unticked by default.
+ *   - Where the slate screen was read off the footage, that read wins over the typed notes
+ *     (mergeReads); the notes fill in where it wasn't. Flags only (no J-code, short, few words,
+ *     J-code again later = an earlier take). Nothing is ever unticked by default.
  *   - Solo vs conversation per video, from who talks in it.
  */
 
@@ -333,4 +335,4 @@ function spanTimelines({ day, notes = [], offsetSec = 0, label = 'video' }) {
   });
 }
 
-module.exports = { spanTimelines, findVideos, mergeReads, notesFrom, slateOffset, codeEvents, recordingsOf, slateSeconds, longestPause, speakersIn, tcSecOfFrame, frameOfTcSec, cleanName, safeId, tcLabel };
+module.exports = { spanTimelines, findVideos, notesFrom, slateOffset, cleanName };

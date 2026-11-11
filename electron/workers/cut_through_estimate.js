@@ -196,5 +196,4 @@ function transcribeReports(costsDir) {
   return out;
 }
 
-module.exports = { parseCsv, fitLine, learnRates, estimateCost, transcribeTiming, transcribeRate, makeLookup, transcribeReports,
-  START, START_TRANSCRIBE, MIN_ROWS };
+module.exports = { parseCsv, learnRates, estimateCost, transcribeTiming, transcribeRate, makeLookup, transcribeReports, START, START_TRANSCRIBE };

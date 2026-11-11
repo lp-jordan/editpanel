@@ -1339,7 +1339,7 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.ok(!tr.log.some((l) => /\[#+/.test(l)), 'progress lines leaked into the log');
 
   // a conversation: Claude edits it too (convo brief, speaker-labelled transcript), place_cuts.py places + gates mics
-  snap = await c.runPlan({ start: '', end: '', extra: '' });
+  snap = await c.runPlan({ start: '', end: '' });
   const pl = snap.steps.plan;
   assert.strictEqual(pl.status, 'done', `${pl.error}\n${pl.log.join('\n')}`);
   assert.ok(pl.data.pieces > 0 && pl.data.angles['Camera 1'] >= 1 && pl.data.angles['Camera 2'] >= 1 && pl.data.angles['Camera 3'] >= 1, JSON.stringify(pl.data));
@@ -1488,7 +1488,7 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.throws(() => c3.saveAngleRules({ rules: ['Camera 1>Camera 2', 'Camera 1>Camera 3', 'Camera 1>Camera 4'] }), /can't cut to any angle/);
   c3.saveAngleRules({ rules: ['Camera 2>Camera 3', 'Camera 3>Camera 2', 'Camera 9>Camera 1'] });
   assert.deepStrictEqual(c3.snapshot().angleRules, ['Camera 2>Camera 3', 'Camera 3>Camera 2']);
-  const cl = (await c3.runPlan({ extra: 'Camera 4', delivery: 'scripted', direction: 'Use the wide only to hide cuts.' })).steps.plan;
+  const cl = (await c3.runPlan({ delivery: 'scripted', direction: 'Use the wide only to hide cuts.' })).steps.plan;
   assert.ok(/Never cut directly between these angles[^\n]*Camera 2 → Camera 3, Camera 3 → Camera 2/.test(requests[0].messages[0].content), 'rules not sent to Claude');
   assert.strictEqual(c3.snapshot().direction, 'Use the wide only to hide cuts.');
   assert.strictEqual(cl.status, 'done', `${cl.error}\n${cl.log.join('\n')}`);

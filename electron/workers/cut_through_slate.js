@@ -5,15 +5,17 @@
  * screen itself was on camera the whole time.
  *
  * How:
- *   1. Find the code box: Claude gets one whole frame and says where the code is (a box, 0–1).
- *      Everything after looks only at that box (padded), so a clock or meter elsewhere on the
- *      screen doesn't count as a change, and a two-character code change does.
+ *   1. Find the code box: local OCR tries the Slate page's usual tile (SLATE_BOX) first. Only if
+ *      no code reads there, and the editor allowed Claude, does Claude check that tile and then
+ *      get whole frames to say where the code is (a box, 0–1); without Claude the read stops and
+ *      the caller asks. Everything after looks only at that box (padded), so a clock or meter
+ *      elsewhere on the screen doesn't count as a change, and a two-character code change does.
  *   2. ffmpeg samples the box at SAMPLE_FPS as tiny grey thumbnails; the samples fall into "looks"
  *      where the box stays the same (a new look = differs for PERSIST samples in a row).
  *   3. The box is read at the START of every look (and at its end, and every CHECK_EVERY_SEC
  *      inside a long one — a change the thumbnails missed). Free first: local OCR
  *      (cut_through_ocr.js), trusted when it matches a code on the slate's notes; Claude only
- *      reads what OCR can't vouch for (a code never logged, a blurred frame).
+ *      reads what OCR can't vouch for (a code never logged, a blurred frame), and only when asked.
  *   4. Where two neighbouring reads disagree and are more than MIN_GAP_SEC apart, more reads go in
  *      between (three per gap per round, all gaps batched together) until each change is pinned.
  *   5. The reads become { from, to, code } on the multicam (frames). Find videos treats the start of
@@ -434,4 +436,4 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
   };
 }
 
-module.exports = { SLATE_BOX, readSlate, grabForOcr, looksOf, segmentsOf, readThumbs, grabFrame, readBatch, locateBox, cropFilter, diff, SAMPLE_FPS, THUMB_W, THUMB_H };
+module.exports = { readSlate, diff };

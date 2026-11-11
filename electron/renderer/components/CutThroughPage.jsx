@@ -43,8 +43,6 @@ function ctStatusText(st, now) {
   }
 }
 
-const CT_DOT = { pending: 'is-pending', running: 'is-active', done: 'is-done', failed: 'is-error', canceled: 'is-skipped' };
-
 const CT_DELIVERY = [['scripted', 'Scripted'], ['free', 'Free talk'], ['stage', 'Stage'], ['convo', 'Conversation']];
 
 function ctMoney(x) {

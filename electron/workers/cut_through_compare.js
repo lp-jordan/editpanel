@@ -505,4 +505,4 @@ ${tally('Changes', sum.byType)}${tally('Restored from', sum.restoredWhy)}${tally
 ${flagRows ? `<details><summary>Flags acted on</summary><table>${flagRows}</table></details>` : ''}${sections}</body></html>`;
 }
 
-module.exports = { compareTimeline, planMatch, totals, reportLines, reportHtml, subtract, ranges, segsOf };
+module.exports = { compareTimeline, planMatch, totals, reportLines, reportHtml, subtract, ranges };

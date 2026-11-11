@@ -73,7 +73,7 @@ const COMMAND_OWNER = Object.freeze({
   ct_list_multicams: WORKERS.resolve,
   ct_run_step: WORKERS.resolve,
   ct_mark_in_out: WORKERS.resolve,
-  ct_read_timeline: WORKERS.resolve,   // Cut-through Check: read a built rough cut
+  ct_read_timeline: WORKERS.resolve,   // Cut-through Check and Compare: read a built rough cut
   ct_set_markers: WORKERS.resolve,     // Cut-through Check: replace its markers
 
   leaderpass_auth: WORKERS.platform,
