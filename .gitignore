@@ -20,3 +20,6 @@ vendor/
 # Vendor JS libraries committed for offline renderer use
 !electron/renderer/vendor/
 
+
+# Cut-through run outputs (plans quote client words; never committed)
+cut_through/plans/
