@@ -223,6 +223,8 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   findVideos: (payload) => ipcRenderer.invoke('cut-through:find-videos', payload),
   readSlate: (opts = {}) => ipcRenderer.invoke('cut-through:read-slate', { useClaude: Boolean(opts.useClaude) }),
   setSlateAngle: (angle) => ipcRenderer.invoke('cut-through:set-slate-angle', { angle }),
+  getSlateFrame: (index) => ipcRenderer.invoke('cut-through:slate-frame', { index }),
+  setSlateBox: (box) => ipcRenderer.invoke('cut-through:set-slate-box', { box }),
   nameMulticamTimelines: (payload) => ipcRenderer.invoke('cut-through:name-multicam-timelines', payload),
   updateVideo: (id, patch) => ipcRenderer.invoke('cut-through:update-video', { id, patch }),
   joinVideos: (ids) => ipcRenderer.invoke('cut-through:join-videos', { ids }),

@@ -297,6 +297,84 @@ function AngleRulesDialog({ mc, angles, roles, rules, busy, error, onSave, onCan
   );
 }
 
+/** Set code box (Jordan 2026-11-11): a frame from the slate angle; drag a box around the J-code.
+ *  Saved per Resolve project and used as is by Read slate; Reset goes back to finding it. */
+function SlateBoxDialog({ api, angle, onClose }) {
+  const [frame, setFrame] = React.useState(null);
+  const [index, setIndex] = React.useState(0);
+  const [box, setBox] = React.useState(null);
+  const [drag, setDrag] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const imgRef = React.useRef(null);
+  React.useEffect(() => {
+    let live = true;
+    setBusy(true);
+    api.getSlateFrame(index).then((res) => {
+      if (!live) return;
+      setBusy(false);
+      if (!res || res.ok === false) { setError((res && res.error) || 'No frame'); return; }
+      setError(null);
+      setFrame(res.data);
+      setBox((b) => b || res.data.box);
+    });
+    return () => { live = false; };
+  }, [index]);
+  const at = (e) => {
+    const r = imgRef.current.getBoundingClientRect();
+    return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
+  };
+  const rectOf = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+  const shown = drag ? rectOf(drag.from, drag.to) : box;
+  const pct = (b) => ({ left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%` });
+  async function save(next) {
+    setBusy(true);
+    const res = await api.setSlateBox(next);
+    setBusy(false);
+    if (!res || res.ok === false) { setError((res && res.error) || 'Not saved'); return; }
+    onClose(res);
+  }
+  return (
+    <div className="export-picker-overlay ct-dialog-overlay" role="dialog" aria-modal="true" aria-label="Code box">
+      <div className="export-picker ct-dialog ct-slatebox-dialog">
+        <header className="export-picker-head">
+          <h3>Code box{angle ? ` · ${angle}` : ''}</h3>
+        </header>
+        <div className="export-picker-body">
+          <div className="ct-slatebox-stage">
+            {frame ? (
+              <div className="ct-slatebox-frame"
+                onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); const p = at(e); setDrag({ from: p, to: p }); }}
+                onPointerMove={(e) => { if (drag) setDrag({ ...drag, to: at(e) }); }}
+                onPointerUp={() => {
+                  if (!drag) return;
+                  const r = rectOf(drag.from, drag.to);
+                  setDrag(null);
+                  if (r.w >= 0.01 && r.h >= 0.01) setBox(r);
+                }}>
+                <img ref={imgRef} src={frame.image} alt="Slate frame" draggable={false} />
+                {!shown && frame.usual && <div className="ct-slatebox-rect is-usual" style={pct(frame.usual)} />}
+                {shown && <div className="ct-slatebox-rect" style={pct(shown)} />}
+              </div>
+            ) : <div className="ct-slatebox-empty dim">{busy ? 'Loading frame…' : ''}</div>}
+          </div>
+          <div className="ct-slatebox-nav">
+            <button type="button" className="btn small ghost" disabled={busy || !frame || frame.count < 2} onClick={() => setIndex(index - 1)} aria-label="Previous frame">‹</button>
+            <span className="dim">{frame ? `${frame.index + 1} / ${frame.count} · ${frame.clip}` : ''}</span>
+            <button type="button" className="btn small ghost" disabled={busy || !frame || frame.count < 2} onClick={() => setIndex(index + 1)} aria-label="Next frame">›</button>
+          </div>
+          {error && <div className="notice error">{error}</div>}
+        </div>
+        <footer className="export-picker-foot">
+          {frame && frame.box && <button type="button" className="btn ghost" disabled={busy} onClick={() => save(null)}>Reset</button>}
+          <button type="button" className="btn ghost" disabled={busy} onClick={() => onClose(null)}>Cancel</button>
+          <button type="button" className="btn primary" disabled={busy || !box} onClick={() => save(box)}>Save</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 /** One video of the day as a table row: tick · name · start–end · length · type · status · flags · join. */
 function CtVideoRow({ v, next, soloDefault, locked, busy, estimate, onPatch, onRetry, onJoin, onSplit }) {
   const [name, setName] = React.useState(v.name);
@@ -351,6 +429,7 @@ function CutThroughPage({ connected }) {
   const [planForm, setPlanForm] = React.useState({ start: '', end: '', delivery: 'scripted', useMarks: false });
   const [rolesDraft, setRolesDraft] = React.useState({});
   const [rulesOpen, setRulesOpen] = React.useState(false);
+  const [boxOpen, setBoxOpen] = React.useState(false);
   const [rulesBusy, setRulesBusy] = React.useState(false);
   const [bins, setBins] = React.useState([]);
   const [timelines, setTimelines] = React.useState([]);
@@ -772,6 +851,10 @@ function CutThroughPage({ connected }) {
                     <option value="">Off</option>
                     {sortedAngles.map((a) => <option key={a} value={a}>{a}</option>)}
                   </select>
+                  {api.getSlateFrame && (
+                    <button type="button" className="btn small ghost" disabled={locked || !ct.slateAngle || Boolean(slateRun)}
+                      onClick={() => setBoxOpen(true)}>{ct.slateBox ? 'Code box · set' : 'Code box'}</button>
+                  )}
                   {!slateRun && (
                     <button type="button" className="btn small ghost" disabled={locked || !ct.slateAngle || !transcribed}
                       onClick={() => call('videos', () => api.readSlate())}>{ct.slateInfo && (ct.slateInfo.frames || ct.slateInfo.boxMissing) ? 'Read again' : 'Read slate'}</button>
@@ -1081,6 +1164,10 @@ function CutThroughPage({ connected }) {
               if (r) setRulesOpen(false);
             });
           }} />
+      )}
+
+      {boxOpen && (
+        <SlateBoxDialog api={api} angle={ct.slateAngle} onClose={(res) => { if (res) apply(res, 'videos'); setBoxOpen(false); }} />
       )}
 
       <section className="panel ct-step ct-settings" ref={settingsRef}>

@@ -1285,6 +1285,14 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   c2.setSlateAngle('');                // the file no longer counts …
   snap = await c2.joinVideos([snap.videos.videos[0].id, snap.videos.videos[1].id]);
   assert.deepStrictEqual(snap.videos.videos.map((v) => v.code), ['A1', 'R7'], 'Join dropped the slate read');   // … Join still uses it
+  // Set code box: saved per Resolve project, cleaned (inside the frame), Reset clears it
+  snap = c2.setSlateBox({ x: 0.2, y: 0.6, w: 0.9, h: 0.1 });
+  assert.deepStrictEqual(snap.slateBox, { x: 0.2, y: 0.6, w: 0.8, h: 0.1 }, JSON.stringify(snap.slateBox));
+  assert.throws(() => c2.setSlateBox({ x: 0.5, y: 0.5, w: 0.001, h: 0.2 }), /bigger box/);
+  snap = c2.setSlateBox(null);
+  assert.strictEqual(snap.slateBox, null);
+  const slateLib = require('../electron/workers/cut_through_slate');
+  assert.deepStrictEqual(slateLib.cleanBox({ x: -1, y: 0.4, w: 0.3, h: 0.2 }), { x: 0, y: 0.4, w: 0.3, h: 0.2, ocrMargin: [0.03, 0.06] });
   console.log('✓ videos end to end: slate J-codes → A1 / S1 (restart) / B2 → plan now (solo keeps both mic tracks, gap cut) → build PLAN_FILES → batch priced, sent, survives a restart, canceled, collected at half price, failed one re-sent; Join keeps the slate read');
 }
 

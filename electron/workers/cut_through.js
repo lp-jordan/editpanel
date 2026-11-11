@@ -462,6 +462,42 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
+  /** The code box drawn on a slate frame (Set code box), per Resolve project; null = find it as usual. */
+  function slateBox() {
+    const p = (getPrefs() || {}).cutThrough || {};
+    const b = s.project ? (p.slateBoxes || {})[s.project] : null;
+    const c = b ? slateLib.cleanBox(b) : null;
+    return c ? { x: c.x, y: c.y, w: c.w, h: c.h } : null;
+  }
+
+  function setSlateBox(box) {
+    if (!s.project) throw new Error('Pick a multicam first');
+    const c = box ? slateLib.cleanBox(box) : null;
+    if (box && !c) throw new Error('Draw a bigger box around the code');
+    const p = (getPrefs() || {}).cutThrough || {};
+    const boxes = { ...(p.slateBoxes || {}) };
+    if (c) boxes[s.project] = { x: +c.x.toFixed(4), y: +c.y.toFixed(4), w: +c.w.toFixed(4), h: +c.h.toFixed(4) };
+    else delete boxes[s.project];
+    setPrefs({ cutThrough: { ...p, slateBoxes: boxes } });
+    emit();
+    return snapshot();
+  }
+
+  /** One frame of the slate angle for Set code box: the middle of slate clip `index` (wraps). */
+  async function slateFrame({ index = 0 } = {}) {
+    if (!s.day) throw new Error('Run Prep first');
+    const angle = slateAngle();
+    if (!angle) throw new Error('Pick the slate angle first');
+    const clips = (s.day.picture_clips || []).filter((c) => c.angle === angle && c.path && c.to_sec > c.from_sec);
+    if (!clips.length) throw new Error(`No clips found for ${angle} (run Prep again)`);
+    const i = ((Math.floor(Number(index) || 0) % clips.length) + clips.length) % clips.length;
+    const c = clips[i];
+    const t = c.from_sec + (c.to_sec - c.from_sec) / 2;
+    const jpeg = await slateLib.grabFrame(ffmpegPath || 'ffmpeg', c.path, Math.max(0, t - c.file_zero_sec));
+    return { image: `data:image/jpeg;base64,${jpeg.toString('base64')}`, index: i, count: clips.length,
+      clip: path.basename(c.path), box: slateBox(), usual: (({ x, y, w, h }) => ({ x, y, w, h }))(slateLib.SLATE_BOX) };
+  }
+
   /** The saved slate read for this label, when it's of the current slate angle. */
   function slateReads() {
     if (!s.label) return null;
@@ -586,7 +622,7 @@ function createCutThrough(opts) {
     // the saved slate notes stay in the worker (Join / Split use them); the page doesn't need them
     const videos = s.videos && (s.videos.slateNotes || s.videos.slateCodes) ? (({ slateNotes, slateCodes, ...rest }) => rest)(s.videos) : s.videos;
     return { ...s, videos, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
-      slateAngle: slateAngle(), slateInfo: slateInfo(), estimate: costEstimate(),
+      slateAngle: slateAngle(), slateBox: slateBox(), slateInfo: slateInfo(), estimate: costEstimate(),
       videosReady: videosToBuild().length,
       // Cancel can stop it: a child process (Transcribe, the placer, ffmpeg) or the slate read; not a Claude call or a Resolve step
       cancelable: Boolean(child) || Boolean(s.slateRead) || Boolean(claudeAbort) };
@@ -1726,7 +1762,7 @@ function createCutThrough(opts) {
     try {
       const r = await slateLib.readSlate({ ffmpeg: ffmpegPath || 'ffmpeg', clips, frameSec: s.day.frame_sec[0] / s.day.frame_sec[1],
         // free unless confirmed: OCR only (frames it can't vouch for are counted for the confirm step)
-        client: useClaude ? claudeApi() : null, model, knownCodes: known, signal: useClaude ? claudeSignal() : null,
+        client: useClaude ? claudeApi() : null, model, knownCodes: known, userBox: slateBox(), signal: useClaude ? claudeSignal() : null,
         onProgress: (p) => { s.slateRead = { ...s.slateRead, ...p }; emit(); },
         onProc: (p) => { child = p; }, isCanceled: () => canceled });
       const cost = claude.costOf(r.model, r.usage);
@@ -1735,7 +1771,7 @@ function createCutThrough(opts) {
       // what Claude would cost for the rest: ~650 input tokens per box crop, ~20 out, the prompt per 8
       const n = r.needsClaude || 0;
       const estimate = r.boxMissing ? null : n ? claude.costOf(model, { input_tokens: 650 * n + 500 * Math.ceil(n / 8), output_tokens: 20 * n }) : 0;
-      fs.writeFileSync(f.slate, JSON.stringify({ angle, madeAt: Date.now(), model: r.model, cost, seconds: r.seconds, report: r.report,
+      fs.writeFileSync(f.slate, JSON.stringify({ angle, box: r.box || null, madeAt: Date.now(), model: r.model, cost, seconds: r.seconds, report: r.report,
         byOcr: r.byOcr, byClaude: r.byClaude, needsClaude: n, boxMissing: !!r.boxMissing, estimate, reads: r.reads }, null, 1), 'utf8');
       forgetDisk();
       pushLog('plan', `Slate read: ${r.report}`);
@@ -2215,6 +2251,8 @@ function createCutThrough(opts) {
     findVideos,
     readSlate,
     setSlateAngle,
+    setSlateBox,
+    slateFrame,
     updateVideo,
     joinVideos,
     splitVideo,

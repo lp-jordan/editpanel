@@ -65,6 +65,18 @@ function run(ffmpeg, args, onProc) {
   });
 }
 
+/** A drawn box (0–1 fractions) made safe: inside the frame, not too small; a little OCR margin. */
+function cleanBox(b) {
+  if (!b) return null;
+  const n = (v) => Math.min(1, Math.max(0, Number(v) || 0));
+  const x = n(b.x);
+  const y = n(b.y);
+  const w = Math.min(n(b.w), 1 - x);
+  const h = Math.min(n(b.h), 1 - y);
+  if (w < 0.01 || h < 0.01) return null;
+  return { x, y, w, h, ocrMargin: [0.03, 0.06] };
+}
+
 /** ffmpeg crop filter for a 0–1 box (null = the whole frame). */
 function cropFilter(box) {
   if (!box) return '';
@@ -275,7 +287,7 @@ async function readSlate(opts) {
   }
 }
 
-async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes = [], onProgress = () => {}, onProc = () => {}, isCanceled = () => false,
+async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes = [], userBox = null, onProgress = () => {}, onProc = () => {}, isCanceled = () => false,
   signal = null, grab = grabFrame, grabOcr = grabForOcr, ocrRead = ocr.readCode }) {
   const t0 = Date.now();
   let usage = {};
@@ -301,9 +313,10 @@ async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes
 
   // 1. the code box: the Slate page's usual tile if a code reads there, else Claude finds it
   onProgress({ phase: 'Finding the code box', bar: 0 });
-  let box = null;
-  let boxFrom = 'none';
-  const probes = clips.slice(0, 3).map((c) => ({ c, t: c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2) }));
+  // the box the editor drew on a slate frame (Set code box) is used as is: no search, no Claude
+  let box = userBox ? cleanBox(userBox) : null;
+  let boxFrom = box ? 'set' : 'none';
+  const probes = box ? [] : clips.slice(0, 3).map((c) => ({ c, t: c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2) }));
   for (const { c, t } of probes) {
     if (box) break;
     if (await tryOcr(c, t, SLATE_BOX, true)) { box = SLATE_BOX; boxFrom = 'usual'; byOcr += 1; }
@@ -435,11 +448,11 @@ async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes
   const needsClaude = client ? 0 : perClip.reduce((n, pc) => n + pc.samples.filter((x) => !x.code).length, 0);
   return {
     reads, box, needsClaude, frames: asked + byOcr, byOcr, byClaude: asked, ocrOff, usage, model: usedModel, seconds: +seconds.toFixed(1),
-    report: `${boxFrom === 'usual' ? 'usual code tile' : boxFrom === 'found' ? 'code box found by Claude' : 'no code box found (whole frame used)'}; ` +
+    report: `${boxFrom === 'set' ? 'code box set by hand' : boxFrom === 'usual' ? 'usual code tile' : boxFrom === 'found' ? 'code box found by Claude' : 'no code box found (whole frame used)'}; ` +
       `${byOcr} frames read free (OCR), ${asked} by Claude${ocrOff ? ` (OCR off: ${ocrOff})` : ''}` +
       `${needsClaude ? `, ${needsClaude} left for Claude` : ''}: ${codes} codes, ` +
       `${unreadable} unreadable stretches, in ${seconds.toFixed(0)} s`
   };
 }
 
-module.exports = { readSlate, diff };
+module.exports = { readSlate, diff, grabFrame, cleanBox, SLATE_BOX };
