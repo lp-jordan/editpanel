@@ -1104,7 +1104,7 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
     { timestamp: at(60), code: 'B2', note: '' }
   ];
   const lpos = { isConfigured: () => true, listProjects: async () => ({ projects: [{ projectId: 'p1', name: 'Day', clientName: 'Client' }] }),
-    getSlateNotes: async (id) => { assert.strictEqual(id, 'p1'); return { notes, tabs: [] }; } };
+    getSlateNotes: async (id) => { assert.strictEqual(id, 'p1'); return { notes: notes.map((n) => ({ ...n })), tabs: [] }; } };
   // a stand-in Claude: live calls and the batch API (the real one isn't called)
   const answer = (params) => {
     const shots = [];
@@ -1153,10 +1153,19 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   assert.ok(s1.gaps.length === 1 && s1.flags.includes('Restart'), JSON.stringify(s1));
   assert.strictEqual(b2.kind, 'convo');
   assert.ok(fs.existsSync(RUN('Vids', 'videos_Vids.json')));
-  // Join two videos (the slate split one in two) and Split them again; a video that didn't move keeps its id
+  // Join two videos (the slate split one in two) and Split them again; a video that didn't move keeps its id.
+  // Join / Split don't read the LPOS slate again (rows added since — another day on the same times of
+  // day — would change every code): they reuse the last Find's notes + offset
+  assert.ok(!('slateNotes' in snap.videos), 'saved slate notes sent to the page');
+  const saved = notes.slice();
+  notes.length = 0;
   snap = await c.joinVideos([a1.id, s1.id]);
   assert.deepStrictEqual(snap.videos.videos.map((v) => [v.name, Boolean(v.joined)]), [['A1', true], ['B2', false]], JSON.stringify(snap.videos.videos.map((v) => v.name)));
   assert.strictEqual(snap.videos.videos[1].id, b2.id, 'B2 renumbered by the join');
+  snap = await c.splitVideo(snap.videos.videos[0].id);
+  assert.deepStrictEqual(snap.videos.videos.map((v) => v.name), ['A1', 'S1', 'B2'], 'Split read the slate again');
+  snap = await c.joinVideos([a1.id, s1.id]);
+  notes.push(...saved);
   snap = await c.findVideos({});
   assert.strictEqual(snap.videos.videos.length, 2, 'Find again lost the join');
   await assert.rejects(c.joinVideos([b2.id]), /Pick two/);

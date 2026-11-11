@@ -582,7 +582,9 @@ function createCutThrough(opts) {
   }
 
   function snapshot() {
-    return { ...s, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
+    // the saved slate notes stay in the worker (Join / Split use them); the page doesn't need them
+    const videos = s.videos && s.videos.slateNotes ? (({ slateNotes, ...rest }) => rest)(s.videos) : s.videos;
+    return { ...s, videos, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
       slateAngle: slateAngle(), slateInfo: slateInfo(), estimate: costEstimate(),
       videosReady: videosToBuild().length,
       // Cancel can stop it: a child process (Transcribe, the placer, ffmpeg) or the slate read; not a Claude call or a Resolve step
@@ -1569,7 +1571,7 @@ function createCutThrough(opts) {
    * a pause and to tell solo from conversation). offsetSec: '' = work it out from the slate.
    * Earlier choices (tick, type, name) and plans stay with a video that comes back unchanged.
    */
-  async function findVideos({ offsetSec, firstCode } = {}) {
+  async function findVideos({ offsetSec, firstCode, again = null } = {}) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
     needRunFolder();
     if (!s.day) throw new Error('Run Prep first');
@@ -1579,22 +1581,33 @@ function createCutThrough(opts) {
     if (batchLive()) throw new Error('A batch is still running for these videos — cancel it or wait');
     const ended = s.videos && s.videos.batch;
     if (ended && ended.id && ended.status === 'ended' && !ended.collected) throw new Error('The last batch has ended: Collect it first');
-    const lp = settings().lposProject;
+    // again = the last Find's saved slate notes + offset (Join / Split): the LPOS slate is not read
+    // again, so rows added since (another day on the same times of day) can't change every code
+    const lp = again ? (again.lpos || null) : settings().lposProject;
     let notes = [];
-    if (lp) {
-      const c = lposClient();
-      if (!c) throw new Error('LPOS not connected — pick "No slate" to split by recordings only');
-      const data = await c.getSlateNotes(lp.id);
-      notes = Array.isArray(data?.notes) ? data.notes : [];
+    let first = '';
+    let offset;
+    if (again) {
+      notes = again.slateNotes;
+      first = again.firstCode || '';
+      offset = again.offset;
+    } else {
+      if (lp) {
+        const c = lposClient();
+        if (!c) throw new Error('LPOS not connected — pick "No slate" to split by recordings only');
+        const data = await c.getSlateNotes(lp.id);
+        notes = Array.isArray(data?.notes) ? data.notes : [];
+      }
+      first = lp ? String(firstCode || '').trim() : '';
+      if (first) {
+        notes = videosLib.notesFrom(s.day, notes, first);
+        if (!notes) throw new Error(`${first} isn't on this slate`);
+      }
+      const auto = videosLib.slateOffset(s.day, notes);
+      const manual = offsetSec !== undefined && offsetSec !== null && String(offsetSec).trim() !== '' && Number.isFinite(Number(offsetSec));
+      offset = { used: manual ? Number(offsetSec) : auto.offsetSec, auto: auto.offsetSec, manual, hours: auto.hours, seconds: auto.seconds, matched: auto.matched };
     }
-    const first = lp ? String(firstCode || '').trim() : '';
-    if (first) {
-      notes = videosLib.notesFrom(s.day, notes, first);
-      if (!notes) throw new Error(`${first} isn't on this slate`);
-    }
-    const auto = videosLib.slateOffset(s.day, notes);
-    const manual = offsetSec !== undefined && offsetSec !== null && String(offsetSec).trim() !== '' && Number.isFinite(Number(offsetSec));
-    const used = manual ? Number(offsetSec) : auto.offsetSec;
+    const used = offset.used;
     const slate = slateReads();
     const joins = (s.videos && Array.isArray(s.videos.joins)) ? s.videos.joins : [];
     const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first, reads: slate && slate.reads, joins });
@@ -1623,9 +1636,8 @@ function createCutThrough(opts) {
     });
     const codes = notes.filter((n) => n.code && n.code !== 'ATEM').length;
     writeVideos({
-      label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes, firstCode: first,
-      offset: { used, auto: auto.offsetSec, manual, hours: auto.hours, seconds: auto.seconds, matched: auto.matched },
-      active: Boolean(s.videos && s.videos.active), batch: null, videos, joins
+      label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes, firstCode: first, offset,
+      slateNotes: notes, active: Boolean(s.videos && s.videos.active), batch: null, videos, joins
     });
     emit();
     return snapshot();
@@ -1651,7 +1663,19 @@ function createCutThrough(opts) {
       if (r[1] >= lo && r[0] <= hi) { lo = Math.min(lo, r[0]); hi = Math.max(hi, r[1]); } else keep.push(r);
     }
     writeVideos({ ...s.videos, joins: [...keep, [lo, hi]] });
-    return findAgain();
+    const first = pick.reduce((a, v) => (v.from < a.from ? v : a));
+    await refind();
+    // the joined video keeps the name the first one had (typed by hand, or its code)
+    const j = s.videos.videos.find((v) => v.joined && v.from <= first.from && v.to >= first.to);
+    if (j && first.name && j.name !== first.name) return updateVideo(j.id, { name: first.name });
+    return snapshot();
+  }
+
+  /** Join / Split: the videos again from the last Find's slate notes + offset (no LPOS read).
+   *  A videos file from before 1.2.153 has no saved notes: Find again as before. */
+  function refind() {
+    const v = s.videos || {};
+    return Array.isArray(v.slateNotes) && v.offset ? findVideos({ again: v }) : findAgain();
   }
 
   /** Undo the join a video came from. */
@@ -1662,7 +1686,7 @@ function createCutThrough(opts) {
     if (!v) throw new Error('No such video');
     const joins = (s.videos.joins || []).filter((r) => !(r[1] >= v.from && r[0] <= v.to));
     writeVideos({ ...s.videos, joins });
-    return findAgain();
+    return refind();
   }
 
   /**
