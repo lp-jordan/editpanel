@@ -30,6 +30,22 @@ import time
 import zlib
 from typing import Any, List
 
+
+def _common():
+    """common.py from this script's own folder, loaded fresh each run (see its docstring).
+    build_rough_cut.py sets __file__; a console exec(open(...).read()) has none → the LP1 checkout."""
+    import importlib.util
+    here = (os.path.dirname(os.path.abspath(globals()["__file__"])) if globals().get("__file__")
+            else r"C:\lp-app-ecosystem\editpanel\cut_through")
+    spec = importlib.util.spec_from_file_location("cut_through_common", os.path.join(here, "common.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_c = _common()
+_safe = _c._safe
+
 XML = globals().get("XML", "ConvoTest_xml.fcpxml")
 LABEL = globals().get("LABEL", "ConvoTest")
 ARCHIVE = bool(globals().get("ARCHIVE"))               # original multicam → its own bin
@@ -57,19 +73,8 @@ def phase(text: str) -> None:
     print(f"▸ {text}", flush=True)
 
 
-def _safe(fn, default=None):
-    try:
-        return fn()
-    except Exception:
-        return default
-
-
 def walk(folder: Any, skip=SKIP_BINS):
-    for clip in _safe(lambda: folder.GetClipList(), []) or []:
-        yield folder, clip
-    for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
-        if _safe(lambda: sub.GetName()) not in skip:
-            yield from walk(sub, skip)
+    return _c.walk(folder, skip)
 
 
 def clip_label(item: Any) -> str:
@@ -281,8 +286,7 @@ def multicams(mp: Any, name: str):
 
 
 def angle_of(item: Any) -> str:
-    n = str(_safe(lambda: item.GetName(), ""))
-    return n.rsplit(" - ", 1)[-1] if " - " in n else "?"
+    return _c.angle_of(str(_safe(lambda: item.GetName(), "")))
 
 
 def main() -> None:

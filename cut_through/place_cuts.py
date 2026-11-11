@@ -42,6 +42,19 @@ import re
 import sys
 from collections import Counter
 
+
+def _common():
+    """common.py from this script's own folder (see its docstring)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "cut_through_common", os.path.join(os.path.dirname(os.path.abspath(__file__)), "common.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+cam_no = _common().cam_no
+
 PAUSE_MAX, PAUSE_LEFT = 30, 11            # frames: silences longer than this are trimmed to this (defaults; the
                                            # removals file's "pauses" sets them per delivery)
 LEN = {"wide": 228, "punch": 209, "extra": 132}   # 9.5 s / 8.7 s / 5.5 s at 24 fps
@@ -127,11 +140,6 @@ def fit_angles(pieces, angles, hold=72, w_short=3, w_cut=24, allowed=None, nocut
             continue
         out.append({**p, "angle": g, "kind": "forced" if changed else p["kind"]})
     return out
-
-
-def cam_no(name: str) -> int:
-    m = re.search(r"(\d+)\s*$", name or "")
-    return int(m.group(1)) if m else 999
 
 
 def norm(w: str) -> str:

@@ -342,7 +342,7 @@ print(f"{len(words)} words")
 
 fs.writeFileSync(path.join(TMP, 'fake_resolve.py'), FAKE_RESOLVE);
 fs.writeFileSync(path.join(FAKE_PIPELINE, 'transcribe.py'), FAKE_TRANSCRIBE);
-for (const f of ['prepare_multicam.py', 'place_cuts.py']) fs.copyFileSync(path.join(PIPELINE, f), path.join(FAKE_PIPELINE, f));
+for (const f of ['common.py', 'prepare_multicam.py', 'place_cuts.py']) fs.copyFileSync(path.join(PIPELINE, f), path.join(FAKE_PIPELINE, f));
 fs.mkdirSync(path.join(FAKE_PIPELINE, 'editor_briefs'));
 for (const f of ['solo.md', 'conversation.md']) fs.copyFileSync(path.join(PIPELINE, 'editor_briefs', f), path.join(FAKE_PIPELINE, 'editor_briefs', f));
 

@@ -40,7 +40,8 @@ import threading
 import time
 from typing import Any, Dict, List
 
-ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
+from . import ct_common
+
 ALLOWED_STEPS = {"prepare_multicam.py", "build_rough_cut.py"}
 _run_lock = threading.Lock()
 
@@ -57,7 +58,7 @@ def _walk(folder: Any, path: List[str]):
         yield path, clip
     for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
         name = _safe(lambda: sub.GetName())
-        if name in ARCHIVE_BINS:
+        if name in ct_common.load().ARCHIVE_BINS:
             continue
         yield from _walk(sub, path + [name or "?"])
 
@@ -178,7 +179,8 @@ def mark_in_out(root: Any, name: str) -> Dict[str, Any]:
     found = [(path, clip) for path, clip in _walk_all(root, [])
              if _safe(lambda: clip.GetName()) == name
              and "multicam" in str(_safe(lambda: clip.GetClipProperty("Type"), "")).lower()]
-    found.sort(key=lambda pc: any(p in ARCHIVE_BINS for p in pc[0]))
+    archive = ct_common.load().ARCHIVE_BINS
+    found.sort(key=lambda pc: any(p in archive for p in pc[0]))
     for path, clip in found:
         marks = _safe(lambda: clip.GetMarkInOut(), {}) or {}
         m = marks.get("video") or marks.get("audio") or {}
@@ -197,13 +199,6 @@ def handle_ct_mark_in_out(payload: Dict[str, Any], log_func=None) -> Dict[str, A
     if not out["multicams"]:
         raise RuntimeError(f"No multicam named {name!r}")
     return out
-
-
-def angle_of(item_name: str, mc_name: str) -> str:
-    """A multicam piece's active angle, from its item name ("<MC> - Camera 2")."""
-    if mc_name and item_name.startswith(mc_name + " - "):
-        return item_name[len(mc_name) + 3:]
-    return item_name.rsplit(" - ", 1)[-1] if " - " in item_name else "?"
 
 
 def read_audio(tl: Any) -> List[Dict[str, Any]]:
@@ -231,6 +226,7 @@ def read_timeline(tl: Any) -> Dict[str, Any]:
     """Every multicam piece on the picture track with the most of them: record start/end, the
     multicam source in/out (multicam frames, the unit the cut plan uses) and the angle. Same read
     as the Z8 comparison (spike_auto_rough_cut.py / spike_scan_past_edits.py)."""
+    angle_of = ct_common.load().angle_of
     fps = float(_safe(lambda: tl.GetSetting("timelineFrameRate"), 0) or 0) or 24.0
     by_track: Dict[int, List[Dict[str, Any]]] = {}
     for t in range(1, int(_safe(lambda: tl.GetTrackCount("video"), 0) or 0) + 1):

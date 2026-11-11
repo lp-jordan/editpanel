@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from .bin_tree import BIN_PATH_SEPARATOR, resolve_folder_by_path
 from .import_media import _find_or_create_path
-from .slate_span_report import _is_drop_frame, frames_to_tc, tc_to_frames
+from . import ct_common
 
 CAMERAS = {1, 2, 3, 4, 6}        # 1-4 = angles, 6 = slate
 MIN_SPAN_SECONDS = 2.0           # shorter recordings don't get a timeline
@@ -48,16 +48,6 @@ def _camera_number(trail: List[str], name: str) -> Optional[int]:
             return int(m.group(1))
     m = CAM_RE.search(name)
     return int(m.group(1)) if m else None
-
-
-def _merge_ranges(ranges: List[List[int]], tolerance: int) -> List[List[int]]:
-    out: List[List[int]] = []
-    for r in sorted(ranges):
-        if out and r[0] <= out[-1][1] + tolerance:
-            out[-1][1] = max(out[-1][1], r[1])
-        else:
-            out.append(list(r))
-    return out
 
 
 def _gather_clips(source: Any) -> List[Dict[str, Any]]:
@@ -91,13 +81,13 @@ def _day(mc: Any, mc_name: str, clips: List[Dict[str, Any]], fps: float) -> Opti
     frames = _safe(lambda: int(str(mc.GetClipProperty("Frames"))))
     if not start_tc or not frames:
         return None
-    mc_start = tc_to_frames(start_tc, fps)
+    ct = ct_common.load()
+    mc_start = ct.tc_to_frames(start_tc, fps)
     per_cam: Dict[int, List[List[int]]] = {}
     for c in clips:
         per_cam.setdefault(c["cam"], []).append([c["in_f"], c["in_f"] + c["frames"]])
-    merged = [s for ranges in per_cam.values() for s in _merge_ranges(ranges, MERGE_TOLERANCE)]
-    spans = [s for s in _merge_ranges(merged, MERGE_TOLERANCE)
-             if s[1] - s[0] >= int(MIN_SPAN_SECONDS * fps)]
+    merged = [s for ranges in per_cam.values() for s in ct.merge_spans(ranges, MERGE_TOLERANCE)]
+    spans = ct.merge_spans(merged, MERGE_TOLERANCE, min_len=int(MIN_SPAN_SECONDS * fps))
     return {
         "multicam": mc_name,
         "fps": fps,
@@ -159,8 +149,9 @@ def handle_create_multicam(payload: Dict[str, Any]) -> Dict[str, Any]:
     fps = fps_set[0]
     if len(fps_set) > 1:
         warnings.append(f"Mixed clip frame rates: {fps_set}.")
+    ct = ct_common.load()
     for c in clips:
-        c["in_f"] = tc_to_frames(c["start_tc"], fps)
+        c["in_f"] = ct.tc_to_frames(c["start_tc"], fps)
 
     mc_name = multicam_name
     mc_segments = ["SEQUENCES", "MC"]
@@ -184,11 +175,11 @@ def handle_create_multicam(payload: Dict[str, Any]) -> Dict[str, Any]:
         if failed_tags:
             warnings.append(f"{failed_tags} clip(s) couldn't be tagged; angle grouping may be wrong.")
 
-        drop = _is_drop_frame(clips[0]["start_tc"])
+        drop = ct._is_drop_frame(clips[0]["start_tc"])
         ordered = [c["clip"] for c in sorted(clips, key=lambda c: (c["cam"], c["in_f"]))]
         options = {
             "name": mc_name,
-            "startTimecode": frames_to_tc(min(c["in_f"] for c in clips), fps, drop),
+            "startTimecode": ct.frames_to_tc(min(c["in_f"] for c in clips), fps, drop),
             "frameRate": fps,
             "angleSyncMode": rh.resolve.MULTICAM_ANGLE_SYNC_TIMECODE,
             "angleNameMode": rh.resolve.MULTICAM_ANGLE_NAME_CAMERA,
