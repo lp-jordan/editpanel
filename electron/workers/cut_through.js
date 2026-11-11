@@ -664,7 +664,7 @@ function createCutThrough(opts) {
   function finish(step, { error = null, report = null, reportFile = null, data = undefined } = {}) {
     const st = s.steps[step];
     st.finishedAt = Date.now();
-    st.status = canceled && step === 'transcribe' ? 'canceled' : error ? 'failed' : 'done';
+    st.status = canceled ? 'canceled' : error ? 'failed' : 'done';
     st.error = error;
     if (report) st.report = report;
     st.reportFile = reportFile && fs.existsSync(reportFile) ? reportFile : null;
@@ -676,6 +676,17 @@ function createCutThrough(opts) {
     if (pendingProject) { const n = pendingProject; pendingProject = null; onProject(n); }
     emit();
     maybeCollect();
+  }
+
+  /** Run a step's body after begin(): anything it throws ends the step as failed, so the page
+   *  is never left showing it as running (and every other step locked). */
+  async function inStep(step, st, fn) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (s.busy === step && s.steps[step] === st) finish(step, { error: errMsg(err), report: st.log.slice(), reportFile: saveLog(step) });
+      return snapshot();
+    }
   }
 
   /** An ended batch that wasn't read yet (something else was running, or EditPanel was closed). */
@@ -1156,8 +1167,8 @@ function createCutThrough(opts) {
   /** Lines streamed from the Resolve worker for a running step (by trace id). */
   function onWorkerLog(traceId, message) {
     if (!traceId || !s.busy) return;
-    const st = s.steps[s.busy];
-    if (st.traceId !== traceId) return;
+    const st = s.steps[s.busy];                      // undefined while busy is "Reading the slate" / "Copying runs"
+    if (!st || st.traceId !== traceId) return;
     const text = String(message);
     if (text.startsWith('▸ ')) {                      // the script saying what it's doing now
       st.progress = { phase: text.slice(2).trim(), phaseAt: Date.now(), bar: null };
@@ -1208,6 +1219,12 @@ function createCutThrough(opts) {
 
   async function runTranscribe({ minutes } = {}) {
     if (!s.day) throw new Error('Run Prep first');
+    // a batch's answers point at this words file by token number: a new transcript would put
+    // Claude's cuts on the wrong words, so it waits until the batch is collected or discarded
+    const b = s.videos && s.videos.batch;
+    if (b && (b.status === 'draft' || batchLive() || (b.status === 'ended' && !b.collected))) {
+      throw new Error('A batch is waiting on this transcript — collect, cancel or discard it first');
+    }
     const st = begin('transcribe');
     const { pipelineDir, wxPython } = settings();
     const mins = Number(minutes) > 0 ? Number(minutes) : 0;
@@ -1690,7 +1707,7 @@ function createCutThrough(opts) {
     return {
       label: vf.tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
       promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
-      start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: st0.sliderMotion, noCut: planRules(), delivery,
+      start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: Boolean(st0.sliderMotion && fs.existsSync(f.motion)), noCut: planRules(), delivery,
       talker: kind === 'solo' ? v.talker || null : null,
       roles: { wide: R.wide || undefined, punch: R.punch || undefined, extra: R.extra, slider: R.slider, side: R.side, other: R.other, skip: R.skip },
       direction: direction(), kind, minutes: v.minutes
@@ -1815,58 +1832,60 @@ function createCutThrough(opts) {
     const { list, R } = videosPlanSetup({ ids, roles, direction: note });
     await assertNoQueuedBatch();
     const st = begin('plan');
-    st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
-    emit();
-    const f = files();
-    const st0 = settings();
-    const prepErr = await ensureAudioPrep(st, f, st0);
-    if (canceled || prepErr) {
-      finish('plan', { error: canceled ? null : prepErr, report: st.log.slice(), reportFile: saveLog('plan') });
-      return snapshot();
-    }
-    const api = claudeApi();
-    const ratio = outputRatio();
-    const requests = [];
-    const items = {};
-    const skipped = [];
-    for (const [k, v] of list.entries()) {
-      st.progress = { phase: `Pricing ${v.name}`, phaseAt: Date.now(), bar: Math.round((k / list.length) * 100) };
+    return inStep('plan', st, async () => {
+      st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
       emit();
-      const args = videoArgs(v, { roles: R, defaultDelivery: delivery });
-      let ctx;
-      try {
-        ctx = claude.preparePlan(args);
-      } catch (err) {
-        skipped.push(`${v.name}: ${err.message}`);
-        continue;
+      const f = files();
+      const st0 = settings();
+      const prepErr = await ensureAudioPrep(st, f, st0);
+      if (canceled || prepErr) {
+        finish('plan', { error: canceled ? null : prepErr, report: st.log.slice(), reportFile: saveLog('plan') });
+        return snapshot();
       }
-      let input = null;
-      try {
-        const counted = await api.messages.countTokens({ model: ctx.params.model, system: ctx.params.system, messages: ctx.params.messages });
-        input = counted && Number(counted.input_tokens);
-      } catch (_) { /* estimate below */ }
-      if (!Number.isFinite(input) || input <= 0) input = Math.round((ctx.system.length + ctx.params.messages[0].content.length) / 3.5);
-      const output = Math.round(input * ratio);
-      const usd = claude.costOf(ctx.model, { input_tokens: input, output_tokens: output }, 0.5);
-      const { label: _l, wordsPath: _w, dayPath: _d, outDir: _o, costsDir: _c, promptPath: _p, ...keep } = args;
-      requests.push({ custom_id: v.id, params: ctx.params });
-      items[v.id] = { name: v.name, input, output, usd, args: keep };
-    }
-    if (!requests.length) {
-      finish('plan', { error: `Nothing to send: ${skipped.join('; ')}`, report: st.log.slice() });
+      const api = claudeApi();
+      const ratio = outputRatio();
+      const requests = [];
+      const items = {};
+      const skipped = [];
+      for (const [k, v] of list.entries()) {
+        st.progress = { phase: `Pricing ${v.name}`, phaseAt: Date.now(), bar: Math.round((k / list.length) * 100) };
+        emit();
+        const args = videoArgs(v, { roles: R, defaultDelivery: delivery });
+        let ctx;
+        try {
+          ctx = claude.preparePlan(args);
+        } catch (err) {
+          skipped.push(`${v.name}: ${err.message}`);
+          continue;
+        }
+        let input = null;
+        try {
+          const counted = await api.messages.countTokens({ model: ctx.params.model, system: ctx.params.system, messages: ctx.params.messages });
+          input = counted && Number(counted.input_tokens);
+        } catch (_) { /* estimate below */ }
+        if (!Number.isFinite(input) || input <= 0) input = Math.round((ctx.system.length + ctx.params.messages[0].content.length) / 3.5);
+        const output = Math.round(input * ratio);
+        const usd = claude.costOf(ctx.model, { input_tokens: input, output_tokens: output }, 0.5);
+        const { label: _l, wordsPath: _w, dayPath: _d, outDir: _o, costsDir: _c, promptPath: _p, ...keep } = args;
+        requests.push({ custom_id: v.id, params: ctx.params });
+        items[v.id] = { name: v.name, input, output, usd, args: keep };
+      }
+      if (!requests.length) {
+        finish('plan', { error: `Nothing to send: ${skipped.join('; ')}`, report: st.log.slice() });
+        return snapshot();
+      }
+      // the requests quote client words: they stay in the run folder until sent
+      fs.writeFileSync(f.batchDraft, JSON.stringify({ requests }), 'utf8');
+      const total = Object.values(items).reduce((t, x) => t + x.usd, 0);
+      // videos that already have a plan go again only if the editor means it: the draft says so
+      const replans = list.filter((v) => items[v.id] && v.plan && v.plan.status === 'planned').map((v) => v.name);
+      writeVideos({ ...s.videos, batch: { status: 'draft', preparedAt: Date.now(), model: st0.claudeModel, effort: st0.claudeEffort,
+        items, skipped, replans, estimate: Math.round(total * 100) / 100, liveEstimate: Math.round(total * 200) / 100 } });
+      pushLog('plan', `Batch ready: ${requests.length} video(s), about $${total.toFixed(2)} at the batch price` +
+        (skipped.length ? `; left out: ${skipped.join('; ')}` : '') + '. Submit or discard.');
+      finish('plan', { report: st.log.slice(), data: videosSummary() });
       return snapshot();
-    }
-    // the requests quote client words: they stay in the run folder until sent
-    fs.writeFileSync(f.batchDraft, JSON.stringify({ requests }), 'utf8');
-    const total = Object.values(items).reduce((t, x) => t + x.usd, 0);
-    // videos that already have a plan go again only if the editor means it: the draft says so
-    const replans = list.filter((v) => items[v.id] && v.plan && v.plan.status === 'planned').map((v) => v.name);
-    writeVideos({ ...s.videos, batch: { status: 'draft', preparedAt: Date.now(), model: st0.claudeModel, effort: st0.claudeEffort,
-      items, skipped, replans, estimate: Math.round(total * 100) / 100, liveEstimate: Math.round(total * 200) / 100 } });
-    pushLog('plan', `Batch ready: ${requests.length} video(s), about $${total.toFixed(2)} at the batch price` +
-      (skipped.length ? `; left out: ${skipped.join('; ')}` : '') + '. Submit or discard.');
-    finish('plan', { report: st.log.slice(), data: videosSummary() });
-    return snapshot();
+    });
   }
 
   function discardBatch() {
@@ -1935,70 +1954,72 @@ function createCutThrough(opts) {
     const b = s.videos && s.videos.batch;
     if (!b || !b.id) throw new Error('No batch to collect');
     const st = begin('plan');
-    st.progress = { phase: 'Reading the batch results', phaseAt: Date.now(), bar: null };
-    emit();
-    const R = rolesOf(angleRoles(), s.day.angles || []);
-    const f = files();
-    const st0 = settings();
-    const got = {};
-    try {
-      for await (const r of await claudeApi().messages.batches.results(b.id)) got[r.custom_id] = r.result;
-    } catch (err) {
-      writeVideos({ ...s.videos, batch: { ...s.videos.batch, collectError: errMsg(err) } });
-      finish('plan', { error: `Couldn't read the batch results: ${errMsg(err)}`, report: st.log.slice() });
-      return snapshot();
-    }
-    const ids = Object.keys(b.items || {});
-    let n = 0;
-    let spent = 0;
-    for (const [k, id] of ids.entries()) {
-      const v = s.videos.videos.find((x) => x.id === id);
-      const item = b.items[id];
-      if (!v) continue;
-      st.progress = { phase: `${v.name} · placing the cuts`, phaseAt: Date.now(), bar: Math.round((k / ids.length) * 100) };
+    return inStep('plan', st, async () => {
+      st.progress = { phase: 'Reading the batch results', phaseAt: Date.now(), bar: null };
       emit();
-      pushLog('plan', `── ${v.name} ──`);
-      const result = got[id];
-      let error = null;
-      let summary = null;
-      let cost = null;
-      if (!result) error = 'No answer in the batch';
-      else if (result.type === 'errored') error = `Batch error: ${result.error?.error?.message || result.error?.type || 'unknown'}`;
-      else if (result.type === 'canceled') error = 'Canceled before it ran';
-      else if (result.type === 'expired') error = 'Expired (not run within 24 h)';
-      else {
-        const args = { ...item.args, label: videoFiles(id).tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
-          promptPath: path.join(st0.pipelineDir, 'editor_briefs', item.args.kind === 'convo' ? 'conversation.md' : 'solo.md') };
-        const msg = result.message;
-        try {
-          const res = claude.readMessage(msg, b.model);
-          claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan', model: res.model, effort: args.effort, usage: res.usage, factor: 0.5,
-            minutes: item.args.minutes || v.minutes, kind: item.args.kind });
-          cost = claude.costOf(res.model, res.usage, 0.5);
-          spent += cost;
-          const ctx = claude.preparePlan(args);
-          const out = claude.finishPlan(ctx, res, { outDir: f.dir, factor: 0.5, via: 'batch' });
-          out.lines.forEach((line) => pushLog('plan', line));
-          ({ error, summary } = await placeVideo(v, args, out.removalsFile, R));
-        } catch (err) {
-          if (err.usage) {
-            const c = claude.costOf(err.model || b.model, err.usage, 0.5);
-            claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan_failed', model: err.model || b.model, effort: args.effort, usage: err.usage, factor: 0.5,
-              minutes: item.args.minutes || v.minutes, kind: item.args.kind });
-            spent += c;
-            err.message += ` (billed $${c})`;
-          }
-          error = `Claude: ${err.message}`;
-        }
+      const R = rolesOf(angleRoles(), s.day.angles || []);
+      const f = files();
+      const st0 = settings();
+      const got = {};
+      try {
+        for await (const r of await claudeApi().messages.batches.results(b.id)) got[r.custom_id] = r.result;
+      } catch (err) {
+        writeVideos({ ...s.videos, batch: { ...s.videos.batch, collectError: errMsg(err) } });
+        finish('plan', { error: `Couldn't read the batch results: ${errMsg(err)}`, report: st.log.slice() });
+        return snapshot();
       }
-      if (error) pushLog('plan', `✗ ${v.name}: ${error}`);
-      else n += 1;
-      setVideoPlan(id, error ? { status: 'failed', error, via: 'batch' } : { status: 'planned', via: 'batch', cost, summary });
-    }
-    writeVideos({ ...s.videos, active: true, batch: { ...s.videos.batch, collected: true, collectError: null, collectedAt: Date.now(), spent: Math.round(spent * 1000) / 1000 } });
-    pushLog('plan', `Batch collected: ${n} of ${ids.length} video(s) planned, $${spent.toFixed(2)}`);
-    finish('plan', { error: n ? null : 'No video in the batch was planned', report: st.log.slice(), reportFile: saveLog('plan'), data: videosSummary() });
-    return snapshot();
+      const ids = Object.keys(b.items || {});
+      let n = 0;
+      let spent = 0;
+      for (const [k, id] of ids.entries()) {
+        const v = s.videos.videos.find((x) => x.id === id);
+        const item = b.items[id];
+        if (!v) continue;
+        st.progress = { phase: `${v.name} · placing the cuts`, phaseAt: Date.now(), bar: Math.round((k / ids.length) * 100) };
+        emit();
+        pushLog('plan', `── ${v.name} ──`);
+        const result = got[id];
+        let error = null;
+        let summary = null;
+        let cost = null;
+        if (!result) error = 'No answer in the batch';
+        else if (result.type === 'errored') error = `Batch error: ${result.error?.error?.message || result.error?.type || 'unknown'}`;
+        else if (result.type === 'canceled') error = 'Canceled before it ran';
+        else if (result.type === 'expired') error = 'Expired (not run within 24 h)';
+        else {
+          const args = { ...item.args, label: videoFiles(id).tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
+            promptPath: path.join(st0.pipelineDir, 'editor_briefs', item.args.kind === 'convo' ? 'conversation.md' : 'solo.md') };
+          const msg = result.message;
+          try {
+            const res = claude.readMessage(msg, b.model);
+            claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan', model: res.model, effort: args.effort, usage: res.usage, factor: 0.5,
+              minutes: item.args.minutes || v.minutes, kind: item.args.kind });
+            cost = claude.costOf(res.model, res.usage, 0.5);
+            spent += cost;
+            const ctx = claude.preparePlan(args);
+            const out = claude.finishPlan(ctx, res, { outDir: f.dir, factor: 0.5, via: 'batch' });
+            out.lines.forEach((line) => pushLog('plan', line));
+            ({ error, summary } = await placeVideo(v, args, out.removalsFile, R));
+          } catch (err) {
+            if (err.usage) {
+              const c = claude.costOf(err.model || b.model, err.usage, 0.5);
+              claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan_failed', model: err.model || b.model, effort: args.effort, usage: err.usage, factor: 0.5,
+                minutes: item.args.minutes || v.minutes, kind: item.args.kind });
+              spent += c;
+              err.message += ` (billed $${c})`;
+            }
+            error = `Claude: ${err.message}`;
+          }
+        }
+        if (error) pushLog('plan', `✗ ${v.name}: ${error}`);
+        else n += 1;
+        setVideoPlan(id, error ? { status: 'failed', error, via: 'batch' } : { status: 'planned', via: 'batch', cost, summary });
+      }
+      writeVideos({ ...s.videos, active: true, batch: { ...s.videos.batch, collected: true, collectError: null, collectedAt: Date.now(), spent: Math.round(spent * 1000) / 1000 } });
+      pushLog('plan', `Batch collected: ${n} of ${ids.length} video(s) planned, $${spent.toFixed(2)}`);
+      finish('plan', { error: n ? null : 'No video in the batch was planned', report: st.log.slice(), reportFile: saveLog('plan'), data: videosSummary() });
+      return snapshot();
+    });
   }
 
   // An unfinished batch is checked every minute while EditPanel runs (and once when its label opens).
@@ -2022,6 +2043,8 @@ function createCutThrough(opts) {
     const t = mtime(f.plan);
     s.steps.plan = { ...emptyStep(), status: 'done', earlier: true, startedAt: null, finishedAt: t,
       report: [`Using ${f.plan}`], reportFile: f.plan, data: planSummary(plan) };
+    // Build follows this plan, not the per-video plans
+    if (s.videos && s.videos.active) writeVideos({ ...s.videos, active: false });
     refreshFiles();
     emit();
     return snapshot();

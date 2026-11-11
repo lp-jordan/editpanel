@@ -454,11 +454,13 @@ try:
     say(f"\nTotal time: {time.time() - _T0:.1f}s")
 except Exception as exc:
     say(f"\n✗ STOPPED after {time.time() - _T0:.1f}s: {exc}")
+    CHECK_OK = False                                    # never split a copy whose import didn't finish
+    IMPORT_ERROR = str(exc)
 finally:
     try:
         with open(os.path.join(OUT_DIR, f"import_{LABEL}.txt"), "w", encoding="utf-8") as fh:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "ATEM_FILE", "OUT_DIR", "PLAN_FILE"):  # CHECK_OK stays for the caller    # the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "BATCH", "QUARANTINE", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "ATEM_FILE", "OUT_DIR", "PLAN_FILE"):  # CHECK_OK / IMPORT_ERROR stay for the caller; the console keeps run-line settings between runs
         globals().pop(_k, None)

@@ -31,7 +31,20 @@ import xml.etree.ElementTree as ET
 from fractions import Fraction
 from xml.sax.saxutils import quoteattr
 
-FD = Fraction(1001, 24000)             # 23.976 frame duration
+FD = Fraction(1001, 24000)             # frame duration; main() resets it from the multicam's own format
+
+
+def frame_duration(xml: str, mc_names=None) -> Fraction:
+    """The multicam's frame duration from its <format frameDuration>, so a 25p or 29.97 day builds
+    at its own rate (23.976 only when the export doesn't say)."""
+    formats = {a.get("id"): a.get("frameDuration") for a in map(attrs, re.findall(r"<format ([^>]*)/?>", xml))}
+    for m in re.finditer(r"<media ([^>]*)>\s*<multicam ([^>]*)>", xml):
+        if mc_names and attrs(m.group(1)).get("name") not in mc_names:
+            continue
+        fd = formats.get(attrs(m.group(2)).get("format"))
+        if fd:
+            return secs(fd)
+    return Fraction(1001, 24000)
 
 
 def t(frames) -> str:
@@ -243,6 +256,7 @@ def split_plan(plan: dict, n: int) -> list:
 
 def main(argv=None) -> list:
     """Returns the video ranges when joined= is used (else [])."""
+    global FD
     args = sys.argv[1:] if argv is None else list(argv)
     src, out_path = args[0], args[1]
     opts = dict(a.split("=", 1) for a in args[2:] if "=" in a and not a.endswith(".json") and ".json:" not in a)
@@ -263,6 +277,7 @@ def main(argv=None) -> list:
         parts = split_plan(plan, split) if split > 1 else [plan]
         jobs += [(f"{name} {k}" if len(parts) > 1 else name, p) for k, p in enumerate(parts, 1)
                  if not part or k == part]
+    FD = frame_duration(xml, {p["multicam"] for _, p in jobs})
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
     angle_wavs = {}
     cam_refs = camera_audio_refs(resources)
@@ -322,7 +337,7 @@ def main(argv=None) -> list:
     mc_tc = Fraction(int(num), int(den)) / FD               # multicam start, in frames
     angles = {a["name"]: a["angleID"] for a in map(attrs, re.findall(r"<mc-angle ([^>]*)>", resources))}
     fmt = re.search(r'<sequence [^>]*format="(r\d+)"', xml).group(1)
-    seq_tc = 86400                                          # 01:00:00:00 at 24 fps timebase
+    seq_tc = 3600 * round(1 / FD)                           # 01:00:00:00 in the multicam's timebase (NDF)
     src_t = lambda f: t(mc_tc + f)                          # multicam-relative frame → source time
 
     def spine(plan: dict, base: int):

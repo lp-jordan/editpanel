@@ -68,7 +68,13 @@ function friendlyStepName(step) {
 const CUT_THROUGH_STEPS = ['prep', 'transcribe', 'plan', 'build', 'check', 'compare'];
 function cutThroughRunOf(ct) {
   const key = CUT_THROUGH_STEPS.find((k) => ct?.steps?.[k]?.status === 'running');
-  if (!key) return null;
+  if (!key) {
+    // busy with something that isn't a step: "Reading the slate", "Copying runs"
+    if (!ct?.busy || typeof ct.busy !== 'string') return null;
+    const live = ct.slateInfo && ct.slateInfo.running;
+    const pct = live && live.bar != null ? Math.round(live.bar) : null;
+    return { label: ct.label || '', step: ct.busy, pct };
+  }
   const p = ct.steps[key].progress || {};
   const pct = p.bar ?? p.overall ?? null;
   return { label: ct.label || '', step: key[0].toUpperCase() + key.slice(1), pct: pct == null ? null : Math.round(pct) };

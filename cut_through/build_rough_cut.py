@@ -88,9 +88,6 @@ def export_type(r: Any):
     raise RuntimeError("This Resolve offers no FCPXML export type")
 
 
-FD = Fraction(1001, 24000)
-
-
 def _s(v: str) -> Fraction:
     v = v.rstrip("s")
     return Fraction(*map(int, v.split("/"))) if "/" in v else Fraction(v)
@@ -106,12 +103,15 @@ def wav_timecodes(xml: str, mc_name: str) -> dict:
     paths = {a.get("id"): unquote((a.find("media-rep").get("src") if a.find("media-rep") is not None else "")
                                   .replace("file://localhost/", ""))
              for a in root.iter("asset")}
+    formats = {f.get("id"): f.get("frameDuration") for f in root.iter("format")}
     out = {}
     for media in root.iter("media"):
         if media.get("name") != mc_name:
             continue
         mc = media.find("multicam")
         start = _s(mc.get("tcStart"))
+        fd = formats.get(mc.get("format"))
+        FD = _s(fd) if fd else Fraction(1001, 24000)        # the multicam's own rate (25p, 29.97 …)
         for ang in mc.iter("mc-angle"):
             end, run = Fraction(0), 0
             for el in ang:
@@ -254,6 +254,9 @@ def main() -> None:
                                               "MIC_FILES": {n: a for n, (_, a, _) in wavs.items()},
                                               "ATEM_FILE": getattr(mk, "LAST_ATEM", None)}, r)
     say(f"3. Import done ({time.time() - t1:.1f}s)")
+    if g.get("IMPORT_ERROR"):
+        raise RuntimeError(f"the import stopped ({g['IMPORT_ERROR']}) — not splitting "
+                           "(delete any new multicam copy and joined timeline before rerunning)")
     if not g.get("CHECK_OK", True):
         raise RuntimeError("the imported multicam copy failed its self-check — not splitting "
                            "(delete the new copy and the joined timeline before rerunning)")
