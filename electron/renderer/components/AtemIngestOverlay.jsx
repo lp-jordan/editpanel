@@ -85,6 +85,9 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   const [importState, setImportState]   = React.useState('idle'); // 'idle'|'running'|'done'|'error'
   const [importResult, setImportResult] = React.useState(null);   // { imported, failed }
   const [importError, setImportError]   = React.useState(null);
+  // The Resolve project open when the ingest started: the import goes there and nowhere else,
+  // so it waits (window open) until that project is open again.
+  const [importTarget, setImportTarget] = React.useState(null);
 
   // ── Progress state ─────────────────────────────────────
   const [progressItems, setProgressItems] = React.useState([]); // [{ session, file, state, camInfo }]
@@ -127,6 +130,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     setImportState('idle');
     setImportResult(null);
     setImportError(null);
+    setImportTarget(null);
     // Keep importToResolve/importBin choices across reopen only within a session
     // is not desirable here — reset the toggle so it never fires unexpectedly.
     setImportToResolve(false);
@@ -158,12 +162,14 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   // Runs from an effect (not inside the progress handler) so it reads fresh
   // importBin/importToResolve state rather than a stale event-handler closure.
   // A canceled ingest doesn't import: the editor asked it to stop.
+  // It waits while another project is open, and runs as soon as the one from Start is open again.
+  const onImportTarget = !importTarget || resolveProject === importTarget;
   React.useEffect(() => {
     if (!ingestDone || ingestError || ingestCanceled) return;
-    if (!importToResolve || !resolveConnected) return;
+    if (!importToResolve || !resolveConnected || !onImportTarget) return;
     if (importState !== 'idle') return;
     runResolveImport();
-  }, [ingestDone, ingestError, ingestCanceled, importToResolve, resolveConnected, importState]);
+  }, [ingestDone, ingestError, ingestCanceled, importToResolve, resolveConnected, importState, onImportTarget]);
 
   // While files are copying (or the follow-up Resolve import runs) the overlay
   // can't close: App unmounts it on close, which would drop the progress view
@@ -297,6 +303,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
 
   async function handleStartIngest() {
     if (!destination || ingestSessions.length === 0) return;
+    setImportTarget(importToResolve && resolveProject ? resolveProject : null);
 
     const total = selectedFileCount;
 
@@ -423,6 +430,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
       const res = await window.leaderpassAPI.call('import_media', {
         parent_bin: importBin || IMPORT_DEFAULT_BIN,
         files,
+        ...(importTarget ? { expect_project: importTarget } : {}),   // the helper refuses any other open project
       });
       const data = res?.data || {};
       setImportResult({ imported: data.imported ?? 0, failed: data.failed ?? 0 });
@@ -682,7 +690,16 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
         {importToResolve && !ingestError && !ingestCanceled && (
           <>
             {importState === 'idle' && !resolveConnected && (
-              <p className="hint">Resolve not connected. Footage wasn’t imported.</p>
+              <p className="hint">
+                {importTarget
+                  ? `Connect Resolve with “${importTarget}” open to import. Closing this window skips the import.`
+                  : 'Resolve not connected. Footage wasn’t imported.'}
+              </p>
+            )}
+            {importState === 'idle' && resolveConnected && !onImportTarget && (
+              <p className="notice warning">
+                Open “{importTarget}” in Resolve to import. Closing this window skips the import.
+              </p>
             )}
             {importState === 'running' && (
               <p className="run-loading">
@@ -692,7 +709,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
             )}
             {importState === 'done' && importResult && (
               <p className="run-summary-sub">
-                Imported {importResult.imported} clip{importResult.imported !== 1 ? 's' : ''} into {importBin}.
+                Imported {importResult.imported} clip{importResult.imported !== 1 ? 's' : ''} into {importBin}{importTarget ? ` in ${importTarget}` : ''}.
                 {importResult.failed ? ` ${importResult.failed} failed.` : ''}
               </p>
             )}

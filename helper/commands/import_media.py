@@ -7,6 +7,7 @@ importing into a closed project — so the toggle is gated on resolveConnected.
 
 Payload:
   {
+    "expect_project": "Shoot 11-11",     # optional: refuse unless this project is the open one
     "parent_bin": "FOOTAGE / ATEM",      # bin path (bin_tree.BIN_PATH_SEPARATOR)
     "files": [
       { "local_path": "C:/.../CAM 1/Sess CAM 1 01.mp4",
@@ -79,13 +80,29 @@ def handle_import_media(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not rh.project:
         raise RuntimeError("No active project — open the target project in Resolve first.")
 
+    # The ingest remembers the project open at Start ("expect_project"): never import into another one.
+    project = rh.project
+    expect = str(payload.get("expect_project") or "").strip()
+    if expect:
+        try:
+            current = rh.project_manager.GetCurrentProject() if rh.project_manager else None
+        except Exception:
+            current = None
+        project = current or rh.project
+        try:
+            name = str(project.GetName() or "")
+        except Exception:
+            name = ""
+        if name != expect:
+            raise RuntimeError(f"Resolve has '{name or 'no project'}' open, not '{expect}' — open '{expect}' to import.")
+
     files = payload.get("files")
     if not isinstance(files, list) or not files:
         raise RuntimeError("No files to import")
 
     parent_bin = payload.get("parent_bin") or "FOOTAGE / ATEM"
 
-    media_pool = rh.project.GetMediaPool()
+    media_pool = project.GetMediaPool()
     if not media_pool:
         raise RuntimeError("Could not retrieve the media pool")
     root = media_pool.GetRootFolder()
