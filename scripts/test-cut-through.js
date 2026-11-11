@@ -690,23 +690,32 @@ class It:
     def GetStart(s): return 1000 + s.a
     def GetEnd(s): return 1000 + s.b
     def AddTransition(s, o): s.tr.append(o["duration"]); return True
+    def GetLinkedItems(s): return [] if getattr(s, "ln", True) is False else [s]
 class TL:
     def __init__(s): s.m, s.its = {}, [It(0, 300), It(300, 320), It(320, 500)]
     def GetStartFrame(s): return 1000
     def AddMarker(s, f, c, n, note, d): s.m[f] = c; return True
     def GetTrackCount(s, kind): return 1 if kind == "audio" else 0
     def GetItemListInTrack(s, kind, k): return s.its
+class LinkTL(TL):
+    def SetClipsLinked(s, its, on):
+        for i in its: i.ln = on
+        return True
 v = json.load(open("out_ranges.json"))["videos"][0]
 tl = TL()
 line = sv.review(tl, v)
 x = open("out.fcpxml").read()
-print(json.dumps({"v": v, "line": line, "marks": tl.m, "tr": [i.tr for i in tl.its], "vol": x.count('<adjust-volume amount="-2.5dB"/>')}))
+print(json.dumps({"v": v, "line": line, "marks": tl.m, "tr": [i.tr for i in tl.its], "vol": x.count('<adjust-volume amount="-2.5dB"/>'),
+                  "unlinked": sv.unlink(LinkTL()), "no_api": sv.unlink(TL())}))
 `, PIPELINE, wt], { encoding: 'utf8', env: { ...process.env, HOME: wt } }).trim().split('\n').pop());   // its import-time run writes a report to ~/Desktop
   assert.deepStrictEqual(wr.v.markers.map((m) => m.frame), [50, 200]);
   assert.deepStrictEqual(wr.v.ducks, [[300, 320, -2.5]]);
   assert.strictEqual(wr.vol, 1);
   assert.deepStrictEqual(wr.marks, { 50: 'Red', 200: 'Yellow' });
   assert.deepStrictEqual(wr.tr, [[2], [2], []], wr.line);
+  // finished timelines come out unlinked (Bill Smith 2026-11-11: a trim dragged all of A1); no API → told to do it by hand
+  assert.strictEqual(wr.unlinked, '3 clip(s) unlinked ✓');
+  assert.ok(/^✗ unlink failed \(3 clip\(s\)\); 3 still linked; unlink by hand/.test(wr.no_api), wr.no_api);
   assert.ok(/markers 2\/2 \(red 1, yellow 1\); backchannels opened quieter: 1\/1, 2 crossfade/.test(wr.line), wr.line);
   // stage (Bill Smith, 2026-11-05): a short pause isn't worth an angle change; a trimmed long one is
   // covered on the other angle for a beat, then back to Claude's shot (and its later shots kept)

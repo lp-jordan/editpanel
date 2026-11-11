@@ -27,6 +27,7 @@ RANGES = globals().get("RANGES", "ConvoTest_joined_ranges.json")
 SEQ_BIN = globals().get("SEQ_BIN")                     # where the cut timelines go, "A / B" path
 KEEP_JOINED = bool(globals().get("KEEP_JOINED"))
 FINISH = globals().get("FINISH", True)                 # crossfades + head/tail fades (style guide)
+UNLINK = globals().get("UNLINK", True)                 # finished timelines come out unlinked
 FADE_FRAMES = 8
 CROSSFADE = {"type": "Cross Fade 0 dB", "category": "audio", "position": "end", "alignment": "center", "duration": 2}
 OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
@@ -151,6 +152,22 @@ def review(tl: Any, v: dict) -> str:
     return "; ".join(out)
 
 
+def unlink(tl: Any) -> str:
+    """Unlink every clip (picture from its sound, and the clips stacked under it), so trimming one
+    clip doesn't drag the rest of A1 with it (Bill Smith mc_1, 2026-11-11: a trim on the first clip
+    slid all the audio 1s13f). Runs last, after the split's ripple deletes, fades and markers."""
+    its = [it for v in tracks(tl).values() for it in v]
+    if not its:
+        return "nothing to unlink"
+    ok = bool(_safe(lambda: tl.SetClipsLinked(its, False), False))
+    linked = [_safe(lambda: it.GetLinkedItems()) for it in its]
+    still = sum(1 for x in linked if x)
+    if ok and not still:
+        return f"{len(its)} clip(s) unlinked ✓"
+    known = " " + str(still) + " still linked;" if any(x is not None for x in linked) else ""
+    return f"✗ unlink failed ({len(its)} clip(s));{known} unlink by hand: select all, Clip → Link Clips"
+
+
 def tracks(tl: Any) -> Dict[str, List[Any]]:
     """Every track's items in record order, keyed V1, A1, A2…"""
     out = {}
@@ -241,6 +258,9 @@ def main() -> None:
         rv = review(dup, v)
         if rv:
             say(f"    review: {rv}")
+        if UNLINK:
+            phase(f"Unlinking clips — {name}")
+            say(f"    unlink: {unlink(dup)}")
     say(f"Clean splits: {clean}/{len(spec['videos'])}")
     if seq and built:
         items = timeline_items(mp.GetRootFolder(), set(built))
