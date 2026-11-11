@@ -1430,6 +1430,15 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
     cp.onProject('Other Project');
     await new Promise((r) => setImmediate(r));
     assert.strictEqual(cp.snapshot().label, 'E2E_test_Other_Project');
+    // Resolve closes the project and comes back while something runs: the queued switch is dropped
+    const keepFolder = fs.mkdtempSync(path.join(TMP, 'rf-'));     // a new folder: the earlier runs are copied (async)
+    fs.mkdirSync(cp.snapshot().files.dir, { recursive: true });       // something to copy, so the move awaits
+    fs.writeFileSync(path.join(cp.snapshot().files.dir, 'note.txt'), 'x');
+    const moving = cp.setRunFolder({ folder: keepFolder });
+    cp.onProject('Untitled Project');
+    cp.onProject('Other Project');
+    await moving;
+    assert.strictEqual(cp.snapshot().project, 'Other Project', 'a stale queued project switch ran');
     prefs.cutThrough.lastLabel = 'E2E_test';
     prefs.cutThrough.lastMc = 'mc_test';
   }

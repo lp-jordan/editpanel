@@ -677,7 +677,7 @@ function createCutThrough(opts) {
     s.busy = null;
     child = null;
     refreshFiles();
-    if (pendingProject) { const n = pendingProject; pendingProject = null; onProject(n); }
+    applyPendingProject();
     emit();
     maybeCollect();
   }
@@ -874,6 +874,7 @@ function createCutThrough(opts) {
    *  stay in their run folders either way — switching never throws work away). Waits out a running step. */
   let pendingProject = null;
   function applyProject(name) {
+    if (name && name === s.project) pendingProject = null;   // Resolve is back on this project: drop a queued switch
     if (!name || name === s.project) return;
     if (s.busy) { pendingProject = name; return; }
     const first = s.project === null;
@@ -885,7 +886,16 @@ function createCutThrough(opts) {
     emit();
   }
 
+  /** A project switch queued while something ran, now that nothing does. */
+  function applyPendingProject() {
+    if (!pendingProject || s.busy) return;
+    const n = pendingProject;
+    pendingProject = null;
+    onProject(n);
+  }
+
   function onProject(name) {
+    if (name && name === s.project) pendingProject = null;   // back on this project before a queued switch ran
     if (!name || name === s.project) return;
     applyProject(name);
     if (s.project === name) listMulticams().catch(() => {});
@@ -958,7 +968,7 @@ function createCutThrough(opts) {
       s.busy = null;
     }
     show(s.mc, s.label);
-    if (pendingProject) { const n = pendingProject; pendingProject = null; onProject(n); }
+    applyPendingProject();
     emit();
     return snapshot();
   }
@@ -1624,6 +1634,7 @@ function createCutThrough(opts) {
     s.slateRead = { phase: 'Starting', bar: 0, startedAt: Date.now() };
     emit();
     const model = st0.claudeModel || claude.DEFAULT_MODEL;
+    let readOk = false;
     try {
       const r = await slateLib.readSlate({ ffmpeg: ffmpegPath || 'ffmpeg', clips, frameSec: s.day.frame_sec[0] / s.day.frame_sec[1],
         // free unless confirmed: OCR only (frames it can't vouch for are counted for the confirm step)
@@ -1639,6 +1650,7 @@ function createCutThrough(opts) {
       fs.writeFileSync(f.slate, JSON.stringify({ angle, madeAt: Date.now(), model: r.model, cost, seconds: r.seconds, report: r.report,
         byOcr: r.byOcr, byClaude: r.byClaude, needsClaude: n, boxMissing: !!r.boxMissing, estimate, reads: r.reads }, null, 1), 'utf8');
       pushLog('plan', `Slate read: ${r.report}`);
+      readOk = true;
     } catch (err) {
       if (err && err.usage) claude.logCost({ costsDir: settings().filesDir, outDir: f.dir, label: s.label, step: 'slate', model, effort: 'low', usage: err.usage });
       throw canceled ? new Error('Slate read canceled') : err;
@@ -1646,12 +1658,23 @@ function createCutThrough(opts) {
       s.busy = null;
       s.slateRead = null;
       child = null;
+      if (!readOk) applyPendingProject();           // failed / canceled: no Find videos follows
       emit();
     }
-    // the videos again, with the codes from the slate (same offset / first code as last time)
-    if (s.videos && readJson(f.words)) {
-      const off = s.videos.offset && s.videos.offset.manual ? s.videos.offset.used : '';
-      return findVideos({ offsetSec: off, firstCode: s.videos.firstCode || '' });
+    // the videos (again), with the codes from the slate (same offset / first code as last time) —
+    // also when Find videos was never run, or the read's codes sit unseen in slate_<LABEL>.json
+    try {
+      if (readJson(f.words)) {
+        const v = s.videos;
+        const off = v && v.offset && v.offset.manual ? v.offset.used : '';
+        try {
+          await findVideos({ offsetSec: off, firstCode: (v && v.firstCode) || '' });
+        } catch (err) {
+          throw new Error(`Slate read, but Find videos failed: ${errMsg(err)}`);
+        }
+      }
+    } finally {
+      applyPendingProject();                         // Resolve switched projects while this ran
     }
     return snapshot();
   }
