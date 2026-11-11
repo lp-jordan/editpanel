@@ -1031,7 +1031,8 @@ function createCutThrough(opts) {
       const sum = compare.totals(results);
       report = compare.reportLines(results, sum);
       if (skipped.length) report.push(`No matching plan: ${skipped.join(', ')}`);
-      st.data = { timelines: sum.timelines, changed: sum.changed, restored: sum.words.restored, cut: sum.words.cut, byType: sum.byType };
+      st.data = { timelines: sum.timelines, changed: sum.changed, restored: sum.words.restored, cut: sum.words.cut,
+        finished: sum.words.finished, clipped: sum.words.clipped, byType: sum.byType };
       fs.mkdirSync(f.dir, { recursive: true });
       fs.writeFileSync(f.compareJson, JSON.stringify({ label: s.label, madeAt: Date.now(), totals: sum, results }, null, 1), 'utf8');
       fs.writeFileSync(f.compareHtml, compare.reportHtml({ label: s.label, results, sum, levels, plans: used }), 'utf8');

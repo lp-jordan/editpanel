@@ -4,14 +4,19 @@
  * Read-only and free: no Claude, no markers, nothing written to Resolve.
  *
  * Everything is compared in multicam source frames (the unit of the plan and the words), so a
- * ripple earlier in the timeline never reads as a change. The plan's kept source and the
- * timeline's kept source are subtracted both ways; each difference is one event:
+ * ripple earlier in the timeline never reads as a change. What is HEARD is compared: A1's
+ * multicam sound when the timeline read gives its source frames (a cut moved on the sound only
+ * counts), else the picture stands in. The plan's kept source and the timeline's kept source are
+ * subtracted both ways; each difference is one event:
  *
- *   restored      kept now, removed by the plan, has words
- *   cut           removed now, kept by the plan, has words
+ *   restored      kept now, removed by the plan, has whole words (a word's middle is in it)
+ *   cut           removed now, kept by the plan, has whole words
+ *   word_finished kept now, removed by the plan, only part of a word (a clipped word given back)
+ *   word_scrap    kept now, removed by the plan, only part of a word the plan took out whole
+ *   word_clipped  removed now, kept by the plan, only part of a word (a trim into a word)
  *   air_added     kept now, removed by the plan, no words
  *   air_trimmed   removed now, kept by the plan, no words
- *   angle         same source on both, different camera
+ *   angle         same source on both, different camera (picture)
  *
  * compare_<label>.json is for reading the patterns; compare_<label>.html is for looking at them.
  */
@@ -83,6 +88,19 @@ const overlap = (a, b) => {
   return n;
 };
 
+/** A1's multicam sound pieces (the lowest audio track that has any), or null when the read has
+ *  no source frames for the sound (an older helper, or a mics run where A1 is WAVs). */
+function soundPieces(timeline, multicam) {
+  const ok = (timeline.audio || []).filter((x) => x.mc && (!multicam || x.mc === multicam)
+    && Number.isFinite(x.src_in) && Number.isFinite(x.src_out) && x.src_out > x.src_in && x.end > x.start);
+  if (!ok.length) return null;
+  const track = Math.min(...ok.map((x) => x.track));
+  return ok.filter((x) => x.track === track).sort((a, b) => a.start - b.start);
+}
+
+/** Frames of [a, b) inside the range list R. */
+const keptOf = (R, a, b) => R.reduce((n, [x, y]) => n + Math.max(0, Math.min(b, y) - Math.max(a, x)), 0);
+
 function picturePieces(timeline, multicam) {
   let pieces = (timeline.pieces || []).filter((p) => p.src_out > p.src_in && p.end > p.start);
   if (multicam && pieces.some((p) => p.mc === multicam)) pieces = pieces.filter((p) => p.mc === multicam);
@@ -140,8 +158,16 @@ function compareTimeline({ timeline, plan, words: wordsFile, removals = null, re
   const nowSegs = segsOf(pieces);
   const P = ranges(planSegs);
   const N = ranges(nowSegs);
-  const lo = Math.min(P[0][0], N[0][0]);
-  const hi = Math.max(P[P.length - 1][1], N[N.length - 1][1]);
+  // what is heard: A1's multicam sound if it reads back and is this plan's (≥ half of it overlaps)
+  const sound = soundPieces(timeline, plan.multicam);
+  const soundSegs = sound ? segsOf(sound) : null;
+  const S0 = soundSegs ? ranges(soundSegs) : null;
+  const S0total = S0 ? S0.reduce((n, [a, b]) => n + b - a, 0) : 0;
+  const soundRead = !!(S0total && overlap(S0, P) / S0total >= 0.5);
+  const S = soundRead ? S0 : N;
+  const heardSegs = soundRead ? soundSegs : nowSegs;
+  const lo = Math.min(P[0][0], N[0][0], S[0][0]);
+  const hi = Math.max(P[P.length - 1][1], N[N.length - 1][1], S[S.length - 1][1]);
 
   const all = (wordsFile.words || []).filter((w) => w.own !== false && !w.ghost && Number.isFinite(w.s) && Number.isFinite(w.e))
     .sort((a, b) => a.s - b.s);
@@ -172,9 +198,9 @@ function compareTimeline({ timeline, plan, words: wordsFile, removals = null, re
     return { why: best(plan.removals || [], (r) => r.why), reason: removals ? best(removals.removals || [], (r) => r.reason || null) : null };
   };
 
-  const recOf = (x) => {
-    const g = nowSegs.find((s) => x >= s.src_in && x < s.src_out) ||
-      nowSegs.reduce((b, s) => (Math.min(Math.abs(s.src_in - x), Math.abs(s.src_out - x)) < Math.min(Math.abs(b.src_in - x), Math.abs(b.src_out - x)) ? s : b));
+  const recOf = (x, segs = nowSegs) => {
+    const g = segs.find((s) => x >= s.src_in && x < s.src_out) ||
+      segs.reduce((b, s) => (Math.min(Math.abs(s.src_in - x), Math.abs(s.src_out - x)) < Math.min(Math.abs(b.src_in - x), Math.abs(b.src_out - x)) ? s : b));
     const clamped = Math.max(g.src_in, Math.min(g.src_out, x));
     return Math.round(g.start + (clamped - g.src_in) - t0);
   };
@@ -186,28 +212,40 @@ function compareTimeline({ timeline, plan, words: wordsFile, removals = null, re
   };
 
   const events = [];
-  const addEvents = (list, withWords, noWords, others) => {
+  const fr = (n) => `${n} fr`;
+  const addEvents = (list, withWords, partWords, noWords, others) => {
     for (const [a, b] of list) {
       if (b - a < MIN_FRAMES) continue;
       const ws = span.filter((w) => mid(w) >= a && mid(w) < b);
+      // words this stretch only partly covers: how much of each the plan kept, and how much is heard now
+      const parts = span.filter((w) => !(mid(w) >= a && mid(w) < b))
+        .map((w) => ({ w, n: Math.round(Math.min(b, w.e) - Math.max(a, w.s)) }))
+        .filter((x) => x.n >= MIN_FRAMES)
+        .map(({ w, n }) => {
+          const len = Math.round(w.e - w.s);
+          return { w: String(w.w).trim(), frames: n, len, plan: Math.round(keptOf(P, w.s, w.e)), now: Math.round(keptOf(S, w.s, w.e)) };
+        });
       const prev = [...span].reverse().find((w) => w.e <= a + 1);
       const next = span.find((w) => w.s >= b - 1);
       const near = span.filter((w) => w.e <= a + 1).slice(-5);
       const follow = span.filter((w) => w.s >= b - 1).slice(0, 5);
-      const type = ws.length ? withWords : noWords;
+      // given back part of a word the plan kept some of = finished; part of a word the plan took out whole = a scrap now heard
+      const partType = partWords === 'word_finished' && !parts.some((x) => x.plan > 0) ? 'word_scrap' : partWords;
+      const type = ws.length ? withWords : parts.length ? partType : noWords;
       const db = meanDb(a, b);
       const e = {
         type, from: a, to: b, frames: b - a, sec: +((b - a) / fps).toFixed(2), position: position(a, b, others),
-        words: ws.length, text: quote(ws), before: quote(near), after: quote(follow),
+        words: ws.length, text: ws.length ? quote(ws) : parts.map((x) => x.w).join(' '), before: quote(near), after: quote(follow),
+        parts, partNote: parts.map((x) => `"${x.w}" ${withWords === 'restored' ? '+' : '−'}${fr(x.frames)} (plan ${x.plan}/${x.len}, now ${x.now}/${x.len})`).join(' · '),
         afterSentence: prev ? endsSentence(prev) : null, wordEndGap: prev ? Math.round(a - prev.e) : null, nextWordGap: next ? Math.round(next.s - b) : null,
-        db, tc: tcPlus(timeline.start_tc, recOf(a), fps)
+        db, tc: tcPlus(timeline.start_tc, recOf(a, heardSegs), fps)
       };
-      if (type === 'restored' || type === 'air_added') Object.assign(e, why(a, b));
+      if (type === 'restored' || type === 'word_finished' || type === 'word_scrap' || type === 'air_added') Object.assign(e, why(a, b));
       events.push(e);
     }
   };
-  addEvents(subtract(N, P), 'restored', 'air_added', P);
-  addEvents(subtract(P, N), 'cut', 'air_trimmed', P);
+  addEvents(subtract(S, P), 'restored', 'word_finished', 'air_added', P);
+  addEvents(subtract(P, S), 'cut', 'word_clipped', 'air_trimmed', P);
 
   // the picture: same source on both, different camera
   const angleRead = pieces.some((p) => p.angle && p.angle !== '?');
@@ -279,17 +317,26 @@ function compareTimeline({ timeline, plan, words: wordsFile, removals = null, re
   }
 
   // the transcript, word by word
-  const transcript = span.filter((w) => inR(P, mid(w)) || inR(N, mid(w)) || (mid(w) > lo && mid(w) < hi)).map((w) => {
+  // a word is clipped when some of it is heard but not all (a frame of slack each side for the aligner)
+  const clipped = (R, w) => { const k = keptOf(R, w.s, w.e); return k >= 1 && k < w.e - w.s - 2; };
+  const transcript = span.filter((w) => inR(P, mid(w)) || inR(S, mid(w)) || (mid(w) > lo && mid(w) < hi)).map((w) => {
     const wasKept = inR(P, mid(w));
-    const isKept = inR(N, mid(w));
-    return { w: String(w.w).trim(), s: Math.round(w.s), st: wasKept && isKept ? 'kept' : wasKept ? 'cut' : isKept ? 'restored' : 'removed' };
+    const isKept = inR(S, mid(w));
+    return { w: String(w.w).trim(), s: Math.round(w.s), st: wasKept && isKept ? 'kept' : wasKept ? 'cut' : isKept ? 'restored' : 'removed',
+      clipPlan: clipped(P, w), clipNow: clipped(S, w) };
   });
-  const words = { planKept: 0, nowKept: 0, restored: 0, cut: 0 };
+  const words = { planKept: 0, nowKept: 0, restored: 0, cut: 0, finished: 0, clipped: 0, clippedPlan: 0, clippedNow: 0 };
   for (const w of transcript) {
     if (w.st === 'kept' || w.st === 'cut') words.planKept += 1;
     if (w.st === 'kept' || w.st === 'restored') words.nowKept += 1;
     if (w.st === 'restored') words.restored += 1;
     if (w.st === 'cut') words.cut += 1;
+    if (w.clipPlan) words.clippedPlan += 1;
+    if (w.clipNow) words.clippedNow += 1;
+  }
+  for (const e of events) {
+    if (e.type === 'word_finished') words.finished += e.parts.length;
+    if (e.type === 'word_clipped' || e.type === 'word_scrap') words.clipped += e.parts.length;
   }
 
   const lengthOf = (R) => +(R.reduce((n, [a, b]) => n + b - a, 0) * (1 / fps) / 60).toFixed(2);
@@ -300,7 +347,7 @@ function compareTimeline({ timeline, plan, words: wordsFile, removals = null, re
     joins: { plan: planSegs.length - 1, now: nowSegs.length - 1 },
     plan: shotStats(planned.pieces, fps), now: shotStats(pieces, fps),
     airAtJoins: { plan: airAtJoins(planSegs, wordsIn), now: airAtJoins(nowSegs, wordsIn) },
-    words, byType,
+    words, byType, sound: soundRead ? 'A1' : 'picture',
     airTrimmedMedian: median(events.filter((e) => e.type === 'air_trimmed').map((e) => e.frames)),
     airAddedMedian: median(events.filter((e) => e.type === 'air_added').map((e) => e.frames))
   };
@@ -315,19 +362,21 @@ function compareTimeline({ timeline, plan, words: wordsFile, removals = null, re
     stats.slider[angle] = { now: sliderFit(pieces, angle, m.moving || []), plan: sliderFit(planned.pieces, angle, m.moving || []) };
   }
   const changed = events.length + angleEvents.length > 0 || reorderedAt >= 0;
-  return { timeline: timeline.name, fps, changed, angleRead, reordered: reorderedAt >= 0, split, stats, events: events.sort((a, b) => a.from - b.from),
+  return { timeline: timeline.name, fps, changed, angleRead, soundRead, reordered: reorderedAt >= 0, split, stats, events: events.sort((a, b) => a.from - b.from),
     angles: angleEvents, flags, flagStats, transcript, keptPlan: P, keptNow: N, range: [lo, hi] };
 }
 
 /** Totals over the timelines the editor actually touched. */
 function totals(results) {
   const touched = results.filter((r) => r.changed);
-  const out = { timelines: results.length, changed: touched.length, byType: {}, words: { restored: 0, cut: 0 }, flagStats: {},
+  const out = { timelines: results.length, changed: touched.length, byType: {}, words: { restored: 0, cut: 0, finished: 0, clipped: 0 }, flagStats: {},
     restoredWhy: {}, airTrimmedAt: {}, airAddedAt: {}, anglePairs: {}, frames: { airTrimmed: [], airAdded: [] }, minutes: { plan: 0, now: 0 } };
   for (const r of touched) {
     for (const [k, n] of Object.entries(r.stats.byType)) count(out.byType, k, n);
     out.words.restored += r.stats.words.restored;
     out.words.cut += r.stats.words.cut;
+    out.words.finished += r.stats.words.finished || 0;
+    out.words.clipped += r.stats.words.clipped || 0;
     out.minutes.plan += r.stats.minutes.plan;
     out.minutes.now += r.stats.minutes.now;
     for (const e of r.events) {
@@ -374,8 +423,13 @@ function reportLines(results, sum) {
   for (const r of results) {
     if (!r.changed) { lines.push(`${r.timeline}: unchanged`, ''); continue; }
     const s = r.stats;
-    lines.push(`${r.timeline}: ${s.minutes.plan} → ${s.minutes.now} min · ${s.joins.plan} → ${s.joins.now} joins · words +${s.words.restored} −${s.words.cut}`);
+    lines.push(`${r.timeline}: ${s.minutes.plan} → ${s.minutes.now} min · ${s.joins.plan} → ${s.joins.now} joins · words +${s.words.restored} −${s.words.cut}` +
+      ` · word ends +${s.words.finished} −${s.words.clipped} · clipped words ${s.words.clippedPlan} → ${s.words.clippedNow}`);
     lines.push(`  ${Object.entries(s.byType).map(([k, n]) => `${k} ${n}`).join(' · ')}`);
+    for (const e of r.events.filter((x) => x.parts && x.parts.length && (['word_finished', 'word_scrap', 'word_clipped'].includes(x.type)))) {
+      lines.push(`  ${e.tc}  ${LABEL[e.type]} — ${e.partNote}`);
+    }
+    if (!r.soundRead) lines.push('  (sound measured from the picture: A1 could not be read)');
     if (!r.angleRead) lines.push('  (cameras could not be read from this timeline)');
     if (r.reordered) lines.push('  (pieces are out of source order)');
     lines.push('');
@@ -409,7 +463,7 @@ function waveSvg(e, r, levels, plan) {
     `<g class="wave">${bars.join('')}</g>${track(r.keptPlan, 50, 'tp')}${track(r.keptNow, 59, 'tn')}</svg>`;
 }
 
-const LABEL = { restored: 'Restored', cut: 'Cut', air_added: 'Air added', air_trimmed: 'Air trimmed' };
+const LABEL = { restored: 'Restored', cut: 'Cut', word_finished: 'Word finished', word_scrap: 'Word scrap added', word_clipped: 'Word clipped', air_added: 'Air added', air_trimmed: 'Air trimmed' };
 
 function reportHtml({ label, results, sum, levels, plans }) {
   const row = (k, a, b) => `<tr><th>${esc(k)}</th><td>${esc(a)}</td><td>${esc(b)}</td></tr>`;
@@ -420,15 +474,15 @@ function reportHtml({ label, results, sum, levels, plans }) {
     if (!r.changed) return `<section><h2>${esc(r.timeline)}</h2><p>Unchanged</p></section>`;
     const s = r.stats;
     const plan = plans[r.timeline];
-    const words = r.transcript.map((w) => `<span class="${w.st}">${esc(w.w)}</span>`).join(' ');
+    const words = r.transcript.map((w) => `<span class="${w.st}${w.clipNow ? ' clip' : ''}">${esc(w.w)}</span>`).join(' ');
     const evs = r.events.map((e) => `<div class="ev ${e.type}"><div class="h"><b>${LABEL[e.type]}</b> <code>${esc(e.tc)}</code> ${e.sec} s · ${esc(e.position)}${e.why ? ` · ${esc(e.why)}` : ''}${e.db !== null ? ` · ${e.db} dB` : ''}</div>` +
-      `<div class="t">${esc(e.before)} <mark>${esc(e.text || '·')}</mark> ${esc(e.after)}</div>${e.reason ? `<div class="r">${esc(e.reason)}</div>` : ''}${waveSvg(e, r, levels, plan)}</div>`).join('');
+      (e.partNote ? `<div class="r">${esc(e.partNote)}</div>` : '') + `<div class="t">${esc(e.before)} <mark>${esc(e.text || '·')}</mark> ${esc(e.after)}</div>${e.reason ? `<div class="r">${esc(e.reason)}</div>` : ''}${waveSvg(e, r, levels, plan)}</div>`).join('');
     const angs = r.angles.filter((a) => !a.moved).map((a) => `<tr><td><code>${esc(a.tc)}</code></td><td>${esc(a.plan)} → ${esc(a.now)}</td><td>${a.sec} s</td><td>${esc(a.text)}</td></tr>`).join('');
     return `<section><h2>${esc(r.timeline)}</h2><table class="st"><tr><th></th><th>Plan</th><th>Now</th></tr>` +
-      row('Minutes', s.minutes.plan, s.minutes.now) + row('Joins', s.joins.plan, s.joins.now) + row('Words', s.words.planKept, s.words.nowKept) +
+      row('Minutes', s.minutes.plan, s.minutes.now) + row('Joins', s.joins.plan, s.joins.now) + row('Words', s.words.planKept, s.words.nowKept) + row('Clipped words', s.words.clippedPlan, s.words.clippedNow) +
       row('Shots', s.plan.shots, s.now.shots) + row('Cuts / min', s.plan.cutsPerMin, s.now.cutsPerMin) + row('Median shot (s)', s.plan.medianShot, s.now.medianShot) +
       row('Air after last word at a join (fr)', s.airAtJoins.plan.after, s.airAtJoins.now.after) + row('Air before first word at a join (fr)', s.airAtJoins.plan.before, s.airAtJoins.now.before) +
-      `</table>${r.split && r.split.offsets.length ? `<p><b>Split edits</b> ${r.split.offsets.length}, median ${r.split.medianOffset} fr</p>` : ''}` +
+      `</table>${r.soundRead ? '' : '<p class="r">Sound measured from the picture (A1 could not be read)</p>'}${r.split && r.split.offsets.length ? `<p><b>Split edits</b> ${r.split.offsets.length}, median ${r.split.medianOffset} fr</p>` : ''}` +
       `<details open><summary>Changes (${r.events.length})</summary>${evs}</details>` +
       (angs ? `<details><summary>Angles (${r.angles.filter((a) => !a.moved).length})</summary><table class="an">${angs}</table></details>` : '') +
       `<details><summary>Transcript</summary><p class="tx">${words}</p></details></section>`;
@@ -440,12 +494,12 @@ body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;mar
 h1{font-size:22px}h2{font-size:18px;border-top:1px solid var(--line);padding-top:20px;margin-top:32px}
 table{border-collapse:collapse;margin:10px 0}th,td{padding:3px 14px 3px 0;text-align:left;font-weight:400;vertical-align:top}th{color:var(--mut)}
 code{font-size:13px}summary{cursor:pointer;margin:12px 0;font-weight:600}
-.ev{border-left:3px solid var(--line);padding:6px 0 8px 12px;margin:12px 0}.ev.restored{border-color:var(--add)}.ev.cut{border-color:var(--cut)}.ev.air_added{border-color:var(--air)}.ev.air_trimmed{border-color:var(--trim)}
+.ev{border-left:3px solid var(--line);padding:6px 0 8px 12px;margin:12px 0}.ev.restored{border-color:var(--add)}.ev.cut{border-color:var(--cut)}.ev.word_finished{border-color:var(--add);border-left-style:dashed}.ev.word_clipped,.ev.word_scrap{border-color:var(--cut);border-left-style:dashed}.ev.air_added{border-color:var(--air)}.ev.air_trimmed{border-color:var(--trim)}
 .h,.r{color:var(--mut);font-size:13px}.h b{color:var(--fg)}.t{margin:4px 0}mark{background:color-mix(in srgb,var(--trim) 30%,transparent);color:inherit}
 svg{display:block;width:100%;height:auto;margin-top:6px}.wave rect{fill:var(--mut)}.hl{fill:var(--trim);opacity:.22}.tp{fill:var(--cut);opacity:.75}.tn{fill:var(--add);opacity:.85}
 .key span{margin-right:14px;font-size:13px}.key i{display:inline-block;width:18px;height:6px;margin-right:5px;vertical-align:middle}
-.tx{line-height:1.9}.tx .removed{color:var(--mut);opacity:.45;text-decoration:line-through}.tx .restored{color:var(--add);font-weight:600}.tx .cut{color:var(--cut);font-weight:600;text-decoration:line-through}
-</style></head><body><h1>${esc(label)}</h1><p>${sum.changed} of ${sum.timelines} timelines changed · ${sum.minutes.plan} → ${sum.minutes.now} min · words +${sum.words.restored} −${sum.words.cut}</p>
+.tx{line-height:1.9}.tx .removed{color:var(--mut);opacity:.45;text-decoration:line-through}.tx .restored{color:var(--add);font-weight:600}.tx .cut{color:var(--cut);font-weight:600;text-decoration:line-through}.tx .clip{text-decoration:underline wavy var(--trim)}
+</style></head><body><h1>${esc(label)}</h1><p>${sum.changed} of ${sum.timelines} timelines changed · ${sum.minutes.plan} → ${sum.minutes.now} min · words +${sum.words.restored} −${sum.words.cut} · word ends +${sum.words.finished} −${sum.words.clipped}</p>
 <p class="key"><span><i style="background:var(--cut)"></i>Plan</span><span><i style="background:var(--add)"></i>Now</span></p>
 ${tally('Changes', sum.byType)}${tally('Restored from', sum.restoredWhy)}${tally('Air trimmed at', sum.airTrimmedAt)}${tally('Air added at', sum.airAddedAt)}${tally('Angle changes', sum.anglePairs)}
 ${flagRows ? `<details><summary>Flags acted on</summary><table>${flagRows}</table></details>` : ''}${sections}</body></html>`;

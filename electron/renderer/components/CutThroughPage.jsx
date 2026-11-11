@@ -685,6 +685,7 @@ function CutThroughPage({ connected }) {
             <CtRow label="Result">
               <span className="tag">{d.changed} of {d.timelines} changed</span>
               <span className="tag">Words +{d.restored} −{d.cut}</span>
+              {d.finished || d.clipped ? <span className="tag">Word ends +{d.finished || 0} −{d.clipped || 0}</span> : null}
             </CtRow>
           )}
         </div>

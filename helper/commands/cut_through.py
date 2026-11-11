@@ -206,12 +206,23 @@ def angle_of(item_name: str, mc_name: str) -> str:
 
 
 def read_audio(tl: Any) -> List[Dict[str, Any]]:
-    """Where every audio clip sits on the timeline (record frames only: enough to see a split edit)."""
+    """Every audio clip: where it sits on the timeline, and for a multicam clip which multicam
+    frames it plays (src_in/src_out, the unit of the plan and the words) — so Compare can measure
+    what is heard, not only what is seen."""
     out: List[Dict[str, Any]] = []
     for t in range(1, int(_safe(lambda: tl.GetTrackCount("audio"), 0) or 0) + 1):
         for it in _safe(lambda: tl.GetItemListInTrack("audio", t), []) or []:
-            out.append({"track": t, "name": str(_safe(lambda: it.GetName(), "")),
-                        "start": int(_safe(lambda: it.GetStart(), 0)), "end": int(_safe(lambda: it.GetEnd(), 0))})
+            row = {"track": t, "name": str(_safe(lambda: it.GetName(), "")),
+                   "start": int(_safe(lambda: it.GetStart(), 0)), "end": int(_safe(lambda: it.GetEnd(), 0))}
+            mpi = _safe(lambda: it.GetMediaPoolItem())
+            if mpi and "multicam" in str(_safe(lambda: mpi.GetClipProperty("Type"), "") or "").lower():
+                row["mc"] = _safe(lambda: mpi.GetName(), "") or ""
+                src_in = _safe(lambda: it.GetSourceStartFrame())
+                src_out = _safe(lambda: it.GetSourceEndFrame())
+                if src_in is not None and src_out is not None:
+                    row["src_in"] = int(round(float(src_in)))
+                    row["src_out"] = int(round(float(src_out)))
+            out.append(row)
     return out
 
 

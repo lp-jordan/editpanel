@@ -880,16 +880,44 @@ sys.stdout.write(json.dumps(res))`;
   const same = { name: 'x', fps: 24, start_frame: 1000, start_tc: '01:00:00:00', pieces: [piece(0, 100, 'Camera 1', 1000), piece(200, 300, 'Camera 2', 1100)] };
   assert.strictEqual(cmp.compareTimeline({ timeline: same, plan, words }).changed, false);
   assert.strictEqual(cmp.planMatch(same, plan), 1);
-  // the flub put back, 10 frames of air off the tail, the second piece on another camera, and the whole thing later on the timeline
+  // the flub put back, 10 frames off the tail (5 of them the end of "three."), the second piece on another camera, and the whole thing later on the timeline
   const edited = { ...same, pieces: [piece(0, 200, 'Camera 1', 5000), piece(200, 290, 'Camera 3', 5200)] };
   const r = cmp.compareTimeline({ timeline: edited, plan, words });
-  assert.deepStrictEqual(r.events.map((e) => [e.type, e.from, e.to, e.position]), [['restored', 100, 200, 'join'], ['air_trimmed', 290, 300, 'tail']]);
+  assert.deepStrictEqual(r.events.map((e) => [e.type, e.from, e.to, e.position]), [['restored', 100, 200, 'join'], ['word_clipped', 290, 300, 'tail']]);
   assert.strictEqual(r.events[0].why, 'claude flub');
   assert.deepStrictEqual(r.angles.map((a) => [a.plan, a.now, a.from, a.to]), [['Camera 2', 'Camera 3', 200, 290]]);
-  assert.deepStrictEqual(r.stats.words, { planKept: 3, nowKept: 4, restored: 1, cut: 0 });
+  assert.deepStrictEqual(r.stats.words, { planKept: 3, nowKept: 4, restored: 1, cut: 0, finished: 0, clipped: 1, clippedPlan: 0, clippedNow: 1 });
+  assert.strictEqual(r.soundRead, false);
+  // the sound is what's measured: a word the plan clipped by 6 fr, given back by moving the cut on
+  // A1 only (picture as planned), and the next piece's head trimmed into a word
+  {
+    const w2 = { words: [{ w: 'one', s: 10, e: 20 }, { w: 'end.', s: 90, e: 106 }, { w: 'next', s: 204, e: 216 }, { w: 'two.', s: 230, e: 240 }] };
+    const pic = { ...same, pieces: [piece(0, 100, 'Camera 1', 1000), piece(200, 300, 'Camera 2', 1100)] };
+    assert.strictEqual(cmp.compareTimeline({ timeline: pic, plan, words: w2 }).changed, false);
+    const a1 = (a, b, t) => ({ track: 1, name: 'mc', mc: 'mc', src_in: a, src_out: b, start: t, end: t + b - a });
+    const heard = { ...pic, audio: [a1(0, 108, 1000), a1(208, 300, 1108), { track: 2, name: 'room.wav', start: 1000, end: 1200 }] };
+    const h = cmp.compareTimeline({ timeline: heard, plan, words: w2 });
+    assert.strictEqual(h.soundRead, true);
+    assert.deepStrictEqual(h.events.map((e) => [e.type, e.from, e.to]), [['word_finished', 100, 108], ['word_clipped', 200, 208]]);
+    assert.deepStrictEqual(h.events[0].parts, [{ w: 'end.', frames: 6, len: 16, plan: 10, now: 16 }]);
+    assert.deepStrictEqual(h.events[1].parts, [{ w: 'next', frames: 4, len: 12, plan: 12, now: 8 }]);
+    assert.ok(h.events[0].partNote.includes('"end." +6 fr (plan 10/16, now 16/16)'), h.events[0].partNote);
+    assert.deepStrictEqual([h.stats.words.finished, h.stats.words.clipped, h.stats.words.clippedPlan, h.stats.words.clippedNow], [1, 1, 1, 1]);
+    assert.strictEqual(h.stats.sound, 'A1');
+    // reaching into a word the plan took out whole is a scrap, not a finished word
+    const scrap = cmp.compareTimeline({ timeline: { ...pic, audio: [a1(0, 100, 1000), a1(196, 300, 1100)] }, plan, words: { words: [{ w: 'gone', s: 190, e: 199 }, { w: 'two.', s: 230, e: 240 }] } });
+    assert.deepStrictEqual(scrap.events.map((e) => [e.type, e.parts[0] && e.parts[0].plan]), [['word_scrap', 0]]);
+    // sound from another multicam (or none readable) → the picture stands in
+    const other = { ...pic, audio: [{ ...a1(0, 108, 1000), mc: 'other' }] };
+    assert.strictEqual(cmp.compareTimeline({ timeline: other, plan, words: w2 }).soundRead, false);
+    const lines = cmp.reportLines([h], cmp.totals([h])).join('\n');
+    assert.ok(lines.includes('Word finished — "end." +6 fr') && lines.includes('Word clipped — "next" −4 fr'), lines);
+    assert.ok(cmp.reportHtml({ label: 'x', results: [h], sum: cmp.totals([h]), levels: null, plans: { x: plan } }).includes('Word finished'));
+  }
   const html = cmp.reportHtml({ label: '<x>', results: [r], sum: cmp.totals([r]), levels: null, plans: { x: plan } });
   assert.ok(html.includes('&lt;x&gt;') && !html.includes('<x>'));
   console.log('✓ compare: restored / trimmed / camera changes found in source frames, untouched is unchanged');
+  console.log('✓ compare: the sound (A1) is measured; a cut moved on the sound only gives back / clips part of a word');
 }
 
 // ── 3b. videos: find (recordings + slate) → plan now → batch → build ──
