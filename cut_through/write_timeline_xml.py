@@ -35,20 +35,21 @@ import xml.etree.ElementTree as ET
 from fractions import Fraction
 from xml.sax.saxutils import quoteattr
 
-FD = Fraction(1001, 24000)             # frame duration; main() resets it from the multicam's own format
+
+def _common():
+    """common.py from this script's own folder, loaded fresh (see its docstring)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "cut_through_common", os.path.join(os.path.dirname(os.path.abspath(__file__)), "common.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
-def frame_duration(xml: str, mc_names=None) -> Fraction:
-    """The multicam's frame duration from its <format frameDuration>, so a 25p or 29.97 day builds
-    at its own rate (23.976 only when the export doesn't say)."""
-    formats = {a.get("id"): a.get("frameDuration") for a in map(attrs, re.findall(r"<format ([^>]*)/?>", xml))}
-    for m in re.finditer(r"<media ([^>]*)>\s*<multicam ([^>]*)>", xml):
-        if mc_names and attrs(m.group(1)).get("name") not in mc_names:
-            continue
-        fd = formats.get(attrs(m.group(2)).get("format"))
-        if fd:
-            return secs(fd)
-    return Fraction(1001, 24000)
+_c = _common()
+attrs, secs, cam_no, frame_duration = _c.attrs, _c.secs, _c.cam_no, _c.frame_duration
+
+FD = _c.DEFAULT_FD                     # frame duration; main() resets it from the multicam's own format
 
 
 def t(frames) -> str:
@@ -56,26 +57,8 @@ def t(frames) -> str:
     return f"{v.numerator}/{v.denominator}s" if v else "0/1s"
 
 
-def attrs(tag: str) -> dict:
-    """An element's attributes, whatever order Resolve wrote them in (it differs by version)."""
-    return dict(re.findall(r'([\w:-]+)="([^"]*)"', tag))
-
-
-def secs(v: str) -> Fraction:
-    v = v.rstrip("s")
-    if "/" in v:
-        n, d = v.split("/")
-        return Fraction(int(n), int(d))
-    return Fraction(v)
-
-
 def fmt_s(v: Fraction) -> str:
     return f"{v.numerator}/{v.denominator}s" if v else "0/1s"
-
-
-def cam_no(name: str) -> int:
-    m = re.search(r"(\d+)\s*$", name or "")
-    return int(m.group(1)) if m else 999
 
 
 def atem_out(media_xml: str, atem_angle: str = "Camera 1"):

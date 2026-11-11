@@ -33,58 +33,7 @@ Output:
 
 from typing import Any, Dict, List, Optional
 
-
-# ── Timecode helpers (self-contained; mirror the spike) ──────────────────────
-def _is_drop_frame(tc: str) -> bool:
-    return ";" in tc
-
-
-def _round_fps(fps: float) -> int:
-    return int(round(fps))
-
-
-def tc_to_frames(tc: str, fps: float) -> int:
-    tc = tc.strip()
-    drop = _is_drop_frame(tc)
-    parts = tc.replace(";", ":").split(":")
-    if len(parts) != 4:
-        raise ValueError(f"Bad timecode {tc!r}; expected HH:MM:SS:FF")
-    hh, mm, ss, ff = (int(p) for p in parts)
-    nominal = _round_fps(fps)
-    if drop:
-        drop_frames = 2 if nominal == 30 else (4 if nominal == 60 else 0)
-        total_minutes = 60 * hh + mm
-        return (
-            (hh * 3600 + mm * 60 + ss) * nominal
-            + ff
-            - drop_frames * (total_minutes - total_minutes // 10)
-        )
-    return ((hh * 3600 + mm * 60 + ss) * nominal) + ff
-
-
-def frames_to_tc(frame: int, fps: float, drop: bool = False) -> str:
-    nominal = _round_fps(fps)
-    sep = ";" if drop else ":"
-    if drop:
-        drop_frames = 2 if nominal == 30 else (4 if nominal == 60 else 0)
-        fps_int = nominal
-        frames_per_min = fps_int * 60 - drop_frames
-        frames_per_10min = frames_per_min * 10 + drop_frames
-        tens = frame // frames_per_10min
-        rem = frame % frames_per_10min
-        rem_min = 0 if rem < drop_frames else (rem - drop_frames) // frames_per_min
-        minutes = tens * 10 + rem_min
-        total = frame + drop_frames * (minutes - minutes // 10)
-        ff = total % fps_int
-        ss = (total // fps_int) % 60
-        mm = (total // (fps_int * 60)) % 60
-        hh = total // (fps_int * 3600)
-        return f"{hh:02d}:{mm:02d}:{ss:02d}{sep}{ff:02d}"
-    ff = frame % nominal
-    ss = (frame // nominal) % 60
-    mm = (frame // (nominal * 60)) % 60
-    hh = frame // (nominal * 3600)
-    return f"{hh:02d}:{mm:02d}:{ss:02d}{sep}{ff:02d}"
+from . import ct_common
 
 
 def _safe(fn, default=None):
@@ -149,6 +98,8 @@ def handle_slate_span_report(_payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _report_from_timeline(rh: Any, tl: Any) -> Dict[str, Any]:
+    ct = ct_common.load()
+    tc_to_frames, frames_to_tc, _is_drop_frame = ct.tc_to_frames, ct.frames_to_tc, ct._is_drop_frame
     tl_name = _safe(lambda: tl.GetName(), "?")
     fps = _parse_fps_setting(_safe(lambda: tl.GetSetting("timelineFrameRate")), None)
     if fps is None:
@@ -209,21 +160,9 @@ def _report_from_timeline(rh: Any, tl: Any) -> Dict[str, Any]:
                           "rec_out": rel(r["rec_e"]), "src_in_tc": sin, "src_out_tc": sout})
 
     # Merge gapless chunks (source-TOD continuous) into single spans.
-    spans: List[Dict[str, Any]] = []
-    for r in rows:
-        prev = spans[-1] if spans else None
-        contiguous = (
-            prev is not None
-            and r["src_in_f"] is not None
-            and prev["src_out_f"] is not None
-            and abs(r["src_in_f"] - prev["src_out_f"]) <= MERGE_TOLERANCE
-        )
-        if contiguous:
-            prev["src_out_f"] = r["src_out_f"]
-            prev["rec_e"] = r["rec_e"]
-            prev["chunks"] += 1
-        else:
-            spans.append({**r, "chunks": 1})
+    spans = [{**g[0], "src_out_f": g[-1]["src_out_f"], "rec_e": g[-1]["rec_e"], "chunks": len(g)}
+             for g in ct.group_spans(rows, MERGE_TOLERANCE, chain=True,
+                                     start=lambda r: r["src_in_f"], end=lambda r: r["src_out_f"])]
 
     rh.log(f"→ {len(spans)} recording span(s) after merging gapless chunks:")
     spans_out: List[Dict[str, Any]] = []
@@ -258,6 +197,8 @@ def _report_from_media_pool(rh: Any, project: Any) -> Dict[str, Any]:
     own timecode ranges — no timeline and no multicam internals needed. Gapless
     chunks (same recording split across files) merge into one span.
     """
+    ct = ct_common.load()
+    tc_to_frames, frames_to_tc, _is_drop_frame = ct.tc_to_frames, ct.frames_to_tc, ct._is_drop_frame
     mp = _safe(lambda: project.GetMediaPool())
     folder = _safe(lambda: mp.GetCurrentFolder()) if mp else None
     folder_name = _safe(lambda: folder.GetName(), "?") if folder else None
@@ -321,20 +262,9 @@ def _report_from_media_pool(rh: Any, project: Any) -> Dict[str, Any]:
         clips_out.append({"name": r["name"], "src_in_tc": sin, "src_out_tc": sout})
 
     # Merge gapless chunks (next clip's TOD in ≈ prev clip's TOD out) into spans.
-    spans: List[Dict[str, Any]] = []
-    for r in rows:
-        prev = spans[-1] if spans else None
-        contiguous = (
-            prev is not None
-            and r["src_in_f"] is not None
-            and prev["src_out_f"] is not None
-            and abs(r["src_in_f"] - prev["src_out_f"]) <= MERGE_TOLERANCE
-        )
-        if contiguous:
-            prev["src_out_f"] = r["src_out_f"]
-            prev["chunks"] += 1
-        else:
-            spans.append({**r, "chunks": 1})
+    spans = [{**g[0], "src_out_f": g[-1]["src_out_f"], "chunks": len(g)}
+             for g in ct.group_spans(rows, MERGE_TOLERANCE, chain=True,
+                                     start=lambda r: r["src_in_f"], end=lambda r: r["src_out_f"])]
 
     rh.log(f"→ {len(spans)} recording span(s) after merging gapless chunks:")
     spans_out: List[Dict[str, Any]] = []

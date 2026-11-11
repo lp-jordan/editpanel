@@ -28,7 +28,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import time
 import xml.etree.ElementTree as ET
 from fractions import Fraction
@@ -43,6 +42,18 @@ RAW = globals().get("RAW")
 # exec(open(...).read()) has no __file__, so it falls back to the LP1 checkout
 PIPELINE = (os.path.dirname(os.path.abspath(globals()["__file__"])) if globals().get("__file__")
             else r"C:\lp-app-ecosystem\editpanel\cut_through")
+
+
+def _common():
+    """common.py from the pipeline folder, loaded fresh each run (see its docstring)."""
+    spec = importlib.util.spec_from_file_location("cut_through_common", os.path.join(PIPELINE, "common.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_c = _common()
+_safe, walk, secs, frame_duration, export_multicam = _c._safe, _c.walk, _c.secs, _c.frame_duration, _c.export_multicam
 PLAN_FILE = globals().get("PLAN_FILE") or os.path.join(PIPELINE, "plans", f"{LABEL}_plan.json")
 # one plan per video (EditPanel's Videos list): [[plan file, timeline name], ...], all of one multicam
 PLAN_FILES = [list(x) for x in (globals().get("PLAN_FILES") or [])]
@@ -50,7 +61,6 @@ if PLAN_FILES:
     PLAN_FILE = PLAN_FILES[0][0]
 OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
 os.makedirs(OUT_DIR, exist_ok=True)
-ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
 _lines: List[str] = []
 _T0 = time.time()
 
@@ -65,35 +75,6 @@ def phase(text: str) -> None:
     print(f"▸ {text}", flush=True)
 
 
-def _safe(fn, default=None):
-    try:
-        return fn()
-    except Exception:
-        return default
-
-
-def walk(folder: Any):
-    for clip in _safe(lambda: folder.GetClipList(), []) or []:
-        yield folder, clip
-    for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
-        if _safe(lambda: sub.GetName()) not in ARCHIVE_BINS:
-            yield from walk(sub)
-
-
-def export_type(r: Any):
-    """Newest FCPXML export this Resolve offers."""
-    for v in ("1_14", "1_13", "1_12", "1_11", "1_10", "1_9", "1_8"):
-        val = _safe(lambda: getattr(r, f"EXPORT_FCPXML_{v}"))
-        if val is not None:
-            return v.replace("_", "."), val
-    raise RuntimeError("This Resolve offers no FCPXML export type")
-
-
-def _s(v: str) -> Fraction:
-    v = v.rstrip("s")
-    return Fraction(*map(int, v.split("/"))) if "/" in v else Fraction(v)
-
-
 def wav_timecodes(xml: str, mc_name: str) -> dict:
     """Where Jordan placed each extra-track clip (the mic WAVs) inside the multicam, as the start
     timecode that file needs so Resolve's timecode placement lands it there:
@@ -104,46 +85,33 @@ def wav_timecodes(xml: str, mc_name: str) -> dict:
     paths = {a.get("id"): unquote((a.find("media-rep").get("src") if a.find("media-rep") is not None else "")
                                   .replace("file://localhost/", ""))
              for a in root.iter("asset")}
-    formats = {f.get("id"): f.get("frameDuration") for f in root.iter("format")}
     out = {}
     for media in root.iter("media"):
         if media.get("name") != mc_name:
             continue
         mc = media.find("multicam")
-        start = _s(mc.get("tcStart"))
-        fd = formats.get(mc.get("format"))
-        FD = _s(fd) if fd else Fraction(1001, 24000)        # the multicam's own rate (25p, 29.97 …)
+        start = secs(mc.get("tcStart"))
+        FD = frame_duration(xml, {mc_name})                 # the multicam's own rate (25p, 29.97 …)
         for ang in mc.iter("mc-angle"):
             end, run = Fraction(0), 0
             for el in ang:
                 if "offset" not in el.attrib:
                     continue
-                o = _s(el.get("offset"))
+                o = secs(el.get("offset"))
                 if o < end:
                     run += 1
-                end = o + _s(el.get("duration", "0s"))
+                end = o + secs(el.get("duration", "0s"))
                 if run and el.tag == "asset-clip":
-                    frames = round((start + o - _s(el.get("start", "0s"))) / FD)
+                    frames = round((start + o - secs(el.get("start", "0s"))) / FD)
                     out.setdefault(el.get("name"), (frames, ang.get("name"), paths.get(el.get("ref"), "")))
     return out
 
 
-def bundle_xml(path: str):
-    """FCPXML 1.10+ exports as a bundle folder with Info.fcpxml inside; older ones as a file."""
-    for p in (path, path + "d", os.path.splitext(path)[0] + ".fcpxmld"):
-        if os.path.isfile(p):
-            return p
-        if os.path.isdir(p):
-            inner = [os.path.join(p, f) for f in os.listdir(p) if f.lower().endswith(".fcpxml")]
-            if inner:
-                return inner[0]
-    return None
-
-
 def run_script(name: str, settings: dict, r: Any) -> dict:
     """Run a sibling step script in its own namespace and fold its report into this one."""
-    g = {"__name__": "__main__", "resolve": r, **settings}
-    exec(open(os.path.join(PIPELINE, name), encoding="utf-8").read(), g)
+    path = os.path.join(PIPELINE, name)
+    g = {"__name__": "__main__", "__file__": path, "resolve": r, **settings}     # __file__: it finds common.py
+    exec(open(path, encoding="utf-8").read(), g)
     _lines.extend("    " + x for x in g.get("_lines", []))
     return g
 
@@ -203,24 +171,8 @@ def main() -> None:
     # 1. the multicam's description, straight from Resolve
     phase("Reading the multicam's layout from Resolve")
     t1 = time.time()
-    version, etype = export_type(r)
-    tmp = mp.CreateTimelineFromClips(f"Cut-through temp {LABEL} layout", [orig])
-    if not tmp:
-        raise RuntimeError("Couldn't make the throwaway multicam timeline")
-    mcdef = os.path.join(OUT_DIR, f"mcdef_{LABEL}.fcpxml")
-    for p in (mcdef, mcdef + "d"):                      # leftovers from an earlier run
-        if os.path.isdir(p):
-            shutil.rmtree(p, ignore_errors=True)
-        elif os.path.isfile(p):
-            os.remove(p)
-    ok = _safe(lambda: tmp.Export(mcdef, etype), False) or _safe(lambda: tmp.Export(mcdef, etype, r.EXPORT_NONE), False)
-    other = next((project.GetTimelineByIndex(i) for i in range(1, int(project.GetTimelineCount()) + 1)
-                  if project.GetTimelineByIndex(i).GetName() != tmp.GetName()), None)
-    if other:
-        project.SetCurrentTimeline(other)
-    gone = _safe(lambda: mp.DeleteTimelines([tmp]), False)
-    src = bundle_xml(mcdef)
-    if not ok or not src:
+    version, src, gone = export_multicam(r, project, mp, orig, LABEL, OUT_DIR)
+    if not src:
         raise RuntimeError(f"FCPXML {version} export failed")
     xml = open(src, encoding="utf-8").read()
     angles = [re.search(r'name="([^"]+)"', a).group(1) for a in re.findall(r"<mc-angle ([^>]*)>", xml)]

@@ -24,18 +24,33 @@ one speaker track. audio_source in the day file says which ("wav" / "camera").
 import json
 import os
 import re
-import shutil
 import xml.etree.ElementTree as ET
 from fractions import Fraction
-from typing import Any, List
+from typing import List
 from urllib.parse import unquote
+
+
+def _common():
+    """common.py from this script's own folder, loaded fresh each run (see its docstring). EditPanel's
+    Resolve worker sets __file__; a console exec(open(...).read()) has none → the LP1 checkout."""
+    import importlib.util
+    here = (os.path.dirname(os.path.abspath(globals()["__file__"])) if globals().get("__file__")
+            else r"C:\lp-app-ecosystem\editpanel\cut_through")
+    spec = importlib.util.spec_from_file_location("cut_through_common", os.path.join(here, "common.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_c = _common()
+_safe, walk, export_multicam, frame_duration, merge_spans = (
+    _c._safe, _c.walk, _c.export_multicam, _c.frame_duration, _c.merge_spans)
 
 LABEL = globals().get("LABEL", "Convo2")
 MC = globals().get("MC")
 AUDIO_ANGLE = globals().get("AUDIO_ANGLE")     # no mic WAVs: whose camera audio (track 1) to use; default Camera 1
 OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
 os.makedirs(OUT_DIR, exist_ok=True)
-ARCHIVE_BINS = {"MC ORIGINAL", "MC QUARANTINE"}
 _lines: List[str] = []
 
 
@@ -49,35 +64,9 @@ def phase(text: str) -> None:
     print(f"▸ {text}", flush=True)
 
 
-def _safe(fn, default=None):
-    try:
-        return fn()
-    except Exception:
-        return default
-
-
 def _s(v) -> Fraction:
-    v = (v or "0s").rstrip("s")
-    return Fraction(*map(int, v.split("/"))) if "/" in v else Fraction(v)
-
-
-def walk(folder: Any):
-    for clip in _safe(lambda: folder.GetClipList(), []) or []:
-        yield folder, clip
-    for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
-        if _safe(lambda: sub.GetName()) not in ARCHIVE_BINS:
-            yield from walk(sub)
-
-
-def bundle_xml(path: str):
-    for p in (path, path + "d", os.path.splitext(path)[0] + ".fcpxmld"):
-        if os.path.isfile(p):
-            return p
-        if os.path.isdir(p):
-            inner = [os.path.join(p, f) for f in os.listdir(p) if f.lower().endswith(".fcpxml")]
-            if inner:
-                return inner[0]
-    return None
+    """An FCPXML time; a missing one (no start= on a clip) is 0."""
+    return _c.secs(v or "0s")
 
 
 def describe(xml: str, mc_name: str = None) -> dict:
@@ -85,14 +74,13 @@ def describe(xml: str, mc_name: str = None) -> dict:
     start. A clip at angle position P with media start S has its file's 0:00 at P − S."""
     root = ET.fromstring(re.search(r"<resources>.*?</resources>", xml, re.S).group(0))
     assets = {a.get("id"): a for a in root.iter("asset")}
-    formats = {f.get("id"): f for f in root.iter("format")}
     medias = [m for m in root.iter("media") if m.find("multicam") is not None
               and (mc_name is None or m.get("name") == mc_name)]
     if not medias:
         raise RuntimeError(f"No multicam {mc_name or ''} in the export")
     media = medias[0]
     mc = media.find("multicam")
-    fd = _s(formats[mc.get("format")].get("frameDuration")) if mc.get("format") in formats else Fraction(1001, 24000)
+    fd = frame_duration(xml, {media.get("name")})
 
     def path(ref):
         a = assets.get(ref)
@@ -161,13 +149,7 @@ def recordings(pictures, join_sec: float = 0.5) -> list:
     """Camera clips on every angle → the recordings: where the cameras rolled. The ATEM records
     every camera at once, so clips that overlap or touch (a long recording split into files) are one
     recording; a real gap between them is a stop. Seconds from the multicam's start."""
-    out = []
-    for a, b in sorted(pictures):
-        if out and a <= out[-1][1] + Fraction(join_sec):
-            out[-1][1] = max(out[-1][1], b)
-        else:
-            out.append([a, b])
-    return [{"from_sec": float(a), "to_sec": float(b)} for a, b in out]
+    return [{"from_sec": float(a), "to_sec": float(b)} for a, b in merge_spans(pictures, Fraction(join_sec))]
 
 
 def main() -> None:
@@ -186,25 +168,8 @@ def main() -> None:
         raise RuntimeError(f"Expected one multicam{f' named {MC!r}' if MC else ''} outside the archive bins, found "
                            f"{[c.GetName() for c in mcs]} — set MC=\"name\"")
     orig = mcs[0]
-    etype = next((getattr(r, f"EXPORT_FCPXML_{v}") for v in ("1_14", "1_13", "1_12", "1_11", "1_10")
-                  if _safe(lambda: getattr(r, f"EXPORT_FCPXML_{v}")) is not None), None)
-    tmp = mp.CreateTimelineFromClips(f"Cut-through temp {LABEL} layout", [orig])
-    if not tmp:
-        raise RuntimeError("Couldn't make the throwaway multicam timeline")
-    mcdef = os.path.join(OUT_DIR, f"mcdef_{LABEL}.fcpxml")
-    for p in (mcdef, mcdef + "d"):
-        if os.path.isdir(p):
-            shutil.rmtree(p, ignore_errors=True)
-        elif os.path.isfile(p):
-            os.remove(p)
-    ok = _safe(lambda: tmp.Export(mcdef, etype), False)
-    other = next((project.GetTimelineByIndex(i) for i in range(1, int(project.GetTimelineCount()) + 1)
-                  if project.GetTimelineByIndex(i).GetName() != tmp.GetName()), None)
-    if other:
-        project.SetCurrentTimeline(other)
-    gone = _safe(lambda: mp.DeleteTimelines([tmp]), False)
-    src = bundle_xml(mcdef)
-    if not ok or not src:
+    _, src, gone = export_multicam(r, project, mp, orig, LABEL, OUT_DIR)
+    if not src:
         raise RuntimeError("FCPXML export failed")
     day = describe(open(src, encoding="utf-8").read(), orig.GetName())
     day.update({"label": LABEL, "project": project.GetName()})
