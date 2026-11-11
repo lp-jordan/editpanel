@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Cut-through (beta): Claude as the solo editor — the Z8 method, in the app.
+ * Cut-through (beta): Claude as the editor, solo or conversation — the Z8 method, in the app.
  *
  *   words_<LABEL>.json (+ unheard stretches) → numbered transcript
  *   → Claude (cut_through/editor_briefs/solo.md) edits it like Z8: every removal AND every
@@ -11,8 +11,8 @@
  *     (Z8: 3 fr clear of sound), trims pauses, keeps the hard rules (angle change at
  *     every removal, no blink shots) and builds the audio.
  *
- * Client words go to Claude and to Desktop files only, never into git. The
- * brief lives in cut_through/editor_briefs/ so it can be tuned with a git pull.
+ * Client words go to Claude and to the run folder only, never into git. The
+ * briefs live in cut_through/editor_briefs/ (solo.md, conversation.md).
  */
 const fs = require('fs');
 const path = require('path');
@@ -108,9 +108,7 @@ function buildSchema(angles) {
   }
   };
 }
-const SCHEMA = buildSchema(['Camera 1', 'Camera 2']);   // shape reference for tests
 
-/** One talker's words + unheard stretches in [start, end), in time order. */
 /**
  * Words + unheard stretches in [start, end), in time order. One mic = one talker (solo); several
  * mics = a conversation: each word is said by the owner of the mic it's loudest on (`own`), and
@@ -315,11 +313,10 @@ function readMessage(msg, model) {
 }
 
 /**
- * Ask Claude for the removals. Streams (long input, adaptive thinking) and
- * returns the final message parsed against SCHEMA.
+ * Ask Claude for the edit (removals + shots). Streams (long input, adaptive thinking) and
+ * returns the final message parsed against buildSchema(angles).
  */
 async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', system, transcript, meta, angles = ['Camera 1', 'Camera 2'], client = null, onEvent = () => {} }) {
-  // maxRetries 0: an automatic retry re-runs (and re-bills) a whole long edit
   const anthropic = client || makeClient(apiKey);
   const params = requestParams({ model, effort, system, transcript, meta, angles });
   const run = async (withFallback) => {
@@ -349,12 +346,6 @@ function makeClient(apiKey) {
   return new Anthropic({ ...(apiKey ? { apiKey } : {}), maxRetries: 0 });
 }
 
-/**
- * The whole Claude planning step. Writes Desktop/claude_edit_<LABEL>.json
- * (token ranges + reasons, client words) and Desktop/removals_<LABEL>.json
- * (frame spans for place_cuts.py), appends <files folder>/cut_through_costs.csv.
- * Returns { removalsFile, lines, cost, problems }.
- */
 /**
  * Everything one edit needs, without asking yet: the numbered transcript, Claude's brief and the
  * request (`params`). Deterministic from the files, so a batch answer is read back by preparing the
@@ -440,8 +431,8 @@ function logCost({ costsDir, outDir, label, step, model, effort, usage, seconds 
 }
 
 /**
- * The whole Claude planning step, live. Writes Desktop/claude_edit_<LABEL>.json
- * (token ranges + reasons, client words) and Desktop/removals_<LABEL>.json
+ * The whole Claude planning step, live. Writes <run folder>/claude_edit_<LABEL>.json
+ * (token ranges + reasons, client words) and <run folder>/removals_<LABEL>.json
  * (frame spans for place_cuts.py), appends <files folder>/cut_through_costs.csv.
  * Returns { removalsFile, lines, cost, problems }.
  */
@@ -519,5 +510,4 @@ function finishPlan(ctx, res, { outDir, seconds = 0, factor = 1, via = '' }) {
   return { removalsFile, claudeFile, lines, cost, problems };
 }
 
-module.exports = { planWithClaude, preparePlan, finishPlan, readMessage, requestParams, makeClient, logCost, buildTokens, renderTranscript,
-  validateRemovals, validateShots, toFrameSpans, toFrameShots, costOf, askClaude, buildSchema, SCHEMA, DEFAULT_MODEL, DELIVERY, PAUSES, MAX_WORDS, PRICES };
+module.exports = { planWithClaude, preparePlan, finishPlan, readMessage, makeClient, logCost, renderTranscript, costOf, DEFAULT_MODEL, DELIVERY, PRICES };

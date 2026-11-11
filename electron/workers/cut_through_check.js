@@ -10,7 +10,8 @@
  *   Red     Word cut off      a word runs across a cut (part of it is missing)
  *           Ends mid-sentence the video's last kept word doesn't end a sentence
  *           Cue kept          "say that again", "from the top", … left in
- *   Yellow  Joins mid-sentence the words before a join stop mid-sentence and ≥ 3 real words were removed
+ *   Yellow  Starts mid-sentence the video opens on a lower-case word after an unfinished sentence
+ *           Joins mid-sentence the words before a join stop mid-sentence and ≥ 3 real words were removed
  *           Gap at the cut / Pause kept / Silence at the head or tail
  *           Sound, no words    a loud stretch with no words (mumble, off-camera talk) left in
  *           Flash shot         a shot under half a second

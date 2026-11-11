@@ -4,11 +4,15 @@
  *
  * Runs the cut-through pipeline (editpanel/cut_through/) from one place on LP1:
  *
+ *   setup       transcription pack          checkSetup / installPack / testPack (this machine's GPU + pack)
  *   prep        prepare_multicam.py         Resolve worker (ct_run_step)
- *   transcribe  transcribe.py <LABEL>       child process (C:\wxbench venv, GPU)
+ *   transcribe  transcribe.py <LABEL>       child process (the pack's Python, else C:\wxbench venv; GPU)
  *   plan        Claude (editor_briefs/) + place_cuts.py (app Python) — 2+ mic angles =
  *               conversation, else one speaker
  *   build       build_rough_cut.py          Resolve worker (ct_run_step)
+ *   check       cut_through_check.js        marks what an editor would still fix (ct_read_timeline)
+ *   compare     cut_through_compare.js      rough cut as it is now vs its plan (ct_read_timeline)
+ *   slate read  cut_through_slate.js        J-codes off the slate angle (local OCR; Claude only if asked)
  *
  * Videos (2026-11-07): Plan can also work per video. findVideos splits the day into videos from
  * Prep's recordings + the LPOS slate's J-codes (cut_through_videos.js) → videos_<LABEL>.json; each
@@ -72,7 +76,7 @@ function parseProgress(line) {
   };
 }
 
-/** A label is part of Desktop file names (day_<LABEL>.json …): keep it plain. */
+/** A label is part of the run's file and folder names (day_<LABEL>.json …): keep it plain. */
 function sanitizeLabel(raw) {
   return String(raw || '').trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48);
 }
@@ -276,8 +280,8 @@ function createCutThrough(opts) {
       seqBin: p.seqBin === undefined ? DEFAULT_SEQ_BIN : p.seqBin,
       claudeModel: p.claudeModel || claude.DEFAULT_MODEL,
       claudeEffort: p.claudeEffort || 'high',
-      energyHints: p.energyHints !== false,
-      sliderMotion: p.sliderMotion !== false,    // slider shots only while the slider moves (on trial 2026-11-10)      // pace / loudness hints in Claude's transcript (on trial 2026-11-10)
+      energyHints: p.energyHints !== false,      // pace / loudness hints in Claude's transcript (on trial 2026-11-10)
+      sliderMotion: p.sliderMotion !== false,    // slider shots only while the slider moves (on trial 2026-11-10)
       // this Resolve project's data folder (chosen on the page, no default: see needRunFolder);
       // until it's chosen, earlier runs are still read from the old shared location
       runFolder,
@@ -582,7 +586,7 @@ function createCutThrough(opts) {
   function snapshot() {
     return { ...s, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
       slateAngle: slateAngle(), slateInfo: slateInfo(), estimate: costEstimate(),
-      videosReady: videosToBuild().length, now: Date.now() };
+      videosReady: videosToBuild().length };
   }
 
   // ---- Cost + time estimate (1.2.144): learned from this folder's cost log and transcribe reports.
@@ -867,7 +871,7 @@ function createCutThrough(opts) {
   }
 
   /** Resolve's open project changed: show what this page last had for that project (its files
-   *  stay on the Desktop either way — switching never throws work away). Waits out a running step. */
+   *  stay in their run folders either way — switching never throws work away). Waits out a running step. */
   let pendingProject = null;
   function applyProject(name) {
     if (!name || name === s.project) return;
@@ -1004,7 +1008,6 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
-  /** Compare the plan with Jordan's finished timeline (Z8): removals, cuts, angles, pacing. */
   /**
    * The In/Out marked on the multicam in Resolve (source viewer) → a section of the day, in
    * multicam frames. Resolve may give marks from the clip's start or on its timecode clock;
@@ -1055,7 +1058,7 @@ function createCutThrough(opts) {
   }
 
   /** Check: read each rough cut back from Resolve as it is now, mark what an editor would fix
-   *  (red: word cut off, ends mid-sentence, cue kept; yellow: joins mid-sentence, gaps, repeats,
+   *  (red: word cut off, ends mid-sentence, cue kept; yellow: starts / joins mid-sentence, gaps, repeats,
    *  sound with no words, flash shots). Free — no Claude. A re-run replaces its own markers. */
   async function runCheck({ timeline } = {}) {
     const f = files();
@@ -1296,20 +1299,21 @@ function createCutThrough(opts) {
 
   // The placer: takes the day + words files (+ Claude's edit and the levels) and writes
   // <run folder>/<LABEL>_plan.json (the build's input).
-  const PLANNERS = {
-    solo: { script: 'place_cuts.py', args: ({ wide, extra, punch, skip, removalsFile, levelsFile, motionFile, nocut, talker, reviewFile }) => [...(motionFile ? [`motion=${motionFile}`] : []),
-      ...(nocut || []).map((r) => `nocut=${r}`),...(wide ? [`wide=${wide}`] : []),
+  // Solo and conversations both go through place_cuts.py.
+  const PLACER = 'place_cuts.py';
+  function placerArgs({ wide, extra, punch, skip, removalsFile, levelsFile, motionFile, nocut, talker, reviewFile }) {
+    return [...(motionFile ? [`motion=${motionFile}`] : []),
+      ...(nocut || []).map((r) => `nocut=${r}`), ...(wide ? [`wide=${wide}`] : []),
       ...(punch ? [`punch=${punch}`] : []), ...[].concat(extra || []).map((x) => `extra=${x}`), ...(skip || []).map((x) => `skip=${x}`),
       ...(removalsFile ? [`removals=${removalsFile}`] : []), ...(levelsFile ? [`levels=${levelsFile}`] : []),
-      ...(talker ? [`talker=${talker}`] : []), ...(reviewFile ? [`review=${reviewFile}`] : [])] }
-  };
-  function runPlanner(kind, o) {
-    const { script, args } = PLANNERS[kind];
+      ...(talker ? [`talker=${talker}`] : []), ...(reviewFile ? [`review=${reviewFile}`] : [])];
+  }
+  function runPlanner(o) {
     const f = o.files;
     const planFile = o.planFile || f.plan;
     fs.mkdirSync(path.dirname(planFile), { recursive: true });
-    return runChild('plan', pythonCmd, [path.join(settings().pipelineDir, script), f.words, f.day, planFile,
-      `start=${o.start}`, `end=${o.end}`, ...args(o), ...o.cuts.map((c) => `cut=${c}`),
+    return runChild('plan', pythonCmd, [path.join(settings().pipelineDir, PLACER), f.words, f.day, planFile,
+      `start=${o.start}`, `end=${o.end}`, ...placerArgs(o), ...(o.cuts || []).map((c) => `cut=${c}`),
       ...(o.trims || []).map(([a, b]) => `trim=${a}-${b}`), ...(o.keeps || []).map(([a, b]) => `keep=${a}-${b}`)]);
   }
 
@@ -1389,7 +1393,7 @@ function createCutThrough(opts) {
     }
   }
 
-  async function runPlan({ start, end, extra, punch, roles: roleMap, delivery, direction: note, useMarks = false } = {}) {
+  async function runPlan({ start, end, roles: roleMap, delivery, direction: note, useMarks = false } = {}) {
     if (!s.day) throw new Error('Run Prep first');
     const kind = planKind(s.day);
     const f = files();
@@ -1402,7 +1406,6 @@ function createCutThrough(opts) {
     const a = fromF === null ? 0 : fromF;
     const b = toF === null ? total : toF;
     if (b <= a) throw new Error('To must be after From');
-    const cutList = [];
     const st0 = settings();
     if (!claudeKey() && !claudeClient) throw new Error('Add a Claude API key in Settings below');
     if (note !== undefined) {
@@ -1413,66 +1416,61 @@ function createCutThrough(opts) {
     st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
     emit();
     const started = Date.now();
-    // what each angle is: the page's roles (saved for this project), else the saved/usual ones;
-    // an explicit punch / extra (older callers) still wins for those two
+    // what each angle is: the page's roles (saved for this project), else the saved/usual ones
     if (roleMap && typeof roleMap === 'object') saveAngleRoles(roleMap);
     const R = rolesOf(angleRoles(), (s.day && s.day.angles) || []);
-    const extras = [...new Set([...(extra ? [extra] : []), ...R.slider, ...R.side, ...R.other])].filter((x) => x !== (punch || R.punch) && x !== R.wide);
-    const o = { files: f, start: Math.round(a), end: Math.round(b), wide: R.wide, punch: punch || R.punch || null, extra: extras, skip: R.skip,
-      roles: R, cuts: cutList };
-    {   // solo and conversations: Claude edits, place_cuts.py places (Z8)
-      // Z8 cuts from the waveform: an older transcription has no per-frame levels yet → one
-      // levels-only pass over the audio (no Whisper), which also adds the loud-without-words marks
-      // a transcript from before WhisperX alignment (2026-11-06): pin its words to the audio
-      // once (no Whisper, minutes on the GPU) — Whisper's own word times cut words in half
-      const prepErr = await ensureAudioPrep(st, f, st0);
-      if (canceled) {
-        finish('plan', { error: null, report: st.log.slice(), reportFile: saveLog('plan') });
-        return snapshot();
-      }
-      if (prepErr) {
-        finish('plan', { error: prepErr, report: st.log.slice(), reportFile: saveLog('plan') });
-        return snapshot();
-      }
-      o.levelsFile = f.levels;
-      if (st0.sliderMotion && fs.existsSync(f.motion)) o.motionFile = f.motion;
-      o.nocut = planRules();
-      // Claude edits like Z8 — every removal and every shot; place_cuts.py places the cuts
-      st.progress = { phase: 'Claude is reading the transcript', phaseAt: Date.now(), bar: null };
-      emit();
-      try {
-        const out = await claude.planWithClaude({
-          label: s.label, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: settings().filesDir,
-          promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
-          start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: !!o.motionFile, noCut: o.nocut,
-          kind, minutes: (o.end - o.start) * tcClock(s.day).fsec / 60,
-          delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
-          roles: { wide: o.wide || undefined, punch: o.punch || undefined, extra: o.extra, slider: o.roles.slider, side: o.roles.side,
-            other: o.roles.other, skip: o.skip },
-          direction: direction(),
-          client: claudeClient,
-          log: (line) => { pushLog('plan', line); emit(); },
-          onEvent: (ev) => {
-            if (ev.type === 'writing' && !String(st.progress.phase).startsWith('Claude is writing')) {
-              st.progress = { phase: 'Claude is writing the edit', phaseAt: Date.now(), bar: null };
-              emit();
-            }
-          }
-        });
-        out.lines.forEach((line) => pushLog('plan', line));
-        o.removalsFile = out.removalsFile;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : errMsg(err);   // SDK errors carry status + message
-        pushLog('plan', `✗ ${msg}`);
-        finish('plan', { error: `Claude: ${msg}`, report: st.log.slice(), reportFile: saveLog('plan') });
-        return snapshot();
-      }
-      st.progress = { phase: 'Placing the cuts on the waveform', phaseAt: Date.now(), bar: null };
-      emit();
+    const extras = [...new Set([...R.slider, ...R.side, ...R.other])].filter((x) => x !== R.punch && x !== R.wide);
+    const o = { files: f, start: Math.round(a), end: Math.round(b), wide: R.wide, punch: R.punch || null, extra: extras, skip: R.skip,
+      roles: R };
+    // solo and conversations: Claude edits, place_cuts.py places. First the words pinned to the
+    // audio and the per-frame levels (each once per label; see ensureAudioPrep).
+    const prepErr = await ensureAudioPrep(st, f, st0);
+    if (canceled) {
+      finish('plan', { error: null, report: st.log.slice(), reportFile: saveLog('plan') });
+      return snapshot();
     }
-    const res = await runPlanner('solo', o);   // the Claude edit's placer, solo or conversation
+    if (prepErr) {
+      finish('plan', { error: prepErr, report: st.log.slice(), reportFile: saveLog('plan') });
+      return snapshot();
+    }
+    o.levelsFile = f.levels;
+    if (st0.sliderMotion && fs.existsSync(f.motion)) o.motionFile = f.motion;
+    o.nocut = planRules();
+    // Claude edits: every removal and every shot; place_cuts.py places the cuts
+    st.progress = { phase: 'Claude is reading the transcript', phaseAt: Date.now(), bar: null };
+    emit();
+    try {
+      const out = await claude.planWithClaude({
+        label: s.label, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: settings().filesDir,
+        promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
+        start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: !!o.motionFile, noCut: o.nocut,
+        kind, minutes: (o.end - o.start) * tcClock(s.day).fsec / 60,
+        delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
+        roles: { wide: o.wide || undefined, punch: o.punch || undefined, extra: o.extra, slider: o.roles.slider, side: o.roles.side,
+          other: o.roles.other, skip: o.skip },
+        direction: direction(),
+        client: claudeClient,
+        log: (line) => { pushLog('plan', line); emit(); },
+        onEvent: (ev) => {
+          if (ev.type === 'writing' && !String(st.progress.phase).startsWith('Claude is writing')) {
+            st.progress = { phase: 'Claude is writing the edit', phaseAt: Date.now(), bar: null };
+            emit();
+          }
+        }
+      });
+      out.lines.forEach((line) => pushLog('plan', line));
+      o.removalsFile = out.removalsFile;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : errMsg(err);   // SDK errors carry status + message
+      pushLog('plan', `✗ ${msg}`);
+      finish('plan', { error: `Claude: ${msg}`, report: st.log.slice(), reportFile: saveLog('plan') });
+      return snapshot();
+    }
+    st.progress = { phase: 'Placing the cuts on the waveform', phaseAt: Date.now(), bar: null };
+    emit();
+    const res = await runPlanner(o);   // the Claude edit's placer, solo or conversation
     let error = res.error;
-    if (!error && res.code !== 0) error = exitError('plan', PLANNERS.solo.script, res.code);
+    if (!error && res.code !== 0) error = exitError('plan', PLACER, res.code);
     if (!error && !(mtime(f.plan) >= started - 2000)) error = `${s.label}_plan.json was not written`;
     if (!error) error = await secondPass(o, kind);
     // a section plan replaces a per-video one: Build makes the one "<LABEL> rough cut" again
@@ -1501,17 +1499,16 @@ function createCutThrough(opts) {
       pushLog('plan', 'Second pass: nothing to fix');
       return null;
     }
-    st0Progress('Second pass: fixing gaps, pauses and cut words');
-    const res = await runPlanner('solo', { ...o, trims, keeps });
-    if (res.error || res.code !== 0) return res.error || exitError('plan', `${PLANNERS.solo.script} (second pass)`, res.code);
+    setPlanPhase('Second pass: fixing gaps, pauses and cut words');
+    const res = await runPlanner({ ...o, trims, keeps });
+    if (res.error || res.code !== 0) return res.error || exitError('plan', `${PLACER} (second pass)`, res.code);
     const after = checkTimeline({ timeline: planTimeline(readJson(planFile) || plan), words, kind, multicam: plan.multicam, pauses, beats });
     const what = Object.entries(fixed).map(([k, n]) => `${k.toLowerCase()} × ${n}`).join(', ');
     pushLog('plan', `Second pass fixed ${what}; left for you: ${after.data.red} red, ${after.data.yellow} yellow (marked after Build)`);
-    o.checked = after.data;
     return null;
   }
 
-  function st0Progress(phase) {
+  function setPlanPhase(phase) {
     const st = s.steps.plan;
     st.progress = { phase, phaseAt: Date.now(), bar: null };
     emit();
@@ -1728,9 +1725,9 @@ function createCutThrough(opts) {
       levelsFile: files().levels, removalsFile, motionFile: settings().sliderMotion && fs.existsSync(files().motion) ? files().motion : null,
       nocut: planRules() };
     const started = Date.now();
-    const res = await runPlanner('solo', o);
+    const res = await runPlanner(o);
     let error = res.error;
-    if (!error && res.code !== 0) error = exitError('plan', PLANNERS.solo.script, res.code);
+    if (!error && res.code !== 0) error = exitError('plan', PLACER, res.code);
     if (!error && !(mtime(vf.plan) >= started - 2000)) error = `${path.basename(vf.plan)} was not written`;
     if (!error) error = await secondPass(o, args.kind);
     return { error, summary: error ? null : planSummary(readJson(vf.plan)) };
@@ -2108,8 +2105,7 @@ function createCutThrough(opts) {
     runBuild,
     runCheck,
     runCompare,
-    onWorkerLog,
-    _planners: PLANNERS
+    onWorkerLog
   };
 }
 
@@ -2130,8 +2126,6 @@ module.exports = {
   dayFrames,
   parseSection,
   frameToTc,
-  defaultPipelineDir,
   defaultAngleRoles,
-  rolesOf,
-  DEFAULT_SEQ_BIN
+  rolesOf
 };

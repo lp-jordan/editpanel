@@ -3611,12 +3611,6 @@ app.whenReady().then(() => {
     const err = await shell.openPath(p);   // '' on success
     return err ? { ok: false, error: err } : { ok: true };
   });
-  ipcMain.handle('cut-through:open-path', async (_e, p) => {
-    if (typeof p !== 'string' || !p) return { ok: false, error: 'no path' };
-    if (!fs.existsSync(p)) return { ok: false, error: 'Not found' };
-    shell.showItemInFolder(p);
-    return { ok: true };
-  });
 
   // --- Camera card ingest IPC ---
   // The engine (workers/card_ingest.js) polls for mounted cards and pushes the

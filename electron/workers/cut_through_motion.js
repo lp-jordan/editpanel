@@ -166,4 +166,4 @@ function sliderFit(pieces, angle, moving) {
   return { shots: shots.length, inside: inside.length };
 }
 
-module.exports = { sliderMotion, sliderFit, stretchesOf, samplesOf, shiftOf, normalise, readProfiles, SAMPLE_FPS };
+module.exports = { sliderMotion, sliderFit };

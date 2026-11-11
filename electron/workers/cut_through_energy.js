@@ -169,4 +169,4 @@ function rhythmOf(rows) {
     rhoLevel: spearman(rows.map((r) => r.len), rows.map((r) => r.relDb)), rows };
 }
 
-module.exports = { energyModel, energyLabel, rhythmStats, rhythmOf, shotRows, spearman, WIN_SEC };
+module.exports = { energyModel, energyLabel, rhythmStats, rhythmOf, spearman };

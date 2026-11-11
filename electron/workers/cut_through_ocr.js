@@ -9,7 +9,6 @@
 const path_ = (pkg, ...rest) => require('path').join(require('path').dirname(require.resolve(pkg)), ...rest);
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-const MIN_CONFIDENCE = 75;
 const CODE_RE = /^[A-Z0-9]{1,6}$/;
 
 const INIT_MS = 60000;
@@ -65,14 +64,13 @@ function worker() {
   return workerP;
 }
 
-/** A prepared image (dark text on light, PNG) → { code | null, confidence, ok }. */
+/** A prepared image (dark text on light, PNG) → { code | null, confidence }; trusted() decides. */
 async function readCode(png) {
   const w = await worker();
   const { data } = await guarded(w.recognize(png), READ_MS, 'read');
   const code = String(data.text || '').replace(/\s+/g, '').toUpperCase();
   const confidence = Math.round(data.confidence || 0);
-  const ok = CODE_RE.test(code) && confidence >= MIN_CONFIDENCE;
-  return { code: code || null, confidence, ok };
+  return { code: code || null, confidence };
 }
 
 // characters tesseract mixes up on the slate's font, each mapped to one stand-in
@@ -110,4 +108,4 @@ async function close() {
   if (p) { try { await (await p).terminate(); } catch (_) { /* already gone */ } }
 }
 
-module.exports = { readCode, trusted, looksLikeCode, shape, close, MIN_CONFIDENCE, CODE_RE };
+module.exports = { readCode, trusted, looksLikeCode, close };

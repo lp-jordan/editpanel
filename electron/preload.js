@@ -232,7 +232,6 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   refreshBatch: () => ipcRenderer.invoke('cut-through:batch-refresh'),
   cancelBatch: () => ipcRenderer.invoke('cut-through:batch-cancel'),
   collectBatch: () => ipcRenderer.invoke('cut-through:batch-collect'),
-  showInFolder: (p) => ipcRenderer.invoke('cut-through:open-path', p),
   openFile: (p) => ipcRenderer.invoke('cut-through:open-file', p),
   onUpdate(callback) {
     const handler = (_event, data) => callback(data);
