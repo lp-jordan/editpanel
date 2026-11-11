@@ -150,7 +150,14 @@ fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
     { mc: 'mc', angle: 'Camera 1', start: 0, end: 141, src_in: 0, src_out: 141 },
     { mc: 'mc', angle: 'Camera 1', start: 141, end: 300, src_in: 141, src_out: 300 } ] };
   assert.ok(checkTimeline({ timeline: tl3, words, multicam: 'mc' }).markers.some((m) => m.name.includes('Repeated word') && m.color === 'Purple' && /"The the"/.test(m.note)));
-  console.log('✓ check: word cut off, cue kept, sound with no words, flash shot, pauses, mid-sentence join, repeats, one marker per frame');
+  // silence at the head: Check's fix trims to where the planner aims — the delivery's head
+  // (scripted: 6 fr before the first word), else 3 air + 8 fade = 11 fr
+  const quiet = { fps: 24, aligned: true, words: [W('Hello', 100, 120), W('there.', 122, 150)] };
+  const tlq = { name: 'Q', fps: 24, start_frame: 0, start_tc: '01:00:00:00', pieces: [{ mc: 'mc', angle: 'Camera 1', start: 0, end: 160, src_in: 0, src_out: 160 }] };
+  const headTrim = (pauses) => checkTimeline({ timeline: tlq, words: quiet, multicam: 'mc', pauses }).fixes.trims.find(([a]) => a === 0);
+  assert.deepStrictEqual(headTrim({ max: 20, left: 12, head: 6, tail: 24 }), [0, 94]);
+  assert.deepStrictEqual(headTrim(null), [0, 89]);
+  console.log('✓ check: word cut off, cue kept, sound with no words, flash shot, pauses, mid-sentence join, repeats, one marker per frame, head/tail trims follow the delivery');
 }
 
 // ── energy hints + energy check (on trial) ─────────────────────
@@ -1653,11 +1660,31 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   const long = (await c3.runPlan({})).steps.plan;
   assert.ok(long.status === 'failed' && /billed \$2\.96/.test(long.error), long.error);
   assert.ok(/solo_plan_failed,claude-opus-5-5,high,100000,128000,0,0,2\.96,/.test(fs.readFileSync(path.join(FILES, 'cut_through_costs.csv'), 'utf8')));
+  // Cancel stops a Claude call in flight: the step shows Canceled (not Failed) and what was billed so far is logged
+  fakeClaude.beta.messages.stream = (params, opts) => {
+    const handlers = {};
+    return {
+      on: (ev, fn) => { handlers[ev] = fn; },
+      finalMessage: () => new Promise((_, reject) => {
+        setTimeout(() => handlers.streamEvent && handlers.streamEvent({ type: 'message_start', message: { usage: { input_tokens: 50000, output_tokens: 1 } } }), 5);
+        opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('Request was aborted.'), { name: 'APIUserAbortError' })));
+      })
+    };
+  };
+  const planning = c3.runPlan({});
+  for (let k = 0; k < 400 && !c3.snapshot().cancelable; k += 1) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(c3.snapshot().cancelable, 'Cancel never turned on during the Claude call');
+  await new Promise((r) => setTimeout(r, 20));
+  c3.cancel();
+  const stopped = (await planning).steps.plan;
+  assert.strictEqual(stopped.status, 'canceled', `${stopped.status}: ${stopped.error}`);
+  assert.ok(!c3.snapshot().cancelable && !c3.snapshot().busy);
+  assert.ok(/solo_plan_canceled,claude-opus-5-5,high,50000,1,/.test(fs.readFileSync(path.join(FILES, 'cut_through_costs.csv'), 'utf8')), 'canceled call not logged');
   // key setting: saved on this machine, shown masked
   c3.updateSettings({ anthropicKey: 'sk-ant-test-1234' });
   assert.strictEqual(c3.snapshot().settings.claudeKey, 'saved …1234');
   assert.ok(!JSON.stringify(c3.snapshot()).includes('sk-ant-test'), 'key leaked to the renderer');
-  console.log('✓ Claude solo editor: request shape, removals + shots → plan (last takes kept, unheard mutter cut, Claude\'s angles), cuts placed from the waveform (levels-only pass), stage delivery, cost logged, refusal reported, key never sent to the page');
+  console.log('✓ Claude solo editor: request shape, removals + shots → plan (last takes kept, unheard mutter cut, Claude\'s angles), cuts placed from the waveform (levels-only pass), stage delivery, cost logged, refusal reported, Cancel stops a Claude call, key never sent to the page');
 
   await videosEndToEnd({ w, getPrefs: () => prefs, setPrefs: (patch) => { prefs = { ...prefs, ...patch }; } });
 

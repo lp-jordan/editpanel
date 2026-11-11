@@ -22,8 +22,10 @@
 const { lowerBound, endsSentence, quote, tcPlus, picturePieces, segsOf } = require('./cut_through_util');
 
 const TAG = 'cut-through-check';
-const HEAD = 18;                       // frames kept before the first / after the last word (place_cuts.py)
-const TAIL = 24;
+// Head and tail kept around the first / last word: the planner's own rule (place_cuts.py), so
+// Check's fix lands where the planner aims — the delivery's head/tail (scripted: 6 before the
+// first word, 24 after the last sound), else 3 frames of air + the 8-frame fade on each side.
+const EDGE_AIR = 3 + 8;
 const BEAT = 6;                        // extra air after a finished thought (place_cuts.py)
 const FILLERS = new Set(['um', 'uh', 'uhm', 'umm', 'ah', 'er', 'erm', 'hmm', 'mm', 'mhm']);
 const CUES = [
@@ -78,6 +80,8 @@ function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = n
 
   const pauseMax = Math.max(Math.round((kind === 'convo' ? 2.0 : 1.0) * fps), (pauses && pauses.max) || 0);
   const left = (pauses && pauses.left) || 11;              // air left across a trimmed pause / join
+  const HEAD = pauses && Number.isFinite(pauses.head) ? pauses.head : EDGE_AIR;
+  const TAIL = (pauses && Number.isFinite(pauses.tail) ? pauses.tail : EDGE_AIR) + 1;
   const airBefore = pauses && Number.isFinite(pauses.before) ? pauses.before : left - Math.floor(left / 2);
   const airAfter = left - airBefore;
   const edgeMax = Math.round(1.5 * fps);

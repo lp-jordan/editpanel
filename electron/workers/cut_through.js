@@ -229,6 +229,29 @@ function createCutThrough(opts) {
   };
   let child = null;                 // transcribe / plan child process
   let canceled = false;
+  let claudeAbort = null;           // the Claude call in flight (Plan, Ask Claude): Cancel aborts it
+  /** A fresh abort signal for the next Claude call. */
+  function claudeSignal() {
+    claudeAbort = new AbortController();
+    emit();                                         // the page's Cancel turns on
+    return claudeAbort.signal;
+  }
+
+  // The page state (snapshot) is rebuilt up to ~8×/s while a step runs, and much of it is file
+  // checks — on the NAS, on the main process. They're kept for a few seconds and forgotten whenever
+  // this engine writes or a step ends, so the page stays current without hammering the disk.
+  const diskMemo = new Map();
+  function memo(key, ttlMs, fn) {
+    const hit = diskMemo.get(key);
+    const now = Date.now();
+    if (hit && now - hit.at < ttlMs) return hit.v;
+    const v = fn();
+    diskMemo.set(key, { at: now, v });
+    return v;
+  }
+  function forgetDisk() { diskMemo.clear(); }
+  const existsQuick = (p) => memo(`e:${p}`, 5000, () => fs.existsSync(p));
+  const packQuick = () => memo('pack', 5000, () => getPack());
 
   function settings() {
     const p = (getPrefs() || {}).cutThrough || {};
@@ -236,16 +259,16 @@ function createCutThrough(opts) {
     const bundled = defaultPipelineDir({ isPackaged, appDir, resourcesDir });
     const saved = pipelineDirFrom(p.pipelineDir || p.spikesDir, '');
     // a saved folder (e.g. LP1's git checkout) only while it really holds the scripts
-    const pipelineDir = saved && fs.existsSync(path.join(saved, 'prepare_multicam.py')) ? saved : bundled;
-    const pack = getPack();
+    const pipelineDir = saved && existsQuick(path.join(saved, 'prepare_multicam.py')) ? saved : bundled;
+    const pack = packQuick();
     // a saved Python only while it exists; else the installed pack; else LP1's old venv
-    const wxPython = (p.wxPython && fs.existsSync(p.wxPython) ? p.wxPython : null) || (pack && pack.python)
+    const wxPython = (p.wxPython && existsQuick(p.wxPython) ? p.wxPython : null) || (pack && pack.python)
       || (process.platform === 'win32' ? DEFAULT_WX_PYTHON : 'python3');
     return {
       pipelineDir,
-      scriptsFound: fs.existsSync(path.join(pipelineDir, 'prepare_multicam.py')),
+      scriptsFound: existsQuick(path.join(pipelineDir, 'prepare_multicam.py')),
       wxPython,
-      wxPythonFound: process.platform !== 'win32' || fs.existsSync(wxPython),
+      wxPythonFound: process.platform !== 'win32' || existsQuick(wxPython),
       pack: pack ? { version: pack.version, python: pack.python } : null,
       packFolder: p.packFolder || packLib.DEFAULT_PACK_FOLDER,
       seqBin: p.seqBin === undefined ? DEFAULT_SEQ_BIN : p.seqBin,
@@ -314,6 +337,7 @@ function createCutThrough(opts) {
   function writeVideos(m) {
     fs.mkdirSync(files().dir, { recursive: true });
     fs.writeFileSync(files().videos, JSON.stringify(m, null, 1), 'utf8');
+    forgetDisk();
     s.videos = m;
     noteBatch(m && m.batch);
   }
@@ -387,7 +411,7 @@ function createCutThrough(opts) {
   function videosToBuild() {
     const m = s.videos;
     if (!m || !m.active) return [];
-    return (m.videos || []).filter((v) => v.include && v.plan && v.plan.status === 'planned' && fs.existsSync(videoFiles(v.id).plan));
+    return (m.videos || []).filter((v) => v.include && v.plan && v.plan.status === 'planned' && existsQuick(videoFiles(v.id).plan));
   }
 
   /** Jordan's plain-language direction for Claude, saved per label on this machine. */
@@ -440,7 +464,8 @@ function createCutThrough(opts) {
   /** The saved slate read for this label, when it's of the current slate angle. */
   function slateReads() {
     if (!s.label) return null;
-    const d = readJson(files().slate);
+    const file = files().slate;
+    const d = memo(`j:${file}`, 5000, () => readJson(file));
     return d && d.angle === slateAngle() && Array.isArray(d.reads) ? d : null;
   }
 
@@ -533,11 +558,13 @@ function createCutThrough(opts) {
       });
       s.setup.installing = { phase: 'Checking the models', bar: null, error: null };
       emit();
+      forgetDisk();
       const test = await packLib.selfTest(pack, path.join(st.pipelineDir, 'pack', 'selftest.py'));
       s.setup = { ...s.setup, installing: null, test };
     } catch (err) {
       s.setup = { ...s.setup, installing: { phase: null, bar: null, error: errMsg(err) } };
     }
+    forgetDisk();
     emit();
     await checkSetup().catch(() => {});
     return snapshot();
@@ -559,16 +586,16 @@ function createCutThrough(opts) {
       slateAngle: slateAngle(), slateInfo: slateInfo(), estimate: costEstimate(),
       videosReady: videosToBuild().length,
       // Cancel can stop it: a child process (Transcribe, the placer, ffmpeg) or the slate read; not a Claude call or a Resolve step
-      cancelable: Boolean(child) || Boolean(s.slateRead) };
+      cancelable: Boolean(child) || Boolean(s.slateRead) || Boolean(claudeAbort) };
   }
 
   // ---- Cost + time estimate (1.2.144): learned from this folder's cost log and transcribe reports.
-  // Re-read at most every 30 s (snapshot runs many times a second while a step logs).
+  // Re-read at most every 10 min (it scans the run folder tree on the NAS), and after any step ends.
   let ratesMemo = null;
   function learnedRates() {
     const st0 = settings();
     const key = `${st0.filesDir}|${st0.claudeEffort}|${process.platform === 'win32' ? (s.setup.gpus || []).length : 0}`;
-    if (ratesMemo && ratesMemo.key === key && Date.now() - ratesMemo.at < 30 * 1000) return ratesMemo;
+    if (ratesMemo && ratesMemo.key === key && Date.now() - ratesMemo.at < 10 * 60 * 1000) return ratesMemo;
     let rows = [];
     try { rows = estimateLib.parseCsv(fs.readFileSync(path.join(st0.filesDir, 'cut_through_costs.csv'), 'utf8')); } catch (_) { /* no runs yet */ }
     const lookup = ratesMemo && ratesMemo.dir === st0.filesDir ? ratesMemo.lookup : estimateLib.makeLookup(st0.filesDir);
@@ -649,6 +676,7 @@ function createCutThrough(opts) {
     st.progress = st.status === 'done' && st.progress ? { ...st.progress, pct: 100, overall: 100 } : st.progress;
     s.busy = null;
     child = null;
+    if (ratesMemo) ratesMemo.at = 0;                 // a run just ended: learn the rates again
     refreshFiles();
     applyPendingProject();
     emit();
@@ -689,6 +717,7 @@ function createCutThrough(opts) {
 
   /** Re-read what's on disk for the label: day file, plan file. */
   function refreshFiles() {
+    forgetDisk();
     if (!s.label) { s.day = null; s.planKind = null; s.planExists = false; return; }
     const f = files();
     s.day = readJson(f.day);
@@ -1278,6 +1307,7 @@ function createCutThrough(opts) {
   function cancel() {
     if (s.setup.installing && s.setup.installing.phase) { canceled = true; return snapshot(); }
     if (s.slateRead) canceled = true;                 // the slate read checks this between frames (OCR has no child)
+    if (claudeAbort) { canceled = true; claudeAbort.abort(); }
     if (!child) return snapshot();
     canceled = true;
     killTree(child);
@@ -1437,6 +1467,7 @@ function createCutThrough(opts) {
           other: o.roles.other, skip: o.skip },
         direction: direction(),
         client: claudeClient,
+        signal: claudeSignal(),
         log: (line) => { pushLog('plan', line); emit(); },
         onEvent: (ev) => {
           if (ev.type === 'writing' && !String(st.progress.phase).startsWith('Claude is writing')) {
@@ -1450,8 +1481,10 @@ function createCutThrough(opts) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : errMsg(err);   // SDK errors carry status + message
       pushLog('plan', `✗ ${msg}`);
-      finish('plan', { error: `Claude: ${msg}`, report: st.log.slice(), reportFile: saveLog('plan') });
+      finish('plan', { error: canceled ? null : `Claude: ${msg}`, report: st.log.slice(), reportFile: saveLog('plan') });
       return snapshot();
+    } finally {
+      claudeAbort = null;
     }
     st.progress = { phase: 'Placing the cuts on the waveform', phaseAt: Date.now(), bar: null };
     emit();
@@ -1666,7 +1699,7 @@ function createCutThrough(opts) {
     try {
       const r = await slateLib.readSlate({ ffmpeg: ffmpegPath || 'ffmpeg', clips, frameSec: s.day.frame_sec[0] / s.day.frame_sec[1],
         // free unless confirmed: OCR only (frames it can't vouch for are counted for the confirm step)
-        client: useClaude ? claudeApi() : null, model, knownCodes: known,
+        client: useClaude ? claudeApi() : null, model, knownCodes: known, signal: useClaude ? claudeSignal() : null,
         onProgress: (p) => { s.slateRead = { ...s.slateRead, ...p }; emit(); },
         onProc: (p) => { child = p; }, isCanceled: () => canceled });
       const cost = claude.costOf(r.model, r.usage);
@@ -1677,6 +1710,7 @@ function createCutThrough(opts) {
       const estimate = r.boxMissing ? null : n ? claude.costOf(model, { input_tokens: 650 * n + 500 * Math.ceil(n / 8), output_tokens: 20 * n }) : 0;
       fs.writeFileSync(f.slate, JSON.stringify({ angle, madeAt: Date.now(), model: r.model, cost, seconds: r.seconds, report: r.report,
         byOcr: r.byOcr, byClaude: r.byClaude, needsClaude: n, boxMissing: !!r.boxMissing, estimate, reads: r.reads }, null, 1), 'utf8');
+      forgetDisk();
       pushLog('plan', `Slate read: ${r.report}`);
       readOk = true;
     } catch (err) {
@@ -1686,6 +1720,7 @@ function createCutThrough(opts) {
       s.busy = null;
       s.slateRead = null;
       child = null;
+      claudeAbort = null;
       if (!readOk) applyPendingProject();           // failed / canceled: no Find videos follows
       emit();
     }
@@ -1831,7 +1866,7 @@ function createCutThrough(opts) {
       let summary = null;
       let cost = null;
       try {
-        const out = await claude.planWithClaude({ ...args, apiKey: claudeKey(), client: claudeClient,
+        const out = await claude.planWithClaude({ ...args, apiKey: claudeKey(), client: claudeClient, signal: claudeSignal(),
           log: (line) => { pushLog('plan', line); emit(); },
           onEvent: (ev) => {
             if (ev.type === 'writing' && !String(st.progress.phase).endsWith('writing the edit')) {
@@ -1846,6 +1881,12 @@ function createCutThrough(opts) {
         ({ error, summary } = await placeVideo(v, args, out.removalsFile, R));
       } catch (err) {
         error = `Claude: ${err instanceof Error ? err.message : errMsg(err)}`;
+      } finally {
+        claudeAbort = null;
+      }
+      if (canceled) {                                  // stop here; this video keeps the plan it had
+        pushLog('plan', `Canceled at ${v.name}`);
+        break;
       }
       if (error) pushLog('plan', `✗ ${v.name}: ${error}`);
       setVideoPlan(v.id, error ? { status: 'failed', error, via: 'now' } : { status: 'planned', via: 'now', cost, summary });
@@ -1853,7 +1894,7 @@ function createCutThrough(opts) {
     }
     const failed = results.filter((r) => r.error);
     pushLog('plan', `Planned ${results.length - failed.length} of ${results.length} video(s)${failed.length ? `; failed: ${failed.map((r) => r.v.name).join(', ')}` : ''}`);
-    finish('plan', { error: failed.length === results.length ? `No video was planned (${failed[0].error})` : null,
+    finish('plan', { error: !canceled && failed.length === results.length ? `No video was planned (${failed[0] ? failed[0].error : 'nothing ran'})` : null,
       report: st.log.slice(), reportFile: saveLog('plan'), data: videosSummary() });
     return snapshot();
   }

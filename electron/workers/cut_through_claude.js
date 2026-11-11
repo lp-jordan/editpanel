@@ -312,18 +312,34 @@ function readMessage(msg, model) {
  * Ask Claude for the edit (removals + shots). Streams (long input, adaptive thinking) and
  * returns the final message parsed against buildSchema(angles).
  */
-async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', system, transcript, meta, angles = ['Camera 1', 'Camera 2'], client = null, onEvent = () => {} }) {
+async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', system, transcript, meta, angles = ['Camera 1', 'Camera 2'], client = null, onEvent = () => {},
+  signal = null }) {
   const anthropic = client || makeClient(apiKey);
   const params = requestParams({ model, effort, system, transcript, meta, angles });
+  const opts = signal ? { signal } : undefined;      // Cancel aborts the call in flight
   const run = async (withFallback) => {
     const stream = withFallback
       // Refusal fallback: if a safety classifier declines, the API re-runs on a
       // fallback model inside the same call (no model list to maintain).
-      ? anthropic.beta.messages.stream({ ...params, ...REFUSAL_FALLBACK })
-      : anthropic.messages.stream(params);
+      ? anthropic.beta.messages.stream({ ...params, ...REFUSAL_FALLBACK }, opts)
+      : anthropic.messages.stream(params, opts);
     let chars = 0;
+    let usage = null;                                // what's been billed so far, for a canceled call
     stream.on('text', (delta) => { chars += delta.length; onEvent({ type: 'writing', chars }); });
-    return stream.finalMessage();
+    if (typeof stream.on === 'function') {
+      stream.on('streamEvent', (ev) => {
+        if (ev && ev.type === 'message_start' && ev.message) usage = { ...(ev.message.usage || {}) };
+        else if (ev && ev.type === 'message_delta' && ev.usage && usage) usage = { ...usage, ...ev.usage };
+      });
+    }
+    try {
+      return await stream.finalMessage();
+    } catch (err) {
+      if (signal && signal.aborted) {
+        throw Object.assign(new Error('Canceled'), { canceled: true, ...(usage ? { usage, model } : {}) });
+      }
+      throw err;
+    }
   };
   // the fallback option is a beta: if this account/API rejects it, ask once without it
   const msg = await withRefusalFallback(run);
@@ -434,11 +450,11 @@ async function planWithClaude(o) {
   let res;
   try {
     res = await askClaude({ apiKey, model: ctx.model, effort: ctx.effort, system: ctx.system, transcript: ctx.transcript, meta: ctx.meta,
-      angles: ctx.angles, client, onEvent });
+      angles: ctx.angles, client, onEvent, signal: o.signal || null });
   } catch (err) {
     if (err.usage) {
       const m = err.model || ctx.model;
-      logCost({ costsDir, outDir, label: ctx.label, step: 'solo_plan_failed', model: m, effort: ctx.effort, usage: err.usage, seconds: (Date.now() - t0) / 1000,
+      logCost({ costsDir, outDir, label: ctx.label, step: err.canceled ? 'solo_plan_canceled' : 'solo_plan_failed', model: m, effort: ctx.effort, usage: err.usage, seconds: (Date.now() - t0) / 1000,
         minutes: o.minutes || ctx.minutes, kind: o.kind });
       err.message += ` (billed $${costOf(m, err.usage)})`;
     }

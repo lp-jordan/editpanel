@@ -142,10 +142,11 @@ function looksOf(thumbs, { change = null, persist = PERSIST } = {}) {
   return looks;
 }
 
-async function ask(client, params) {
+async function ask(client, params, signal) {
+  const opts = signal ? { signal } : undefined;     // Cancel aborts a call that's in flight
   const msg = await withRefusalFallback((withFallback) => (withFallback
-    ? client.beta.messages.create({ ...params, ...REFUSAL_FALLBACK })
-    : client.messages.create(params)));
+    ? client.beta.messages.create({ ...params, ...REFUSAL_FALLBACK }, opts)
+    : client.messages.create(params, opts)));
   if (msg.stop_reason === 'refusal') throw Object.assign(new Error('Claude declined to read the slate frames'), { usage: msg.usage });
   const text = (msg.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
   try {
@@ -193,7 +194,7 @@ function hint(knownCodes) {
 }
 
 /** Where the code box is, on one whole frame → { box (padded, 0–1) | null, code }. */
-async function locateBox({ client, model, jpeg, knownCodes }) {
+async function locateBox({ client, model, jpeg, knownCodes, signal }) {
   const r = await ask(client, {
     model,
     max_tokens: 2000,
@@ -204,7 +205,7 @@ async function locateBox({ client, model, jpeg, knownCodes }) {
       { type: 'text', text: 'Find the code box. Return found, the code shown, and the box around the code text as x, y, w, h ' +
         'fractions of the image width and height (x, y = top-left corner). found = false when there is no slate code on screen.' }
     ] }]
-  });
+  }, signal);
   const p = r.parsed || {};
   if (!p.found || !(p.w > 0) || !(p.h > 0)) return { box: null, code: null, usage: r.usage, model: r.model };
   const x0 = Math.max(0, p.x - p.w * PAD);
@@ -215,7 +216,7 @@ async function locateBox({ client, model, jpeg, knownCodes }) {
 }
 
 /** One request: box crops [{ jpeg }] → [{ code, sure }] in the same order. */
-async function readBatch({ client, model, frames, knownCodes }) {
+async function readBatch({ client, model, frames, knownCodes, signal }) {
   const content = [];
   frames.forEach((f, i) => {
     content.push({ type: 'text', text: `Image ${i + 1}:` });
@@ -229,7 +230,7 @@ async function readBatch({ client, model, frames, knownCodes }) {
     output_config: { effort: 'low', format: { type: 'json_schema', schema: READ_SCHEMA } },
     system: ABOUT + hint(knownCodes),
     messages: [{ role: 'user', content }]
-  });
+  }, signal);
   const by = new Map(((r.parsed && r.parsed.reads) || []).map((x) => [x.image, x]));
   return {
     reads: frames.map((_, i) => {
@@ -265,8 +266,17 @@ function segmentsOf(samples, clip) {
  * clips: [{ path, file_zero_sec, from_sec, to_sec }] of the slate angle (multicam seconds).
  * Returns { reads: [{ from, to, code, sure }] (multicam frames), box, frames, usage, model, seconds, report }.
  */
-async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = [], onProgress = () => {}, onProc = () => {}, isCanceled = () => false,
-  grab = grabFrame, grabOcr = grabForOcr, ocrRead = ocr.readCode }) {
+async function readSlate(opts) {
+  try {
+    return await readSlateRun(opts);
+  } catch (err) {
+    await ocr.close();                               // canceled or failed: don't leave the OCR worker running
+    throw err;
+  }
+}
+
+async function readSlateRun({ ffmpeg, clips, frameSec, client, model, knownCodes = [], onProgress = () => {}, onProc = () => {}, isCanceled = () => false,
+  signal = null, grab = grabFrame, grabOcr = grabForOcr, ocrRead = ocr.readCode }) {
   const t0 = Date.now();
   let usage = {};
   let usedModel = model;
@@ -301,7 +311,7 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
   if (probes.length && !box && client) {
     const frames = [];
     for (const { c, t } of probes) frames.push({ jpeg: await grab(ffmpeg, c.path, fileSec(c, t), SLATE_BOX, onProc) });
-    const r = await readBatch({ client, model, frames, knownCodes });
+    const r = await readBatch({ client, model, frames, knownCodes, signal });
     usage = addUsage(usage, r.usage);
     usedModel = r.model;
     asked += frames.length;
@@ -310,7 +320,7 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
   for (const c of box || !client ? [] : clips.slice(0, 4)) {
     check();
     const t = c.from_sec + Math.min(10, (c.to_sec - c.from_sec) / 2);
-    const found = await locateBox({ client, model, jpeg: await grab(ffmpeg, c.path, fileSec(c, t), null, onProc), knownCodes });
+    const found = await locateBox({ client, model, jpeg: await grab(ffmpeg, c.path, fileSec(c, t), null, onProc), knownCodes, signal });
     usage = addUsage(usage, found.usage);
     usedModel = found.model;
     asked += 1;
@@ -367,7 +377,7 @@ async function readSlate({ ffmpeg, clips, frameSec, client, model, knownCodes = 
       const group = todo.slice(i, i + PER_REQUEST);
       const frames = [];
       for (const { pc, s } of group) frames.push({ jpeg: await grab(ffmpeg, pc.clip.path, fileSec(pc.clip, s.t), box, onProc) });
-      const r = await readBatch({ client, model, frames, knownCodes });
+      const r = await readBatch({ client, model, frames, knownCodes, signal });
       usage = addUsage(usage, r.usage);
       usedModel = r.model;
       asked += frames.length;
