@@ -2733,6 +2733,17 @@ button.status-bar-chip-btn:disabled {
   color: var(--muted-soft);
 }
 
+.atem-session-controls-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.atem-session-controls-right .ct-seg-btn {
+  padding: 3px 10px;
+  font-size: 0.78rem;
+}
+
 .atem-session-list {
   display: flex;
   flex-direction: column;
@@ -5297,3 +5308,8 @@ button.status-bar-chip-btn:disabled {
 .ct-rule-cell.blocked { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
 .ct-rule-cell.self { background: transparent; border-style: dashed; cursor: default; }
 .ct-rules-checks { display: flex; flex-direction: column; gap: 6px; font-size: 0.84rem; }
+
+.atem-progress-pct {
+  color: var(--text-strong);
+  font-weight: 600;
+}

@@ -14,6 +14,39 @@
  */
 const IMPORT_DEFAULT_BIN = 'FOOTAGE / ATEM';
 const DEFAULT_EXCLUDED_CAMS = [5, 7, 8];
+const SORT_KEY = 'atemIngest.sort';
+
+function readAtemSort() {
+  try { return localStorage.getItem(SORT_KEY) === 'name' ? 'name' : 'date'; } catch (_) { return 'date'; }
+}
+
+/** Date: newest first (undated last). Name: A–Z, numbers in order. */
+function sortAtemSessions(list, by) {
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  return [...list].sort((a, b) => {
+    if (by === 'name') return byName(a, b);
+    const ta = a.modifiedMs ?? -Infinity;
+    const tb = b.modifiedMs ?? -Infinity;
+    return tb !== ta ? tb - ta : byName(a, b);
+  });
+}
+
+function atemSessionDate(ms) {
+  if (ms == null) return '';
+  const d = new Date(ms);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) }) +
+    ' ' + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+/** "about 12 min left", "about 1 h 5 min left", "less than a minute left". */
+function atemTimeLeft(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return '';
+  if (sec < 60) return 'less than a minute left';
+  const mins = Math.round(sec / 60);
+  if (mins < 60) return `about ${mins} min left`;
+  return `about ${Math.floor(mins / 60)} h ${mins % 60} min left`;
+}
 
 function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveProject, onLog }) {
   const DEFAULT_HOST = atemHost || '172.20.10.241';
@@ -28,6 +61,12 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   const [browseError, setBrowseError] = React.useState(null);
   const [selected, setSelected] = React.useState(new Set());
   const [ingestLogs, setIngestLogs] = React.useState([]); // prior ingest log records
+  const [sortBy, setSortByState] = React.useState(readAtemSort); // 'date' | 'name'
+
+  function setSortBy(by) {
+    setSortByState(by);
+    try { localStorage.setItem(SORT_KEY, by); } catch (_) { /* not remembered */ }
+  }
 
   // ── Configure state ────────────────────────────────────
   const [destination, setDestination] = React.useState('');
@@ -56,6 +95,13 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   const [canceling, setCanceling]   = React.useState(false);
   const [filesDone, setFilesDone]   = React.useState(0);
   const [filesTotal, setFilesTotal] = React.useState(0);
+  // Bytes, for the % and time left: finished files' sizes (copied, already there or failed)
+  // plus the file in flight, against the whole run. The rate counts only bytes actually
+  // copied, from the first byte on, so already-copied files don't make it look fast.
+  const [bytesTotal, setBytesTotal]       = React.useState(0);
+  const [bytesFinished, setBytesFinished] = React.useState(0);
+  const fileSizesRef = React.useRef({});                    // "session/file" → size
+  const rateRef = React.useRef({ startedAt: null, copied: 0 });
 
   // Reset when overlay opens
   React.useEffect(() => {
@@ -74,6 +120,8 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     setCanceling(false);
     setFilesDone(0);
     setFilesTotal(0);
+    setBytesTotal(0);
+    setBytesFinished(0);
     setHost(DEFAULT_HOST);
     doneFilesRef.current = [];
     setImportState('idle');
@@ -258,6 +306,10 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
     ));
     setFilesTotal(total);
     setFilesDone(0);
+    fileSizesRef.current = Object.fromEntries(ingestSessions.flatMap(s => s.files.map(f => [`${s.name}/${f.name}`, f.size || 0])));
+    rateRef.current = { startedAt: null, copied: 0 };
+    setBytesTotal(selectedBytes);
+    setBytesFinished(0);
     setIngestDone(false);
     setIngestError(null);
     setIngestCanceled(false);
@@ -293,9 +345,14 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
           : item
       ));
     } else if (event.type === 'file-bytes') {
+      const r = rateRef.current;
+      if (r.startedAt == null && event.bytes > 0) r.startedAt = Date.now();
+      if (Number.isFinite(event.bytesTotal)) r.copied = event.bytesTotal;
       setCurrentProgress(prev => prev ? { ...prev, bytes: event.bytes } : prev);
     } else if (event.type === 'file-done' || event.type === 'file-skipped') {
       setFilesDone(prev => prev + 1);
+      setBytesFinished(prev => prev + (fileSizesRef.current[`${event.session}/${event.file}`] || 0));
+      setCurrentProgress(prev => prev && prev.file === event.file ? { ...prev, finished: true } : prev);
       // Record the on-disk path + camera so the post-ingest import can pull it
       // into Resolve. Both done and skipped (already-on-disk) carry destPath.
       if (event.destPath) {
@@ -314,6 +371,8 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
       // filesDone counts files *processed* (drives the progress line); the
       // done screen counts only done + skipped as ingested.
       setFilesDone(prev => prev + 1);
+      setBytesFinished(prev => prev + (fileSizesRef.current[`${event.session}/${event.file}`] || 0));
+      setCurrentProgress(prev => prev && prev.file === event.file ? { ...prev, finished: true } : prev);
       onLog?.(`[ATEM] ${event.file} failed: ${event.error || 'unknown error'}`);
       setProgressItems(prev => prev.map(item =>
         item.session === event.session && item.file === event.file
@@ -436,11 +495,19 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
               <button className="atem-select-all-btn" onClick={toggleAll}>
                 {selected.size === sessions.length ? 'Deselect all' : 'Select all'}
               </button>
-              <span className="atem-session-count">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</span>
+              <div className="atem-session-controls-right">
+                <div className="ct-seg" role="radiogroup" aria-label="Sort sessions">
+                  {[['date', 'Date'], ['name', 'Name']].map(([k, t]) => (
+                    <button key={k} type="button" role="radio" aria-checked={sortBy === k}
+                      className={`ct-seg-btn${sortBy === k ? ' is-on' : ''}`} onClick={() => setSortBy(k)}>{t}</button>
+                  ))}
+                </div>
+                <span className="atem-session-count">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</span>
+              </div>
             </div>
 
             <div className="atem-session-list">
-              {sessions.map(session => {
+              {sortAtemSessions(sessions, sortBy).map(session => {
                 const ingested = sessionWasIngested(session.name);
                 const isSelected = selected.has(session.name);
                 return (
@@ -460,6 +527,7 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
                         {session.fileCount} file{session.fileCount !== 1 ? 's' : ''}
                         {' · '}
                         {formatBytes(session.totalBytes)}
+                        {session.modifiedMs != null && <>{' · '}{atemSessionDate(session.modifiedMs)}</>}
                       </span>
                     </div>
                     {ingested && <span className="tag success">Ingested</span>}
@@ -640,18 +708,33 @@ function AtemIngestOverlay({ open, onClose, atemHost, resolveConnected, resolveP
   }
 
   function renderProgress() {
-    // One bar: whole files processed plus the fraction of the file in flight.
-    const inFlight = !ingestDone && currentProgress?.size > 0
-      ? Math.min(1, currentProgress.bytes / currentProgress.size)
+    // One bar by bytes: finished files plus the part of the file in flight. Falls back to
+    // file counts when the drive reported no sizes.
+    const inFlightBytes = !ingestDone && currentProgress && !currentProgress.finished
+      ? Math.min(currentProgress.bytes || 0, currentProgress.size || 0)
       : 0;
-    const pct = filesTotal > 0
-      ? Math.min(100, Math.round(((filesDone + inFlight) / filesTotal) * 100))
-      : 0;
+    const doneBytes = Math.min(bytesTotal, bytesFinished + inFlightBytes);
+    let pct = 0;
+    if (bytesTotal > 0) pct = Math.min(100, Math.floor((doneBytes / bytesTotal) * 100));
+    else if (filesTotal > 0) {
+      const inFlight = currentProgress?.size > 0 && !currentProgress.finished ? Math.min(1, currentProgress.bytes / currentProgress.size) : 0;
+      pct = Math.min(100, Math.floor(((filesDone + inFlight) / filesTotal) * 100));
+    }
+    // Time left from the average copy rate so far; waits a few seconds so the first
+    // burst doesn't set it.
+    const r = rateRef.current;
+    const elapsedSec = r.startedAt ? (Date.now() - r.startedAt) / 1000 : 0;
+    const rate = elapsedSec >= 3 && r.copied > 0 ? r.copied / elapsedSec : 0;
+    const timeLeft = rate > 0 && bytesTotal > 0 ? atemTimeLeft((bytesTotal - doneBytes) / rate) : '';
 
     return (
       <div className="atem-progress-view">
         {ingestDone ? renderDoneSummary() : (
           <div className="run-progress">
+            <p className="run-progress-line">
+              <span className="atem-progress-pct">{pct}%</span>
+              <span>{timeLeft || 'Estimating time…'}</span>
+            </p>
             <p className="run-progress-line">
               <span>{filesDone} / {filesTotal} files</span>
               {currentProgress && (

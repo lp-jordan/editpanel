@@ -56,6 +56,42 @@ function parseCameraInfo(filename) {
   };
 }
 
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * When an FTP list entry was last changed, in ms, or null. Uses the parsed MLSD date when the
+ * server gives one; otherwise reads the LIST text: Unix "Nov 10 14:29" (no year: this year,
+ * or last year if that lands in the future) / "Nov 10 2025", or DOS "11-10-26 02:29PM".
+ * Local time, minute resolution: enough to sort sessions.
+ */
+function ftpDateMs(item, now = Date.now()) {
+  if (item && item.modifiedAt instanceof Date && !isNaN(item.modifiedAt)) return item.modifiedAt.getTime();
+  const raw = String((item && item.rawModifiedAt) || '').trim();
+  let m = raw.match(/^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{1,2}):(\d{2})$/);
+  if (m) {
+    const mon = MONTHS.indexOf(m[1].toLowerCase());
+    if (mon < 0) return null;
+    const year = new Date(now).getFullYear();
+    let t = new Date(year, mon, +m[2], +m[3], +m[4]).getTime();
+    if (t > now + 24 * 3600 * 1000) t = new Date(year - 1, mon, +m[2], +m[3], +m[4]).getTime();
+    return t;
+  }
+  m = raw.match(/^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})$/);
+  if (m) {
+    const mon = MONTHS.indexOf(m[1].toLowerCase());
+    return mon < 0 ? null : new Date(+m[3], mon, +m[2]).getTime();
+  }
+  m = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{2,4})\s+(\d{1,2}):(\d{2})\s*([AP]M)?$/i);
+  if (m) {
+    let year = +m[3];
+    if (year < 100) year += 2000;
+    let hour = +m[4];
+    if (m[6]) hour = (hour % 12) + (m[6].toUpperCase() === 'PM' ? 12 : 0);
+    return new Date(year, +m[1] - 1, +m[2], hour, +m[5]).getTime();
+  }
+  return null;
+}
+
 function camFolderName(camNumber) {
   return `CAM ${camNumber}`;
 }
@@ -144,6 +180,14 @@ async function listSessions(host, port = DEFAULT_PORT, onLog = null) {
         continue;
       }
 
+      // Session date = its newest video (when it was recorded); the folder's own date if the
+      // files have none.
+      const fileTimes = videoFiles
+        .filter(i => VIDEO_EXT_RE.test(i.name) && !APPLE_DOUBLE_RE.test(i.name))
+        .map(i => ftpDateMs(i))
+        .filter(t => t != null);
+      const modifiedMs = fileTimes.length ? Math.max(...fileTimes) : ftpDateMs(dir);
+
       kept++;
       sessions.push({
         name:           dir.name,
@@ -151,6 +195,7 @@ async function listSessions(host, port = DEFAULT_PORT, onLog = null) {
         ftpVideoPath:   videoPath,
         fileCount:      files.length,
         totalBytes,
+        modifiedMs,
         files
       });
     }
@@ -263,4 +308,4 @@ async function ingestSessions(host, port = DEFAULT_PORT, sessions, destination, 
   }
 }
 
-module.exports = { listSessions, ingestSessions, parseCameraInfo, camFolderName };
+module.exports = { listSessions, ingestSessions, parseCameraInfo, camFolderName, ftpDateMs };
