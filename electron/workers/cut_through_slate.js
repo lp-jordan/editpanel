@@ -26,6 +26,7 @@
 
 const { spawn } = require('child_process');
 const ocr = require('./cut_through_ocr');
+const { REFUSAL_FALLBACK, withRefusalFallback } = require('./cut_through_util');
 
 const SAMPLE_FPS = 1;
 const THUMB_W = 64;
@@ -142,14 +143,9 @@ function looksOf(thumbs, { change = null, persist = PERSIST } = {}) {
 }
 
 async function ask(client, params) {
-  let msg;
-  try {
-    // refusal fallback: a safety decline re-runs on a fallback model inside the same call
-    msg = await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
-  } catch (err) {
-    if (err && err.status === 400 && /fallback/i.test(err.message || '')) msg = await client.messages.create(params);
-    else throw err;
-  }
+  const msg = await withRefusalFallback((withFallback) => (withFallback
+    ? client.beta.messages.create({ ...params, ...REFUSAL_FALLBACK })
+    : client.messages.create(params)));
   if (msg.stop_reason === 'refusal') throw Object.assign(new Error('Claude declined to read the slate frames'), { usage: msg.usage });
   const text = (msg.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
   try {

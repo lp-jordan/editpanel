@@ -27,13 +27,7 @@ const FEW_WORDS = 25;
 const SPEAKER_SHARE = 0.15;         // a mic with this share of the words is a speaker in the video
 const SPEAKER_MIN_WORDS = 20;
 
-function frameSec(day) {
-  return Array.isArray(day.frame_sec) && day.frame_sec[1] ? day.frame_sec[0] / day.frame_sec[1] : 1 / (day.fps || 24);
-}
-
-function totalFrames(day) {
-  return day && day.length_sec ? Math.floor(day.length_sec / frameSec(day)) : 0;
-}
+const { frameSec, totalFrames, tcClock, frameToTc, median } = require('./cut_through_util');
 
 /** Prep's recordings in frames; a day prepped before recordings existed = one recording. */
 function recordingsOf(day) {
@@ -51,23 +45,14 @@ function slateSeconds(ts) {
 
 /** Multicam frame ↔ its timecode in seconds (the label time Resolve shows; TOD on an ATEM day). */
 function tcSecOfFrame(day, f) {
-  const fs_ = frameSec(day);
-  const nominal = Math.round(1 / fs_);
-  const first = Math.round((day.tc_start_sec || 0) / fs_);
+  const { nominal, first } = tcClock(day);
   return (first + f) / nominal;
 }
 
 function frameOfTcSec(day, sec) {
-  const fs_ = frameSec(day);
-  const nominal = Math.round(1 / fs_);
-  const first = Math.round((day.tc_start_sec || 0) / fs_);
+  const { nominal, first } = tcClock(day);
   return Math.round(sec * nominal) - first;
 }
-
-const median = (xs) => {
-  const v = [...xs].sort((a, b) => a - b);
-  return v.length ? (v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2) : null;
-};
 
 /**
  * The slate's clock vs the multicam's timecode. The LPOS server may run on another time zone and
@@ -208,14 +193,7 @@ function cleanName(s) {
   return String(s || '').replace(/[=:"\\/<>|?*\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
-function tcLabel(day, f) {
-  const fs_ = frameSec(day);
-  const nominal = Math.round(1 / fs_);
-  const n = Math.round((day.tc_start_sec || 0) / fs_) + Math.max(0, Math.round(f));
-  const pad = (x) => String(x).padStart(2, '0');
-  const secs = Math.floor(n / nominal);
-  return `${pad(Math.floor(secs / 3600) % 24)}:${pad(Math.floor(secs / 60) % 60)}:${pad(secs % 60)}:${pad(n % nominal)}`;
-}
+const tcLabel = (day, f) => frameToTc(f, day);
 
 /**
  * The videos of the day.

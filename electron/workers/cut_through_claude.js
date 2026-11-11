@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const AnthropicModule = require('@anthropic-ai/sdk');
 const { energyModel, energyLabel } = require('./cut_through_energy');
+const { angleNo, REFUSAL_FALLBACK, withRefusalFallback } = require('./cut_through_util');
 
 const Anthropic = AnthropicModule.default || AnthropicModule;
 
@@ -131,11 +132,6 @@ function buildTokens(wordsFile, { start = 0, end = Infinity, talker: only = null
   }
   toks.sort((a, b) => a.s - b.s);
   return { talker, people, multi, tokens: toks };
-}
-
-function angleNo(a) {
-  const m = /(\d+)\s*$/.exec(a || '');
-  return m ? Number(m[1]) : 999;
 }
 
 function clock(sec) {
@@ -323,20 +319,14 @@ async function askClaude({ apiKey, model = DEFAULT_MODEL, effort = 'high', syste
     const stream = withFallback
       // Refusal fallback: if a safety classifier declines, the API re-runs on a
       // fallback model inside the same call (no model list to maintain).
-      ? anthropic.beta.messages.stream({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' })
+      ? anthropic.beta.messages.stream({ ...params, ...REFUSAL_FALLBACK })
       : anthropic.messages.stream(params);
     let chars = 0;
     stream.on('text', (delta) => { chars += delta.length; onEvent({ type: 'writing', chars }); });
     return stream.finalMessage();
   };
-  let msg;
-  try {
-    msg = await run(true);
-  } catch (err) {
-    // the fallback option is a beta: if this account/API rejects it, ask once without it
-    if (err instanceof Anthropic.BadRequestError && /fallback/i.test(err.message || '')) msg = await run(false);
-    else throw err;
-  }
+  // the fallback option is a beta: if this account/API rejects it, ask once without it
+  const msg = await withRefusalFallback(run);
   // a failed answer is still billed: readMessage's error carries its usage so the cost gets logged
   return readMessage(msg, model);
 }

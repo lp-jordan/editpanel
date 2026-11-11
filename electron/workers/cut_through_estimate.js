@@ -15,6 +15,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { readJson } = require('./cut_through_util');
 
 const PLAN_STEPS = ['solo_plan', 'batch_plan'];
 const MIN_ROWS = 5;
@@ -142,7 +143,6 @@ function transcribeRate(reports, { gpu }) {
 function makeLookup(costsDir) {
   const cache = new Map();
   let runDirs = null;
-  const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } };
   function dirsFor(run) {
     if (!runDirs) {
       runDirs = new Map();

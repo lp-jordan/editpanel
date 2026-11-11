@@ -19,6 +19,8 @@
  *           Repeated word      "the the" left in (may be deliberate emphasis; Whisper's own doubles are already ignored)
  */
 
+const { lowerBound, endsSentence, quote, tcPlus, picturePieces, segsOf } = require('./cut_through_util');
+
 const TAG = 'cut-through-check';
 const HEAD = 18;                       // frames kept before the first / after the last word (place_cuts.py)
 const TAIL = 24;
@@ -34,34 +36,8 @@ const CUES = [
 
 const RANK = { Red: 3, Yellow: 2, Purple: 1 };           // one marker per frame: the higher priority colour shows
 const norm = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9']/g, '');
-const endsSentence = (w) => /[.?!…]["'”’)\]]*$/.test(String(w.w || '').trim());
 const startsLower = (w) => /^["'“‘(]*[a-z]/.test(String(w.w || '').trim());
 const isFiller = (w) => FILLERS.has(norm(w.w));
-
-/** "01:00:12:03" + frames (nominal rate, non-drop — what Resolve shows for 23.976). */
-function tcPlus(startTc, frames, fps) {
-  const nom = Math.round(fps) || 24;
-  const m = /^(\d+):(\d+):(\d+)[:;](\d+)$/.exec(String(startTc || ''));
-  const base = m ? ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * nom + +m[4] : 0;
-  const t = base + Math.max(0, Math.round(frames));
-  const ff = t % nom;
-  const s = Math.floor(t / nom);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}:${p(ff)}`;
-}
-
-/** Index of the first word with s >= x (words sorted by s). */
-function lowerBound(words, x) {
-  let lo = 0;
-  let hi = words.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (words[mid].s < x) lo = mid + 1; else hi = mid;
-  }
-  return lo;
-}
-
-const quote = (ws) => ws.map((w) => String(w.w).trim()).join(' ');
 
 /**
  * timeline: ct_read_timeline output ({name, fps, pieces [{mc, angle, start, end, src_in, src_out}],
@@ -80,23 +56,12 @@ const quote = (ws) => ws.map((w) => String(w.w).trim()).join(' ');
 function checkTimeline({ timeline, words: wordsFile, kind = 'solo', multicam = null, pauses = null, beats = [] }) {
   const fps = timeline.fps || wordsFile.fps || 24;
   const sec = (fr) => (fr / fps).toFixed(1);
-  let pieces = (timeline.pieces || []).filter((p) => p.src_out > p.src_in && p.end > p.start);
-  if (multicam && pieces.some((p) => p.mc === multicam)) pieces = pieces.filter((p) => p.mc === multicam);
-  pieces.sort((a, b) => a.start - b.start);
+  const pieces = picturePieces(timeline, multicam);
   const t0 = timeline.start_frame || (pieces.length ? Math.min(...pieces.map((p) => p.start)) : 0);
   if (!pieces.length) throw new Error(`No multicam pieces in ${timeline.name}`);
 
   // continuous stretches of source (an angle change is not a join)
-  const segs = [];
-  for (const p of pieces) {
-    const g = segs[segs.length - 1];
-    if (g && Math.abs(p.src_in - g.src_out) <= 1 && Math.abs(p.start - g.end) <= 1) {
-      g.src_out = p.src_out;
-      g.end = p.end;
-    } else {
-      segs.push({ src_in: p.src_in, src_out: p.src_out, start: p.start, end: p.end });
-    }
-  }
+  const segs = segsOf(pieces);
   const rec = (g, x) => g.start + (x - g.src_in) - t0;    // source frame → frame from the timeline's start
 
   const all = (wordsFile.words || []).filter((w) => w.own !== false && !w.ghost && Number.isFinite(w.s) && Number.isFinite(w.e))

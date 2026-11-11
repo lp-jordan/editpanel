@@ -43,8 +43,8 @@ const slateLib = require('./cut_through_slate');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 const compare = require('./cut_through_compare');
 const packLib = require('./transcription_pack');
+const { STEP_KEYS, readJson, angleNo: angleNumber, totalFrames: dayFrames, tcClock, frameToTc } = require('./cut_through_util');
 
-const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check', 'compare'];
 const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
 const DEFAULT_WX_PYTHON = 'C:\\wxbench\\Scripts\\python.exe';
 const MAX_LOG_LINES = 400;
@@ -92,30 +92,6 @@ function micAngles(day) {
 
 function planKind(day) {
   return micAngles(day).length >= 2 ? 'convo' : 'solo';
-}
-
-/** Day length in multicam frames (the unit place_cuts.py's start=/end= take). */
-function dayFrames(day) {
-  if (!day || !day.length_sec) return 0;
-  const fs_ = Array.isArray(day.frame_sec) && day.frame_sec[1] ? day.frame_sec[0] / day.frame_sec[1] : 1 / (day.fps || 24);
-  return Math.floor(day.length_sec / fs_);
-}
-
-/** Frames per timecode second (24 for 23.976) and the multicam's first frame on the TC clock. */
-function tcClock(day) {
-  const fsec = Array.isArray(day.frame_sec) && day.frame_sec[1] ? day.frame_sec[0] / day.frame_sec[1] : 1 / (day.fps || 24);
-  const nominal = Math.round(1 / fsec);
-  return { fsec, nominal, first: Math.round((day.tc_start_sec || 0) / fsec) };
-}
-
-/** Multicam frame → its timecode, as Resolve shows it on the multicam (HH:MM:SS:FF). */
-function frameToTc(frame, day) {
-  const { nominal, first } = tcClock(day);
-  const n = first + Math.max(0, Math.round(frame));
-  const pad = (x) => String(x).padStart(2, '0');
-  const ff = n % nominal;
-  const secs = Math.floor(n / nominal);
-  return `${pad(Math.floor(secs / 3600) % 24)}:${pad(Math.floor(secs / 60) % 60)}:${pad(secs % 60)}:${pad(ff)}`;
 }
 
 /**
@@ -169,7 +145,6 @@ function emptyStep() {
 // What each angle of the multicam is (Jordan 2026-11-06): Claude is told the role and the habits
 // measured from Jordan's edits for it; placement uses wide / close-up / inserts; `skip` is never used.
 const ANGLE_ROLES = ['wide', 'closeup', 'slider', 'side', 'other', 'skip'];
-const angleNumber = (a) => Number((/(\d+)\s*$/.exec(a) || [])[1] || 999);
 
 /** The usual LeaderPass setup: Camera 1 wide, 2 close-up, 3 side, 4 slider; Slate never. */
 function defaultAngleRoles(angles = []) {
@@ -193,10 +168,6 @@ function rolesOf(map = {}, angles = []) {
   const punch = by('closeup').find((a) => a !== wide) || null;
   return { wide, punch, slider: by('slider'), side: by('side'), other: [...by('other'), ...by('closeup').filter((a) => a !== punch), ...by('wide').filter((a) => a !== wide)],
     skip: by('skip') };
-}
-
-function readJson(p) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; }
 }
 
 function mtime(p) {
@@ -1838,9 +1809,11 @@ function createCutThrough(opts) {
 
   /** Output tokens per input token on this machine's earlier edits (cut_through_costs.csv), for the estimate. */
   function outputRatio() {
-    const rows = readLines(path.join(settings().filesDir, 'cut_through_costs.csv')) || [];
-    const ratios = rows.slice(1).map((l) => l.split(',')).filter((c) => /plan$/.test(c[2] || '') && Number(c[5]) > 0)
-      .map((c) => Number(c[6]) / Number(c[5])).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+    let rows = [];
+    try { rows = estimateLib.parseCsv(fs.readFileSync(path.join(settings().filesDir, 'cut_through_costs.csv'), 'utf8')); } catch (_) { /* no runs yet */ }
+    // a row cut short before output_tokens reads as '' here: skip it (Number('') would be 0)
+    const ratios = rows.filter((r) => /plan$/.test(r.step) && Number(r.input_tokens) > 0 && r.output_tokens !== '')
+      .map((r) => Number(r.output_tokens) / Number(r.input_tokens)).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
     return ratios.length >= 3 ? ratios[Math.floor(ratios.length / 2)] : 1;
   }
 

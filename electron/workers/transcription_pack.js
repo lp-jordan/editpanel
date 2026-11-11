@@ -17,6 +17,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { readJson } = require('./cut_through_util');
 const { execFile, spawn } = require('child_process');
 
 const DEFAULT_PACK_FOLDER = 'N:\\LPOS\\editpanel dist\\transcription-pack';
@@ -25,10 +26,6 @@ const MANIFEST = 'pack.json';
 function defaultInstallRoot() {
   const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   return path.join(base, 'EditPanel', 'transcription');
-}
-
-function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return null; }
 }
 
 /** The pack on the NAS (or null + why). */

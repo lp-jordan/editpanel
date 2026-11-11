@@ -21,7 +21,8 @@
  * compare_<label>.json is for reading the patterns; compare_<label>.html is for looking at them.
  */
 
-const { checkTimeline, planTimeline, tcPlus } = require('./cut_through_check');
+const { checkTimeline, planTimeline } = require('./cut_through_check');
+const { endsSentence, median, quote, tcPlus, picturePieces, segsOf } = require('./cut_through_util');
 const { energyModel, rhythmStats, rhythmOf } = require('./cut_through_energy');
 const { sliderFit } = require('./cut_through_motion');
 
@@ -29,30 +30,7 @@ const MIN_FRAMES = 2;          // a difference shorter than this is rounding
 const SHIFT_FRAMES = 12;       // an angle difference this short is a moved cut, not a new angle
 const FLAG_REACH = 24;         // a change this close to a flag counts as acting on it
 
-const endsSentence = (w) => /[.?!…]["'”’)\]]*$/.test(String((w && w.w) || '').trim());
-const median = (xs) => {
-  if (!xs.length) return null;
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
-const quote = (ws) => ws.map((w) => String(w.w).trim()).join(' ');
 const count = (o, k, n = 1) => { o[k] = (o[k] || 0) + n; return o; };
-
-/** Pieces joined wherever source and record both run on (an angle change is not a join). */
-function segsOf(pieces) {
-  const segs = [];
-  for (const p of pieces) {
-    const g = segs[segs.length - 1];
-    if (g && Math.abs(p.src_in - g.src_out) <= 1 && Math.abs(p.start - g.end) <= 1) {
-      g.src_out = p.src_out;
-      g.end = p.end;
-    } else {
-      segs.push({ src_in: p.src_in, src_out: p.src_out, start: p.start, end: p.end });
-    }
-  }
-  return segs;
-}
 
 /** Sorted, non-overlapping [from, to) ranges. */
 function ranges(segs) {
@@ -100,12 +78,6 @@ function soundPieces(timeline, multicam) {
 
 /** Frames of [a, b) inside the range list R. */
 const keptOf = (R, a, b) => R.reduce((n, [x, y]) => n + Math.max(0, Math.min(b, y) - Math.max(a, x)), 0);
-
-function picturePieces(timeline, multicam) {
-  let pieces = (timeline.pieces || []).filter((p) => p.src_out > p.src_in && p.end > p.start);
-  if (multicam && pieces.some((p) => p.mc === multicam)) pieces = pieces.filter((p) => p.mc === multicam);
-  return pieces.sort((a, b) => a.start - b.start);
-}
 
 /** How many of a timeline's source frames this plan covers (0–1): picks the plan for a timeline,
  *  so a renamed or duplicated rough cut still finds its plan. */

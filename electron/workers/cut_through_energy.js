@@ -13,6 +13,8 @@
  * Remove both if Compare says the cuts don't follow it.
  */
 
+const { median, lowerBound } = require('./cut_through_util');
+
 const WIN_SEC = 10;
 const TALK_GAP_SEC = 1;          // a gap longer than this between words is a pause, not talk
 const FAST = 1.15;               // pace ≥ 1.15× the person's median = fast; ≤ 0.85× = slow
@@ -20,24 +22,6 @@ const SLOW = 0.85;
 const LOUD_DB = 3;               // level ≥ median + 3 dB = loud; ≤ median − 3 dB = quiet
 const MIN_WORDS = 6;             // fewer words than this in the window: no reading
 
-const median = (xs) => {
-  if (!xs.length) return null;
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
-
-/** First index with ws[i].s >= f. */
-function lowerBound(ws, f) {
-  let lo = 0;
-  let hi = ws.length;
-  while (lo < hi) {
-    const m = (lo + hi) >> 1;
-    if (ws[m].s < f) lo = m + 1;
-    else hi = m;
-  }
-  return lo;
-}
 
 /**
  * words: the words file's words (multicam frames). frameSec: seconds per frame.

@@ -1052,7 +1052,7 @@ const PEER_JOB_NAMES = {
   lp_base_export_round1: 'Queue exports',
   prepare_project:       'Project setup'
 };
-const CUT_THROUGH_STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check', 'compare'];
+const { STEP_KEYS: CUT_THROUGH_STEP_KEYS } = require('./workers/cut_through_util');
 
 function exportRunLabel(row, jobs) {
   const first = (jobs && jobs[0]) || {};

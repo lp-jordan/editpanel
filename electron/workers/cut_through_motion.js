@@ -18,6 +18,7 @@
  */
 
 const { spawn } = require('child_process');
+const { median } = require('./cut_through_util');   // never called on an empty list here
 
 const SAMPLE_FPS = 4;
 const LAG = 2;                    // compare samples 0.5 s apart: a slow slide still shifts a few px
@@ -30,11 +31,6 @@ const SMOOTH = 5;                 // median over this many samples
 const MIN_MOVE_SEC = 2;
 const EDGE_SEC = 0.5;
 
-const median = (xs) => {
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
 
 function normalise(p) {
   const n = p.length;
