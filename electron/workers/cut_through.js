@@ -49,6 +49,7 @@ const { STEP_KEYS, readJson, angleNo: angleNumber, totalFrames: dayFrames, tcClo
 
 const DEFAULT_SEQ_BIN = 'MASTER / SEQUENCES';
 const DEFAULT_WX_PYTHON = 'C:\\wxbench\\Scripts\\python.exe';
+const MAC_WX_PYTHON = path.join(os.homedir(), 'wxbench', 'bin', 'python');
 const MAX_LOG_LINES = 400;
 const BATCH_POLL_MS = 60 * 1000;
 const LIST_MULTICAMS_TIMEOUT_MS = 2 * 60 * 1000;
@@ -278,7 +279,9 @@ function createCutThrough(opts) {
     const pack = packQuick();
     // a saved Python only while it exists; else the installed pack; else LP1's old venv
     const wxPython = (p.wxPython && existsQuick(p.wxPython) ? p.wxPython : null) || (pack && pack.python)
-      || (process.platform === 'win32' ? DEFAULT_WX_PYTHON : 'python3');
+      || (process.platform === 'win32' ? DEFAULT_WX_PYTHON
+        // a Mac: the ~/wxbench venv (faster-whisper + WhisperX, CPU) when it's there, else python3
+        : existsQuick(MAC_WX_PYTHON) ? MAC_WX_PYTHON : 'python3');
     return {
       pipelineDir,
       scriptsFound: existsQuick(path.join(pipelineDir, 'prepare_multicam.py')),
