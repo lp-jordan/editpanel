@@ -43,6 +43,7 @@ const narrationLib = require('./cut_through_narration');
 const slateLib = require('./cut_through_slate');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 const compare = require('./cut_through_compare');
+const scorer = require('./cut_through_score');
 const packLib = require('./transcription_pack');
 const { STEP_KEYS, readJson, angleNo: angleNumber, totalFrames: dayFrames, tcClock, frameToTc } = require('./cut_through_util');
 
@@ -209,6 +210,7 @@ function createCutThrough(opts) {
     isPackaged = false,
     appDir = path.join(__dirname, '..', '..'),
     resourcesDir = null,           // packaged: process.resourcesPath (the bundled cut_through\)
+    markRenderJobsOwned = () => {},   // main: render jobs EditPanel queued itself (never adopted as orphan exports)
     packRoot = packLib.defaultInstallRoot(),   // where the transcription pack is installed
     getPack = () => packLib.installedPack(packRoot),
     desktopDir = path.join(os.homedir(), 'Desktop'),  // where runs before 1.2.94 left their files
@@ -737,7 +739,7 @@ function createCutThrough(opts) {
       slateAngle: slateAngle(), slateBox: slateBox(), slateInfo: slateInfo(), estimate: costEstimate(),
       videosReady: videosToBuild().length,
       // Cancel can stop it: a child process (Transcribe, the placer, ffmpeg) or the slate read; not a Claude call or a Resolve step
-      cancelable: Boolean(child) || Boolean(s.slateRead) || Boolean(claudeAbort) };
+      cancelable: Boolean(child) || Boolean(s.slateRead) || Boolean(claudeAbort) || s.busy === 'score' };
   }
 
   // ---- Cost + time estimate (1.2.144): learned from this folder's cost log and transcribe reports.
@@ -914,7 +916,8 @@ function createCutThrough(opts) {
       plan: [readJson(f.videos)?.active ? f.videos : f.plan, null],
       build: [f.buildReport, f.buildReport],
       check: [f.checkReport, f.checkReport],
-      compare: [f.compareHtml, null]
+      compare: [f.compareHtml, null],
+      score: [path.join(f.dir, `score_${s.label}.html`), null]
     };
     for (const key of STEP_KEYS) {
       const [out, rep] = marks[key];
@@ -1351,6 +1354,40 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
+  /** Score (test, 2026-11-12): would a round-2 pass have caught what the editor fixed? Compare the
+   *  reviewed rough cuts, render the as-built snapshots (bin "CT SNAPSHOT"), check every join on the
+   *  render, ask Haiku for leftover flubs, then count caught / missed / false alarms per tool.
+   *  See cut_through_score.js. */
+  async function runScore() {
+    const f = files();
+    const words = readJson(f.words);
+    if (!words) throw new Error('Run Transcribe first');
+    const { wxPython, pipelineDir, filesDir } = settings();
+    if (!wxPython) throw new Error('No transcription pack Python (Setup)');
+    const st = begin('score');
+    st.traceId = randomUUID();
+    let error = null;
+    let out = null;
+    try {
+      out = await scorer.runScore({
+        label: s.label, files: f, words, plans: comparablePlans(), roughCuts,
+        ask: async (payload) => (await sendWorkerRequest({ ...payload, trace_id: st.traceId }, 'resolve')).data || {},
+        phase: (text, bar = null) => { st.progress = { phase: text, phaseAt: Date.now(), bar }; emit(); },
+        log: (line) => { pushLog('score', line); emit(); },
+        markOwned: (jobs) => markRenderJobsOwned(jobs),
+        runPython: (args) => runChild('score', wxPython, args),
+        joinScript: path.join(pipelineDir, 'join_check.py'),
+        apiKey: claudeKey(), client: claudeClient, costsDir: filesDir,
+        isCanceled: () => canceled
+      });
+    } catch (err) {
+      error = err instanceof Error ? err.message : errMsg(err);
+    }
+    finish('score', { error, report: out ? out.report : null, reportFile: error || !out ? null : out.reportFile,
+      data: error || !out ? null : out.data });
+    return snapshot();
+  }
+
   /** Lines streamed from the Resolve worker for a running step (by trace id). */
   function onWorkerLog(traceId, message) {
     if (!traceId || !s.busy) return;
@@ -1480,6 +1517,7 @@ function createCutThrough(opts) {
     if (s.setup.installing && s.setup.installing.phase) { canceled = true; return snapshot(); }
     if (s.slateRead) canceled = true;                 // the slate read checks this between frames (OCR has no child)
     if (claudeAbort) { canceled = true; claudeAbort.abort(); }
+    if (s.busy === 'score') canceled = true;          // Score checks this between renders / reads
     if (!child) return snapshot();
     canceled = true;
     killTree(child);
@@ -2466,6 +2504,7 @@ function createCutThrough(opts) {
     runBuild,
     runCheck,
     runCompare,
+    runScore,
     onWorkerLog
   };
 }

@@ -218,6 +218,7 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   readMarks: () => ipcRenderer.invoke('cut-through:read-marks'),
   runBuild: (payload) => ipcRenderer.invoke('cut-through:build', payload),
   runCheck: (payload) => ipcRenderer.invoke('cut-through:check', payload),
+  runScore: () => ipcRenderer.invoke('cut-through:score'),
   runCompare: (payload) => ipcRenderer.invoke('cut-through:compare', payload),
   listLposProjects: () => ipcRenderer.invoke('cut-through:lpos-projects'),
   findVideos: (payload) => ipcRenderer.invoke('cut-through:find-videos', payload),

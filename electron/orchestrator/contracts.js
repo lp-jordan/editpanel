@@ -75,6 +75,7 @@ const COMMAND_OWNER = Object.freeze({
   ct_mark_in_out: WORKERS.resolve,
   ct_read_timeline: WORKERS.resolve,   // Cut-through Check and Compare: read a built rough cut
   ct_set_markers: WORKERS.resolve,     // Cut-through Check: replace its markers
+  ct_render_audio: WORKERS.resolve,    // Cut-through Score: audio-only renders of timelines
 
   leaderpass_auth: WORKERS.platform,
   leaderpass_upload: WORKERS.platform
@@ -164,6 +165,7 @@ const COMMAND_SCHEMAS = Object.freeze({
   ct_mark_in_out: { required: ['name'], types: { name: 'string' } },
   ct_read_timeline: { required: ['name'], types: { name: 'string' } },
   ct_set_markers: { required: ['name', 'markers'], types: { name: 'string' } },
+  ct_render_audio: { required: [], types: { action: 'string', target_dir: 'string' } },
   leaderpass_auth: { required: [], types: { force: 'boolean', force_refresh: 'boolean' } },
   leaderpass_upload: { required: ['file_path'], types: { file_path: 'string', chunk_size: 'number' } }
 });

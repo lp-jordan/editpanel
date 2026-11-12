@@ -18,6 +18,12 @@ Resolve's Py3 console.
   ct_set_markers  {name, tag, markers [{frame, color, name, note}]}  → {removed, placed, failed}
       Cut-through Check: read a built rough cut back; replace its Check markers.
 
+  ct_render_audio  {action: "queue", names, target_dir}  → {jobs [{name, job_id}], format, codec}
+                   {action: "delete", job_ids}            → {deleted}
+      Cut-through Score: queue an audio-only render of each timeline (whole timeline, one file
+      per timeline named after it) without starting it; the engine starts the jobs with
+      start_render {job_ids}, polls render_status, then deletes the jobs from the queue.
+
   ct_run_step  {pipeline_dir, script, settings}  → {lines, stopped, error, seconds}
       Exec one allow-listed step script with `settings` as its run-line globals
       (LABEL, MC, SEQ_BIN, …) and the worker's Resolve handle, exactly as the
@@ -294,6 +300,80 @@ def handle_ct_read_timeline(payload: Dict[str, Any], log_func=None) -> Dict[str,
         out["audio"] = read_audio(tl)
     if log_func:
         log_func(f"[cut-through] read {len(out['pieces'])} multicam piece(s) from {name!r}")
+    return out
+
+
+def _audio_format(project: Any):
+    """(format, codec) for an audio-only render: WAV / linear PCM when Resolve offers it, else a
+    QuickTime with its first PCM-ish audio codec (Score reads either)."""
+    formats = _safe(lambda: project.GetRenderFormats(), {}) or {}
+    pick = None
+    for label, ext in formats.items():
+        if str(ext).lower() == "wav" or "wav" in str(label).lower():
+            pick = ext
+            break
+    if pick is None:
+        pick = "mov" if "mov" in [str(v).lower() for v in formats.values()] else None
+    if pick is None:
+        raise RuntimeError(f"No WAV or QuickTime render format in Resolve ({sorted(formats.values())})")
+    codecs = _safe(lambda: project.GetRenderCodecs(pick), {}) or {}
+    codec = None
+    for label, val in codecs.items():
+        if "pcm" in str(label).lower() or "pcm" in str(val).lower():
+            codec = val
+            break
+    if codec is None and codecs:
+        codec = list(codecs.values())[0]
+    return pick, codec
+
+
+def render_audio_queue(project: Any, names: List[str], target_dir: str, emit=None) -> Dict[str, Any]:
+    os.makedirs(target_dir, exist_ok=True)
+    fmt, codec = _audio_format(project)
+    jobs, failed = [], []
+    for name in names:
+        tl = _timeline_named(name)
+        if not _safe(lambda: project.SetCurrentTimeline(tl), False):
+            failed.append(f"{name}: could not open the timeline")
+            continue
+        time.sleep(0.5)
+        if codec is not None and not _safe(lambda: project.SetCurrentRenderFormatAndCodec(fmt, codec), False):
+            failed.append(f"{name}: Resolve rejected {fmt}/{codec}")
+            continue
+        settings = {"SelectAllFrames": True, "ExportVideo": False, "ExportAudio": True,
+                    "TargetDir": target_dir, "CustomName": name, "UniqueFilename": False}
+        if not _safe(lambda: project.SetRenderSettings(settings), False):
+            # some keys are refused on some formats: the ones that matter, one by one
+            for k, v in settings.items():
+                _safe(lambda: project.SetRenderSettings({k: v}), False)
+        job_id = _safe(lambda: project.AddRenderJob())
+        if not job_id:
+            failed.append(f"{name}: AddRenderJob failed")
+            continue
+        jobs.append({"name": name, "job_id": str(job_id)})
+        if emit:
+            emit(f"queued audio render: {name}")
+    return {"jobs": jobs, "failed": failed, "format": fmt, "codec": codec}
+
+
+def handle_ct_render_audio(payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
+    from .. import resolve_helper as rh
+
+    if not rh.project:
+        raise RuntimeError("No project open in Resolve")
+    action = str(payload.get("action") or "queue")
+    if action == "delete":
+        deleted = 0
+        for jid in payload.get("job_ids") or []:
+            deleted += bool(_safe(lambda: rh.project.DeleteRenderJob(str(jid)), False))
+        return {"deleted": deleted}
+    names = [str(n) for n in (payload.get("names") or []) if n]
+    target_dir = str(payload.get("target_dir") or "")
+    if not names or not target_dir:
+        raise RuntimeError("names and target_dir are required")
+    out = render_audio_queue(rh.project, names, target_dir, log_func)
+    if log_func:
+        log_func(f"[cut-through] queued {len(out['jobs'])} audio render(s) as {out['format']}/{out['codec']}")
     return out
 
 
