@@ -180,6 +180,16 @@ console.log('✓ build_narration.py: kept pieces split at file edges and mapped 
   assert.deepStrictEqual(c.snapshot().audioTimelines.map((t) => t.name), ['Book session']);
   c.select({ mc: 'Book session', source: 'timeline', label: 'Book1' });
   assert.strictEqual(c.snapshot().source, 'timeline');
+  // choosing the run folder after the pick must keep it an audio timeline (BenWebinarNov2026: Prep ran
+  // the multicam script), and so must reopening EditPanel
+  const FILES2 = path.join(TMP, 'runs2');
+  fs.mkdirSync(FILES2, { recursive: true });
+  await c.setRunFolder({ folder: FILES2 });
+  assert.strictEqual(c.snapshot().source, 'timeline', 'run folder change lost the audio timeline');
+  await c.setRunFolder({ folder: FILES });
+  const reopened = ct.createCutThrough({ sendWorkerRequest: send, broadcast: () => {}, getPrefs: () => prefs, setPrefs: () => {},
+    pythonCmd: PY, desktopDir: path.join(TMP, 'desk'), filesDir: FILES });
+  assert.strictEqual(reopened.snapshot().source, 'timeline', 'reopening lost the audio timeline');
   const prep = (await c.runPrep({})).steps.prep;
   assert.strictEqual(prep.status, 'done', prep.error);
   const prepCall = calls.find((x) => x.script === 'prepare_audio.py');

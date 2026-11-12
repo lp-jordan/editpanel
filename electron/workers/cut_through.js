@@ -1003,9 +1003,12 @@ function createCutThrough(opts) {
     }
   }
 
-  function show(mc, label, source = 'multicam') {
+  function show(mc, label, source) {
+    // source omitted: the same pick keeps its kind (a run-folder change, the label field) — an audio
+    // timeline must never fall back to the multicam Prep (BenWebinarNov2026, 2026-11-12)
+    const kind = source || (mc && mc === s.mc ? s.source : 'multicam');
     s.mc = mc || null;
-    s.source = source === 'timeline' ? 'timeline' : 'multicam';
+    s.source = kind === 'timeline' ? 'timeline' : 'multicam';
     s.marks = null;
     s.label = sanitizeLabel(label || '');
     adoptLegacyFiles(s.label);
@@ -1158,6 +1161,8 @@ function createCutThrough(opts) {
   async function runPrep({ audioAngle } = {}) {
     if (!s.mc) throw new Error('Pick a multicam first');
     const started = Date.now();
+    const onlyTimeline = (s.audioTimelines || []).some((t) => t.name === s.mc) && !(s.multicams || []).some((m) => m.name === s.mc);
+    if (onlyTimeline && s.source !== 'timeline') s.source = 'timeline';
     const out = s.source === 'timeline'
       ? await runStep('prep', 'prepare_audio.py', { LABEL: s.label, TIMELINE: s.mc, OUT_DIR: runDir() })
       : await runStep('prep', 'prepare_multicam.py', { LABEL: s.label, MC: s.mc, OUT_DIR: runDir(), ...(audioAngle ? { AUDIO_ANGLE: String(audioAngle) } : {}) });
@@ -2456,7 +2461,7 @@ function createCutThrough(opts) {
   const last = (getPrefs() || {}).cutThrough || {};
   if (last.lastLabel) {
     s.project = last.lastProject || null;
-    show(last.lastMc, last.lastLabel);
+    show(last.lastMc, last.lastLabel, last.lastSource);
   }
   // batches that ended while EditPanel was closed are announced shortly after it opens
   watchQueue();
