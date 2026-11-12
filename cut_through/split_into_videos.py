@@ -115,7 +115,9 @@ def finish(project: Any, tl: Any) -> str:
     if v:
         def dissolve(item, edge, align):
             for kind in (LP_FADE, "Cross Dissolve"):
-                for cat in ("simple", None):
+                # the preset sits under Effects > User Presets; which category name the API wants
+                # for it is unknown, so try the likely ones
+                for cat in (("simple", None, "user", "User Presets") if kind == LP_FADE else ("simple", None)):
                     opts = {"type": kind, "position": edge, "alignment": align, "duration": FADE_FRAMES}
                     if cat:
                         opts["category"] = cat
