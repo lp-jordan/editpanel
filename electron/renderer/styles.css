@@ -1,6 +1,9 @@
 @font-face {
   font-family: 'Metropolis';
   src: url('./fonts/Metropolis-Regular.otf') format('opentype');
+  /* Skip U+005F: Metropolis kerns '_' against ~100 glyphs by up to half an em
+     ("RB_MC_2" collapses). Underscore comes from the fallback font instead. */
+  unicode-range: U+0000-005E, U+0060-10FFFF;
   font-weight: 400;
   font-style: normal;
 }
@@ -8,6 +11,7 @@
 @font-face {
   font-family: 'Metropolis';
   src: url('./fonts/Metropolis-Bold.otf') format('opentype');
+  unicode-range: U+0000-005E, U+0060-10FFFF;
   font-weight: 700;
   font-style: normal;
 }
