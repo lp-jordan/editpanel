@@ -51,6 +51,8 @@ const MAX_LOG_LINES = 400;
 const BATCH_POLL_MS = 60 * 1000;
 const LIST_MULTICAMS_TIMEOUT_MS = 2 * 60 * 1000;
 const BATCH_LIVE = ['in_progress', 'canceling'];
+const BATCH_WATCH_MS = 5 * 60 * 1000;   // every queued batch, whichever label is open (1.2.158)
+const BATCH_TIMES_HEADER = 'submitted_at,ended_at,minutes,project,multicam,label,videos,succeeded,errored,canceled,expired,model,batch_id';
 
 // `  Camera 2 [######-------------------]  24%  5.4/22.6 min  41s`
 const PROGRESS_RE = /^\s*(.*?)\s*\[([#-]+)\]\s+(\d+)%\s+([\d.]+)\/([\d.]+)\s*min(?:\s+(\d+)s)?/;
@@ -203,7 +205,8 @@ function createCutThrough(opts) {
     packRoot = packLib.defaultInstallRoot(),   // where the transcription pack is installed
     getPack = () => packLib.installedPack(packRoot),
     desktopDir = path.join(os.homedir(), 'Desktop'),  // where runs before 1.2.94 left their files
-    filesDir = path.join(os.homedir(), 'Documents', 'Cut-through')   // default home of run files
+    filesDir = path.join(os.homedir(), 'Documents', 'Cut-through'),  // default home of run files
+    onBatchEnded = null            // ({ label, videos, minutes, counts, … }) => void: a queued batch has ended; also turns on the queue watch
   } = opts;
 
   const s = {
@@ -359,12 +362,106 @@ function createCutThrough(opts) {
     const q = queuedBatches();
     const live = BATCH_LIVE.includes(b.status);
     if (live === Boolean(q[b.id])) return;
-    const next = { ...q };
     if (live) {
-      next[b.id] = { project: s.project, mc: s.mc || (s.day && s.day.multicam) || null, label: s.label,
-        videos: Object.keys(b.items || {}).length, submittedAt: b.submittedAt || Date.now() };
-    } else delete next[b.id];
-    setQueuedBatches(next);
+      if (endedBatches().includes(b.id)) return;   // the queue watch saw it end; this label's file is just behind
+      setQueuedBatches({ ...q, [b.id]: { project: s.project, mc: s.mc || (s.day && s.day.multicam) || null, label: s.label,
+        videos: Object.keys(b.items || {}).length, submittedAt: b.submittedAt || Date.now(), model: b.model || null } });
+      watchQueue();
+    } else if (b.status === 'ended') {
+      batchEnded(b.id, q[b.id], { createdAt: b.createdAt || null, endedAt: b.endedAt || null, counts: b.counts || null });
+    } else {
+      const next = { ...q };
+      delete next[b.id];
+      setQueuedBatches(next);
+    }
+  }
+
+  /** Batch ids already seen ending (newest 50), so one is timed and announced once. */
+  function endedBatches() {
+    return ((getPrefs() || {}).cutThrough || {}).endedBatches || [];
+  }
+
+  function batchTimes(got) {
+    return { createdAt: got.created_at ? Date.parse(got.created_at) : null, endedAt: got.ended_at ? Date.parse(got.ended_at) : null,
+      counts: got.request_counts || null };
+  }
+
+  /**
+   * A queued batch has ended (seen by its open label, or by the queue watch while another label
+   * is open or EditPanel was closed): out of the queue, one row in cut_through_batches.csv
+   * (how long Anthropic took), and onBatchEnded (main: a desktop notification).
+   */
+  function batchEnded(id, e, t = {}) {
+    if (!e || endedBatches().includes(id)) return;
+    const p = (getPrefs() || {}).cutThrough || {};
+    const q = { ...(p.queuedBatches || {}) };
+    delete q[id];
+    setPrefs({ cutThrough: { ...p, queuedBatches: q, endedBatches: [...endedBatches(), id].slice(-50) } });
+    const startedAt = t.createdAt || e.submittedAt || null;
+    const endedAt = t.endedAt || Date.now();
+    const minutes = startedAt ? Math.round(((endedAt - startedAt) / 60000) * 10) / 10 : null;
+    const c = t.counts || {};
+    logBatchTime([startedAt ? new Date(startedAt).toISOString() : '', new Date(endedAt).toISOString(), minutes, e.project, e.mc, e.label,
+      e.videos, c.succeeded, c.errored, c.canceled, c.expired, e.model, id]);
+    if (onBatchEnded) {
+      try { onBatchEnded({ id, project: e.project || null, mc: e.mc || null, label: e.label, videos: e.videos, minutes, counts: t.counts || null }); } catch (_) { /* never stops the queue */ }
+    }
+    watchQueue();
+  }
+
+  /** <files folder>/cut_through_batches.csv: one row per ended batch, to see how long batches take. */
+  function logBatchTime(cells) {
+    try {
+      const dir = settings().filesDir;
+      fs.mkdirSync(dir, { recursive: true });
+      const csv = path.join(dir, 'cut_through_batches.csv');
+      if (!fs.existsSync(csv)) fs.writeFileSync(csv, `${BATCH_TIMES_HEADER}\n`, 'utf8');
+      const cell = (v) => {
+        if (v == null) return '';
+        const str = String(v);
+        return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+      };
+      fs.appendFileSync(csv, `${cells.map(cell).join(',')}\n`, 'utf8');
+    } catch (_) { /* timing only */ }
+  }
+
+  // ---- The queue watch: with onBatchEnded set, every queued batch is checked every 5 minutes
+  // (a status check is free: no tokens) while any is queued; off when the queue is empty.
+  let watchTimer = null;
+  let watching = false;
+  function watchQueue() {
+    const want = Boolean(onBatchEnded) && Object.keys(queuedBatches()).length > 0 && Boolean(claudeKey() || claudeClient);
+    if (want && !watchTimer) {
+      watchTimer = setInterval(() => { checkQueue().catch(() => {}); }, BATCH_WATCH_MS);
+      if (watchTimer.unref) watchTimer.unref();
+    } else if (!want && watchTimer) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+    }
+  }
+
+  async function checkQueue() {
+    if (watching || !(claudeKey() || claudeClient)) return;
+    watching = true;
+    try {
+      const own = s.videos && s.videos.batch && s.videos.batch.id;
+      for (const [id, e] of Object.entries(queuedBatches())) {
+        if (id === own && batchTimer) continue;   // the open label checks its own every minute
+        let got;
+        try {
+          got = await claudeApi().messages.batches.retrieve(id);
+        } catch (err) {
+          if (err && err.status === 404) { const next = { ...queuedBatches() }; delete next[id]; setQueuedBatches(next); }
+          continue;
+        }
+        if (BATCH_LIVE.includes(got.processing_status)) continue;
+        if (!queuedBatches()[id]) continue;        // its label saw it end meanwhile
+        batchEnded(id, e, batchTimes(got));
+      }
+    } finally {
+      watching = false;
+      watchQueue();
+    }
   }
 
   function whenText(ts) {
@@ -392,8 +489,9 @@ function createCutThrough(opts) {
       if (b && b.id === id) continue;
       if (e.project !== s.project || e.mc !== mc) continue;
       let status = 'in_progress';
+      let got = null;
       try {
-        const got = await claudeApi().messages.batches.retrieve(id);
+        got = await claudeApi().messages.batches.retrieve(id);
         status = got.processing_status;
       } catch (err) {
         if (err && err.status === 404) status = 'gone';
@@ -401,9 +499,12 @@ function createCutThrough(opts) {
       if (BATCH_LIVE.includes(status)) {
         throw new Error(`A batch for ${mc} is already in the queue: ${e.label} (${e.videos} videos, sent ${whenText(e.submittedAt)}). Wait for it or cancel it from that label.`);
       }
-      const next = { ...queuedBatches() };
-      delete next[id];
-      setQueuedBatches(next);
+      if (status === 'ended' && got) batchEnded(id, e, batchTimes(got));
+      else {
+        const next = { ...queuedBatches() };
+        delete next[id];
+        setQueuedBatches(next);
+      }
     }
   }
 
@@ -962,6 +1063,7 @@ function createCutThrough(opts) {
     }
     setPrefs({ cutThrough: next });
     refreshFiles();
+    watchQueue();
     emit();
     return snapshot();
   }
@@ -2074,7 +2176,8 @@ function createCutThrough(opts) {
     try { fs.rmSync(files().batchDraft, { force: true }); } catch (_) { /* sent */ }
     const videos = s.videos.videos.map((v) => (b.items[v.id] ? { ...v, plan: { status: 'queued', via: 'batch', at: Date.now() } } : v));
     writeVideos({ ...s.videos, active: true, videos, batch: { ...b, status: created.processing_status || 'in_progress', id: created.id,
-      submittedAt: Date.now(), counts: created.request_counts || null, endedAt: null, collected: false } });
+      submittedAt: Date.now(), createdAt: created.created_at ? Date.parse(created.created_at) : null,
+      counts: created.request_counts || null, endedAt: null, collected: false } });
     pushLog('plan', `Batch sent: ${created.id} (${draft.requests.length} video(s))`);
     pollBatch();
     emit();
@@ -2089,6 +2192,7 @@ function createCutThrough(opts) {
     const got = await claudeApi().messages.batches.retrieve(b.id);
     if (s.label !== label || !s.videos || !s.videos.batch || s.videos.batch.id !== b.id) return snapshot();   // switched away meanwhile
     writeVideos({ ...s.videos, batch: { ...s.videos.batch, status: got.processing_status, counts: got.request_counts || null,
+      createdAt: got.created_at ? Date.parse(got.created_at) : (s.videos.batch.createdAt || null),
       endedAt: got.ended_at ? Date.parse(got.ended_at) : null, checkedAt: Date.now() } });
     if (got.processing_status === 'ended' && !s.videos.batch.collected && !s.busy) await collectBatch();
     pollBatch();
@@ -2228,9 +2332,16 @@ function createCutThrough(opts) {
     s.project = last.lastProject || null;
     show(last.lastMc, last.lastLabel);
   }
+  // batches that ended while EditPanel was closed are announced shortly after it opens
+  watchQueue();
+  if (watchTimer) {
+    const first = setTimeout(() => { checkQueue().catch(() => {}); }, 15 * 1000);
+    if (first.unref) first.unref();
+  }
 
   return {
     snapshot,
+    checkQueue,
     listMulticams,
     select,
     onProject,

@@ -1239,8 +1239,9 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   api.messages.batches.retrieve = async () => ({ processing_status: 'in_progress' });
   c.select({ mc: 'mc_test', label: 'Vids2' });
   await assert.rejects(c.prepareBatch({ delivery: 'scripted' }), /already in the queue: Vids \(3 videos/);
-  // once Anthropic says it has ended, the other label may send
-  api.messages.batches.retrieve = async () => ({ processing_status: 'ended' });
+  // once Anthropic no longer has it, the other label may send (404 here: an 'ended' one is
+  // timed + announced once and never re-queued, 1.2.158, but this fake brings it back live below)
+  api.messages.batches.retrieve = async () => { const e = new Error('not found'); e.status = 404; throw e; };
   snap = await c.prepareBatch({ delivery: 'scripted' });
   assert.strictEqual(snap.videos.batch.status, 'draft', snap.steps.plan.error);
   assert.ok(!getPrefs().cutThrough.queuedBatches.msgbatch_test);

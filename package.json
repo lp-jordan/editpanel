@@ -1,6 +1,6 @@
 {
   "name": "editpanel",
-  "version": "1.2.157",
+  "version": "1.2.158",
   "description": "EditPanel — DaVinci Resolve companion app for the LPOS ecosystem",
   "author": "LeaderPass <tools@leaderpass.com>",
   "main": "electron/main.js",
@@ -15,6 +15,7 @@
     "cache:invalidate": "node scripts/invalidate-step-cache.js",
     "test:platform-worker": "node scripts/test-platform-worker.js",
     "test:cut-through": "node scripts/test-cut-through.js",
+    "test:batch-watch": "node scripts/test-batch-watch.js",
     "test:slate-shift": "node scripts/test-slate-shift.js"
   },
   "build": {
