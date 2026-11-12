@@ -29,6 +29,9 @@ KEEP_JOINED = bool(globals().get("KEEP_JOINED"))
 FINISH = globals().get("FINISH", True)                 # crossfades + head/tail fades (style guide)
 UNLINK = globals().get("UNLINK", True)                 # finished timelines come out unlinked
 FADE_FRAMES = 8
+# Jordan's saved Resolve transition preset (a Subtractive Cross Dissolve); plain Cross Dissolve
+# (Resolve's default "Film" type) if the preset isn't found on this machine
+LP_FADE = "Default LP Fade"
 CROSSFADE = {"type": "Cross Fade 0 dB", "category": "audio", "position": "end", "alignment": "center", "duration": 2}
 OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -84,7 +87,7 @@ def finish(project: Any, tl: Any) -> str:
     jumps) and the mic is open on at least one side, and on every mic open / close (a gated clip
     next to an open one: Jordan 2026-11-10, so room tone doesn't snap on and off); 8-frame audio
     fades at head and tail;
-    8-frame picture Cross Dissolve from/to black. Also counts the disabled (gated) mic clips."""
+    8-frame picture dissolve from/to black ("Default LP Fade" preset, else Cross Dissolve). Also counts the disabled (gated) mic clips."""
     project.SetCurrentTimeline(tl)
     t = tracks(tl)
     start, end = tl.GetStartFrame(), tl.GetEndFrame()
@@ -111,12 +114,13 @@ def finish(project: Any, tl: Any) -> str:
     v = t.get("V1", [])
     if v:
         def dissolve(item, edge, align):
-            for cat in ("simple", None):
-                opts = {"type": "Cross Dissolve", "position": edge, "alignment": align, "duration": FADE_FRAMES}
-                if cat:
-                    opts["category"] = cat
-                if _safe(lambda: item.AddTransition(opts)):
-                    return "✓"
+            for kind in (LP_FADE, "Cross Dissolve"):
+                for cat in ("simple", None):
+                    opts = {"type": kind, "position": edge, "alignment": align, "duration": FADE_FRAMES}
+                    if cat:
+                        opts["category"] = cat
+                    if _safe(lambda: item.AddTransition(opts)):
+                        return "✓" if kind == LP_FADE else "✓ (Cross Dissolve, no LP preset)"
             return "✗"
         out.append(f"picture from black {dissolve(v[0], 'start', 'right')} to black {dissolve(v[-1], 'end', 'left')}")
     return "; ".join(out)
