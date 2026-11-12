@@ -27,13 +27,25 @@ const READ_CONCURRENCY = 4;
 const REACH = 24;                 // frames: a flag this close to a change counts as catching it (as Compare)
 const LINE_WORDS = 14;
 
-// what each tool is meant to catch (Compare event types)
+// Each change gets a group from Compare's type. Compare names a change from the words in it, and
+// the words come from the transcript: a word Whisper never wrote down makes a word-end fix look
+// like a pause, so a pause change right at a cut also counts as a join-check target. The editor's
+// own label (changes sheet, `your_label`) replaces the group: edge / words / pause / other.
+const LABELS = ['edge', 'words', 'pause', 'other'];
+function autoGroup(e) {
+  if (['word_finished', 'word_scrap', 'word_clipped'].includes(e.type)) return 'edge';
+  if (e.type === 'cut' || e.type === 'restored') return 'words';
+  if (e.type === 'air_added' || e.type === 'air_trimmed') return e.position === 'join' ? 'pause_at_cut' : 'pause';
+  return 'other';
+}
+const groupOf = (e) => e.label || e.group;
+// what each tool is meant to catch, by group (a labelled pause is a pause: not the join check's)
 const TARGETS = {
-  join: ['word_finished', 'word_scrap', 'word_clipped'],
-  read: ['cut', 'restored'],
-  check: ['word_finished', 'word_scrap', 'word_clipped', 'cut', 'restored', 'air_added', 'air_trimmed']
+  join: (e) => (e.label ? e.label === 'edge' : ['edge', 'pause_at_cut'].includes(e.group)),
+  read: (e) => groupOf(e) === 'words',
+  check: () => true
 };
-const GROUPS = { edges: ['word_finished', 'word_scrap', 'word_clipped'], words: ['cut', 'restored'], air: ['air_added', 'air_trimmed'] };
+const GROUP_NAMES = ['edge', 'words', 'pause_at_cut', 'pause', 'other'];
 
 const READ_BRIEF = `You check a rough cut of a talking-head video before a human editor reviews it.
 You see only the words still in the cut, in order. A line that starts with ‖ comes right after a cut where something was removed.
@@ -137,7 +149,8 @@ const near = (f, e) => {
   return e.from - REACH < b && e.to + REACH > a;
 };
 
-/** One reviewed timeline: each tool's flags against the editor's changes. */
+/** One reviewed timeline: each tool's flags against the editor's changes. Which changes a tool
+ *  was meant to catch is worked out from the groups (targetsOf), so a relabel re-scores without Resolve. */
 function scoreTimeline({ result, joinFlags = [], readFlagList = [] }) {
   const events = result.events || [];
   const checkFlags = (result.flags || []).filter((f) => f.source === 'check');
@@ -145,37 +158,110 @@ function scoreTimeline({ result, joinFlags = [], readFlagList = [] }) {
   const out = { timeline: result.timeline, changes: events.length, byType: {}, tools: {}, events: [] };
   for (const e of events) out.byType[e.type] = (out.byType[e.type] || 0) + 1;
   for (const [tool, flags] of Object.entries(tools)) {
-    const targets = events.filter((e) => TARGETS[tool].includes(e.type));
     const hit = flags.filter((f) => events.some((e) => near(f, e)));
     out.tools[tool] = {
       flags: flags.length, caught: hit.length, falseAlarms: flags.length - hit.length,
-      targets: targets.length, targetsCaught: targets.filter((e) => flags.some((f) => near(f, e))).length,
       falseAlarmList: flags.filter((f) => !events.some((e) => near(f, e))).map((f) => ({ at: f.at, rec: f.rec, kind: f.kind || f.name, why: f.why || f.note || '' }))
     };
   }
   for (const e of events) {
-    out.events.push({ type: e.type, from: e.from, to: e.to, tc: e.tc, text: e.text || e.partNote || '',
-      by: Object.entries(tools).filter(([, fl]) => fl.some((f) => near(f, e))).map(([t]) => t) });
+    out.events.push({ type: e.type, group: autoGroup(e), position: e.position || null, from: e.from, to: e.to, tc: e.tc,
+      text: e.text || e.partNote || '', by: Object.entries(tools).filter(([, fl]) => fl.some((f) => near(f, e))).map(([t]) => t) });
   }
   return out;
 }
 
+/** Totals over every scored timeline, from the stored rows (also used by the re-score). */
 function totals(rows) {
-  const sum = { timelines: rows.length, changes: 0, byType: {}, tools: {}, groups: {} };
+  const sum = { timelines: rows.length, changes: 0, byType: {}, tools: {}, groups: {}, relabeled: 0 };
   for (const r of rows) {
     sum.changes += r.changes;
     for (const [k, n] of Object.entries(r.byType)) sum.byType[k] = (sum.byType[k] || 0) + n;
     for (const [tool, t] of Object.entries(r.tools)) {
       const s = sum.tools[tool] || (sum.tools[tool] = { flags: 0, caught: 0, falseAlarms: 0, targets: 0, targetsCaught: 0 });
-      for (const k of Object.keys(s)) s[k] += t[k];
+      s.flags += t.flags;
+      s.caught += t.caught;
+      s.falseAlarms += t.falseAlarms;
     }
   }
-  for (const [g, types] of Object.entries(GROUPS)) {
-    const evs = rows.flatMap((r) => r.events.filter((e) => types.includes(e.type)));
-    sum.groups[g] = { changes: evs.length, missedByAll: evs.filter((e) => !e.by.length).length,
-      byTool: Object.fromEntries(['check', 'join', 'read'].map((t) => [t, evs.filter((e) => e.by.includes(t)).length])) };
+  const evs = rows.flatMap((r) => r.events);
+  sum.relabeled = evs.filter((e) => e.label).length;
+  for (const [tool, s] of Object.entries(sum.tools)) {
+    const targets = evs.filter(TARGETS[tool]);
+    s.targets = targets.length;
+    s.targetsCaught = targets.filter((e) => e.by.includes(tool)).length;
+  }
+  for (const g of GROUP_NAMES) {
+    const ge = evs.filter((e) => groupOf(e) === g);
+    sum.groups[g] = { changes: ge.length, missedByAll: ge.filter((e) => !e.by.length).length,
+      byTool: Object.fromEntries(['check', 'join', 'read'].map((t) => [t, ge.filter((e) => e.by.includes(t)).length])) };
   }
   return sum;
+}
+
+const csvCell = (v) => { const x = String(v === null || v === undefined ? '' : v); return /[",\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x; };
+
+/** The changes sheet: one row per change, for the editor to correct Compare's label. */
+function changesCsv(rows) {
+  const head = ['timeline', 'tc', 'from', 'to', 'compare_type', 'auto_label', 'words', 'caught_by', 'your_label'];
+  const out = [head.join(',')];
+  for (const r of rows) {
+    for (const e of r.events) {
+      out.push([r.timeline, e.tc, e.from, e.to, e.type, e.group, e.text, e.by.join('+') || 'missed', e.label || ''].map(csvCell).join(','));
+    }
+  }
+  return out.join('\r\n') + '\r\n';
+}
+
+/** A CSV (Excel / Sheets save, comma or semicolon) → rows of cells. */
+function parseCsv(text) {
+  const src = String(text).replace(/^\uFEFF/, '');
+  const firstLine = src.split(/\r?\n/, 1)[0];
+  const sep = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length ? ';' : ',';
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let q = false;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (q) {
+      if (c === '"' && src[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === sep) { row.push(cell); cell = ''; } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && src[i + 1] === '\n') i++;
+      row.push(cell); cell = '';
+      if (row.some((x) => x !== '')) rows.push(row);
+      row = [];
+    } else cell += c;
+  }
+  if (cell !== '' || row.length) { row.push(cell); if (row.some((x) => x !== '')) rows.push(row); }
+  return rows;
+}
+
+/** The editor's labels from the changes sheet onto a saved score → { score, applied, unknown, unmatched }. */
+function rescore(score, csvText) {
+  const rows = parseCsv(csvText);
+  const head = (rows.shift() || []).map((h) => h.trim().toLowerCase());
+  const col = (n) => head.indexOf(n);
+  const [ti, fi, toi, li] = ['timeline', 'from', 'to', 'your_label'].map(col);
+  if ([ti, fi, toi, li].some((i) => i < 0)) throw new Error('The sheet needs the columns timeline, from, to and your_label');
+  const byKey = new Map();
+  for (const r of score.timelines) for (const e of r.events) { delete e.label; byKey.set(`${r.timeline}|${e.from}|${e.to}`, e); }
+  let applied = 0;
+  const unknown = [];
+  let unmatched = 0;
+  for (const r of rows) {
+    const label = String(r[li] || '').trim().toLowerCase();
+    if (!label) continue;
+    const e = byKey.get(`${String(r[ti]).trim()}|${Number(r[fi])}|${Number(r[toi])}`);
+    if (!e) { unmatched += 1; continue; }
+    if (!LABELS.includes(label)) { unknown.push(label); continue; }
+    e.label = label;
+    applied += 1;
+  }
+  const sum = totals(score.timelines);
+  sum.readCost = score.totals && score.totals.readCost;
+  return { score: { ...score, totals: sum, relabeledAt: Date.now() }, applied, unknown, unmatched };
 }
 
 function reportLines(sum, extra = []) {
@@ -186,8 +272,10 @@ function reportLines(sum, extra = []) {
   }
   L.push('');
   for (const [g, x] of Object.entries(sum.groups)) {
+    if (!x.changes) continue;
     L.push(`${g}: ${x.changes} change(s) · Check ${x.byTool.check} · join ${x.byTool.join} · read ${x.byTool.read} · missed by all ${x.missedByAll}`);
   }
+  if (sum.relabeled) L.push(`(${sum.relabeled} change(s) relabeled by the editor)`);
   return [...L, ...(extra.length ? ['', ...extra] : [])];
 }
 
@@ -197,10 +285,10 @@ function reportHtml({ label, rows, sum, notes = [] }) {
   const name = { check: 'Check', join: 'Join check', read: 'Read-through' };
   const toolRows = Object.entries(sum.tools).map(([t, x]) =>
     `<tr><td>${name[t]}</td><td>${x.flags}</td><td>${x.caught}</td><td>${x.falseAlarms}</td><td>${x.targetsCaught} / ${x.targets}</td></tr>`).join('');
-  const groupRows = Object.entries(sum.groups).map(([g, x]) =>
+  const groupRows = Object.entries(sum.groups).filter(([, x]) => x.changes).map(([g, x]) =>
     `<tr><td>${g}</td><td>${x.changes}</td><td>${x.byTool.check}</td><td>${x.byTool.join}</td><td>${x.byTool.read}</td><td>${x.missedByAll}</td></tr>`).join('');
   const per = rows.map((r) => {
-    const ev = r.events.map((e) => `<tr><td>${esc(e.tc)}</td><td>${esc(e.type)}</td><td>${esc(e.text)}</td><td>${e.by.map((b) => name[b]).join(', ') || '<b>missed</b>'}</td></tr>`).join('');
+    const ev = r.events.map((e) => `<tr><td>${esc(e.tc)}</td><td>${esc(e.label ? `${e.label} (yours; Compare: ${e.type})` : `${e.group} (${e.type})`)}</td><td>${esc(e.text)}</td><td>${e.by.map((b) => name[b]).join(', ') || '<b>missed</b>'}</td></tr>`).join('');
     const fa = Object.entries(r.tools).flatMap(([t, x]) => x.falseAlarmList.map((f) => `<li>${name[t]}: ${esc(f.kind)} — ${esc(f.why)}</li>`)).join('');
     return `<h3>${esc(r.timeline)}</h3><table><tr><th>TC</th><th>Change</th><th>Words</th><th>Caught by</th></tr>${ev || '<tr><td colspan="4">No changes</td></tr>'}</table>`
       + (fa ? `<details><summary>False alarms</summary><ul>${fa}</ul></details>` : '');
@@ -402,6 +490,7 @@ async function runScore(ctx) {
   fs.writeFileSync(path.join(f.dir, `score_${label}.json`), JSON.stringify(out, null, 1), 'utf8');
   const html = path.join(f.dir, `score_${label}.html`);
   fs.writeFileSync(html, reportHtml({ label, rows, sum, notes }), 'utf8');
+  fs.writeFileSync(path.join(f.dir, `score_${label}_changes.csv`), '\uFEFF' + changesCsv(rows), 'utf8');
   const report = reportLines(sum, [`Read-through cost $${sum.readCost.toFixed(3)}`, ...notes]);
   return { report, reportFile: html, data: {
     timelines: sum.timelines, changes: sum.changes,
@@ -409,4 +498,5 @@ async function runScore(ctx) {
 }
 
 module.exports = { runScore, keptTokens, readLines, locateQuote, readFlags, scoreTimeline, totals, reportLines, reportHtml,
+  changesCsv, parseCsv, rescore, autoGroup, LABELS,
   SNAPSHOT_BIN, READ_MODEL, READ_SCHEMA };

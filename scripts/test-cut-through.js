@@ -1357,6 +1357,21 @@ async function scoreChain() {
   assert.deepStrictEqual(saved.timelines[0].events.map((e) => [e.type, e.by.join('+')]), [['restored', 'check+read'], ['word_clipped', 'join']]);
   assert.ok(fs.existsSync(out.reportFile) && fs.existsSync(f.compareJson));
   assert.ok(fs.readFileSync(path.join(dir, 'cut_through_costs.csv'), 'utf8').includes('score_read,claude-haiku-5-5'));
+  // the changes sheet: the editor relabels a change and the score is worked out again (no Resolve)
+  const csvPath = path.join(dir, 'score_T_changes.csv');
+  const sheet = fs.readFileSync(csvPath, 'utf8');
+  assert.ok(sheet.startsWith('\uFEFFtimeline,tc,from,to,compare_type,auto_label,words,caught_by,your_label'));
+  assert.strictEqual(saved.totals.tools.join.targets, 1);
+  // Excel-style: semicolons, quoted cells; "restored" relabeled as an edge fix, a nonsense label ignored
+  const edited = 'timeline;tc;from;to;compare_type;auto_label;words;caught_by;your_label\r\n'
+    + 'A1;x;100;200;restored;words;"two, three";check+read;Edge\r\nA1;x;290;300;word_clipped;edge;x;join;bogus\r\n';
+  const rs = sc.rescore(saved, edited);
+  assert.deepStrictEqual([rs.applied, rs.unknown, rs.unmatched], [1, ['bogus'], 0]);
+  assert.deepStrictEqual([rs.score.totals.tools.join.targets, rs.score.totals.tools.join.targetsCaught], [2, 1]);
+  assert.deepStrictEqual([rs.score.totals.tools.read.targets, rs.score.totals.relabeled], [0, 1]);
+  // a pause right at a cut counts for the join check; one inside a piece doesn't
+  assert.strictEqual(sc.autoGroup({ type: 'air_added', position: 'join' }), 'pause_at_cut');
+  assert.strictEqual(sc.autoGroup({ type: 'air_trimmed', position: 'inside' }), 'pause');
   fs.rmSync(dir, { recursive: true, force: true });
   console.log('✓ score: snapshot paired by plan, audio rendered + jobs cleared, join check + Haiku read-through scored against Compare, renders deleted');
 }
