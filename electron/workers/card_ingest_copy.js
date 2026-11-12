@@ -17,7 +17,8 @@
  *   4. copy the card's mtime, rename temp → final name
  * The card is only ever read.
  *
- * In:  { type: 'start', runId, dest, files: [{ index, src, name, size, sample, mtimeMs }] }
+ * In:  { type: 'start', runId, dest, files: [{ index, dest?, src, name, size, sample, mtimeMs }] }
+ *      (a file's own `dest` wins — stills can go to a different folder)
  *      { type: 'cancel' }
  * Out: { type: 'file-start', index, destName }
  *      { type: 'bytes', index, phase: 'copy'|'verify', bytes }
@@ -143,18 +144,26 @@ async function copyOne(dest, file) {
 
 async function run({ runId: id, dest, files }) {
   if (id) runId = String(id);
-  try {
-    await fsp.mkdir(dest, { recursive: true });
-    await clearDebris(dest);
-  } catch (err) {
-    for (const f of files) send({ type: 'file-error', index: f.index, error: `Destination: ${err.message}` });
-    send({ type: 'finished', canceled: false });
-    return;
+  // Prepare every folder this card writes to; a folder that can't be made
+  // fails only its own files.
+  const destError = new Map();
+  for (const dir of new Set(files.map(f => f.dest || dest))) {
+    try {
+      await fsp.mkdir(dir, { recursive: true });
+      await clearDebris(dir);
+    } catch (err) {
+      destError.set(dir, err.message);
+    }
   }
   for (const file of files) {
     if (canceled) break;
+    const dir = file.dest || dest;
+    if (destError.has(dir)) {
+      send({ type: 'file-error', index: file.index, error: `Destination: ${destError.get(dir)}` });
+      continue;
+    }
     try {
-      await copyOne(dest, file);
+      await copyOne(dir, file);
     } catch (err) {
       if (err instanceof Canceled) break;
       send({ type: 'file-error', index: file.index, error: err.message || String(err) });

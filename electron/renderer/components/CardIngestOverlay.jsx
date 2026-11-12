@@ -4,7 +4,9 @@
  * Two views, driven by the main-process engine (workers/card_ingest.js):
  *   check — every mounted card, checked against the ledger and its destination:
  *           to copy / already on NAS / renamed / unfinalized; a destination per
- *           card; nothing copies until Start ingest
+ *           card; nothing copies until Start ingest. Files to copy can be
+ *           deselected (they stay on the card), and a card holding both clips
+ *           and stills can send the stills to their own folder
  *   run   — the engine's run snapshot: progress while running, then the report
  *           (safe to format, renames, failures) and an optional Resolve import
  *
@@ -37,7 +39,12 @@ const CI_CHECK_STATE = {
   'on-nas':      { dot: 'is-skipped', cls: 'dim',     label: () => 'On NAS' },
   'unfinalized': { dot: 'is-error warning', cls: 'warning', label: () => 'Unfinalized · repair in camera' },
   'error':       { dot: 'is-error',   cls: 'danger',  label: () => 'Unreadable' },
+  'skipped':     { dot: 'is-skipped', cls: 'dim',     label: () => 'Skipped' },
 };
+
+// A file the editor can deselect: one that would be copied.
+const ciPickable = (f) => f.status === 'copy' || f.status === 'rename';
+const CI_NO_SKIP = new Set();
 
 // Run-view file state → dot + label.
 const CI_RUN_STATE = {
@@ -48,6 +55,7 @@ const CI_RUN_STATE = {
   'on-nas':    { dot: 'is-skipped', cls: 'dim',     label: () => 'On NAS' },
   unfinalized: { dot: 'is-error warning', cls: 'warning', label: () => 'Unfinalized' },
   failed:      { dot: 'is-error',   cls: 'danger',  label: () => 'Failed' },
+  skipped:     { dot: 'is-skipped', cls: 'dim',     label: () => 'Skipped' },
   canceled:    { dot: 'is-skipped', cls: 'dim',     label: () => 'Canceled' },
 };
 
@@ -79,6 +87,9 @@ const CI_STRIP_MAX = 8;
 function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, onLog }) {
   const [cards, setCards]       = React.useState([]);
   const [dests, setDests]       = React.useState({});      // root → folder
+  const [stillDests, setStillDests] = React.useState({});  // root → photos folder ('' = same as clips)
+  const [deselected, setDeselected] = React.useState({});  // root → Set of relPaths not to copy
+  const lastPick = React.useRef({});                       // root → index of the last file clicked
   const [excluded, setExcluded] = React.useState(() => new Set());
   const [checks, setChecks]     = React.useState({});      // root → check result
   const [checking, setChecking] = React.useState(false);
@@ -128,14 +139,14 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
 
   // Re-check whenever the card set or a destination changes.
   const cardKey = cards.map(c => c.root).join('|');
-  const destKey = cards.map(c => dests[c.root] || '').join('|');
+  const destKey = cards.map(c => `${dests[c.root] || ''}>${stillDests[c.root] || ''}`).join('|');
   React.useEffect(() => {
     if (!open || run || !window.cardIngestAPI) return;
     if (cards.length === 0) { setChecks({}); return; }
     const seq = ++checkSeq.current;
     setChecking(true);
     const ordered = [...cards].sort((a, b) => Number(excluded.has(a.root)) - Number(excluded.has(b.root)));
-    window.cardIngestAPI.check(ordered.map(c => ({ root: c.root, dest: dests[c.root] || null })))
+    window.cardIngestAPI.check(ordered.map(c => ({ root: c.root, dest: dests[c.root] || null, stillDest: stillDests[c.root] || null })))
       .then(res => {
         if (seq !== checkSeq.current) return;
         if (!res?.ok) { setError(res?.error || 'Check failed'); return; }
@@ -171,9 +182,69 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
 
   // ── Actions ─────────────────────────────────────────────
 
-  async function pickDest(root) {
+  async function pickDest(root, which = 'clips') {
     const res = await window.dialogAPI?.pickFolder();
-    if (res && !res.canceled && res.folderPath) setDests(prev => ({ ...prev, [root]: res.folderPath }));
+    if (!res || res.canceled || !res.folderPath) return;
+    const set = which === 'stills' ? setStillDests : setDests;
+    set(prev => ({ ...prev, [root]: res.folderPath }));
+  }
+
+  function clearStillDest(root) {
+    setStillDests(prev => ({ ...prev, [root]: '' }));
+  }
+
+  // Both clips and stills on the card → offer a separate photos folder.
+  // Decided from file kinds (not statuses) so it can't flip with a re-check.
+  function hasBothKinds(r) {
+    return !!r?.files && r.files.some(f => f.kind === 'video') && r.files.some(f => f.kind === 'still');
+  }
+
+  // ── File selection ──────────────────────────────────────
+
+  function skipSetFor(root) { return deselected[root] || CI_NO_SKIP; }
+
+  /** The card's to-copy numbers after the editor's deselections. */
+  function effective(r) {
+    const skip = skipSetFor(r.root);
+    let toCopy = 0, toCopyBytes = 0, skipped = 0, pickable = 0;
+    for (const f of r.files || []) {
+      if (!ciPickable(f)) continue;
+      pickable++;
+      if (skip.has(f.relPath)) skipped++;
+      else { toCopy++; toCopyBytes += f.size; }
+    }
+    return { toCopy, toCopyBytes, skipped, pickable };
+  }
+
+  function setPicked(root, relPaths, picked) {
+    setDeselected(prev => {
+      const next = new Set(prev[root] || []);
+      for (const p of relPaths) { if (picked) next.delete(p); else next.add(p); }
+      return { ...prev, [root]: next };
+    });
+  }
+
+  // Click toggles one file; shift-click sets the whole range since the last click.
+  function togglePick(root, files, index, shift) {
+    const f = files[index];
+    if (!f || !ciPickable(f)) return;
+    const picked = skipSetFor(root).has(f.relPath);   // new state: deselected → picked
+    const last = lastPick.current[root];
+    let range = [f];
+    if (shift && typeof last === 'number' && files[last]) {
+      const [a, b] = last < index ? [last, index] : [index, last];
+      range = files.slice(a, b + 1);
+    }
+    lastPick.current[root] = index;
+    setPicked(root, range.filter(ciPickable).map(x => x.relPath), picked);
+  }
+
+  function pickOnly(root, files, kind) {
+    const pick = files.filter(ciPickable);
+    setDeselected(prev => ({
+      ...prev,
+      [root]: new Set(pick.filter(f => kind === 'none' || (kind !== 'all' && f.kind !== kind)).map(f => f.relPath))
+    }));
   }
 
   function toggleInclude(root) {
@@ -194,17 +265,22 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
 
   const startable = cards
     .map(c => checks[c.root])
-    .filter(r => r && !r.error && !excluded.has(r.root) && r.summary.toCopy > 0);
+    .filter(r => r && !r.error && !excluded.has(r.root) && effective(r).toCopy > 0);
   const missingDest = startable.some(r => !dests[r.root]);
-  const startFiles = startable.reduce((s, r) => s + r.summary.toCopy, 0);
-  const startBytes = startable.reduce((s, r) => s + r.summary.toCopyBytes, 0);
+  const startFiles = startable.reduce((s, r) => s + effective(r).toCopy, 0);
+  const startBytes = startable.reduce((s, r) => s + effective(r).toCopyBytes, 0);
 
   async function handleStart() {
     if (starting || startable.length === 0 || missingDest) return;
     setStarting(true);
     setError(null);
     try {
-      const res = await window.cardIngestAPI.start(startable.map(r => ({ root: r.root, dest: dests[r.root] })));
+      const res = await window.cardIngestAPI.start(startable.map(r => ({
+        root: r.root,
+        dest: dests[r.root],
+        stillDest: (hasBothKinds(r) && stillDests[r.root]) || null,
+        skip: r.files.filter(f => ciPickable(f) && skipSetFor(r.root).has(f.relPath)).map(f => f.relPath)
+      })));
       if (!res?.ok) setError(res?.error || 'Could not start the ingest');
       else setRun(res.run);
     } finally {
@@ -243,7 +319,9 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
   function renderCheckCard(card) {
     const r = checks[card.root];
     const s = r && !r.error ? r.summary : null;
+    const eff = s ? effective(r) : null;
     const done = s && s.toCopy === 0;
+    const split = s && !done && hasBothKinds(r);
     const isIncluded = !excluded.has(card.root) && !done;
     const isOpen = expanded.has(card.root);
     const meta = [card.formats.join(' + '), card.usedBytes != null ? `${ciBytes(card.usedBytes)} used` : null]
@@ -267,7 +345,8 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
           <div className="ci-card-tags">
             {!r && <span className="run-loading"><span className="spinner small" /><span>Checking…</span></span>}
             {r?.error && <span className="tag danger">{r.error}</span>}
-            {s && s.toCopy > 0 && <span className="tag accent">{s.toCopy} to copy · {ciBytes(s.toCopyBytes)}</span>}
+            {eff && eff.toCopy > 0 && <span className="tag accent">{eff.toCopy} to copy · {ciBytes(eff.toCopyBytes)}</span>}
+            {eff && eff.skipped > 0 && <span className="tag">{eff.skipped} deselected</span>}
             {s && s.onNas > 0 && <span className="tag">{s.onNas} on NAS</span>}
             {s && s.renamed > 0 && <span className="tag info" title="A different file already has this name in the folder">{s.renamed} name{s.renamed !== 1 ? 's' : ''} taken</span>}
             {s && s.unfinalized > 0 && <span className="tag warning">{s.unfinalized} unfinalized</span>}
@@ -294,10 +373,20 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
 
         {s && !done && (
           <div className="ci-dest">
-            <p className="section-label">Destination</p>
+            <p className="section-label">{split ? 'Videos' : 'Destination'}</p>
             <div className="ci-dest-row">
               <span className={`ci-path${dests[card.root] ? '' : ' is-empty'}`}>{dests[card.root] || 'Choose a folder'}</span>
               <button className="btn ghost" onClick={() => pickDest(card.root)}>Browse…</button>
+            </div>
+          </div>
+        )}
+        {split && (
+          <div className="ci-dest">
+            <p className="section-label">Photos</p>
+            <div className="ci-dest-row">
+              <span className={`ci-path${stillDests[card.root] ? '' : ' is-empty'}`}>{stillDests[card.root] || 'Same folder as videos'}</span>
+              {stillDests[card.root] && <button className="btn ghost" onClick={() => clearStillDest(card.root)}>Same as videos</button>}
+              <button className="btn ghost" onClick={() => pickDest(card.root, 'stills')}>Browse…</button>
             </div>
           </div>
         )}
@@ -305,25 +394,73 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
           <p className="ci-done-where">{[...new Set(r.files.filter(f => f.where).map(f => f.where.replace(/[\\/][^\\/]*$/, '')))].join(' · ')}</p>
         )}
 
-        {isOpen && r?.files && renderFiles(card.root, r.files.map(f => ({
-          f, st: CI_CHECK_STATE[f.status] || CI_CHECK_STATE.copy, name: f.name,
-          title: f.status === 'rename' ? `A different ${f.name} is already in this folder` : (f.where || f.error || f.relPath)
-        })))}
+        {isOpen && r?.files && eff?.pickable > 0 && renderPickBar(card.root, r.files, eff)}
+        {isOpen && r?.files && renderFiles(card.root, r.files.map(f => {
+          const skippedHere = ciPickable(f) && skipSetFor(card.root).has(f.relPath);
+          return {
+            f, st: CI_CHECK_STATE[skippedHere ? 'skipped' : f.status] || CI_CHECK_STATE.copy, name: f.name,
+            title: f.status === 'rename' ? `A different ${f.name} is already in this folder` : (f.where || f.error || f.relPath)
+          };
+        }), {
+          pickable: ciPickable,
+          picked: (f) => !skipSetFor(card.root).has(f.relPath),
+          toggle: (index, shift) => togglePick(card.root, r.files, index, shift)
+        })}
       </section>
+    );
+  }
+
+  function renderPickBar(root, files, eff) {
+    const both = files.some(f => ciPickable(f) && f.kind === 'video') && files.some(f => ciPickable(f) && f.kind === 'still');
+    return (
+      <div className="ci-pick-bar">
+        <span className="ci-card-meta">{eff.toCopy} of {eff.pickable} selected</span>
+        <span className="ci-push" />
+        <button className="btn ghost small" onClick={() => pickOnly(root, files, 'all')}>All</button>
+        <button className="btn ghost small" onClick={() => pickOnly(root, files, 'none')}>None</button>
+        {both && <button className="btn ghost small" onClick={() => pickOnly(root, files, 'video')}>Videos</button>}
+        {both && <button className="btn ghost small" onClick={() => pickOnly(root, files, 'still')}>Photos</button>}
+      </div>
     );
   }
 
   // One card's files as rows (list) or thumbnail tiles (grid).
   // items: [{ f, st, name, title }] — st from CI_CHECK_STATE / CI_RUN_STATE.
-  function renderFiles(root, items) {
+  // pick (check view only): { pickable(f), picked(f), toggle(index, shift) }.
+  function renderFiles(root, items, pick = null) {
+    const box = (f, i) => {
+      if (!pick) return null;
+      const can = pick.pickable(f);
+      return (
+        <input
+          type="checkbox"
+          className="ci-check"
+          checked={can ? pick.picked(f) : false}
+          disabled={!can}
+          onClick={(e) => { e.stopPropagation(); pick.toggle(i, e.shiftKey); }}
+          onChange={() => {}}
+          aria-label={`Copy ${f.name}`}
+        />
+      );
+    };
+    const rowProps = (f, i) => {
+      if (!pick || !pick.pickable(f)) return {};
+      return {
+        onClick: (e) => pick.toggle(i, e.shiftKey),
+        onMouseDown: (e) => { if (e.shiftKey) e.preventDefault(); },   // no text selection on shift-click
+      };
+    };
+    const offCls = (f) => (pick && pick.pickable(f) && !pick.picked(f) ? ' is-off' : '');
+    const pickCls = (f) => (pick && pick.pickable(f) ? ' is-pickable' : '');
     if (view === 'grid') {
       return (
         <div className="ci-grid">
-          {items.map(({ f, st, name, title }) => (
-            <div key={f.relPath} className="ci-tile" title={title}>
+          {items.map(({ f, st, name, title }, i) => (
+            <div key={f.relPath} className={`ci-tile${pickCls(f)}${offCls(f)}`} title={title} {...rowProps(f, i)}>
               <CiThumb root={root} relPath={f.relPath} size="tile" />
               <span className="ci-tile-name">{name}</span>
               <span className="ci-tile-meta">
+                {box(f, i)}
                 <span className={`status-dot ${st.dot}`} />
                 <span className={`ci-file-state ${st.cls}`}>{st.label(f)}</span>
                 <span className="ci-file-size ci-push">{ciBytes(f.size)}</span>
@@ -334,9 +471,10 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
       );
     }
     return (
-      <div className="ci-files">
-        {items.map(({ f, st, name, title }) => (
-          <div key={f.relPath} className="ci-file" title={title}>
+      <div className={`ci-files${pick ? ' ci-files--pick' : ''}`}>
+        {items.map(({ f, st, name, title }, i) => (
+          <div key={f.relPath} className={`ci-file${pickCls(f)}${offCls(f)}`} title={title} {...rowProps(f, i)}>
+            {box(f, i)}
             <span className={`status-dot ${st.dot}`} />
             <CiThumb root={root} relPath={f.relPath} />
             <span className="ci-file-name">{name}</span>
@@ -437,7 +575,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         <div className="ci-card-head">
           <div className="ci-card-name">
             <span className="ci-card-title">{card.label}</span>
-            <span className="ci-card-meta ci-mono">→ {card.dest}</span>
+            <span className="ci-card-meta ci-mono">→ {card.dest}{card.stillDest ? ` · photos → ${card.stillDest}` : ''}</span>
           </div>
           <span className="ci-card-meta ci-push">{ciBytes(copied)} of {ciBytes(card.bytesTotal)}</span>
         </div>
@@ -463,6 +601,9 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
       ...card.files.filter(f => f.state === 'failed').map(f => ({
         key: f.relPath, cls: 'is-error', text: <><span className="ci-mono">{f.name}</span> · {f.error || 'failed'}</>
       })),
+      ...(rep.skipped ? [{
+        key: '__skipped', cls: 'is-skipped', text: <>{rep.skipped} deselected file{rep.skipped !== 1 ? 's' : ''} left on the card</>
+      }] : []),
     ];
     return (
       <section key={card.root} className="ci-card ci-report">
@@ -489,9 +630,15 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
           </div>
         )}
         <div className="ci-dest-row">
-          <span className="ci-card-meta ci-mono">{card.dest}</span>
+          <span className="ci-card-meta ci-mono">{card.stillDest ? `Videos · ${card.dest}` : card.dest}</span>
           <button className="btn ghost small ci-push" onClick={() => window.cardIngestAPI.openFolder(card.dest)}>Open folder</button>
         </div>
+        {card.stillDest && (
+          <div className="ci-dest-row">
+            <span className="ci-card-meta ci-mono">Photos · {card.stillDest}</span>
+            <button className="btn ghost small ci-push" onClick={() => window.cardIngestAPI.openFolder(card.stillDest)}>Open folder</button>
+          </div>
+        )}
       </section>
     );
   }

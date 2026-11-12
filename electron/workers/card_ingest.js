@@ -15,6 +15,10 @@
  *   ingest — one copy process per card (card_ingest_copy.js); progress is
  *            broadcast as a run snapshot on 'card-ingest:update'
  *
+ * Per card the editor can deselect files (`skip`, card-relative paths — they
+ * stay on the card, so the card is never "safe to format") and send stills to
+ * their own folder (`stillDest`; empty = same folder as the clips).
+ *
  * Card layouts (FX3 / FX6, verified 2026-10-30):
  *   PRIVATE/M4ROOT/CLIP/*.MP4    FX3 clips (plain counter names, clash-prone)
  *   PRIVATE/XDROOT/Clip/*.MXF    FX6 clips
@@ -111,17 +115,24 @@ async function scanCard(root) {
 function summarize(files, dest) {
   const media = files.filter(f => f.kind !== 'unfinalized');
   const todo = media.filter(f => f.status === 'copy' || f.status === 'rename');
+  const skipped = media.filter(f => f.status === 'skipped').length;
   return {
     mediaCount: media.length,
     toCopy: todo.length,
     toCopyBytes: todo.reduce((s, f) => s + f.size, 0),
     onNas: media.filter(f => f.status === 'on-nas').length,
     renamed: media.filter(f => f.status === 'rename').length,
+    skipped,
     unfinalized: files.filter(f => f.kind === 'unfinalized').length,
     needsDest: !dest && todo.length > 0,
-    safeToFormat: media.length > 0 && todo.length === 0
+    safeToFormat: media.length > 0 && todo.length === 0 && skipped === 0
       && files.every(f => f.kind !== 'unfinalized')
   };
+}
+
+/** Folder a card file goes to: stills to stillDest when one is set. */
+function fileDest(f, dest, stillDest) {
+  return f.kind === 'still' && stillDest ? stillDest : dest;
 }
 
 /**
@@ -212,39 +223,46 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
 
   /**
    * Check cards against the ledger and their destinations.
-   * targets: [{ root, dest|null }] — checked together so two cards headed for
-   * one folder never plan the same name.
+   * targets: [{ root, dest|null, stillDest?, skip? }] — checked together so
+   * two cards headed for one folder never plan the same name. `skip` (card-
+   * relative paths) marks files the editor deselected: they plan no name.
    */
   async function check(targets = []) {
     const reservedByDest = new Map();
+    const reservedFor = (dir) => {
+      const key = path.resolve(dir).toLowerCase();
+      if (!reservedByDest.has(key)) reservedByDest.set(key, new Set());
+      return reservedByDest.get(key);
+    };
     const results = [];
-    for (const { root, dest } of targets) {
+    for (const { root, dest, stillDest, skip } of targets) {
       const card = cards.find(c => c.root === root) || (await describeCard(root));
       if (!card) { results.push({ root, error: 'Card not found' }); continue; }
       const files = await scanCard(root);
-      const destKey = dest ? path.resolve(dest).toLowerCase() : null;
-      const reserved = destKey ? (reservedByDest.get(destKey) || new Set()) : new Set();
-      if (destKey) reservedByDest.set(destKey, reserved);
+      const skipSet = new Set(Array.isArray(skip) ? skip : []);
       for (const f of files) {
         if (f.kind === 'unfinalized') { f.status = 'unfinalized'; continue; }
+        const dir = fileDest(f, dest, stillDest);
+        f.dest = dir || null;
         try {
           f.sample = await sampleHash(f.src, f.size);
           const where = await ledgerHit(f.size, f.sample);
           if (where) {
             f.status = 'on-nas'; f.where = where; f.destName = path.basename(where);
-          } else if (dest) {
-            const t = await resolveTarget(dest, f.name, f.size, f.sample, reserved);
+          } else if (dir) {
+            const t = await resolveTarget(dir, f.name, f.size, f.sample, reservedFor(dir));
             f.status = t.status; f.destName = t.destName;
-            if (t.status === 'on-nas') f.where = path.join(dest, t.destName);
-            else reserved.add(t.destName.toLowerCase());
+            if (t.status === 'on-nas') f.where = path.join(dir, t.destName);
+            else if (skipSet.has(f.relPath)) { f.status = 'skipped'; f.destName = f.name; }
+            else reservedFor(dir).add(t.destName.toLowerCase());
           } else {
-            f.status = 'copy'; f.destName = f.name;
+            f.status = skipSet.has(f.relPath) ? 'skipped' : 'copy'; f.destName = f.name;
           }
         } catch (err) {
           f.status = 'error'; f.error = err.message;
         }
       }
-      results.push({ ...card, dest: dest || null, files, summary: summarize(files, dest) });
+      results.push({ ...card, dest: dest || null, stillDest: stillDest || null, files, summary: summarize(files, dest) });
     }
     return results;
   }
@@ -457,6 +475,7 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
       copiedBytes: media.filter(f => f.state === 'copied').reduce((s, f) => s + f.size, 0),
       onNas: media.filter(f => f.state === 'on-nas').length,
       renamed: media.filter(f => f.state === 'copied' && f.destName !== f.name).length,
+      skipped: media.filter(f => f.state === 'skipped').length,
       failed: media.filter(f => f.state === 'failed').length,
       unfinalized: card.files.filter(f => f.kind === 'unfinalized').length,
       safeToFormat: media.length > 0
@@ -519,8 +538,8 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
   }
 
   /**
-   * targets: [{ root, dest }] — re-checked here (never trusts a stale plan),
-   * then one copy process per card.
+   * targets: [{ root, dest, stillDest?, skip? }] — re-checked here (never
+   * trusts a stale plan), then one copy process per card.
    */
   async function startIngest(targets = []) {
     if (run && run.state === 'running') return { ok: false, error: 'An ingest is already running' };
@@ -533,12 +552,13 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
     run = {
       id, state: 'running', startedAt: Date.now(), finishedAt: null, cancelRequested: false,
       cards: checked.map(c => ({
-        root: c.root, label: c.label, formats: c.formats, dest: c.dest, state: 'running',
+        root: c.root, label: c.label, formats: c.formats, dest: c.dest, stillDest: c.stillDest, state: 'running',
         files: c.files.map(f => ({
-          name: f.name, relPath: f.relPath, size: f.size, kind: f.kind, sample: f.sample,
+          name: f.name, relPath: f.relPath, size: f.size, kind: f.kind, sample: f.sample, dest: f.dest,
           destName: f.destName || f.name, where: f.where || null, error: f.error || null,
           state: f.kind === 'unfinalized' ? 'unfinalized'
             : f.status === 'on-nas' ? 'on-nas'
+            : f.status === 'skipped' ? 'skipped'
             : f.status === 'error' ? 'failed' : 'waiting',
           copyBytes: 0, verifyBytes: 0, src: f.src, mtimeMs: f.mtimeMs
         }))
@@ -559,7 +579,7 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
       const jobs = card.files
         .map((f, index) => ({ f, index }))
         .filter(({ f }) => f.state === 'waiting')
-        .map(({ f, index }) => ({ index, src: f.src, name: f.name, size: f.size, sample: f.sample, mtimeMs: f.mtimeMs }));
+        .map(({ f, index }) => ({ index, dest: f.dest, src: f.src, name: f.name, size: f.size, sample: f.sample, mtimeMs: f.mtimeMs }));
       if (jobs.length === 0) { finishCard(card, false); continue; }
       const child = utilityProcess.fork(path.join(__dirname, 'card_ingest_copy.js'), [], { serviceName: 'EditPanel card ingest' });
       children.push(child);
