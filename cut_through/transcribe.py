@@ -257,7 +257,78 @@ def drop_phantom_doubles(words: list) -> int:
     return len(drop)
 
 
-def align_words(words: list, mics: list, fs: float, progress=None) -> str:
+# One said word written twice (2026-11-12, ELEVATE_MC_2: 301 same-word pairs, Whisper fairly sure of both
+# copies, so the confidence guard above misses them; Claude then trims one copy as a stumble and cuts into
+# the one real word). Each pair is aligned against the mic audio twice — as two words and as one — and a
+# copy that the audio doesn't support is marked "ghost" (every later step ignores ghosts); the kept copy
+# takes the one-word fit's times, so it owns all of the word's sound. Every verdict goes to doubles_<LABEL>.json.
+DOUBLE_GAP = 6               # frames between the copies to count as a pair
+DOUBLE_CTX = 12              # a neighbour this close (frames) goes into the text, so the aligner isn't fitting it
+DOUBLE_PAD_SEC = 0.25
+DOUBLE_WEAK = 0.25           # in the two-word fit, one copy scores under this…
+DOUBLE_ONE_OK = 0.05         # …and the one-word fit scores at least the better copy minus this → fake
+DOUBLE_FIT_GAIN = 0.15       # or: the whole slice fits this much better as one word (and a copy is under 0.5)
+
+
+def test_doubles(words: list, by_mic: dict, fs: float, model, meta, device, align) -> dict:
+    """The one-vs-two test on every adjacent same-word pair. Returns {"pairs": [...], "fake", "real", "untested"}."""
+    out = {"pairs": [], "fake": 0, "real": 0, "untested": 0}
+    for mic, m in by_mic.items():
+        ws = sorted((w for w in words if w["mic"] == mic and w.get("own", True) and not w.get("ghost")), key=lambda w: w["s"])
+        k = 0
+        while k + 1 < len(ws):
+            a, b = ws[k], ws[k + 1]
+            na = norm_word(a["w"])
+            if len(na) < 2 or na != norm_word(b["w"]) or b["s"] - a["e"] > DOUBLE_GAP:
+                k += 1
+                continue
+            row = {"mic": mic, "word": str(a["w"]).strip(), "a": [round(a["s"], 1), round(a["e"], 1), a.get("p"), a.get("a")],
+                   "b": [round(b["s"], 1), round(b["e"], 1), b.get("p"), b.get("a")]}
+            prev = ws[k - 1] if k > 0 and a["s"] - ws[k - 1]["e"] <= DOUBLE_CTX else None
+            nxt = ws[k + 2] if k + 2 < len(ws) and ws[k + 2]["s"] - b["e"] <= DOUBLE_CTX else None
+            ctx = [w for w in (prev, a, b, nxt) if w is not None]
+            lo = max(m["lo"], int(((ctx[0]["s"]) * fs - DOUBLE_PAD_SEC) * SR))
+            hi = min(m["hi"], int(((ctx[-1]["e"]) * fs + DOUBLE_PAD_SEC) * SR))
+            texts = [str(w["w"]).strip() for w in ctx]
+            verdict = None
+            if hi - lo < SR // 10 or not all(texts) or any(" " in t for t in texts):
+                verdict = "untested: no clean slice"
+            else:
+                clip = np.clip(m["audio"][lo:hi] * m["gain"], -1, 1).astype(np.float32)
+                one_ctx = [w for w in ctx if w is not b]
+                two = align(texts, clip)
+                one = align([str(w["w"]).strip() for w in one_ctx], clip)
+                ia, ib, io = ctx.index(a), ctx.index(b), one_ctx.index(a)
+                if not two or not one or any(g.get("score") is None for g in (two[ia], two[ib], one[io])):
+                    verdict = "untested: aligner couldn't place it"
+                else:
+                    sa, sb, s1 = float(two[ia]["score"]), float(two[ib]["score"]), float(one[io]["score"])
+                    mean = lambda gs: sum(float(g.get("score") or 0) for g in gs) / len(gs)
+                    fit2, fit1 = mean(two), mean(one)
+                    row.update({"two": [round(sa, 2), round(sb, 2)], "one": round(s1, 2), "fit_two": round(fit2, 2), "fit_one": round(fit1, 2),
+                                "span_two": round((two[ib]["end"] - two[ia]["start"]) / fs, 1),
+                                "span_one": round((one[io]["end"] - one[io]["start"]) / fs, 1)})
+                    fake = (min(sa, sb) < DOUBLE_WEAK and s1 >= max(sa, sb) - DOUBLE_ONE_OK) or \
+                           (fit1 - fit2 >= DOUBLE_FIT_GAIN and min(sa, sb) < 0.5)
+                    if fake:
+                        ghost, keep = (b, a) if sb <= sa else (a, b)
+                        ghost["ghost"] = True
+                        g1 = one[io]
+                        keep["s"] = round(lo / SR / fs + g1["start"] / fs, 1)
+                        keep["e"] = round(max(keep["s"] + 0.5, lo / SR / fs + g1["end"] / fs), 1)
+                        keep["a"] = round(s1, 2)
+                        verdict = "fake: second copy ghosted" if ghost is b else "fake: first copy ghosted"
+                    else:
+                        verdict = "real"
+            row["verdict"] = verdict
+            out["pairs"].append(row)
+            key = verdict.split(":")[0]
+            out[key] = out.get(key, 0) + 1
+            k += 2 if verdict.startswith("fake") else 1
+    return out
+
+
+def align_words(words: list, mics: list, fs: float, progress=None, label: str = None) -> str:
     """WhisperX forced alignment (wav2vec2): pins every word Whisper wrote to the audio. Whisper's
     own word times touch each other and run 3–25 frames off (Elevate, 2026-11-06: "reconnect" cut
     to "re-", "also" to "al-"); aligned times land within a frame or two of where Jordan would cut.
@@ -354,9 +425,24 @@ def align_words(words: list, mics: list, fs: float, progress=None) -> str:
         if progress and pct // 10 != last_pct // 10:
             last_pct = pct
             progress(pct)
+    # the one-vs-two test on every same-word pair (after alignment: real times to slice by)
+    def one_slice(texts, clip):
+        try:
+            res = whisperx.align([{"text": " ".join(texts), "start": 0.0, "end": len(clip) / SR}], model, meta, clip,
+                                 device, return_char_alignments=False)
+            got = [x for seg in res.get("segments", []) for x in seg.get("words", [])]
+        except Exception:                               # noqa: BLE001 — that pair stays untested
+            return None
+        return got if len(got) == len(texts) else None
+    dbl = test_doubles(words, by_mic, fs, model, meta, device, one_slice)
+    if label:
+        with open(os.path.join(RUN_DIR, f"doubles_{label}.json"), "w", encoding="utf-8") as fh:
+            json.dump({"rules": {"gap": DOUBLE_GAP, "weak": DOUBLE_WEAK, "one_ok": DOUBLE_ONE_OK, "fit_gain": DOUBLE_FIT_GAIN}, **dbl}, fh, indent=1)
     words.sort(key=lambda w: (w["s"], w["mic"]))
     return (f"Aligned {done} of {len(todo)} words to the audio on {device} in {time.time() - t0:.0f}s "
-            f"({moved} moved ≥ 1 fr; {phantoms + ghosts} doubled word(s) Whisper invented, ignored; {skipped} kept Whisper's times)")
+            f"({moved} moved ≥ 1 fr; {phantoms + ghosts} doubled word(s) Whisper invented, ignored; {skipped} kept Whisper's times); "
+            f"doubled words: {len(dbl['pairs'])} pair(s) tested, {dbl['fake']} said once (copy ignored), {dbl['real']} real, "
+            f"{dbl.get('untested', 0)} untested")
 
 
 def write_align_note(label: str, line: str) -> None:
@@ -436,7 +522,7 @@ def main() -> None:
         wp = os.path.join(RUN_DIR, f"words_{label}.json")
         data = json.load(open(wp, encoding="utf-8"))
         print("Aligning words to the audio…", flush=True)
-        line = align_words(data["words"], mics, fs, align_progress)
+        line = align_words(data["words"], mics, fs, align_progress, label)
         if not line.startswith("Aligned"):
             raise SystemExit(line)
         clipped = sum(clip_stretched(data["words"], m, fs) for m in mics)
@@ -520,7 +606,7 @@ def main() -> None:
 
     words.sort(key=lambda w: (w["s"], w["mic"]))
     print("Aligning words to the audio…", flush=True)
-    align_line = align_words(words, mics, fs, align_progress)
+    align_line = align_words(words, mics, fs, align_progress, label)
     report.append(align_line)
     print("Measuring loudness frame by frame (for cut placement)…", flush=True)
     clipped = sum(clip_stretched(words, m, fs) for m in mics)

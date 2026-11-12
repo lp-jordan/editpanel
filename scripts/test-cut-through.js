@@ -576,6 +576,29 @@ class WhisperModel:
   ].join('\n')], { encoding: 'utf8' }).trim().split(' ');
   assert.ok(sw[0] === '1' && Number(sw[1]) > 1.35 && Number(sw[1]) < 1.55 && sw[2] === '2.20-2.80', sw.join(' '));
   console.log('✓ transcribe.py: verbatim pass adds only the missed words; a stretched word is clipped and the stumble it hid surfaces');
+  // one said word written twice vs a real stutter: aligned as two words and as one (stand-in aligner)
+  const dd = execFileSync(process.env.CT_TEST_PYTHON, ['-c', [
+    'import sys, json, numpy as np', `sys.path.insert(0, ${JSON.stringify(PIPELINE)})`, 'import transcribe as t',
+    'SR = 16000; fs = 1 / 24',
+    'm = {"angle": "M", "audio": np.zeros(20 * SR, np.float32), "lo": 0, "hi": 20 * SR, "gain": 1.0}',
+    'W = lambda w, s, e: {"mic": "M", "w": w, "s": s, "e": e, "own": True, "p": 0.9}',
+    'words = [W("we", 24, 30), W("move", 31, 33), W("move", 33.5, 36), W("on", 37, 40),',
+    '         W("the", 120, 124), W("the", 128, 132), W("end.", 133, 140), W("I", 200, 202), W("I", 203, 205)]',
+    'def align(texts, clip):',
+    '    n = len(texts); d = len(clip) / SR / n',
+    '    sc = {("move", 2): [0.8, 0.1], ("move", 1): [0.85], ("the", 2): [0.7, 0.72], ("the", 1): [0.4]}',
+    '    out = []; seen = {}',
+    '    for i, w in enumerate(texts):',
+    '        c = texts.count(w); k = seen.get(w, 0); seen[w] = k + 1',
+    '        out.append({"word": w, "start": i * d, "end": i * d + d * 0.9, "score": sc.get((w, c), [0.9] * c)[k]})',
+    '    return out',
+    'r = t.test_doubles(words, {"M": m}, fs, None, None, "cpu", align)',
+    'print(json.dumps([r["fake"], r["real"], r.get("untested", 0), [x["verdict"] for x in r["pairs"]], [w["w"] for w in words if w.get("ghost")], round(words[1]["e"] - words[1]["s"], 1)]))'
+  ].join('\n')], { encoding: 'utf8' }).trim();
+  const ddr = JSON.parse(dd);
+  assert.deepStrictEqual(ddr.slice(0, 5), [1, 1, 0, ['fake: second copy ghosted', 'real'], ['move']], dd);
+  assert.ok(ddr[5] > 2, `the kept copy takes the one-word fit (${ddr[5]} fr)`);
+  console.log('✓ transcribe.py: a word said once but written twice is ghosted (kept copy gets the whole word); a real stutter and "I I" are left alone');
 } else {
   console.log('- transcribe.py check skipped (set CT_TEST_PYTHON to a Python with numpy)');
 }
