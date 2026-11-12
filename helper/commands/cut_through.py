@@ -5,9 +5,10 @@ with EditPanel; Settings can point the page at another pipeline folder); these
 handlers run its Resolve-side steps inside the Resolve worker instead of
 Resolve's Py3 console.
 
-  ct_list_multicams  {}  → {"multicams": [{name, bin, duplicate}]}
+  ct_list_multicams  {}  → {"multicams": [{name, bin, duplicate}], "audio_timelines": [{name, clips}]}
       Every multicam clip in the open project outside the archive bins
-      (MC ORIGINAL / MC QUARANTINE), same walk as the pipeline uses.
+      (MC ORIGINAL / MC QUARANTINE), same walk as the pipeline uses; and every
+      timeline with sound and no picture (a narration / audiobook session).
 
   ct_mark_in_out  {name}  → {in, out, bin, multicams}
       The In/Out marked on that multicam in Resolve's source viewer (working
@@ -42,7 +43,7 @@ from typing import Any, Dict, List
 
 from . import ct_common
 
-ALLOWED_STEPS = {"prepare_multicam.py", "build_rough_cut.py"}
+ALLOWED_STEPS = {"prepare_multicam.py", "build_rough_cut.py", "prepare_audio.py", "build_narration.py"}
 _run_lock = threading.Lock()
 
 
@@ -75,6 +76,29 @@ def list_multicams(root: Any) -> List[Dict[str, Any]]:
     return found
 
 
+def list_audio_timelines(project: Any) -> List[Dict[str, Any]]:
+    """Timelines with clips on an audio track and none on a video track: a narration session
+    (audiobook) that Cut-through edits without picture. Cut-through's own narration builds
+    ("... rough cut") are left out."""
+    found = []
+    for i in range(1, int(_safe(lambda: project.GetTimelineCount(), 0) or 0) + 1):
+        tl = _safe(lambda: project.GetTimelineByIndex(i))
+        if not tl:
+            continue
+        name = str(_safe(lambda: tl.GetName(), "") or "")
+        if not name or name.endswith("(cut-through)"):
+            continue
+        pics = sum(len(_safe(lambda: tl.GetItemListInTrack("video", t), []) or [])
+                   for t in range(1, int(_safe(lambda: tl.GetTrackCount("video"), 0) or 0) + 1))
+        if pics:
+            continue
+        clips = sum(len(_safe(lambda: tl.GetItemListInTrack("audio", t), []) or [])
+                    for t in range(1, int(_safe(lambda: tl.GetTrackCount("audio"), 0) or 0) + 1))
+        if clips:
+            found.append({"name": name, "clips": clips})
+    return found
+
+
 def handle_ct_list_multicams(_payload: Dict[str, Any], log_func=None) -> Dict[str, Any]:
     from .. import resolve_helper as rh
 
@@ -83,9 +107,10 @@ def handle_ct_list_multicams(_payload: Dict[str, Any], log_func=None) -> Dict[st
     root = rh.project.GetMediaPool().GetRootFolder()
     t0 = time.time()
     found = list_multicams(root)
+    audio = list_audio_timelines(rh.project)
     if log_func:
-        log_func(f"[cut-through] {len(found)} multicam(s) ({time.time() - t0:.1f}s)")
-    return {"project": _safe(lambda: rh.project.GetName()), "multicams": found}
+        log_func(f"[cut-through] {len(found)} multicam(s), {len(audio)} audio timeline(s) ({time.time() - t0:.1f}s)")
+    return {"project": _safe(lambda: rh.project.GetName()), "multicams": found, "audio_timelines": audio}
 
 
 class _PrintCapture:

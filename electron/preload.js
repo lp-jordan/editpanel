@@ -221,6 +221,7 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   runCompare: (payload) => ipcRenderer.invoke('cut-through:compare', payload),
   listLposProjects: () => ipcRenderer.invoke('cut-through:lpos-projects'),
   findVideos: (payload) => ipcRenderer.invoke('cut-through:find-videos', payload),
+  setManuscript: (opts = {}) => ipcRenderer.invoke('cut-through:set-manuscript', { clear: Boolean(opts.clear) }),
   readSlate: (opts = {}) => ipcRenderer.invoke('cut-through:read-slate', { useClaude: Boolean(opts.useClaude) }),
   setSlateAngle: (angle) => ipcRenderer.invoke('cut-through:set-slate-angle', { angle }),
   getSlateFrame: (index) => ipcRenderer.invoke('cut-through:slate-frame', { index }),

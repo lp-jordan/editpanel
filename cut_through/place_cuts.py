@@ -158,7 +158,9 @@ def main(argv) -> None:
     # Resolve exports angles in its own order (e.g. 3, 2, 4, 1): sort by the number in the name
     skip = {v for k, v in opts if k == "skip"} | {a for a in day.get("angles") or [] if re.search(r"slate", a, re.I)}
     angles = sorted((a for a in day.get("angles") or [] if a not in skip), key=lambda a: int((re.findall(r"(\d+)\s*$", a) or [999])[0]))
-    wide = o.get("wide") or ("Camera 1" if "Camera 1" in angles else angles[0])          # Camera 1 / "Angle 1"
+    # narration (an audio-only timeline, prepare_audio.py): no angles, no picture — only the sound is cut
+    narr = day.get("source") == "audio_timeline"
+    wide = o.get("wide") or ("Camera 1" if "Camera 1" in angles else (angles[0] if angles else None))   # Camera 1 / "Angle 1"
     punch = o.get("punch") or next((a for a in ("Camera 2", *angles) if a in angles and a != wide), wide)
     extra = [v for k, v in opts if k == "extra" and v and v not in (wide, punch)]
     cuts = [tuple(map(int, v.split("-"))) for k, v in opts if k == "cut"]
@@ -397,7 +399,7 @@ def main(argv) -> None:
     # every removal costs an angle change, so a scrap of speech shorter than a shot between two
     # removals would flash on screen: give back the optional removal (a pause trim) beside it
     optional = lambda r: r["why"].startswith("pause")
-    changed = True
+    changed = not narr                                  # narration: no picture, so no shot to flash
     while changed:
         changed = False
         for a, b in kept_of(merged)[1:-1]:
@@ -444,7 +446,8 @@ def main(argv) -> None:
     # 5. picture. With Claude's shot list (removals file "shots": [{at, angle}]) the cuts are its
     # choices; the code only keeps the hard rules: an angle change at every removal join (no jump
     # cut) and no blink-length shot between two of its own cuts. Without it: the rule rhythm below.
-    claude_shots = sorted((given or {}).get("shots") or [], key=lambda x: x["at"])
+    claude_shots = [] if narr else sorted((given or {}).get("shots") or [], key=lambda x: x["at"])
+    shots = []
     if LV:                                              # picture cuts: the quiet before the word
         for x in claude_shots:
             if x.get("start") is not None and x.get("prev_end") is not None:
@@ -577,7 +580,7 @@ def main(argv) -> None:
                 else:
                     shots.append(sh)
     cycle = ["wide", "punch"] * 2 + (["extra"] if extra else [])
-    if not claude_shots:
+    if not claude_shots and not narr:
         pick = {"wide": wide, "punch": punch}
         shots, n, ex = [], 0, 0
         for si, (a, b) in enumerate(kept):
@@ -669,7 +672,7 @@ def main(argv) -> None:
            "forced": "angle changed around a removal", "slider": "slider not moving here", "rule": "angle rule"}
     video = [{"in": s["from"], "out": s["to"], "angle": s["angle"],
               "why": why[s["kind"]] + (" (after a removal)" if s["join"] else "")} for s in shots]
-    if not claude_shots:
+    if not claude_shots and video:
         video[0]["why"], video[-1]["why"] = "open on the wide", "close on the wide"
 
     # 6. audio
@@ -785,6 +788,7 @@ def main(argv) -> None:
                      "Draft by place_cuts.py (no Claude edit: listed cuts, pause trims and rule-rhythm shots only)."),
             "mic_angles": {} if camera else {p: p for p in mics}, "video": video, "mics": mics,
             "audio": {"source": "camera" if camera else "wav", "angle": talker},
+            **({"narration": True, "timeline": day.get("timeline")} if narr else {}),
             "removals": [{"from": r["from"], "to": r["to"], "why": r["why"]} for r in merged]}
     json.dump(plan, open(out_p, "w", encoding="utf-8"), indent=1)
 
@@ -796,7 +800,11 @@ def main(argv) -> None:
     print(f"review markers: {sum(m['color'] == 'Red' for m in markers)} red, {sum(m['color'] == 'Yellow' for m in markers)} yellow"
           + (f"; {sum(len([o for o in v if len(o) > 2]) for v in mics.values())} backchannel(s) opened at -2.5 dB" if multi and not camera else ""))
     print("angles:", dict(Counter(v["angle"] for v in video)), f"| audio: {plan['audio']['source']} ({talker})")
-    lens = sorted((v["out"] - v["in"]) / fps for v in video)
+    lens = sorted((v["out"] - v["in"]) / fps for v in video) or [0.0]
+    if narr:
+        print(f"narration: {len(kept)} kept piece(s) on {talker}; pauses > {pause_max} fr → {pause_left} fr"
+              + ("; cuts placed from the waveform" if LV else "; cuts on word times (no levels file)"))
+        return
     print(f"shots: {'Claude' if claude_shots else 'rule rhythm'}; median {lens[len(lens) // 2]:.1f} s, "
           f"10–90% {lens[len(lens) // 10]:.1f}–{lens[len(lens) * 9 // 10]:.1f} s"
           + (f"; {sum(1 for v in video if v['why'].startswith('angle changed around'))} shot(s) changed around removals"

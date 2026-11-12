@@ -33,7 +33,8 @@ const DELIVERY = {
   scripted: 'Scripted, with retakes — the talent reads or recites prepared lines and redoes them until they are right.',
   free: 'Free talk — one person speaking unscripted to camera; no planned retakes.',
   stage: 'Live on stage with an audience — a real event, one continuous performance, no retakes.',
-  convo: 'A recorded conversation (interview / podcast) — unscripted, seated, made for an episode; no planned retakes.'
+  convo: 'A recorded conversation (interview / podcast) — unscripted, seated, made for an episode; no planned retakes.',
+  narration: 'Audiobook narration — audio only, no picture. The narrator reads a manuscript aloud and re-reads any line they flub until it is right.'
 };
 // stage talks mostly lose dead air: pauses longer than 1.5 s go down to ~0.75 s (else > 30 fr → 11 fr)
 // conversations: pauses are mostly turn-taking — only over 2 s, down to ~0.75 s
@@ -42,7 +43,9 @@ const DELIVERY = {
 // scripted: gaps over ~0.8 s go down to ~0.5 s (Elevate, Jordan 2026-11-06: 19–26 fr gaps after a line read long)
 // scripted joins and ends, from Compare on Jordan's edits (Chad Volkert 2026-11-09): ~10 fr after the outgoing word,
 // ~2 before the incoming one (raised to 3, Jordan 2026-11-10); ~6 fr before the first word, 24 after the last
-const PAUSES = { scripted: { max: 20, left: 12, min_save: 0, before: 3, join_after: 10, head: 6, tail: 24 }, stage: { max: 36, left: 18, min_save: 36 }, convo: { max: 48, left: 18, min_save: 24 } };
+// narration (audiobook, 2026-11-12 first cut — tune on the first real book): gaps over ~1.25 s (between takes, page
+// turns) go down to ~0.75 s; ~10 fr of air after the outgoing word, 4 before the incoming one; 12 fr before the first word
+const PAUSES = { narration: { max: 30, left: 18, min_save: 0, before: 4, join_after: 10, head: 12, tail: 36 }, scripted: { max: 20, left: 12, min_save: 0, before: 3, join_after: 10, head: 6, tail: 24 }, stage: { max: 36, left: 18, min_save: 36 }, convo: { max: 48, left: 18, min_save: 24 } };
 const LINE_GAP_SEC = 0.6;
 const MAX_WORDS = 15000;           // ≈ 2.4 h of talk ≈ $1.75 on Opus: the most one Claude pass may take
 const SHOW_PAUSE_SEC = 1.5;
@@ -62,7 +65,7 @@ const ANGLE_HABITS = {
 const SLIDER_MOVING = '; only usable while it is moving — the program keeps your slider shots to its moving stretches (a few seconds each) and gives the rest to the close-up, so keep slider shots short';
 
 function buildSchema(angles) {
-  return {
+  const schema = {
   type: 'object',
   additionalProperties: false,
   required: ['removals', 'shots', 'beats', 'notes'],
@@ -108,6 +111,11 @@ function buildSchema(angles) {
     }
   }
   };
+  if (!angles || !angles.length) {                 // narration: sound only, no shots to choose
+    delete schema.properties.shots;
+    schema.required = schema.required.filter((k) => k !== 'shots');
+  }
+  return schema;
 }
 
 /**
@@ -285,7 +293,7 @@ function requestParams({ model = DEFAULT_MODEL, effort = 'high', system, transcr
     output_config: { effort, format: { type: 'json_schema', schema: buildSchema(angles) } },
     // the brief is the same for every video in a run: cached, so only the first call pays for it in full
     system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
-    messages: [{ role: 'user', content: `${meta}\n\n<transcript>\n${transcript}\n</transcript>\n\nReturn the edit: removals, shots, notes.` }]
+    messages: [{ role: 'user', content: `${meta}\n\n<transcript>\n${transcript}\n</transcript>\n\nReturn the edit: removals, ${angles && angles.length ? 'shots, ' : ''}notes.` }]
   };
 }
 
@@ -358,7 +366,7 @@ function makeClient(apiKey) {
  * same video again. Throws on an empty or too-long range.
  */
 function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model, effort, delivery = 'scripted', roles = {}, direction = '',
-  talker: only = null, energy: useEnergy = true, sliderMoving = false, noCut = [] }) {
+  talker: only = null, energy: useEnergy = true, sliderMoving = false, noCut = [], manuscript = '' }) {
   const words = JSON.parse(fs.readFileSync(wordsPath, 'utf8'));
   const day = JSON.parse(fs.readFileSync(dayPath, 'utf8'));
   const frameSec = day.frame_sec[0] / day.frame_sec[1];
@@ -389,7 +397,17 @@ function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model,
   const insertNote = angles.some((a) => slider.includes(a) || side.includes(a))
     ? 'Inserts are part of Jordan\'s rhythm, not an exception: about a quarter of his cuts after a removal land on one, and he uses the slider about 1.5× as often as the side. Put them on strong lines, lists, examples and story beats.'
     : null;
-  const meta = [
+  const narration = day.source === 'audio_timeline';
+  const script = String(manuscript || '').trim();
+  const meta = narration ? [
+    `Recording: ${label}, ${((e0 - s0) * frameSec / 60).toFixed(1)} min of audiobook narration, one narrator, ` +
+      `${nWords} words, ${nUnheard} unheard-sound marks. Audio only: there are no camera angles and no shots.`,
+    `Delivery: ${DELIVERY.narration}`,
+    ...(script ? ['', 'The manuscript for this part of the recording (what the narrator should read; the transcript is what they actually said):',
+      `<manuscript>\n${script}\n</manuscript>`] : ['', 'No manuscript was given: judge the takes from the transcript alone.']),
+    ...(String(direction || '').trim() ? ['', `Direction from Jordan for this recording (follow it; where it disagrees with the guidelines in your brief, it wins):`,
+      String(direction).trim()] : [])
+  ].join('\n') : [
     `Recording: ${label}, ${((e0 - s0) * frameSec / 60).toFixed(1)} min, ` +
       (multi ? `${people.length} people, each on their own mic (${people.join(', ')}); a line's label says who is talking, ` :
         `one speaker (audio: ${talker || 'mic'}), `) +

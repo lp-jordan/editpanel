@@ -16,6 +16,17 @@ Build / republish on LP1: `node scripts/build-transcription-pack.mjs` — locks 
 committed lock), fetches the same Python from NuGet, installs, downloads the models, self-tests
 online and offline, writes the tar to the NAS, then `pack.json` last. Needs an NVIDIA GPU to run fast.
 
+**Narration (audiobook, 1.2.159).** The source can also be an audio-only timeline (no clips on any
+video track). The page's **Choose** dialog lists multicams and audio timelines; picking a timeline
+runs `prepare_audio.py` (same `day_` shape, one speaker "Narrator", `source: audio_timeline`).
+Transcribe is unchanged. **Chapters** replaces Videos: the manuscript (.docx / .txt / .md, read on
+this machine, `cut_through_narration.js`) is split at its headings and each chapter is found in the
+transcript; each chapter gets its own Claude edit with the `narration.md` brief and only its own
+manuscript text (no shots). `place_cuts.py` keeps sound only. Build runs `build_narration.py`: one
+`<chapter> (cut-through)` audio timeline per chapter, made through Resolve's API (no FCPXML), with
+2-frame crossfades at joins, 8-frame head/tail fades and the review markers. Check and Compare
+aren't built for narration yet. Untested on a real book.
+
 | Step | File | What it does |
 |---|---|---|
 | Prep | `prepare_multicam.py` | Reads the multicam from Resolve: its angles, its length, where each mic or camera's audio sits, and the recordings (where the cameras rolled). Writes `day_<LABEL>.json`. |

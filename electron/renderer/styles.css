@@ -5329,3 +5329,7 @@ button.status-bar-chip-btn:disabled {
   color: var(--text-strong);
   font-weight: 600;
 }
+
+/* Cut-through source picker (2026-11-12): multicams + audio timelines, one click picks */
+.ct-source-row { width: 100%; display: flex; align-items: baseline; gap: 10px; text-align: left; background: none; border: 0; font: inherit; color: inherit; cursor: pointer; }
+.ct-source-meta { margin-left: auto; font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }

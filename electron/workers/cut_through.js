@@ -39,6 +39,7 @@ const estimateLib = require('./cut_through_estimate');
 const motion = require('./cut_through_motion');
 const angleRulesLib = require('../shared/angle_rules');
 const videosLib = require('./cut_through_videos');
+const narrationLib = require('./cut_through_narration');
 const slateLib = require('./cut_through_slate');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 const compare = require('./cut_through_compare');
@@ -92,7 +93,13 @@ function micAngles(day) {
   return seen;
 }
 
+/** A narration day: Prep read an audio-only timeline (prepare_audio.py), not a multicam. */
+function isNarration(day) {
+  return Boolean(day && day.source === 'audio_timeline');
+}
+
 function planKind(day) {
+  if (isNarration(day)) return 'narration';
   return micAngles(day).length >= 2 ? 'convo' : 'solo';
 }
 
@@ -211,6 +218,9 @@ function createCutThrough(opts) {
 
   const s = {
     multicams: [],
+    audioTimelines: [],             // timelines with sound and no picture (narration / audiobook)
+    source: 'multicam',             // what s.mc names: 'multicam' or 'timeline' (an audio timeline)
+    manuscript: null,               // narration: { file, chapters, words } of the loaded manuscript
     multicamsError: null,
     multicamsLoading: false,
     project: null,
@@ -325,7 +335,8 @@ function createCutThrough(opts) {
       compareHtml: path.join(dir, `compare_${label}.html`),
       videos: path.join(dir, `videos_${label}.json`),
       slate: path.join(dir, `slate_${label}.json`),
-      batchDraft: path.join(dir, `batch_${label}.json`)
+      batchDraft: path.join(dir, `batch_${label}.json`),
+      manuscript: path.join(dir, `manuscript_${label}.json`)
     };
   }
 
@@ -864,6 +875,8 @@ function createCutThrough(opts) {
     s.planKind = s.day ? planKind(s.day) : null;
     s.planExists = fs.existsSync(f.plan);
     s.videos = readJson(f.videos);
+    const ms = readJson(f.manuscript);
+    s.manuscript = ms ? { file: ms.file, chapters: (ms.chapters || []).map((c) => c.title), words: ms.words || 0 } : null;
     noteBatch(s.videos && s.videos.batch);
     if (s.day && s.steps.prep.status !== 'running') s.steps.prep.data = prepData(s.day);
   }
@@ -871,6 +884,7 @@ function createCutThrough(opts) {
   function prepData(day) {
     return {
       multicam: day.multicam,
+      source: day.source || 'multicam',
       fps: day.fps,
       lengthMin: day.length_sec ? day.length_sec / 60 : null,
       frames: dayFrames(day),
@@ -928,9 +942,11 @@ function createCutThrough(opts) {
         })
       ]);
       s.multicams = res?.data?.multicams || [];
+      s.audioTimelines = res?.data?.audio_timelines || [];
       applyProject(res?.data?.project || null);
     } catch (err) {
       s.multicams = [];
+      s.audioTimelines = [];
       s.multicamsError = errMsg(err);
     } finally {
       clearTimeout(timer);
@@ -984,8 +1000,9 @@ function createCutThrough(opts) {
     }
   }
 
-  function show(mc, label) {
+  function show(mc, label, source = 'multicam') {
     s.mc = mc || null;
+    s.source = source === 'timeline' ? 'timeline' : 'multicam';
     s.marks = null;
     s.label = sanitizeLabel(label || '');
     adoptLegacyFiles(s.label);
@@ -998,13 +1015,15 @@ function createCutThrough(opts) {
   }
 
   /** label omitted = a fresh pick (see defaultLabel); label given = what the editor typed. */
-  function select({ mc, label }) {
+  function select({ mc, label, source }) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
-    show(mc, label === undefined || label === null ? defaultLabel(mc) : label || (mc ? defaultLabel(mc) : ''));
+    // source omitted (the label field): the pick keeps its kind
+    const src = source || (mc === s.mc ? s.source : 'multicam');
+    show(mc, label === undefined || label === null ? defaultLabel(mc) : label || (mc ? defaultLabel(mc) : ''), src);
     const p = (getPrefs() || {}).cutThrough || {};
-    const next = { ...p, lastMc: s.mc, lastLabel: s.label, lastProject: s.project };
+    const next = { ...p, lastMc: s.mc, lastLabel: s.label, lastProject: s.project, lastSource: s.source };
     if (s.project) {
-      next.byProject = { ...(p.byProject || {}), [s.project]: { mc: s.mc, label: s.label } };
+      next.byProject = { ...(p.byProject || {}), [s.project]: { mc: s.mc, label: s.label, source: s.source } };
       if (s.label) next.labelProjects = { ...(p.labelProjects || {}), [s.label]: s.project };
     }
     setPrefs({ cutThrough: next });
@@ -1023,7 +1042,7 @@ function createCutThrough(opts) {
     s.project = name;
     const p = (getPrefs() || {}).cutThrough || {};
     const saved = (p.byProject || {})[name];
-    if (saved) show(saved.mc, saved.label);
+    if (saved) show(saved.mc, saved.label, saved.source);
     else if (!(first && s.label && (p.labelProjects || {})[s.label] === name)) show(null, '');
     emit();
   }
@@ -1136,7 +1155,9 @@ function createCutThrough(opts) {
   async function runPrep({ audioAngle } = {}) {
     if (!s.mc) throw new Error('Pick a multicam first');
     const started = Date.now();
-    const out = await runStep('prep', 'prepare_multicam.py', { LABEL: s.label, MC: s.mc, OUT_DIR: runDir(), ...(audioAngle ? { AUDIO_ANGLE: String(audioAngle) } : {}) });
+    const out = s.source === 'timeline'
+      ? await runStep('prep', 'prepare_audio.py', { LABEL: s.label, TIMELINE: s.mc, OUT_DIR: runDir() })
+      : await runStep('prep', 'prepare_multicam.py', { LABEL: s.label, MC: s.mc, OUT_DIR: runDir(), ...(audioAngle ? { AUDIO_ANGLE: String(audioAngle) } : {}) });
     let error = out.error;
     const f = files();
     if (!error && !(mtime(f.day) >= started - 2000)) error = `day_${s.label}.json was not written`;
@@ -1151,6 +1172,14 @@ function createCutThrough(opts) {
     if (s.videos && s.videos.active && !vids.length) throw new Error('No planned videos to build');
     if (!vids.length && !fs.existsSync(files().plan)) throw new Error('No plan for this label yet');
     const bin = settings().seqBin;
+    if (isNarration(s.day)) {
+      // narration: one audio timeline per chapter, straight from the plans (no multicam, no FCPXML)
+      const plans = vids.length ? vids.map((v) => [videoFiles(v.id).plan, v.name]) : [[files().plan, s.label]];
+      const out = await runStep('build', 'build_narration.py', { LABEL: s.label, OUT_DIR: runDir(), DAY_FILE: files().day, PLAN_FILES: plans,
+        ...(bin ? { SEQ_BIN: bin } : {}) });
+      finish('build', { error: out.error, report: out.lines, reportFile: files().buildReport });
+      return snapshot();
+    }
     const which = vids.length
       ? { PLAN_FILES: vids.map((v) => [videoFiles(v.id).plan, v.name]) }
       : { PLAN_FILE: files().plan };
@@ -1214,6 +1243,7 @@ function createCutThrough(opts) {
    *  (red: word cut off, ends mid-sentence, cue kept; yellow: starts / joins mid-sentence, gaps, repeats,
    *  sound with no words, flash shots). Free — no Claude. A re-run replaces its own markers. */
   async function runCheck({ timeline } = {}) {
+    if (isNarration(s.day)) throw new Error('Check isn\'t available for narration yet: the build already placed its review markers');
     const f = files();
     const words = readJson(f.words);
     if (!words) throw new Error('Run Transcribe first');
@@ -1275,6 +1305,7 @@ function createCutThrough(opts) {
   /** Compare: each rough cut as it is now in Resolve against the plan it was built from. Read-only
    *  and free. Writes compare_<label>.json (for reading patterns) and .html (for looking). */
   async function runCompare({ timeline } = {}) {
+    if (isNarration(s.day)) throw new Error('Compare isn\'t available for narration yet');
     const f = files();
     const words = readJson(f.words);
     if (!words) throw new Error('Run Transcribe first');
@@ -1600,10 +1631,11 @@ function createCutThrough(opts) {
     try {
       const out = await claude.planWithClaude({
         label: s.label, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: settings().filesDir,
-        promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
+        promptPath: path.join(st0.pipelineDir, 'editor_briefs', briefFor(kind)),
+        manuscript: kind === 'narration' ? narrationLib.sliceText(readJson(f.manuscript), null) : '',
         start: o.start, end: o.end, apiKey: claudeKey(), model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: !!o.motionFile, noCut: o.nocut,
         kind, minutes: (o.end - o.start) * tcClock(s.day).fsec / 60,
-        delivery: claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
+        delivery: kind === 'narration' ? 'narration' : claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
         roles: { wide: o.wide || undefined, punch: o.punch || undefined, extra: o.extra, slider: o.roles.slider, side: o.roles.side,
           other: o.roles.other, skip: o.skip },
         direction: direction(),
@@ -1646,6 +1678,7 @@ function createCutThrough(opts) {
    *  wordless slivers, words a cut went through — by placing the cuts once more with those
    *  trims/keeps. One build afterwards, so no extra timelines or multicam copies. No Claude. */
   async function secondPass(o, kind) {
+    if (kind === 'narration') return null;          // Check reads picture; narration has none (v1)
     const f = o.files;
     const planFile = o.planFile || f.plan;
     const words = readJson(f.words);
@@ -1712,6 +1745,7 @@ function createCutThrough(opts) {
    */
   async function findVideos({ offsetSec, firstCode, again = null } = {}) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
+    if (isNarration(s.day)) throw new Error('Narration splits by chapter: load the manuscript instead');
     needRunFolder();
     if (!s.day) throw new Error('Run Prep first');
     const f = files();
@@ -1933,7 +1967,7 @@ function createCutThrough(opts) {
       const next = { ...v };
       if (patch.include !== undefined) next.include = Boolean(patch.include);
       if (patch.name !== undefined) next.name = videosLib.cleanName(patch.name) || v.name;
-      if (patch.delivery !== undefined && claude.DELIVERY[patch.delivery]) {
+      if (patch.delivery !== undefined && claude.DELIVERY[patch.delivery] && patch.delivery !== 'narration' && v.kind !== 'narration') {
         next.delivery = patch.delivery;
         next.kind = patch.delivery === 'convo' ? 'convo' : 'solo';
         if (next.kind === 'solo' && !next.talker) next.talker = (readJson(files().words)?.mics || [])[0] || null;
@@ -1945,18 +1979,72 @@ function createCutThrough(opts) {
     return snapshot();
   }
 
+  /** The editor brief for a plan kind. */
+  function briefFor(kind) {
+    return kind === 'convo' ? 'conversation.md' : kind === 'narration' ? 'narration.md' : 'solo.md';
+  }
+
+  /**
+   * Narration: read the manuscript (.docx / .txt / .md, on this machine), split it at its chapter
+   * headings, save it in the run folder, and find each chapter in the transcript → one "video" per
+   * chapter (planned and built one by one, like Videos). No file = drop the manuscript: one part.
+   */
+  async function setManuscript({ file } = {}) {
+    if (s.busy) throw new Error(`${s.busy} is still running`);
+    needRunFolder();
+    if (!isNarration(s.day)) throw new Error('A manuscript is for narration: pick an audio timeline and run Prep');
+    const f = files();
+    if (!fs.existsSync(f.words)) throw new Error('Run Transcribe first');
+    if (batchLive() || (s.videos && s.videos.batch && s.videos.batch.status === 'draft')) throw new Error('Discard or finish the batch first');
+    let chapters = [{ title: s.label, text: '' }];
+    if (file) {
+      const text = narrationLib.readManuscript(String(file));
+      chapters = narrationLib.splitChapters(text);
+      const words = text.split(/\s+/).filter(Boolean).length;
+      fs.writeFileSync(f.manuscript, JSON.stringify({ file: path.basename(String(file)), words, chapters }, null, 1), 'utf8');
+    } else if (fs.existsSync(f.manuscript)) {
+      fs.rmSync(f.manuscript, { force: true });
+    }
+    findChapters();
+    refreshFiles();
+    emit();
+    return snapshot();
+  }
+
+  /** The chapters (from the saved manuscript) found in the transcript → videos_<LABEL>.json. A
+   *  chapter whose range didn't move keeps its plan. */
+  function findChapters() {
+    const f = files();
+    const words = readJson(f.words);
+    if (!words) throw new Error('Run Transcribe first');
+    const ms = readJson(f.manuscript);
+    const chapters = ms && ms.chapters && ms.chapters.length ? ms.chapters : [{ title: s.label, text: '' }];
+    const found = narrationLib.findChapters({ day: s.day, words, chapters, label: s.label, tcLabel: (fr) => frameToTc(fr, s.day) });
+    const old = new Map(((s.videos && s.videos.videos) || []).map((v) => [v.id, v]));
+    const videos = found.map((v) => {
+      const o = old.get(v.id);
+      if (!o || o.from !== v.from || o.to !== v.to) return { ...v, plan: { status: 'none' } };
+      return { ...v, include: o.include, name: o.name,
+        plan: o.plan && o.plan.status === 'planned' && fs.existsSync(videoFiles(v.id).plan) ? o.plan : { status: 'none' } };
+    });
+    writeVideos({ label: s.label, multicam: s.day.multicam, madeAt: Date.now(), narration: true, lpos: null, notes: 0, firstCode: '',
+      offset: null, active: Boolean(s.videos && s.videos.active), batch: null, videos, joins: [] });
+  }
+
   /** The options every video's edit shares (roles, direction) + this video's own. */
   function videoArgs(v, { roles: R, defaultDelivery }) {
     const st0 = settings();
     const f = files();
-    const kind = v.kind === 'convo' ? 'convo' : 'solo';
-    const delivery = claude.DELIVERY[v.delivery] ? v.delivery : kind === 'convo' ? 'convo' : (claude.DELIVERY[defaultDelivery] && defaultDelivery !== 'convo' ? defaultDelivery : 'scripted');
+    const kind = v.kind === 'narration' || isNarration(s.day) ? 'narration' : v.kind === 'convo' ? 'convo' : 'solo';
+    const delivery = kind === 'narration' ? 'narration' : claude.DELIVERY[v.delivery] && v.delivery !== 'narration' ? v.delivery : kind === 'convo' ? 'convo'
+      : (claude.DELIVERY[defaultDelivery] && !['convo', 'narration'].includes(defaultDelivery) ? defaultDelivery : 'scripted');
     const vf = videoFiles(v.id);
     return {
       label: vf.tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
-      promptPath: path.join(st0.pipelineDir, 'editor_briefs', kind === 'convo' ? 'conversation.md' : 'solo.md'),
+      promptPath: path.join(st0.pipelineDir, 'editor_briefs', briefFor(kind)),
+      manuscript: kind === 'narration' ? narrationLib.sliceText(readJson(f.manuscript), v.chapters || null) : '',
       start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: Boolean(st0.sliderMotion && fs.existsSync(f.motion)), noCut: planRules(), delivery,
-      talker: kind === 'solo' ? v.talker || null : null,
+      talker: kind !== 'convo' ? v.talker || null : null,
       roles: { wide: R.wide || undefined, punch: R.punch || undefined, extra: R.extra, slider: R.slider, side: R.side, other: R.other, skip: R.skip },
       direction: direction(), kind, minutes: v.minutes
     };
@@ -2025,7 +2113,7 @@ function createCutThrough(opts) {
     for (const [k, v] of list.entries()) {
       st.progress = { phase: `${v.name} · Claude is reading the transcript`, phaseAt: Date.now(), bar: Math.round((k / list.length) * 100) };
       emit();
-      pushLog('plan', `── ${v.name} (${v.fromTc}–${v.toTc}, ${v.kind === 'convo' ? 'conversation' : 'solo'}) ──`);
+      pushLog('plan', `── ${v.name} (${v.fromTc}–${v.toTc}, ${v.kind === 'convo' ? 'conversation' : v.kind === 'narration' ? 'narration' : 'solo'}) ──`);
       const args = videoArgs(v, { roles: R, defaultDelivery: delivery });
       let error = null;
       let summary = null;
@@ -2360,6 +2448,7 @@ function createCutThrough(opts) {
     listLposProjects,
     nameMulticamTimelines,
     findVideos,
+    setManuscript,
     readSlate,
     setSlateAngle,
     setSlateBox,

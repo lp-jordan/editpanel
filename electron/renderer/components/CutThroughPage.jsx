@@ -392,10 +392,12 @@ function CtVideoRow({ v, next, soloDefault, locked, busy, estimate, onPatch, onR
         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
       <span className="ct-vtc" title={`${v.fromTc} – ${v.toTc}`}>{v.fromTc}<span className="dim"> – </span>{v.toTc}</span>
       <span className="ct-vlen dim">{v.minutes.toFixed(1)} min</span>
-      <select className="settings-input ct-vtype" value={delivery} disabled={locked} aria-label="Type"
-        onChange={(e) => onPatch({ delivery: e.target.value })}>
-        {CT_DELIVERY.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
-      </select>
+      {v.kind === 'narration' ? <span className="ct-vtype dim">Narration</span> : (
+        <select className="settings-input ct-vtype" value={delivery} disabled={locked} aria-label="Type"
+          onChange={(e) => onPatch({ delivery: e.target.value })}>
+          {CT_DELIVERY.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+        </select>
+      )}
       <span className="ct-vstatus">
         {st === 'planned' && <span className="tag success">Planned{v.plan.via === 'batch' ? ' · batch' : ''}</span>}
         {st === 'queued' && <span className="tag info">In batch</span>}
@@ -416,6 +418,57 @@ function CtVideoRow({ v, next, soloDefault, locked, busy, estimate, onPatch, onR
             title={`Join with ${next.name} (one video)`} aria-label={`Join ${v.name} with ${next.name}`}>Join ↓</button>
         )}
       </span>
+    </div>
+  );
+}
+
+/** What to cut (2026-11-12): a multicam, or an audio-only timeline (narration / audiobook). */
+function CtSourcePicker({ multicams, audio, current, loading, onPick, onRefresh, onClose }) {
+  const [query, setQuery] = React.useState('');
+  const searchRef = React.useRef(null);
+  React.useEffect(() => { if (searchRef.current) searchRef.current.focus(); }, []);
+  const q = query.trim().toLowerCase();
+  const hit = (...xs) => !q || xs.some((x) => String(x || '').toLowerCase().includes(q));
+  const mcs = multicams.filter((m) => hit(m.name, m.bin));
+  const tls = audio.filter((t) => hit(t.name));
+  const row = (key, name, meta, source) => (
+    <button key={key} type="button" className={`export-project-row ct-source-row${current && current.name === name && current.source === source ? ' selected' : ''}`}
+      onClick={() => onPick(name, source)}>
+      <span className="export-project-row-name">{name}</span>
+      {meta && <span className="dim ct-source-meta">{meta}</span>}
+    </button>
+  );
+  return (
+    <div className="export-picker-overlay ct-dialog-overlay" role="dialog" aria-modal="true" aria-label="Choose what to cut"
+      onKeyDown={(e) => { if (e.key === 'Escape') { if (query) setQuery(''); else onClose(); } }}>
+      <div className="export-picker ct-dialog">
+        <header className="export-picker-head">
+          <h3>Choose what to cut</h3>
+        </header>
+        <div className="export-picker-search">
+          <input ref={searchRef} type="search" className="export-picker-search-input" placeholder="Search…" value={query}
+            onChange={(e) => setQuery(e.target.value)} spellCheck={false} autoComplete="off" />
+          <button type="button" className="btn small ghost" disabled={loading} onClick={onRefresh}>{loading ? 'Loading…' : 'Refresh'}</button>
+        </div>
+        <div className="export-picker-body">
+          {!loading && !mcs.length && !tls.length && <p className="hint">{q ? `Nothing matches “${query}”.` : 'No multicams or audio timelines in this project.'}</p>}
+          {mcs.length > 0 && (
+            <div className="export-project-group">
+              <p className="export-client-name">Multicams</p>
+              {mcs.map((m, i) => row(`m${i}`, m.name, m.bin, 'multicam'))}
+            </div>
+          )}
+          {tls.length > 0 && (
+            <div className="export-project-group">
+              <p className="export-client-name">Audio timelines</p>
+              {tls.map((t, i) => row(`t${i}`, t.name, `${t.clips} clip${t.clips === 1 ? '' : 's'}`, 'timeline'))}
+            </div>
+          )}
+        </div>
+        <footer className="export-picker-foot">
+          <button type="button" className="btn ghost" onClick={onClose}>Close</button>
+        </footer>
+      </div>
     </div>
   );
 }
@@ -443,6 +496,7 @@ function CutThroughPage({ connected }) {
   const [keyDraft, setKeyDraft] = React.useState('');
   const [directionDraft, setDirectionDraft] = React.useState('');
   const [planMode, setPlanMode] = React.useState(null);
+  const [pickerOpen, setPickerOpen] = React.useState(false);
   const [offsetDraft, setOffsetDraft] = React.useState('');
   const [firstCodeDraft, setFirstCodeDraft] = React.useState(null);
   const settingsRef = React.useRef(null);
@@ -519,14 +573,14 @@ function CutThroughPage({ connected }) {
   const needsFolder = Boolean(ct.project) && !runFolder;
   const busy = stepRunning || needsFolder;   // no folder yet: everything waits for it
   const mcOptions = ct.multicams || [];
-  const mcKnown = !ct.mc || mcOptions.some((m) => m.name === ct.mc);
-  const dupe = mcOptions.find((m) => m.name === ct.mc && m.duplicate);
+  const dupe = ct.source !== 'timeline' && mcOptions.find((m) => m.name === ct.mc && m.duplicate);
   const solo = ct.planKind === 'solo';
+  const narr = ct.planKind === 'narration' || Boolean(day && day.source === 'audio_timeline');
   const vids = ct.videos;
   const list = (vids && vids.videos) || [];
   const est = ct.estimate;
   const firstCode = firstCodeDraft !== null ? firstCodeDraft : ((vids && vids.firstCode) || '');
-  const mode = ctPlanMode(planMode, vids);
+  const mode = narr ? 'videos' : ctPlanMode(planMode, vids);
   const batch = vids && vids.batch;
   const batchLive = Boolean(batch && ['in_progress', 'canceling'].includes(batch.status));
   const batchDraft = Boolean(batch && batch.status === 'draft');
@@ -570,11 +624,11 @@ function CutThroughPage({ connected }) {
 
   // What stops a step from running, as the one thing it needs (shown in place of its status).
   const needs = {
-    prep: !connected ? 'Needs Resolve' : !ct.mc ? 'Needs a multicam' : !ct.label ? 'Needs a label' : needsFolder ? 'Needs a run folder' : null,
-    transcribe: !day ? 'Needs Prep' : oddAngles.length ? 'Rename angles to "Camera N", then Prep again'
+    prep: !connected ? 'Needs Resolve' : !ct.mc ? 'Needs a multicam or audio timeline' : !ct.label ? 'Needs a label' : needsFolder ? 'Needs a run folder' : null,
+    transcribe: !day ? 'Needs Prep' : !narr && oddAngles.length ? 'Rename angles to "Camera N", then Prep again'
       : batchWaiting ? 'A batch is waiting on this transcript' : null,
     videos: !transcribed ? 'Needs Transcribe' : null,
-    plan: !transcribed ? 'Needs Transcribe' : mode === 'videos' && !list.length ? 'Needs videos' : !ct.planKind ? 'Needs Prep' : null,
+    plan: !transcribed ? 'Needs Transcribe' : mode === 'videos' && !list.length ? (narr ? 'Needs the manuscript' : 'Needs videos') : !ct.planKind ? 'Needs Prep' : null,
     build: !connected ? 'Needs Resolve' : !(mode === 'videos' ? ct.videosReady : ct.planExists) ? 'Needs a plan' : null,
     review: !connected ? 'Needs Resolve' : !transcribed ? 'Needs Transcribe' : null
   };
@@ -684,11 +738,11 @@ function CutThroughPage({ connected }) {
         menu={r.items} progress={running ? ctStepProgress(st, now) : null} errors={errs('prep')} report={r.el}>
         {day && (
           <div className="ct-grid">
-            {day.multicam !== ct.mc && <CtRow label="Multicam"><span className="dim">{day.multicam}</span></CtRow>}
+            {day.multicam !== ct.mc && <CtRow label={narr ? 'Timeline' : 'Multicam'}><span className="dim">{day.multicam}</span></CtRow>}
             {day.lengthMin != null && (
               <CtRow label="Length"><span>{day.lengthMin.toFixed(1)} min</span><span className="dim">{day.fps?.toFixed(3)} fps</span></CtRow>
             )}
-            <CtRow label="Angles">
+            {!narr && <CtRow label="Angles">
               <div className="ct-angles">
                 {sortedAngles.map((a) => (
                   <div key={a} className={`ct-angle${oddAngle(a) ? ' is-odd' : ''}`}>
@@ -708,7 +762,7 @@ function CutThroughPage({ connected }) {
                 ))}
               </div>
               {oddAngles.length > 0 && <div className="notice warning">Rename {oddAngles.join(', ')} to "Camera N" in Resolve, then Prep again.</div>}
-            </CtRow>
+            </CtRow>}
             {ct.mc && sortedAngles.length > 1 && (
               <CtRow label="Angle rules">
                 <span className={ruleCount ? '' : 'dim'}>{ruleCount ? `${ruleCount} cut${ruleCount === 1 ? '' : 's'} blocked` : 'None'}</span>
@@ -716,7 +770,7 @@ function CutThroughPage({ connected }) {
               </CtRow>
             )}
             <CtRow label="Audio">
-              {(day.cameraAudioAngles.length > 0 || day.wavMics > 0) && (
+              {!narr && (day.cameraAudioAngles.length > 0 || day.wavMics > 0) && (
                 <select className="settings-input ct-audio" value={audioChoice} disabled={busy || !connected} aria-label="Audio source"
                   onChange={(e) => call('prep', () => api.runPrep({ audioAngle: e.target.value }))}>
                   {day.wavMics > 0 && <option value="">Mic WAVs</option>}
@@ -738,7 +792,7 @@ function CutThroughPage({ connected }) {
               <CtRow label="Estimate">
                 <span>≈ {ctMoney(est.day.live)} live · {ctMoney(est.day.batch)} batch</span>
                 {est.day.guess && <span className="tag warning" title="No conversation runs yet">Guess</span>}
-                <span className="dim">{est.day.kind === 'convo' ? 'Conversation' : 'Solo'} · transcribe ≈ {est.day.transcribeMin} min{est.day.tracks > 1 ? ` (${est.day.tracks} tracks)` : ''}</span>
+                <span className="dim">{narr ? 'Narration' : est.day.kind === 'convo' ? 'Conversation' : 'Solo'} · transcribe ≈ {est.day.transcribeMin} min{est.day.tracks > 1 ? ` (${est.day.tracks} tracks)` : ''}</span>
               </CtRow>
             )}
           </div>
@@ -903,6 +957,57 @@ function CutThroughPage({ connected }) {
     );
   }
 
+  // ── 3 Chapters (narration): the manuscript splits the read into chapters ──
+  function renderChapters() {
+    const locked = busy || batchWaiting;
+    const ticked = list.filter((v) => v.include);
+    const ms = ct.manuscript;
+    const load = () => call('videos', () => api.setManuscript());
+    const none = () => call('videos', () => api.setManuscript({ clear: true }));
+    const open = isOpen('videos', transcribed);
+    const menu = [
+      list.length > 0 && { label: 'Change manuscript', onClick: load, disabled: locked || !transcribed },
+      { label: ms ? 'Drop the manuscript (one part)' : 'No manuscript (one part)', onClick: none, disabled: locked || !transcribed }
+    ];
+    return (
+      <CtStep key="videos" n={3} title="Chapters" status={list.length ? 'done' : 'pending'}
+        statusText={list.length ? `${ticked.length} of ${list.length} ticked · ${ticked.reduce((t, v) => t + v.minutes, 0).toFixed(1)} min` : ''}
+        need={!transcribed ? needs.videos : null} open={open} onToggle={toggle('videos', open)}
+        actions={!list.length && (
+          <button type="button" className={btn('find')} disabled={locked || Boolean(needs.videos)} title={needs.videos || ''} onClick={load}>Load manuscript</button>
+        )}
+        menu={menu} errors={[errors.videos].filter(Boolean)}>
+        <div className="ct-grid">
+          <CtRow label="Manuscript">
+            {ms ? <span>{ms.file} <span className="dim">· {ms.chapters.length} chapter{ms.chapters.length === 1 ? '' : 's'} · {ms.words.toLocaleString()} words</span></span>
+              : <span className="dim">{list.length ? 'None' : 'Word or text file'}</span>}
+          </CtRow>
+          {list.length > 0 && (
+            <div className="ct-vtable" role="table" aria-label="Chapters">
+              <div className="ct-vrow ct-vhead" role="row">
+                <span />
+                <span>Name</span>
+                <span>Start – End</span>
+                <span>Length</span>
+                <span>Type</span>
+                <span>Plan</span>
+                <span>Flags</span>
+                <span />
+              </div>
+              {list.map((v) => (
+                <CtVideoRow key={v.id} v={v} next={null} soloDefault={soloDefault} locked={locked} busy={busy}
+                  estimate={batchDraft && batch.items ? batch.items[v.id] : null}
+                  onPatch={(patch) => call('videos', () => api.updateVideo(v.id, patch))}
+                  onRetry={() => call('plan', () => api.planVideos({ ...planForm_, ids: [v.id] }))}
+                  onJoin={null} onSplit={null} />
+              ))}
+            </div>
+          )}
+        </div>
+      </CtStep>
+    );
+  }
+
   // ── 4 Plan: how to cut — Claude's edit (live or a half-price batch) ────────
   function renderPlan() {
     const st = steps.plan;
@@ -961,6 +1066,9 @@ function CutThroughPage({ connected }) {
         <div className="ct-grid">
           {editing && (
             <>
+              {narr ? (
+                <CtRow label="Model"><span className="dim">{ct.settings.claudeModel === 'claude-sonnet-5-5' ? 'Sonnet 5.5' : 'Opus 5.5'}</span></CtRow>
+              ) : (
               <CtRow label={mode === 'videos' ? 'Solo videos' : 'Delivery'}>
                 <select className="settings-input ct-select" value={mode === 'videos' ? soloDefault : delivery} disabled={formLocked} aria-label="Delivery"
                   onChange={(e) => setPlanForm({ ...planForm, delivery: e.target.value })}>
@@ -971,6 +1079,7 @@ function CutThroughPage({ connected }) {
                 </select>
                 <span className="dim">{ct.settings.claudeModel === 'claude-sonnet-5-5' ? 'Sonnet 5.5' : 'Opus 5.5'}</span>
               </CtRow>
+              )}
               <CtRow label="Direction">
                 <textarea className="settings-input ct-direction" rows={3} value={directionDraft} aria-label="Direction for Claude" disabled={formLocked}
                   onChange={(e) => setDirectionDraft(e.target.value)} />
@@ -1116,17 +1225,12 @@ function CutThroughPage({ connected }) {
 
       <section className="panel ct-panel">
         <div className="ct-grid">
-          <CtRow label="Multicam">
-            <select className="settings-input ct-grow-input" value={ct.mc || ''} disabled={stepRunning} aria-label="Multicam"
-              onChange={(e) => call('select', () => api.select({ mc: e.target.value || null }))}>
-              <option value="">{!connected ? 'Resolve not connected' : ct.multicamsLoading ? 'Loading…' : mcOptions.length ? 'Choose…' : 'No multicams'}</option>
-              {!mcKnown && <option value={ct.mc}>{ct.mc}</option>}
-              {mcOptions.map((m, i) => (
-                <option key={`${m.name}-${i}`} value={m.name}>{m.bin ? `${m.name} — ${m.bin}` : m.name}</option>
-              ))}
-            </select>
-            <button type="button" className="btn small ghost" disabled={!connected || stepRunning || ct.multicamsLoading}
-              onClick={() => call('multicams', () => api.listMulticams())} aria-label="Refresh multicams">Refresh</button>
+          <CtRow label="Source">
+            {ct.mc
+              ? <span className="ct-path" title={ct.mc}>{ct.mc} <span className="dim">· {ct.source === 'timeline' ? 'Audio timeline' : 'Multicam'}</span></span>
+              : <span className="dim">{!connected ? 'Resolve not connected' : 'Nothing chosen'}</span>}
+            <button type="button" className={`btn small${!ct.mc && connected ? '' : ' ghost'}`} disabled={!connected || stepRunning}
+              onClick={() => { setPickerOpen(true); if (!ct.multicamsLoading) call('multicams', () => api.listMulticams()); }}>{ct.mc ? 'Change' : 'Choose'}</button>
           </CtRow>
           <CtRow label="Label">
             <input className="settings-input ct-label" value={labelDraft} disabled={stepRunning} aria-label="Label"
@@ -1149,10 +1253,18 @@ function CutThroughPage({ connected }) {
 
       {renderPrep()}
       {renderTranscribe()}
-      {renderVideos()}
+      {narr ? renderChapters() : renderVideos()}
       {renderPlan()}
       {renderBuild()}
-      {renderReview()}
+      {!narr && renderReview()}
+
+      {pickerOpen && (
+        <CtSourcePicker multicams={mcOptions} audio={ct.audioTimelines || []} loading={ct.multicamsLoading}
+          current={ct.mc ? { name: ct.mc, source: ct.source } : null}
+          onRefresh={() => call('multicams', () => api.listMulticams())}
+          onClose={() => setPickerOpen(false)}
+          onPick={(name, source) => { setPickerOpen(false); call('select', () => api.select({ mc: name, source })); }} />
+      )}
 
       {rulesOpen && (
         <AngleRulesDialog mc={ct.mc} angles={usable} roles={roles} rules={ct.angleRules || []} busy={rulesBusy} error={errors.rules}

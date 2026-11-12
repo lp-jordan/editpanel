@@ -3606,6 +3606,14 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:compare', ctCall((a) => cutThrough.runCompare(a)));
   ipcMain.handle('cut-through:lpos-projects', ctCall(() => cutThrough.listLposProjects()));
   ipcMain.handle('cut-through:find-videos', ctCall((a) => cutThrough.findVideos(a)));
+  // narration: pick the manuscript (Word or text) — clear: true drops it (one part, no script)
+  ipcMain.handle('cut-through:set-manuscript', ctCall(async (a) => {
+    if (a && a.clear) return cutThrough.setManuscript({ file: null });
+    const res = await dialog.showOpenDialog({ title: 'Manuscript', properties: ['openFile'],
+      filters: [{ name: 'Manuscript', extensions: ['docx', 'txt', 'md'] }] });
+    if (res.canceled || !res.filePaths.length) return cutThrough.snapshot();
+    return cutThrough.setManuscript({ file: res.filePaths[0] });
+  }));
   ipcMain.handle('cut-through:read-slate', ctCall((a) => cutThrough.readSlate({ useClaude: Boolean(a && a.useClaude) })));
   ipcMain.handle('cut-through:set-slate-angle', ctCall((a) => cutThrough.setSlateAngle(a && a.angle)));
   ipcMain.handle('cut-through:slate-frame', ctCall((a) => cutThrough.slateFrame({ index: a && a.index })));
