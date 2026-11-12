@@ -7,7 +7,7 @@
 const fs = require('fs');
 
 /** The engine's steps, in order (main.js uses them to name a running step). */
-const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check', 'compare'];
+const STEP_KEYS = ['prep', 'transcribe', 'plan', 'build', 'check', 'compare', 'score'];
 
 /** A JSON file, or null when it's missing or unreadable. */
 function readJson(p) {

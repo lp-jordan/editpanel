@@ -1297,6 +1297,70 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   console.log('✓ videos end to end: slate J-codes → A1 / S1 (restart) / B2 → plan now (solo keeps both mic tracks, gap cut) → build PLAN_FILES → batch priced, sent, survives a restart, canceled, collected at half price, failed one re-sent; Join keeps the slate read');
 }
 
+// ── Score: snapshot render → join check → read-through → caught / missed / false alarms (fake Resolve, Python, Claude) ──
+async function scoreChain() {
+  const sc = require('../electron/workers/cut_through_score');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-score-'));
+  const plan = { multicam: 'mc', fps: 24, video: [{ in: 0, out: 100, angle: 'Camera 1' }, { in: 200, out: 300, angle: 'Camera 2' }], removals: [{ from: 100, to: 200, why: 'flub' }] };
+  const words = { words: [{ w: 'one.', s: 10, e: 20 }, { w: 'lost', s: 150, e: 160 }, { w: 'two.', s: 210, e: 220 }, { w: 'three.', s: 280, e: 295 }] };
+  const piece = (a, b, angle, t) => ({ mc: 'mc', angle, src_in: a, src_out: b, start: t, end: t + b - a });
+  const asBuilt = { name: 'A1 copy', fps: 24, start_frame: 1000, start_tc: '01:00:00:00', pieces: [piece(0, 100, 'Camera 1', 1000), piece(200, 300, 'Camera 2', 1100)] };
+  const reviewed = { ...asBuilt, name: 'A1', pieces: [piece(0, 200, 'Camera 1', 1000), piece(200, 290, 'Camera 2', 1200)] };
+  // the read-through: kept words, a new line after the cut
+  const tokens = sc.keptTokens(asBuilt, words, 'mc');
+  assert.deepStrictEqual(tokens.map((t) => [t.w, t.afterCut]), [['one.', false], ['two.', true], ['three.', false]]);
+  const { lines, text } = sc.readLines(tokens);
+  assert.strictEqual(text, '1: one.\n2: ‖ two. three.');
+  assert.deepStrictEqual(sc.locateQuote(tokens, lines, 2, 'Three'), [2, 2]);
+  const f = { dir, words: path.join(dir, 'words_T.json'), levels: path.join(dir, 'none.json'), motion: path.join(dir, 'none.json'),
+    compareJson: path.join(dir, 'compare_T.json'), compareHtml: path.join(dir, 'compare_T.html') };
+  fs.writeFileSync(f.words, JSON.stringify(words));
+  const calls = [];
+  let owned = null;
+  const ask = async (p) => {
+    calls.push(p.cmd + (p.action ? `:${p.action}` : ''));
+    if (p.cmd === 'ct_read_timeline') return p.name === 'A1' ? reviewed : asBuilt;
+    if (p.cmd === 'list_bin_sequences') return { bin_found: true, sequences: [{ name: 'A1 copy' }] };
+    if (p.cmd === 'ct_render_audio' && p.action === 'queue') {
+      fs.writeFileSync(path.join(p.target_dir, 'A1 copy.wav'), 'RIFF');
+      return { jobs: [{ name: 'A1 copy', job_id: 'j1' }], failed: [], format: 'wav', codec: 'LinearPCM' };
+    }
+    if (p.cmd === 'render_status') return { all_terminal: true, jobs: [{ job_id: 'j1', status: 'Complete', terminal: true, percent: 100, output_filename: 'A1 copy.wav' }] };
+    return {};
+  };
+  let renderDir = null;
+  const runPython = async (args) => {
+    const job = JSON.parse(fs.readFileSync(args[1], 'utf8'));
+    renderDir = path.dirname(job.timelines[0].audio);
+    assert.ok(fs.existsSync(job.timelines[0].audio), 'render handed to the join check');
+    assert.deepStrictEqual(job.timelines[0].pieces.map((p) => p.src_in), [0, 200]);
+    fs.writeFileSync(job.out, JSON.stringify({ timelines: [{ name: 'A1 copy', joins: [{}], flags: [
+      { kind: 'clipped_start', src: 300, rec: 200, why: 'squashed' }, { kind: 'clipped_end', src: 40, rec: 40, why: 'loud' }] }] }));
+    return { code: 0 };
+  };
+  const client = { messages: { create: async (req) => {
+    assert.strictEqual(req.model, 'claude-haiku-5-5');
+    assert.ok(req.messages[0].content.includes('2: ‖ two. three.'));
+    return { stop_reason: 'end_turn', model: 'claude-haiku-5-5', usage: { input_tokens: 1000, output_tokens: 200 },
+      content: [{ type: 'text', text: JSON.stringify({ flags: [{ line: 2, quote: 'two.', kind: 'doesnt_follow', why: 'x' }] }) }] };
+  } } };
+  const out = await sc.runScore({ label: 'T', files: f, words, plans: [{ id: null, kind: 'solo', plan: '', removals: '', review: '', data: plan }],
+    roughCuts: async () => ['A1'], ask, phase: () => {}, log: () => {}, markOwned: (j) => { owned = j; }, runPython,
+    joinScript: 'join_check.py', client, costsDir: dir, isCanceled: () => false, tmpRoot: dir, pollMs: 1 });
+  assert.deepStrictEqual(owned, [{ name: 'A1 copy', job_id: 'j1' }], 'render jobs marked as EditPanel\'s own');
+  assert.ok(calls.includes('ct_render_audio:delete'), 'render jobs removed from the queue');
+  assert.ok(!fs.existsSync(renderDir), 'renders deleted');
+  assert.deepStrictEqual([out.data.join.flags, out.data.join.caught, out.data.join.falseAlarms], [2, 1, 1]);
+  assert.deepStrictEqual([out.data.read.flags, out.data.read.caught], [1, 1]);
+  assert.strictEqual(out.data.changes, 2);
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'score_T.json'), 'utf8'));
+  assert.deepStrictEqual(saved.timelines[0].events.map((e) => [e.type, e.by.join('+')]), [['restored', 'check+read'], ['word_clipped', 'join']]);
+  assert.ok(fs.existsSync(out.reportFile) && fs.existsSync(f.compareJson));
+  assert.ok(fs.readFileSync(path.join(dir, 'cut_through_costs.csv'), 'utf8').includes('score_read,claude-haiku-5-5'));
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log('✓ score: snapshot paired by plan, audio rendered + jobs cleared, join check + Haiku read-through scored against Compare, renders deleted');
+}
+
 (async () => {
   {
     let FFMPEG = null;
@@ -1728,6 +1792,7 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   await new Promise((r) => setTimeout(r, 200));
   assert.ok(updates.length > 0, 'no updates broadcast');
   console.log('✓ orchestrator: select → prep → transcribe (cancel + run) → plan → build; earlier runs; solo seam');
+  await scoreChain();
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log('cut-through checks passed');
 })().catch((err) => {

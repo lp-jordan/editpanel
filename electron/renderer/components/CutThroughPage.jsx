@@ -1045,7 +1045,7 @@ function CutThroughPage({ connected }) {
   // ── Review: Check (runs after every Build) and Compare, one timeline picker ──
   function renderReview() {
     const roughBase = ct.label && !(vids && vids.active) ? `${ct.label} rough cut` : '';
-    const anyRun = ['check', 'compare'].some((k) => steps[k].status === 'running');
+    const anyRun = ['check', 'compare', 'score'].some((k) => steps[k] && steps[k].status === 'running');
     const sub = (key, title, verb, result) => {
       const st = steps[key];
       const r = reportBits(key, st);
@@ -1055,7 +1055,8 @@ function CutThroughPage({ connected }) {
           need={!running && st.status === 'pending' ? needs.review : null} open
           actions={!running && (
             <button type="button" className="btn small ghost" disabled={busy || Boolean(needs.review)} title={needs.review || ''}
-              onClick={() => call(key, () => (key === 'check' ? api.runCheck({ timeline: reviewTimeline }) : api.runCompare({ timeline: reviewTimeline })))}>
+              onClick={() => call(key, () => (key === 'check' ? api.runCheck({ timeline: reviewTimeline })
+                : key === 'score' ? api.runScore() : api.runCompare({ timeline: reviewTimeline })))}>
               {st.status === 'pending' ? verb : `${verb} again`}
             </button>
           )}
@@ -1086,6 +1087,11 @@ function CutThroughPage({ connected }) {
           <span className="dim">
             {d.changed} of {d.timelines} changed · words +{d.restored} −{d.cut}
             {d.finished || d.clipped ? ` · word ends +${d.finished || 0} −${d.clipped || 0}` : ''}
+          </span>
+        ))}
+        {steps.score && sub('score', 'Score', 'Score', (d) => (
+          <span className="dim">
+            {d.changes} changes · Check {d.check.caught}/{d.check.flags} · joins {d.join.caught}/{d.join.flags} · read {d.read.caught}/{d.read.flags}
           </span>
         ))}
       </section>

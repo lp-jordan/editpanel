@@ -26,7 +26,9 @@ const DEFAULT_MODEL = 'claude-opus-5-5';
 // $ per million tokens (Claude Opus 5.5; cache write = 1.25× input)
 const PRICES = {
   'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
-  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }
+  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  // Score's read-through (prompts under 100K tokens)
+  'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }
 };
 const KINDS = ['retake', 'false_start', 'self_correction', 'flub', 'chatter', 'pre_roll', 'post_roll', 'filler', 'interruption', 'other'];
 const DELIVERY = {
