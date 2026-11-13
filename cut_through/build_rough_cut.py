@@ -78,8 +78,10 @@ def phase(text: str) -> None:
 def wav_timecodes(xml: str, mc_name: str) -> dict:
     """Where Jordan placed each extra-track clip (the mic WAVs) inside the multicam, as the start
     timecode that file needs so Resolve's timecode placement lands it there:
-    {file name: (start frame, angle, path)}. Resolve exports an angle's extra tracks as a second
-    run restarting at offset 0; a clip's angle position = its offset in that run."""
+    {file name: (start frame, angle, path, takes)}. Resolve exports an angle's extra tracks as a second
+    run restarting at offset 0; a clip's angle position = its offset in that run. A recorder that
+    makes a file per take puts many same-named WAVs under one angle: the first one's position is
+    kept and `takes` counts them all."""
     res = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
     root = ET.fromstring(res)
     paths = {a.get("id"): unquote((a.find("media-rep").get("src") if a.find("media-rep") is not None else "")
@@ -103,7 +105,9 @@ def wav_timecodes(xml: str, mc_name: str) -> dict:
                 end = o + secs(el.get("duration", "0s"))
                 if run and el.tag == "asset-clip":
                     frames = round((start + o - secs(el.get("start", "0s"))) / FD)
-                    out.setdefault(el.get("name"), (frames, ang.get("name"), paths.get(el.get("ref"), "")))
+                    prev = out.get(el.get("name"))
+                    out[el.get("name")] = (prev[:3] if prev else (frames, ang.get("name"), paths.get(el.get("ref"), ""))) \
+                        + ((prev[3] + 1) if prev else 1,)
     return out
 
 
@@ -183,7 +187,14 @@ def main() -> None:
     # 1b. which mic WAV Jordan placed under which angle (the cut uses them as plain clips;
     # their timecode is never changed — stamping it knocked them offline in the original)
     wavs = wav_timecodes(xml, name)
-    say("1b. Mic WAVs in the multicam: " + (", ".join(f"{n} under {a}" for n, (_, a, _) in sorted(wavs.items()))
+    if not wavs and any((pl.get("audio") or {}).get("source") == "wav" for pl in plans):
+        # the plans were cut from mic WAVs but this multicam has none: it's the copy an earlier
+        # cut-through left (its angles carry no WAVs) — cutting from it would use camera audio
+        raise RuntimeError(f"{name!r} has no mic WAVs but the plans use them — it's probably the copy from an "
+                           f"earlier cut-through. Delete it, move {name}_original out of 'MC ORIGINAL' and rename it "
+                           f"{name!r}, then build again")
+    say("1b. Mic WAVs in the multicam: " + (", ".join(f"{n} under {a}" + (f" ({k} takes)" if k > 1 else "")
+                                                     for n, (_, a, _, k) in sorted(wavs.items()))
                                            or "none (mics are in the camera files)"))
 
     # 2. the joined timeline, built on that description
@@ -198,13 +209,19 @@ def main() -> None:
     ranges = mk.main(args)
     say(f"2. Built {os.path.basename(out)} (written as FCPXML 1.14): {len(ranges)} video(s) in one timeline "
         f"({time.time() - t1:.1f}s)")
+    mic_clips = getattr(mk, "LAST_MIC_CLIPS", None) or {}
+    if mic_clips:
+        say("   mic clips written: " + ", ".join(f"{n} {c}" for n, c in sorted(mic_clips.items())))
+    if getattr(mk, "LAST_MIC_UNCOVERED", 0):
+        say(f"   ⚠ {mk.LAST_MIC_UNCOVERED} mic frame(s) inside the cuts have no WAV take under them (left silent)")
 
     # 3. import → one copy (primary); original archived
     phase("Importing into Resolve")
     t1 = time.time()
     g = run_script("import_into_resolve.py", {"XML": os.path.basename(out), "LABEL": LABEL, "OUT_DIR": OUT_DIR,
                                           "ARCHIVE": True, "RAW": RAW, "MICS": MICS, "PLAN_FILE": PLAN_FILE,
-                                              "MIC_FILES": {n: a for n, (_, a, _) in wavs.items()},
+                                              "MIC_FILES": {n: a for n, (_, a, *_) in wavs.items()},
+                                              "MIC_CLIPS": dict(getattr(mk, "LAST_MIC_CLIPS", None) or {}),
                                               "ATEM_FILE": getattr(mk, "LAST_ATEM", None)}, r)
     say(f"3. Import done ({time.time() - t1:.1f}s)")
     if g.get("IMPORT_ERROR"):

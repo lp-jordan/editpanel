@@ -54,6 +54,7 @@ RAW = globals().get("RAW")                             # "*" or [names]: timelin
 MICS = globals().get("MICS") or {}                     # role → mic angle; puts each person's clips on their track
 ATEM_FILE = globals().get("ATEM_FILE")                 # the angle whose multicam audio is cut on A1 (write_timeline_xml LAST_ATEM), if any
 MIC_FILES = globals().get("MIC_FILES") or {}           # mic WAV file → the angle it sits under
+MIC_CLIPS = globals().get("MIC_CLIPS") or {}           # mic WAV file name → clips the build wrote (all must arrive)
 # the original is out of play in these. "MC QUARANTINE" is the archive bin's old name: projects
 # built before it was renamed still have their original multicam there
 SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}
@@ -364,6 +365,19 @@ def main() -> None:
                 f"A{k} " + str({a: sum(1 for x in t.GetItemListInTrack('audio', k) if clip_label(x) == a)
                                 for a in {clip_label(x) for x in t.GetItemListInTrack('audio', k)}})
                 for k in range(1, int(t.GetTrackCount("audio") or 0) + 1))))
+        if MIC_CLIPS:
+            # Resolve silently drops a clip whose in-point lies past its file's end (ELEVATE_MC_4,
+            # 2026-11-13: 1,748 of 1,807 mic clips gone, 25 of 26 videos silent) — so count them
+            got = {}
+            for k in range(1, int(t.GetTrackCount("audio") or 0) + 1):
+                for x in _safe(lambda: t.GetItemListInTrack("audio", k), []) or []:
+                    got[clip_label(x)] = got.get(clip_label(x), 0) + 1
+            short = {n: (got.get(n, 0), c) for n, c in MIC_CLIPS.items() if got.get(n, 0) < c}
+            say("    check mic clips: " + ("✓ all " + ", ".join(f"{n} {c}" for n, c in sorted(MIC_CLIPS.items())) + " arrived"
+                if not short else "✗ Resolve dropped mic clips: "
+                + ", ".join(f"{n} {g} of {c}" for n, (g, c) in sorted(short.items()))))
+            if short:
+                globals()["CHECK_OK"] = False
         wrong = wrong_sources(t, wanted)
         say(f"    check source files: " + ("✓ every audio clip uses the file the multicam uses" if not wrong else
             f"✗ {len(wrong)} audio clip(s) use another file, e.g. A{wrong[0][0]} {wrong[0][1]} → {wrong[0][2]}"))
@@ -427,5 +441,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "ATEM_FILE", "OUT_DIR", "PLAN_FILE"):  # CHECK_OK / IMPORT_ERROR stay for the caller; the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "MIC_CLIPS", "ATEM_FILE", "OUT_DIR", "PLAN_FILE"):  # CHECK_OK / IMPORT_ERROR stay for the caller; the console keeps run-line settings between runs
         globals().pop(_k, None)
