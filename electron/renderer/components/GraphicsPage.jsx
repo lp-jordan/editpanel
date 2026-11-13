@@ -373,6 +373,9 @@ function GpDesign({ g, call, previewShell }) {
               ))}
             </div>
           )}
+          {ws.brand && ws.brand.missingFonts && ws.brand.missingFonts.length > 0 && (
+            <div className="notice error">Open Creative Cloud and activate {ws.brand.missingFonts.join(', ')}</div>
+          )}
           <button type="button" className="btn small ghost" onClick={() => setShowBrand(true)}>Brand</button>
           <button type="button" className="btn small gp-add" disabled={!needsAdd} onClick={() => call('addToReview', { itemId: item.id })}>{addLabel}</button>
         </section>

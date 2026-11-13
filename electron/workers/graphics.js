@@ -99,6 +99,15 @@ function systemFontDirs() {
   return ['/usr/share/fonts', path.join(home, '.fonts')];
 }
 
+/** Where Creative Cloud keeps activated Adobe Fonts: OpenType files named by number, no extension. */
+function adobeFontDirs() {
+  const home = os.homedir();
+  let base = null;
+  if (process.platform === 'win32') base = path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Adobe', 'CoreSync', 'plugins', 'livetype');
+  else if (process.platform === 'darwin') base = path.join(home, 'Library', 'Application Support', 'Adobe', 'CoreSync', 'plugins', 'livetype');
+  return base ? [path.join(base, 'r'), path.join(base, '.r')] : [];
+}
+
 /** A .ttf/.otf's own name table: { family, weight, width, italic }, or null if it can't be read. */
 function readFontFace(file) {
   let fd;
@@ -142,20 +151,21 @@ function readFontFace(file) {
 }
 
 /** Installed upright fonts as Map(family → Map(weight → { file, width })). A page has one face per family + weight. */
-function scanSystemFonts(dirs = systemFontDirs()) {
+function scanSystemFonts(dirs = systemFontDirs(), { adobe = false } = {}) {
   const families = new Map();
   for (const dir of dirs) {
     let names = [];
     try { names = fs.readdirSync(dir); } catch { continue; }
     for (const name of names) {
-      if (!/\.(ttf|otf)$/i.test(name)) continue;
+      if (adobe ? name.startsWith('.') : !/\.(ttf|otf)$/i.test(name)) continue;
       const file = path.join(dir, name);
+      if (adobe) { try { if (!fs.statSync(file).isFile()) continue; } catch { continue; } }
       const face = readFontFace(file);
       if (!face || face.italic) continue;
       if (!families.has(face.family)) families.set(face.family, new Map());
       const faces = families.get(face.family);
       const had = faces.get(face.weight);
-      if (!had || (had.width !== 5 && face.width === 5)) faces.set(face.weight, { file, width: face.width });
+      if (!had || (had.width !== 5 && face.width === 5)) faces.set(face.weight, { file, width: face.width, adobe });
     }
   }
   return families;
@@ -226,6 +236,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     fs.mkdirSync(d.work, { recursive: true });
     fs.mkdirSync(d.projects, { recursive: true });
     allowedRoots.add(path.resolve(d.base));
+    for (const dir of adobeFontDirs()) allowedRoots.add(path.resolve(dir));
     for (const s of STARTERS) {
       const f = path.join(d.templates, `${s.id}.json`);
       if (!fs.existsSync(f)) writeJson(f, { ...s, chat: [], history: [], costUsd: 0 });
@@ -272,7 +283,12 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   /** What a template receives as `brand`. */
   function runtimeBrand(b) {
     const dir = path.join(dirs().brands, b.id);
-    const fonts = b.fonts || [];
+    const missingFonts = [];
+    const fonts = (b.fonts || []).filter((f) => {
+      if (!f.adobe || adobeFontFile(f)) return true;
+      if (!missingFonts.includes(f.family)) missingFonts.push(f.family);
+      return false;
+    });
     const roleFonts = (family) => { const own = fonts.filter((f) => f.family === family); return own.length ? own : fonts; };
     const headingFonts = roleFonts(b.headingFamily);
     const bodyFonts = roleFonts(b.bodyFamily);
@@ -286,8 +302,9 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       accent: (b.colors || [])[0] || '#ffffff',
       headingFont: heading ? heading.family : null,
       bodyFont: body ? body.family : null,
-      fontFaces: fonts.map((f) => ({ family: f.family, weight: f.weight, url: assetUrl(path.join(dir, f.file)) })),
-      logos
+      fontFaces: fonts.map((f) => ({ family: f.family, weight: f.weight, url: assetUrl(f.adobe ? adobeFontFile(f) : path.join(dir, f.file)) })),
+      logos,
+      missingFonts
     };
   }
 
@@ -689,6 +706,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     const ws = loadWs();
     if (!ws.outDir) throw new Error('Choose an output folder');
     const brand = brandOf(ws);
+    needFonts(brand);
     const fps = ws.fps;
     const durationInFrames = Math.max(1, Math.round(ws.durationSec * fps));
     fs.mkdirSync(ws.outDir, { recursive: true });
@@ -953,8 +971,37 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   }
 
   let systemFontsCache = null;
-  const systemFontMap = () => { systemFontsCache = systemFontsCache || scanSystemFonts(); return systemFontsCache; };
+  let adobeFontsCache = null;
+  let adobeScannedAt = 0;
+  /** Installed fonts plus Adobe Fonts active right now. Adobe is re-read each time: activations change while the app runs. */
+  const systemFontMap = () => {
+    systemFontsCache = systemFontsCache || scanSystemFonts();
+    adobeFontsCache = scanSystemFonts(adobeFontDirs(), { adobe: true });
+    const all = new Map([...systemFontsCache].map(([family, faces]) => [family, new Map(faces)]));
+    for (const [family, faces] of adobeFontsCache) {
+      if (!all.has(family)) all.set(family, new Map());
+      for (const [weight, face] of faces) if (!all.get(family).has(weight)) all.get(family).set(weight, face);
+    }
+    return all;
+  };
   const systemFonts = () => [...systemFontMap().keys()].sort((a, b) => a.localeCompare(b));
+
+  /** An Adobe font is used where Creative Cloud keeps it, never copied. Null while it isn't active. */
+  function adobeFontFile(f) {
+    if (f.path && fs.existsSync(f.path)) return f.path;
+    adobeFontsCache = adobeFontsCache || scanSystemFonts(adobeFontDirs(), { adobe: true });
+    const face = (adobeFontsCache.get(f.family) || new Map()).get(f.weight);
+    if (face && fs.existsSync(face.file)) return face.file;
+    if (Date.now() - adobeScannedAt < 10000) return null;   // inactive: don't re-read the folder on every snapshot
+    adobeScannedAt = Date.now();
+    adobeFontsCache = scanSystemFonts(adobeFontDirs(), { adobe: true });
+    const fresh = (adobeFontsCache.get(f.family) || new Map()).get(f.weight);
+    return fresh && fs.existsSync(fresh.file) ? fresh.file : null;
+  }
+
+  function needFonts(brand) {
+    if (brand.missingFonts && brand.missingFonts.length) throw new Error(`Open Creative Cloud and activate ${brand.missingFonts.join(', ')}`);
+  }
 
   /** Use a font for headings or body. A system font's files are copied in so renders can load them. */
   function setBrandFont({ brandId, role, family }) {
@@ -967,7 +1014,8 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       if (!faces) throw new Error('Font not found');
       const dest = path.join(path.dirname(brandFile(brandId)), 'fonts');
       fs.mkdirSync(dest, { recursive: true });
-      for (const [weight, { file }] of faces) {
+      for (const [weight, { file, adobe }] of faces) {
+        if (adobe) { b.fonts.push({ path: file, family, weight, style: '', adobe: true }); continue; }
         const name = path.basename(file).toLowerCase();
         fs.copyFileSync(file, path.join(dest, name));
         b.fonts.push({ file: `fonts/${name}`, family, weight, style: '' });
