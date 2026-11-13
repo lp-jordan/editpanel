@@ -119,11 +119,56 @@ function gpDragBox(b, mode, dx, dy) {
   return { x: Math.round(left), y: Math.round(top), w: Math.round(right - left), h: Math.round(bottom - top) };
 }
 
-/** Draggable, resizable outlines over the preview, one per element that has a layout box. */
-function GpBoxes({ boxes, labels, onChange }) {
+const GP_SNAP_PX = 8;            // screen pixels
+const GP_SAFE = 96;
+const GP_WIRE_REQUEST = 'Position every element inside its box from fields.layout (absolute left, top, width and height from the box) and fit its text to the box. Keep the look otherwise.';
+
+/** Pulls a box's moving edges (or, when moving, its edges and centre) onto the nearest line within reach. */
+function gpSnapBox(b, mode, others, reach) {
+  const xs = [0, GP_SAFE, GP_W / 2, GP_W - GP_SAFE, GP_W];
+  const ys = [0, GP_SAFE, GP_H / 2, GP_H - GP_SAFE, GP_H];
+  for (const o of others) { xs.push(o.x, o.x + o.w / 2, o.x + o.w); ys.push(o.y, o.y + o.h / 2, o.y + o.h); }
+  const nearest = (values, targets) => {
+    let best = null;
+    for (const v of values) for (const t of targets) {
+      const d = t - v.at;
+      if (Math.abs(d) <= reach && (!best || Math.abs(d) < Math.abs(best.d))) best = { d, line: t, edge: v.edge };
+    }
+    return best;
+  };
+  const out = { ...b };
+  const guides = [];
+  const xEdges = mode === 'move' ? [{ at: b.x, edge: 'l' }, { at: b.x + b.w / 2, edge: 'c' }, { at: b.x + b.w, edge: 'r' }]
+    : [...(mode.includes('w') ? [{ at: b.x, edge: 'l' }] : []), ...(mode.includes('e') ? [{ at: b.x + b.w, edge: 'r' }] : [])];
+  const yEdges = mode === 'move' ? [{ at: b.y, edge: 't' }, { at: b.y + b.h / 2, edge: 'c' }, { at: b.y + b.h, edge: 'b' }]
+    : [...(mode.includes('n') ? [{ at: b.y, edge: 't' }] : []), ...(mode.includes('s') ? [{ at: b.y + b.h, edge: 'b' }] : [])];
+  const sx = nearest(xEdges, xs);
+  if (sx) {
+    if (mode === 'move') out.x += sx.d;
+    else if (sx.edge === 'l' && b.w - sx.d >= GP_MIN_BOX) { out.x += sx.d; out.w -= sx.d; }
+    else if (sx.edge === 'r' && b.w + sx.d >= GP_MIN_BOX) out.w += sx.d;
+    guides.push({ axis: 'x', at: sx.line });
+  }
+  const sy = nearest(yEdges, ys);
+  if (sy) {
+    if (mode === 'move') out.y += sy.d;
+    else if (sy.edge === 't' && b.h - sy.d >= GP_MIN_BOX) { out.y += sy.d; out.h -= sy.d; }
+    else if (sy.edge === 'b' && b.h + sy.d >= GP_MIN_BOX) out.h += sy.d;
+    guides.push({ axis: 'y', at: sy.line });
+  }
+  return { box: { x: Math.round(out.x), y: Math.round(out.y), w: Math.round(out.w), h: Math.round(out.h) }, guides };
+}
+
+/** Draggable, resizable outlines over the preview, one per element that has a layout box.
+ *  Click to select; arrows nudge (Shift ×10); Alt while dragging skips snapping; Esc deselects. */
+function GpBoxes({ boxes, labels, snap, onChange }) {
   const ref = React.useRef(null);
   const [scale, setScale] = React.useState(0);
   const [dragging, setDragging] = React.useState(null);
+  const [selected, setSelected] = React.useState(null);
+  const [guides, setGuides] = React.useState([]);
+  const latest = React.useRef({ boxes, onChange });
+  latest.current = { boxes, onChange };
   React.useEffect(() => {
     const el = ref.current;
     if (!el) return undefined;
@@ -131,22 +176,48 @@ function GpBoxes({ boxes, labels, onChange }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  React.useEffect(() => {
+    if (!selected) return undefined;
+    const onKey = (e) => {
+      const tag = (e.target && e.target.tagName) || '';
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (e.target && e.target.isContentEditable)) return;
+      if (e.key === 'Escape') { setSelected(null); return; }
+      const step = e.shiftKey ? 10 : 1;
+      const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+      const b = latest.current.boxes[selected];
+      if (!d || !b) return;
+      e.preventDefault();
+      latest.current.onChange(selected, gpDragBox(b, 'move', d[0], d[1]));
+    };
+    const onDown = (e) => { if (!(e.target.closest && e.target.closest('.gp-box'))) setSelected(null); };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('pointerdown', onDown);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('pointerdown', onDown); };
+  }, [selected]);
   const start = (e, key, mode) => {
     if (e.button !== 0 || !scale) return;
     e.preventDefault();
     e.stopPropagation();
     const from = boxes[key];
+    const others = Object.entries(boxes).filter(([k]) => k !== key && labels[k]).map(([, b]) => b);
     const x0 = e.clientX;
     const y0 = e.clientY;
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
+    setSelected(key);
     setDragging(key);
-    const move = (ev) => onChange(key, gpDragBox(from, mode, (ev.clientX - x0) / scale, (ev.clientY - y0) / scale));
+    const move = (ev) => {
+      const raw = gpDragBox(from, mode, (ev.clientX - x0) / scale, (ev.clientY - y0) / scale);
+      const res = snap && !ev.altKey ? gpSnapBox(raw, mode, others, GP_SNAP_PX / scale) : { box: raw, guides: [] };
+      setGuides(res.guides);
+      onChange(key, res.box);
+    };
     const end = () => {
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', end);
       el.removeEventListener('pointercancel', end);
       setDragging(null);
+      setGuides([]);
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', end);
@@ -155,12 +226,15 @@ function GpBoxes({ boxes, labels, onChange }) {
   return (
     <div className="gp-boxes" ref={ref}>
       {scale > 0 && Object.entries(boxes).filter(([key]) => labels[key]).map(([key, b]) => (
-        <div key={key} className={`gp-box${dragging === key ? ' is-dragging' : ''}`}
+        <div key={key} className={`gp-box${dragging === key ? ' is-dragging' : ''}${selected === key ? ' is-selected' : ''}`}
           style={{ left: b.x * scale, top: b.y * scale, width: b.w * scale, height: b.h * scale }}
           onPointerDown={(e) => start(e, key, 'move')}>
           <span className="gp-box-label">{labels[key]}</span>
           {GP_HANDLES.map((h) => <span key={h} className={`gp-box-handle is-${h}`} onPointerDown={(e) => start(e, key, h)} />)}
         </div>
+      ))}
+      {scale > 0 && guides.map((g, i) => (
+        <div key={i} className={`gp-guide is-${g.axis}`} style={g.axis === 'x' ? { left: g.at * scale } : { top: g.at * scale }} />
       ))}
     </div>
   );
@@ -386,6 +460,9 @@ function GpDesign({ g, call, previewShell }) {
   };
   const shownFields = fieldDefs.filter((f) => f.type !== 'layout' && !(kind === 'slide' && f.type === 'image'));
   const layoutField = item ? fieldDefs.find((f) => f.type === 'layout') : null;
+  const showBoxes = ws.ui.showBoxes !== false;
+  const snap = ws.ui.snap !== false;
+  const wired = Boolean(item && /\blayout\b/.test(item.code || ''));
   const boxLabels = Object.fromEntries(shownFields.map((f) => [f.key, f.label]));
 
   return (
@@ -397,6 +474,12 @@ function GpDesign({ g, call, previewShell }) {
         </select>
         <button type="button" className="btn small ghost gp-square" aria-label="Save as template" title="Save as template" onClick={() => setNameModal({ mode: 'new', initial: '' })}>+</button>
         {isCustom && <button type="button" className="btn small ghost" onClick={() => setNameModal({ mode: 'rename', initial: template.name })}>Rename</button>}
+        {layoutField && (
+          <div className="gp-toggle gp-toggle-small" role="group" aria-label="Boxes">
+            <button type="button" className={showBoxes ? 'is-on' : ''} aria-pressed={showBoxes} onClick={() => call('setUi', { showBoxes: !showBoxes })}>Boxes</button>
+            <button type="button" className={snap ? 'is-on' : ''} aria-pressed={snap} onClick={() => call('setUi', { snap: !snap })}>Snap</button>
+          </div>
+        )}
         {previewShell.toggle}
       </div>
 
@@ -404,8 +487,8 @@ function GpDesign({ g, call, previewShell }) {
         <div className="gp-stage">
           <div className="gp-stage-frame">
             <GpPreview message={message} onError={previewShell.onError} />
-            {layoutField && (
-              <GpBoxes boxes={values[layoutField.key] || {}} labels={boxLabels}
+            {layoutField && showBoxes && (
+              <GpBoxes boxes={values[layoutField.key] || {}} labels={boxLabels} snap={snap}
                 onChange={(key, box) => changeValue(layoutField.key, { ...(values[layoutField.key] || {}), [key]: box })} />
             )}
             {status && <div className="gp-badge"><span className="gp-spinner" />Updating</div>}
@@ -414,17 +497,25 @@ function GpDesign({ g, call, previewShell }) {
         </div>
 
         <section className="panel gp-side">
-          <label className="gp-field">
-            <span className="gp-label">Type</span>
-            <select className="settings-input" value={kind} onChange={(e) => {
-              const next = e.target.value;
-              if (next === 'callout' && !ws.items.some((it) => it.kind === 'callout' && it.stage === 'editing')) call('newCallout');
-              else call('setUi', { kind: next });
-            }}>
-              <option value="slide">Slide</option>
-              <option value="callout">Callout</option>
-            </select>
-          </label>
+          <div className="gp-side-head">
+            <label className="gp-field gp-grow">
+              <span className="gp-label">Type</span>
+              <select className="settings-input" value={kind} onChange={(e) => {
+                const next = e.target.value;
+                if (next === 'callout' && !ws.items.some((it) => it.kind === 'callout' && it.stage === 'editing')) call('newCallout');
+                else call('setUi', { kind: next });
+              }}>
+                <option value="slide">Slide</option>
+                <option value="callout">Callout</option>
+              </select>
+            </label>
+            {item && (
+              <button type="button" className="btn small ghost gp-square gp-reset" aria-label="Reset to template" title="Reset to template"
+                onClick={() => call('resetItem', { itemId: item.id })}>
+                <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v2.8h2.8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            )}
+          </div>
           {kind === 'slide' && (
             <div className="gp-field">
               <span className="gp-label">Slide image</span>
@@ -435,6 +526,12 @@ function GpDesign({ g, call, previewShell }) {
             <button type="button" className="btn small ghost" onClick={() => call('revertToImage', { itemId: item.id })}>Back to original image</button>
           )}
           {kind === 'callout' && <button type="button" className="btn small ghost" onClick={() => call('newCallout')}>New callout</button>}
+          {kind === 'callout' && item && layoutField && !wired && (
+            <div className="gp-row">
+              <span className="gp-dim gp-grow">This design ignores its boxes</span>
+              <button type="button" className="btn small ghost" disabled={g.busyEdit} onClick={() => call('editItem', { itemId: item.id, request: GP_WIRE_REQUEST })}>Use boxes</button>
+            </div>
+          )}
           {shownFields.map((f) => (kind === 'callout' && item ? (
             <div className="gp-element" key={f.key}>
               <GpField field={f} value={values[f.key]} call={call} onChange={(v) => changeValue(f.key, v)} />

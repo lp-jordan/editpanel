@@ -53,11 +53,11 @@ const mainIdea = `const Template = ({fields, brand}) => {
   const line = interpolate(frame, [0, 0.35 * fps], [0, 1], ${clamp});
   const rise = interpolate(frame, [0.2 * fps, 0.75 * fps], [0, 1], ${clamp});
   const family = brand.headingFont || 'sans-serif';
-  const text = fields.text || ' ';
-  const fit = Layout.fitTextOnNLines({text, maxLines: 3, maxBoxWidth: 860, fontFamily: family, fontWeight: 700, maxFontSize: 96});
+  const b = (fields.layout || {}).text || {x: 110, y: 593, w: 860, h: 357};
+  const fit = Layout.fitTextOnNLines({text: fields.text || ' ', maxLines: 3, maxBoxWidth: b.w, fontFamily: family, fontWeight: 700, maxFontSize: Math.min(160, (b.h - 34) / 3.36)});
   return (
     <AbsoluteFill>
-      <div style={{position: 'absolute', left: 110, bottom: 130, width: 860}}>
+      <div style={{position: 'absolute', left: b.x, top: b.y, width: b.w, height: b.h, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end'}}>
         <div style={{width: 150 * line, height: 10, marginBottom: 24, background: brand.accent}} />
         <div style={{opacity: rise, transform: 'translateY(' + (1 - rise) * 36 + 'px)', fontFamily: family, fontWeight: 700, fontSize: fit.fontSize, lineHeight: 1.12, color: 'white'}}>
           {fit.lines.map((l, i) => <div key={i}>{l}</div>)}
@@ -72,21 +72,25 @@ const list = `const Template = ({fields, brand}) => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const family = brand.headingFont || 'sans-serif';
+  const layout = fields.layout || {};
+  const hb = layout.heading || {x: 110, y: 230, w: 760, h: 170};
+  const ib = layout.items || {x: 110, y: 420, w: 760, h: 430};
   const items = (fields.items || []).filter(Boolean).slice(0, 6);
   const head = interpolate(frame, [0, 0.5 * fps], [0, 1], ${clamp});
-  const heading = Layout.fitTextOnNLines({text: fields.heading || ' ', maxLines: 2, maxBoxWidth: 760, fontFamily: family, fontWeight: 700, maxFontSize: 68});
+  const heading = Layout.fitTextOnNLines({text: fields.heading || ' ', maxLines: 2, maxBoxWidth: hb.w, fontFamily: family, fontWeight: 700, maxFontSize: Math.min(120, hb.h / 2.24)});
+  const row = ib.h / Math.max(1, items.length);
   return (
-    <AbsoluteFill style={{justifyContent: 'center'}}>
-      <div style={{marginLeft: 110, width: 760, color: 'white', fontFamily: family}}>
-        <div style={{opacity: head, fontWeight: 700, fontSize: heading.fontSize, lineHeight: 1.12, color: brand.accent, marginBottom: 26}}>
-          {heading.lines.map((l, i) => <div key={i}>{l}</div>)}
-        </div>
+    <AbsoluteFill>
+      <div style={{position: 'absolute', left: hb.x, top: hb.y, width: hb.w, height: hb.h, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', opacity: head, fontFamily: family, fontWeight: 700, fontSize: heading.fontSize, lineHeight: 1.12, color: brand.accent}}>
+        {heading.lines.map((l, i) => <div key={i}>{l}</div>)}
+      </div>
+      <div style={{position: 'absolute', left: ib.x, top: ib.y, width: ib.w, height: ib.h, color: 'white', fontFamily: family}}>
         {items.map((item, i) => {
           const start = 0.3 * fps + i * 8;
           const on = interpolate(frame, [start, start + 0.45 * fps], [0, 1], ${clamp});
-          const fit = Layout.fitTextOnNLines({text: item, maxLines: 2, maxBoxWidth: 760, fontFamily: family, fontWeight: 500, maxFontSize: 46});
+          const fit = Layout.fitTextOnNLines({text: item, maxLines: 2, maxBoxWidth: ib.w, fontFamily: family, fontWeight: 500, maxFontSize: Math.min(46, (row - 20) / 2.4)});
           return (
-            <div key={i} style={{opacity: on, transform: 'translateX(' + (1 - on) * -24 + 'px)', borderTop: '2px solid rgba(255,255,255,0.35)', padding: '16px 0', fontWeight: 500, fontSize: fit.fontSize, lineHeight: 1.2}}>
+            <div key={i} style={{height: row, boxSizing: 'border-box', display: 'flex', flexDirection: 'column', justifyContent: 'center', opacity: on, transform: 'translateX(' + (1 - on) * -24 + 'px)', borderTop: '2px solid rgba(255,255,255,0.35)', fontWeight: 500, fontSize: fit.fontSize, lineHeight: 1.2}}>
               {fit.lines.map((l, j) => <div key={j}>{l}</div>)}
             </div>
           );
@@ -135,10 +139,14 @@ module.exports = [
     {key: 'text', label: 'Text', type: 'textarea', default: ''},
     {key: 'layout', label: 'Layout', type: 'layout', default: {text: {x: 110, y: 380, w: 860, h: 320}}}
   ]},
-  {id: 'starter-main-idea', name: 'Main idea', kind: 'callout', code: mainIdea, fields: [textField]},
-  {id: 'starter-list', name: 'List', kind: 'callout', code: list, fields: [
+  {id: 'starter-main-idea', name: 'Main idea', kind: 'callout', version: 2, code: mainIdea, fields: [
+    textField,
+    {key: 'layout', label: 'Layout', type: 'layout', default: {text: {x: 110, y: 593, w: 860, h: 357}}}
+  ]},
+  {id: 'starter-list', name: 'List', kind: 'callout', version: 2, code: list, fields: [
     {key: 'heading', label: 'Heading', type: 'text', default: 'Three habits that stick'},
-    {key: 'items', label: 'Items', type: 'list', default: ['Name the priority', 'Protect the time', 'Review every Friday']}
+    {key: 'items', label: 'Items', type: 'list', default: ['Name the priority', 'Protect the time', 'Review every Friday']},
+    {key: 'layout', label: 'Layout', type: 'layout', default: {heading: {x: 110, y: 230, w: 760, h: 170}, items: {x: 110, y: 420, w: 760, h: 430}}}
   ]},
   {id: 'starter-full-slide', name: 'Full screen', kind: 'slide', code: fullSlide, fields: [imageField]},
   {id: 'starter-beside-speaker', name: 'Beside speaker', kind: 'slide', code: besideSpeaker, fields: [imageField]}

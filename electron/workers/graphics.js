@@ -393,7 +393,9 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
   }
 
   function loadWs(file = wsPath()) {
-    return readJson(file) || {
+    const ws = readJson(file);
+    if (ws) { for (const it of ws.items || []) ensureLayout(it); return ws; }
+    return {
       project: currentProject,
       ui: { page: 'design', kind: 'slide', filter: 'editing', activeByKind: {}, templateByKind: {}, brandId: null, accent: null },
       items: [], fps: FPS_DEFAULT, durationSec: 15, outDir: '', binPath: 'GRAPHICS', nextSeq: 1
@@ -510,7 +512,13 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     // New callouts start blank unless the editor picked one of their own templates.
     const picked = ws.ui.templateByKind.callout;
     const own = picked && !STARTERS.some((s) => s.id === picked) && fs.existsSync(templatePath(picked));
-    const item = newItem(ws, 'callout', 'New callout', {}, own ? picked : 'starter-blank');
+    const current = ws.items.find((it) => it.id === ws.ui.activeByKind.callout && it.kind === 'callout');
+    const item = newItem(ws, 'callout', 'New callout', {}, current ? current.templateId : (own ? picked : 'starter-blank'));
+    if (current) {
+      // Keep going in the same style: the current callout's design, elements, content and placement.
+      Object.assign(item, JSON.parse(JSON.stringify({ code: current.code, fields: current.fields, values: current.values, mode: current.mode })));
+    }
+    ensureLayout(item);
     item.name = calloutName(item) || 'New callout';
     ws.items.push(item);
     ws.ui = { ...ws.ui, kind: 'callout', page: 'design', activeByKind: { ...ws.ui.activeByKind, callout: item.id } };
@@ -550,6 +558,26 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     image: { label: 'Image', type: 'image' }
   };
 
+  const BOX_HEIGHT = { text: 200, textarea: 200, list: 360, image: 400 };
+
+  /** Every callout element gets a box the editor can move in the preview, even on older callouts. */
+  function ensureLayout(item) {
+    if (item.kind !== 'callout' || !Array.isArray(item.fields)) return;
+    let field = item.fields.find((f) => f.type === 'layout');
+    if (!field) {
+      field = { key: 'layout', label: 'Layout', type: 'layout', default: {} };
+      item.fields = [...item.fields, field];
+    }
+    const boxes = { ...((item.values || {})[field.key] || {}) };
+    let changed = !item.values || item.values[field.key] === undefined;
+    for (const f of item.fields) {
+      if (f.type === 'layout' || boxes[f.key]) continue;
+      boxes[f.key] = freeBox(Object.values(boxes), 860, BOX_HEIGHT[f.type] || 200);
+      changed = true;
+    }
+    if (changed) item.values = { ...(item.values || {}), [field.key]: boxes };
+  }
+
   /** The first spot for a new box that overlaps none, left column then right, 96px inside the edges. */
   function freeBox(taken, w, h) {
     const clear = (b) => taken.every((t) => b.x + b.w + 24 <= t.x || t.x + t.w + 24 <= b.x || b.y + b.h + 24 <= t.y || t.y + t.h + 24 <= b.y);
@@ -576,8 +604,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       const layoutField = item.fields.find((f) => f.type === 'layout');
       if (layoutField) {
         const boxes = { ...(item.values[layoutField.key] || {}) };
-        const h = { text: 200, list: 360, image: 400 }[type];
-        boxes[field.key] = freeBox(Object.values(boxes), 860, h);
+        boxes[field.key] = freeBox(Object.values(boxes), 860, BOX_HEIGHT[type]);
         item.values = { ...item.values, [layoutField.key]: boxes };
       }
     });
@@ -612,8 +639,29 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       item.mode = 'image';
       item.originalCode = null;
       item.values = valuesFor(t.fields, item.values);
+      ensureLayout(item);
     }
     return commit(ws);
+  }
+
+  /** Back to the item's template: its design, elements and placement. Typed content stays where the element still exists. */
+  function resetItem({ itemId }) {
+    return withItem(itemId, (item) => {
+      const t = readJson(templatePath(item.templateId)) || loadTemplate(item.kind === 'callout' ? 'starter-blank' : defaultTemplateId(loadWs(), item.kind));
+      pushHistory(item);
+      const content = Object.fromEntries(Object.entries(item.values || {}).filter(([k]) => {
+        const f = t.fields.find((x) => x.key === k);
+        return f && f.type !== 'layout';
+      }));
+      item.templateId = t.id;
+      item.code = t.code;
+      item.fields = t.fields;
+      item.mode = 'image';
+      item.originalCode = null;
+      item.values = valuesFor(t.fields, content);
+      ensureLayout(item);
+      item.chat = [...(item.chat || []), { who: 'ai', text: `Reset to ${t.name}.` }].slice(-40);
+    });
   }
 
   function saveAsTemplate({ itemId, kind, templateId, name }) {
@@ -715,9 +763,12 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
           it.originalCode = it.code;
           it.mode = 'rebuilt';
         }
+        const layout = it.fields.find((f) => f.type === 'layout');
         it.code = out.change.code;
         it.fields = out.change.fields;
+        if (layout && !it.fields.some((f) => f.type === 'layout')) it.fields = [...it.fields, layout];
         it.values = valuesFor(it.fields, it.values);
+        ensureLayout(it);
       }
       it.chat = chat.slice(-40);
       it.costUsd = (it.costUsd || 0) + out.spent;
@@ -1121,7 +1172,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     editTemplate, undo, createTemplate, renameTemplate, deleteTemplate,
     createBrand, updateBrand, addBrandFiles, systemFonts, setBrandFont,
     pickImage, pickFolder, updateSettings,
-    setUi, updateWorkspace, loadSlides, newCallout, addField, removeField, updateItem, useTemplate, saveAsTemplate, addToReview, setStage, openItem,
+    setUi, updateWorkspace, loadSlides, newCallout, addField, removeField, resetItem, updateItem, useTemplate, saveAsTemplate, addToReview, setStage, openItem,
     removeItem, undoItem, revertToImage, editItem, renderQueue, markImported, cancel
   };
 
