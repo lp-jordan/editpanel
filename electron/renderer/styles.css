@@ -4946,6 +4946,9 @@ button.status-bar-chip-btn:disabled {
 .gp-side { flex: 1 1 260px; min-width: 0; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .gp-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .gp-label { font-size: 0.8rem; font-weight: 600; color: var(--text-dim); }
+.gp-element { position: relative; }
+.gp-element-remove { position: absolute; top: -2px; right: 0; border: 0; background: none; color: var(--text-dim); font-size: 1rem; line-height: 1; cursor: pointer; padding: 0 2px; }
+.gp-element-remove:hover { color: var(--text); }
 .gp-area { resize: vertical; font: inherit; }
 .gp-batch { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.82rem; }
 .gp-dim { color: var(--text-dim); font-size: 0.8rem; }

@@ -456,8 +456,8 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     return commit(next);
   }
 
-  function newItem(ws, kind, name, values) {
-    const t = loadTemplate(defaultTemplateId(ws, kind));
+  function newItem(ws, kind, name, values, templateId) {
+    const t = loadTemplate(templateId || defaultTemplateId(ws, kind));
     const seq = ws.nextSeq || 1;
     ws.nextSeq = seq + 1;
     return {
@@ -488,7 +488,10 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
 
   function newCallout() {
     const ws = loadWs();
-    const item = newItem(ws, 'callout', 'New callout', {});
+    // New callouts start blank unless the editor picked one of their own templates.
+    const picked = ws.ui.templateByKind.callout;
+    const own = picked && !STARTERS.some((s) => s.id === picked) && fs.existsSync(templatePath(picked));
+    const item = newItem(ws, 'callout', 'New callout', {}, own ? picked : 'starter-blank');
     item.name = calloutName(item) || 'New callout';
     ws.items.push(item);
     ws.ui = { ...ws.ui, kind: 'callout', page: 'design', activeByKind: { ...ws.ui.activeByKind, callout: item.id } };
@@ -519,6 +522,37 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       const next = mapValues(values, dehydrate);
       item.values = next;
       if (item.kind === 'callout') item.name = calloutName(item) || item.name;
+    });
+  }
+
+  const ELEMENTS = {
+    text: { label: 'Text', type: 'textarea' },
+    list: { label: 'List', type: 'list' },
+    image: { label: 'Image', type: 'image' }
+  };
+
+  /** Adds a sidebar element to a callout. The layout is left to the notes box (Claude). */
+  function addField({ itemId, type }) {
+    const el = ELEMENTS[type];
+    if (!el) throw new Error('Unknown element');
+    return withItem(itemId, (item) => {
+      pushHistory(item);
+      const taken = new Set(item.fields.map((f) => f.key));
+      const labels = new Set(item.fields.map((f) => f.label));
+      let n = 1;
+      while (taken.has(n === 1 ? type : `${type}${n}`) || labels.has(n === 1 ? el.label : `${el.label} ${n}`)) n += 1;
+      const field = { key: n === 1 ? type : `${type}${n}`, label: n === 1 ? el.label : `${el.label} ${n}`, type: el.type, default: type === 'list' ? [] : '' };
+      item.fields = [...item.fields, field];
+      item.values = valuesFor(item.fields, item.values);
+    });
+  }
+
+  function removeField({ itemId, key }) {
+    return withItem(itemId, (item) => {
+      if (!item.fields.some((f) => f.key === key)) return;
+      pushHistory(item);
+      item.fields = item.fields.filter((f) => f.key !== key);
+      item.values = valuesFor(item.fields, item.values);
     });
   }
 
@@ -1014,7 +1048,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     editTemplate, undo, createTemplate, renameTemplate, deleteTemplate,
     createBrand, updateBrand, addBrandFiles, systemFonts, setBrandFont,
     pickImage, pickFolder, updateSettings,
-    setUi, updateWorkspace, loadSlides, newCallout, updateItem, useTemplate, saveAsTemplate, addToReview, setStage, openItem,
+    setUi, updateWorkspace, loadSlides, newCallout, addField, removeField, updateItem, useTemplate, saveAsTemplate, addToReview, setStage, openItem,
     removeItem, undoItem, revertToImage, editItem, renderQueue, markImported, cancel
   };
 

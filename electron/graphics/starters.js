@@ -2,6 +2,38 @@
 /** The built-in templates. Copied to the library once, by id, so user edits are kept. */
 const clamp = "{extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic)}";
 
+// A blank callout: draws whatever elements the editor added in the sidebar, stacked, until Claude lays them out.
+const blank = `const Template = ({fields, brand}) => {
+  const {useCurrentFrame, useVideoConfig, interpolate, Easing, AbsoluteFill, Img} = Remotion;
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const on = interpolate(frame, [0, 0.5 * fps], [0, 1], ${clamp});
+  const family = brand.headingFont || 'sans-serif';
+  const isImage = (v) => typeof v === 'string' && /^(https?:|data:)/.test(v);
+  const parts = Object.entries(fields || {}).filter(([, v]) => (Array.isArray(v) ? v.some(Boolean) : Boolean(v)));
+  return (
+    <AbsoluteFill style={{justifyContent: 'center'}}>
+      <div style={{marginLeft: 110, width: 860, color: 'white', fontFamily: family, opacity: on, transform: 'translateY(' + (1 - on) * 24 + 'px)'}}>
+        {parts.map(([key, v]) => {
+          if (Array.isArray(v)) {
+            return (
+              <div key={key} style={{marginBottom: 24}}>
+                {v.filter(Boolean).slice(0, 8).map((item, i) => {
+                  const fit = Layout.fitTextOnNLines({text: item, maxLines: 2, maxBoxWidth: 860, fontFamily: family, fontWeight: 500, maxFontSize: 46});
+                  return <div key={i} style={{fontWeight: 500, fontSize: fit.fontSize, lineHeight: 1.2, padding: '8px 0'}}>{fit.lines.map((l, j) => <div key={j}>{l}</div>)}</div>;
+                })}
+              </div>
+            );
+          }
+          if (isImage(v)) return <Img key={key} src={v} style={{display: 'block', maxWidth: 860, maxHeight: 480, objectFit: 'contain', marginBottom: 24}} />;
+          const fit = Layout.fitTextOnNLines({text: String(v), maxLines: 3, maxBoxWidth: 860, fontFamily: family, fontWeight: 700, maxFontSize: 80});
+          return <div key={key} style={{fontWeight: 700, fontSize: fit.fontSize, lineHeight: 1.12, marginBottom: 24}}>{fit.lines.map((l, i) => <div key={i}>{l}</div>)}</div>;
+        })}
+      </div>
+    </AbsoluteFill>
+  );
+};`;
+
 const mainIdea = `const Template = ({fields, brand}) => {
   const {useCurrentFrame, useVideoConfig, interpolate, Easing, AbsoluteFill} = Remotion;
   const frame = useCurrentFrame();
@@ -87,6 +119,7 @@ const textField = {key: 'text', label: 'Text', type: 'textarea', default: 'Clari
 const imageField = {key: 'image', label: 'Slide image', type: 'image', default: ''};
 
 module.exports = [
+  {id: 'starter-blank', name: 'Blank', kind: 'callout', code: blank, fields: [{key: 'text', label: 'Text', type: 'textarea', default: ''}]},
   {id: 'starter-main-idea', name: 'Main idea', kind: 'callout', code: mainIdea, fields: [textField]},
   {id: 'starter-list', name: 'List', kind: 'callout', code: list, fields: [
     {key: 'heading', label: 'Heading', type: 'text', default: 'Three habits that stick'},

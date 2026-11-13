@@ -13,6 +13,7 @@ Nothing else exists: no other packages, network calls, or files.
 
 FIELDS AND BRAND
 fields holds the per-overlay content, by key. Everything that changes per overlay must be a field. Types: text, textarea, list (array of strings), image (a URL).
+The editor adds and removes fields in the sidebar. Lay out every field in the list you are given, using the request to decide how; keep the field list as given unless the request asks to change it.
 brand has: accent, colors (array of hex), headingFont, bodyFont, logos (name to URL). Use brand values, not fixed fonts or colors, unless asked.
 
 RULES

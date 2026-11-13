@@ -359,7 +359,20 @@ function GpDesign({ g, call, previewShell }) {
             <button type="button" className="btn small ghost" onClick={() => call('revertToImage', { itemId: item.id })}>Back to original image</button>
           )}
           {kind === 'callout' && <button type="button" className="btn small ghost" onClick={() => call('newCallout')}>New callout</button>}
-          {shownFields.map((f) => <GpField key={f.key} field={f} value={values[f.key]} call={call} onChange={(v) => changeValue(f.key, v)} />)}
+          {shownFields.map((f) => (kind === 'callout' && item ? (
+            <div className="gp-element" key={f.key}>
+              <GpField field={f} value={values[f.key]} call={call} onChange={(v) => changeValue(f.key, v)} />
+              <button type="button" className="gp-element-remove" aria-label={`Remove ${f.label}`} title="Remove" onClick={() => call('removeField', { itemId: item.id, key: f.key })}>×</button>
+            </div>
+          ) : <GpField key={f.key} field={f} value={values[f.key]} call={call} onChange={(v) => changeValue(f.key, v)} />))}
+          {kind === 'callout' && item && (
+            <div className="gp-row">
+              <span className="gp-label">Add</span>
+              {[['text', 'Text'], ['list', 'List'], ['image', 'Image']].map(([type, label]) => (
+                <button type="button" key={type} className="btn small ghost" onClick={() => call('addField', { itemId: item.id, type })}>{label}</button>
+              ))}
+            </div>
+          )}
           <button type="button" className="btn small ghost" onClick={() => setShowBrand(true)}>Brand</button>
           <button type="button" className="btn small gp-add" disabled={!needsAdd} onClick={() => call('addToReview', { itemId: item.id })}>{addLabel}</button>
         </section>
