@@ -1,35 +1,47 @@
 'use strict';
-/** The built-in templates. Copied to the library once, by id, so user edits are kept. */
+/** The built-in templates. Copied to the library once, by id, so user edits are kept; a higher `version` replaces the copy. */
 const clamp = "{extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic)}";
 
-// A blank callout: draws whatever elements the editor added in the sidebar, stacked, until Claude lays them out.
+// A blank callout: each element the editor adds in the sidebar sits in its own box (fields.layout),
+// moved and resized in the preview. Text is fitted to its box.
 const blank = `const Template = ({fields, brand}) => {
   const {useCurrentFrame, useVideoConfig, interpolate, Easing, AbsoluteFill, Img} = Remotion;
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const on = interpolate(frame, [0, 0.5 * fps], [0, 1], ${clamp});
   const family = brand.headingFont || 'sans-serif';
+  const layout = fields.layout || {};
   const isImage = (v) => typeof v === 'string' && /^(https?:|data:)/.test(v);
-  const parts = Object.entries(fields || {}).filter(([, v]) => (Array.isArray(v) ? v.some(Boolean) : Boolean(v)));
+  const fitBox = (text, w, h, weight, lineHeight) => {
+    let best = {fontSize: 0, lines: [text]};
+    for (let n = 1; n <= 6; n += 1) {
+      const fit = Layout.fitTextOnNLines({text, maxLines: n, maxBoxWidth: w, fontFamily: family, fontWeight: weight, maxFontSize: Math.min(220, h / (n * lineHeight))});
+      if (fit.lines.length * fit.fontSize * lineHeight <= h + 1 && fit.fontSize > best.fontSize) best = fit;
+    }
+    return best;
+  };
+  const parts = Object.entries(fields).filter(([key, v]) => key !== 'layout' && (Array.isArray(v) ? v.some(Boolean) : Boolean(v)));
   return (
-    <AbsoluteFill style={{justifyContent: 'center'}}>
-      <div style={{marginLeft: 110, width: 860, color: 'white', fontFamily: family, opacity: on, transform: 'translateY(' + (1 - on) * 24 + 'px)'}}>
-        {parts.map(([key, v]) => {
-          if (Array.isArray(v)) {
-            return (
-              <div key={key} style={{marginBottom: 24}}>
-                {v.filter(Boolean).slice(0, 8).map((item, i) => {
-                  const fit = Layout.fitTextOnNLines({text: item, maxLines: 2, maxBoxWidth: 860, fontFamily: family, fontWeight: 500, maxFontSize: 46});
-                  return <div key={i} style={{fontWeight: 500, fontSize: fit.fontSize, lineHeight: 1.2, padding: '8px 0'}}>{fit.lines.map((l, j) => <div key={j}>{l}</div>)}</div>;
-                })}
-              </div>
-            );
-          }
-          if (isImage(v)) return <Img key={key} src={v} style={{display: 'block', maxWidth: 860, maxHeight: 480, objectFit: 'contain', marginBottom: 24}} />;
-          const fit = Layout.fitTextOnNLines({text: String(v), maxLines: 3, maxBoxWidth: 860, fontFamily: family, fontWeight: 700, maxFontSize: 80});
-          return <div key={key} style={{fontWeight: 700, fontSize: fit.fontSize, lineHeight: 1.12, marginBottom: 24}}>{fit.lines.map((l, i) => <div key={i}>{l}</div>)}</div>;
-        })}
-      </div>
+    <AbsoluteFill>
+      {parts.map(([key, v], i) => {
+        const b = layout[key] || {x: 110, y: 110 + i * 260, w: 860, h: 220};
+        const box = {position: 'absolute', left: b.x, top: b.y, width: b.w, height: b.h, color: 'white', fontFamily: family, opacity: on, transform: 'translateY(' + (1 - on) * 24 + 'px)'};
+        if (Array.isArray(v)) {
+          const items = v.filter(Boolean).slice(0, 8);
+          const row = b.h / items.length;
+          return (
+            <div key={key} style={{...box, display: 'flex', flexDirection: 'column'}}>
+              {items.map((item, j) => {
+                const fit = fitBox(item, b.w, row * 0.8, 500, 1.2);
+                return <div key={j} style={{height: row, display: 'flex', flexDirection: 'column', justifyContent: 'center', fontWeight: 500, fontSize: fit.fontSize, lineHeight: 1.2}}>{fit.lines.map((l, k) => <div key={k}>{l}</div>)}</div>;
+              })}
+            </div>
+          );
+        }
+        if (isImage(v)) return <Img key={key} src={v} style={{...box, objectFit: 'contain'}} />;
+        const fit = fitBox(String(v), b.w, b.h, 700, 1.12);
+        return <div key={key} style={{...box, fontWeight: 700, fontSize: fit.fontSize, lineHeight: 1.12}}>{fit.lines.map((l, k) => <div key={k}>{l}</div>)}</div>;
+      })}
     </AbsoluteFill>
   );
 };`;
@@ -119,7 +131,10 @@ const textField = {key: 'text', label: 'Text', type: 'textarea', default: 'Clari
 const imageField = {key: 'image', label: 'Slide image', type: 'image', default: ''};
 
 module.exports = [
-  {id: 'starter-blank', name: 'Blank', kind: 'callout', code: blank, fields: [{key: 'text', label: 'Text', type: 'textarea', default: ''}]},
+  {id: 'starter-blank', name: 'Blank', kind: 'callout', version: 2, code: blank, fields: [
+    {key: 'text', label: 'Text', type: 'textarea', default: ''},
+    {key: 'layout', label: 'Layout', type: 'layout', default: {text: {x: 110, y: 380, w: 860, h: 320}}}
+  ]},
   {id: 'starter-main-idea', name: 'Main idea', kind: 'callout', code: mainIdea, fields: [textField]},
   {id: 'starter-list', name: 'List', kind: 'callout', code: list, fields: [
     {key: 'heading', label: 'Heading', type: 'text', default: 'Three habits that stick'},

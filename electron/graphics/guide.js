@@ -12,7 +12,8 @@ No imports, no exports. These are already in scope:
 Nothing else exists: no other packages, network calls, or files.
 
 FIELDS AND BRAND
-fields holds the per-overlay content, by key. Everything that changes per overlay must be a field. Types: text, textarea, list (array of strings), image (a URL).
+fields holds the per-overlay content, by key. Everything that changes per overlay must be a field. Types: text, textarea, list (array of strings), image (a URL), layout.
+A layout field maps other field keys to boxes {x, y, w, h} in canvas pixels; the editor drags and resizes them in the preview. When there is one, put each element inside its box (absolute position, that width and height), fit its text to the box, and keep the layout field. Never hard-code a position that a box covers.
 The editor adds and removes fields in the sidebar. Lay out every field in the list you are given, using the request to decide how; keep the field list as given unless the request asks to change it.
 brand has: accent, colors (array of hex), headingFont, bodyFont, logos (name to URL). Use brand values, not fixed fonts or colors, unless asked.
 

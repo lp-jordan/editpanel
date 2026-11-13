@@ -239,7 +239,9 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     for (const dir of adobeFontDirs()) allowedRoots.add(path.resolve(dir));
     for (const s of STARTERS) {
       const f = path.join(d.templates, `${s.id}.json`);
-      if (!fs.existsSync(f)) writeJson(f, { ...s, chat: [], history: [], costUsd: 0 });
+      const had = readJson(f);
+      if (!had) writeJson(f, { ...s, chat: [], history: [], costUsd: 0 });
+      else if ((had.version || 1) < (s.version || 1)) writeJson(f, { ...had, ...s, history: [] });
     }
     if (!listBrands().length) {
       const id = 'leaderpass';
@@ -548,6 +550,16 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     image: { label: 'Image', type: 'image' }
   };
 
+  /** The first spot for a new box that overlaps none, left column then right, 96px inside the edges. */
+  function freeBox(taken, w, h) {
+    const clear = (b) => taken.every((t) => b.x + b.w + 24 <= t.x || t.x + t.w + 24 <= b.x || b.y + b.h + 24 <= t.y || t.y + t.h + 24 <= b.y);
+    for (const x of [110, 1010]) {
+      const bw = Math.min(w, 1824 - x);
+      for (let y = 96; y + h <= 984; y += 12) if (clear({ x, y, w: bw, h })) return { x, y, w: bw, h };
+    }
+    return { x: 110, y: 96, w, h };
+  }
+
   /** Adds a sidebar element to a callout. The layout is left to the notes box (Claude). */
   function addField({ itemId, type }) {
     const el = ELEMENTS[type];
@@ -561,15 +573,28 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
       const field = { key: n === 1 ? type : `${type}${n}`, label: n === 1 ? el.label : `${el.label} ${n}`, type: el.type, default: type === 'list' ? [] : '' };
       item.fields = [...item.fields, field];
       item.values = valuesFor(item.fields, item.values);
+      const layoutField = item.fields.find((f) => f.type === 'layout');
+      if (layoutField) {
+        const boxes = { ...(item.values[layoutField.key] || {}) };
+        const h = { text: 200, list: 360, image: 400 }[type];
+        boxes[field.key] = freeBox(Object.values(boxes), 860, h);
+        item.values = { ...item.values, [layoutField.key]: boxes };
+      }
     });
   }
 
   function removeField({ itemId, key }) {
     return withItem(itemId, (item) => {
-      if (!item.fields.some((f) => f.key === key)) return;
+      const field = item.fields.find((f) => f.key === key);
+      if (!field || field.type === 'layout') return;
       pushHistory(item);
       item.fields = item.fields.filter((f) => f.key !== key);
       item.values = valuesFor(item.fields, item.values);
+      const layoutField = item.fields.find((f) => f.type === 'layout');
+      if (layoutField) {
+        const { [key]: _gone, ...boxes } = item.values[layoutField.key] || {};
+        item.values = { ...item.values, [layoutField.key]: boxes };
+      }
     });
   }
 

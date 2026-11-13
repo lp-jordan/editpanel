@@ -96,6 +96,76 @@ function GpPreview({ message, onError }) {
   return <iframe ref={ref} className="gp-frame" title="Preview" sandbox="allow-scripts" srcDoc={doc} />;
 }
 
+const GP_W = 1920;
+const GP_H = 1080;
+const GP_MIN_BOX = 60;
+const GP_HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+
+/** Moves and resizes a box from where it was when the drag started. Canvas pixels, kept on the canvas. */
+function gpDragBox(b, mode, dx, dy) {
+  let left = b.x;
+  let top = b.y;
+  let right = b.x + b.w;
+  let bottom = b.y + b.h;
+  if (mode === 'move') {
+    const x = Math.min(Math.max(0, left + dx), GP_W - b.w);
+    const y = Math.min(Math.max(0, top + dy), GP_H - b.h);
+    return { x: Math.round(x), y: Math.round(y), w: b.w, h: b.h };
+  }
+  if (mode.includes('w')) left = Math.min(Math.max(0, left + dx), right - GP_MIN_BOX);
+  if (mode.includes('e')) right = Math.max(Math.min(GP_W, right + dx), left + GP_MIN_BOX);
+  if (mode.includes('n')) top = Math.min(Math.max(0, top + dy), bottom - GP_MIN_BOX);
+  if (mode.includes('s')) bottom = Math.max(Math.min(GP_H, bottom + dy), top + GP_MIN_BOX);
+  return { x: Math.round(left), y: Math.round(top), w: Math.round(right - left), h: Math.round(bottom - top) };
+}
+
+/** Draggable, resizable outlines over the preview, one per element that has a layout box. */
+function GpBoxes({ boxes, labels, onChange }) {
+  const ref = React.useRef(null);
+  const [scale, setScale] = React.useState(0);
+  const [dragging, setDragging] = React.useState(null);
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const ro = new ResizeObserver(() => setScale(el.clientWidth / GP_W));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const start = (e, key, mode) => {
+    if (e.button !== 0 || !scale) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const from = boxes[key];
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    setDragging(key);
+    const move = (ev) => onChange(key, gpDragBox(from, mode, (ev.clientX - x0) / scale, (ev.clientY - y0) / scale));
+    const end = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', end);
+      el.removeEventListener('pointercancel', end);
+      setDragging(null);
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+  };
+  return (
+    <div className="gp-boxes" ref={ref}>
+      {scale > 0 && Object.entries(boxes).filter(([key]) => labels[key]).map(([key, b]) => (
+        <div key={key} className={`gp-box${dragging === key ? ' is-dragging' : ''}`}
+          style={{ left: b.x * scale, top: b.y * scale, width: b.w * scale, height: b.h * scale }}
+          onPointerDown={(e) => start(e, key, 'move')}>
+          <span className="gp-box-label">{labels[key]}</span>
+          {GP_HANDLES.map((h) => <span key={h} className={`gp-box-handle is-${h}`} onPointerDown={(e) => start(e, key, h)} />)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function GpField({ field, value, onChange, call }) {
   if (field.type === 'image') {
     return (
@@ -314,7 +384,9 @@ function GpDesign({ g, call, previewShell }) {
       });
     }
   };
-  const shownFields = kind === 'slide' ? fieldDefs.filter((f) => f.type !== 'image') : fieldDefs;
+  const shownFields = fieldDefs.filter((f) => f.type !== 'layout' && !(kind === 'slide' && f.type === 'image'));
+  const layoutField = item ? fieldDefs.find((f) => f.type === 'layout') : null;
+  const boxLabels = Object.fromEntries(shownFields.map((f) => [f.key, f.label]));
 
   return (
     <React.Fragment>
@@ -332,6 +404,10 @@ function GpDesign({ g, call, previewShell }) {
         <div className="gp-stage">
           <div className="gp-stage-frame">
             <GpPreview message={message} onError={previewShell.onError} />
+            {layoutField && (
+              <GpBoxes boxes={values[layoutField.key] || {}} labels={boxLabels}
+                onChange={(key, box) => changeValue(layoutField.key, { ...(values[layoutField.key] || {}), [key]: box })} />
+            )}
             {status && <div className="gp-badge"><span className="gp-spinner" />Updating</div>}
           </div>
           {previewShell.error}
