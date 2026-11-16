@@ -82,6 +82,29 @@ function cutThroughRunOf(ct) {
 
 // Engine-job / export state → { dot, label } for the compact rows: a
 // .status-dot modifier plus a short text label.
+// Camera card ingest (main-process run snapshot) as a small summary for the
+// Jobs pill and row, or null when there's no run.
+function cardRunOf(snap) {
+  if (!snap || !Array.isArray(snap.cards)) return null;
+  const pct = snap.workTotal > 0 ? Math.min(100, Math.floor((snap.workDone / snap.workTotal) * 100)) : 0;
+  const reports = snap.cards.map(c => c.report).filter(Boolean);
+  return {
+    id: snap.id,
+    state: snap.state,
+    pct: snap.state === 'running' ? pct : 100,
+    cardCount: snap.cards.length,
+    labels: snap.cards.map(c => c.label).filter(Boolean).join(', '),
+    canceling: !!snap.cancelRequested,
+    failed: reports.reduce((n, r) => n + (r.failed || 0), 0),
+    safe: reports.filter(r => r.safeToFormat).length
+  };
+}
+function cardRunResultText(cr) {
+  if (cr.state === 'canceled') return 'Canceled';
+  if (cr.failed) return `${cr.failed} failed`;
+  return `${cr.safe} of ${cr.cardCount} safe to format`;
+}
+
 function jobStatusOf(state) {
   switch (state) {
     case 'succeeded':
@@ -254,7 +277,7 @@ function RenderingExportRow({
 // render reaches a terminal state, the row falls back to the compact display.
 const RENDERING_STATES = new Set(['queued', 'rendering', 'uploading']);
 
-function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThroughRun, exportVersion, onViewResults, onReviewExports, resolveProject, peers = [] }) {
+function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThroughRun, cardRun, onOpenCardIngest, exportVersion, onViewResults, onReviewExports, resolveProject, peers = [] }) {
   const [runs, setRuns] = React.useState([]);
   const [loadingRuns, setLoadingRuns] = React.useState(false);
   const [recentExports, setRecentExports] = React.useState([]);
@@ -671,6 +694,49 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThr
                     {cutThroughRun.pct != null && (
                       <div className="job-panel-progress-track">
                         <div className="job-panel-progress-fill" style={{ width: `${cutThroughRun.pct}%` }} />
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {g.live && activeTab === 'all' && cardRun && (
+                <section className="job-panel-section">
+                  <div className={`job-panel-row${cardRun.state === 'running' ? ' active' : ''}`}>
+                    <div className="job-panel-row-top">
+                      <span className="job-panel-name" title={cardRun.labels}>
+                        Camera cards · {cardRun.cardCount} card{cardRun.cardCount !== 1 ? 's' : ''}
+                      </span>
+                      <div className="job-panel-row-actions">
+                        <span className="job-panel-step-badge">
+                          {cardRun.state === 'running'
+                            ? (cardRun.canceling ? 'Canceling…' : `${cardRun.pct}%`)
+                            : cardRunResultText(cardRun)}
+                        </span>
+                        <button className="btn ghost small" onClick={() => onOpenCardIngest?.()}>Open</button>
+                        {cardRun.state === 'running' ? (
+                          <button
+                            className="btn danger small"
+                            onClick={() => window.cardIngestAPI?.cancel()}
+                            disabled={cardRun.canceling}
+                          >
+                            Cancel
+                          </button>
+                        ) : (
+                          <button
+                            className="job-panel-delete-btn"
+                            onClick={() => window.cardIngestAPI?.dismiss()}
+                            title="Clear from Jobs"
+                            aria-label="Clear from Jobs"
+                          >
+                            {X_ICON}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {cardRun.state === 'running' && (
+                      <div className="job-panel-progress-track">
+                        <div className="job-panel-progress-fill" style={{ width: `${cardRun.pct}%` }} />
                       </div>
                     )}
                   </div>
@@ -1101,7 +1167,7 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThr
 
           {renderGroup(here)}
 
-          {tabCounts[activeTab] === 0 && !loadingRuns && !(activeTab === 'all' && cutThroughRun) && (
+          {tabCounts[activeTab] === 0 && !loadingRuns && !(activeTab === 'all' && (cutThroughRun || cardRun)) && (
             <p className="job-panel-empty">
               {currentProject ? 'Nothing for this project yet.'
                 : activeTab === 'all'        ? 'No jobs yet.'

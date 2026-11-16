@@ -147,6 +147,7 @@ function App() {
   const [exportOpen, setExportOpen]           = React.useState(false);
   const [activeExport, setActiveExport]       = React.useState(null);
   const [cutThroughRun, setCutThroughRun]     = React.useState(null);
+  const [cardRun, setCardRun]                 = React.useState(null);
   const [openSeqOpen, setOpenSeqOpen]         = React.useState(false);
   // Phase 3.5: bumps when the Jobs-tab "exports awaiting assignment" pill is
   // clicked. ExportsPanel observes the change and expands itself filtered to
@@ -980,6 +981,30 @@ function App() {
     return api.onUpdate(apply);
   }, []);
 
+  // Card ingest also runs in the main process: the Jobs pill and row follow it
+  // with the overlay closed, and a toast says when it finishes.
+  const cardIngestOpenRef = React.useRef(false);
+  cardIngestOpenRef.current = cardIngestOpen;
+  React.useEffect(() => {
+    const api = window.cardIngestAPI;
+    if (!api) return undefined;
+    let lastState = null;
+    const apply = (snap) => {
+      const next = cardRunOf(snap);
+      if (lastState === 'running' && next && next.state !== 'running' && !cardIngestOpenRef.current) {
+        showToast(`Card ingest ${next.state === 'canceled' ? 'canceled' : 'finished'}`, {
+          tone: next.state === 'canceled' || next.failed ? 'warning' : 'success',
+          detail: cardRunResultText(next),
+          duration: 8000
+        });
+      }
+      lastState = next ? next.state : null;
+      setCardRun((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    };
+    api.snapshot().then((res) => apply(res?.data || null)).catch(() => {});
+    return api.onUpdate(apply);
+  }, [showToast]);
+
   const currentWorkspace = workspaceConfig[route];
 
   function renderStatusBar() {
@@ -989,7 +1014,8 @@ function App() {
     const exportUploading = activeExport && activeExport.state === 'uploading';
     const exportQueued    = activeExport && activeExport.state === 'queued';
     const exportRunning = exportRendering || exportUploading;
-    const showBusy = Boolean(runningJob) || exportRunning || Boolean(cutThroughRun);
+    const cardRunning = cardRun && cardRun.state === 'running';
+    const showBusy = Boolean(runningJob) || exportRunning || Boolean(cutThroughRun) || cardRunning;
     const showAdvisory = Boolean(resolveAdvisory) &&
       !connected &&
       resolveAdvisory.code !== dismissedAdvisoryCode;
@@ -1065,6 +1091,8 @@ function App() {
                 ? runningJobLabel
                 : cutThroughRun
                 ? `Cut-through: ${cutThroughRun.step}${cutThroughRun.pct != null ? ` ${cutThroughRun.pct}%` : ''}`
+                : cardRunning
+                ? `Cards ${cardRun.pct}%`
                 : exportQueued
                 ? 'Export queued'
                 : 'Jobs'}
@@ -1500,6 +1528,8 @@ function App() {
         dashboard={dashboard}
         activeExport={activeExport}
         cutThroughRun={cutThroughRun}
+        cardRun={cardRun}
+        onOpenCardIngest={() => { setJobPanelOpen(false); setCardIngestOpen(true); }}
         exportVersion={exportVersion}
         resolveProject={project}
         peers={peers}

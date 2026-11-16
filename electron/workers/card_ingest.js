@@ -170,7 +170,7 @@ function ffmpegFrame(ffmpegPath, src) {
   });
 }
 
-function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, onCardsAdded = () => {}, nativeImage = null, ffmpegPath = '' }) {
+function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, onCardsAdded = () => {}, onRunFinished = () => {}, nativeImage = null, ffmpegPath = '' }) {
   let cards = [];
   let firstPoll = true;
   let pollTimer = null;
@@ -488,6 +488,9 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
       try { jobsDb?.finishCardIngestRun(run.id, run.state, run); } catch (err) { log(`[Cards] report save failed: ${err.message}`); }
       children = [];
       log(`[Cards] ingest ${run.state}`);
+      pushUpdate(true);
+      try { onRunFinished(snapshot()); } catch (err) { log(`[Cards] finish hook failed: ${err.message}`); }
+      return;
     }
     pushUpdate(true);
   }
@@ -609,7 +612,10 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
 
   /** Clear a finished run so the overlay starts fresh. */
   function dismiss() {
-    if (run && run.state !== 'running') run = null;
+    if (run && run.state !== 'running') {
+      run = null;
+      broadcast('card-ingest:update', null);   // the Jobs row clears too
+    }
     return { ok: true };
   }
 

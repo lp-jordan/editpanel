@@ -3639,6 +3639,14 @@ app.whenReady().then(() => {
   });
 
   // --- Camera card ingest IPC ---
+  function cardRunSummaryText(snap) {
+    const cards = snap.cards || [];
+    const failed = cards.reduce((n, c) => n + (c.report?.failed || 0), 0);
+    const safe = cards.filter(c => c.report?.safeToFormat).length;
+    if (snap.state === 'canceled') return 'Canceled.';
+    if (failed) return `${failed} file${failed !== 1 ? 's' : ''} failed.`;
+    return `${safe} of ${cards.length} card${cards.length !== 1 ? 's' : ''} safe to format.`;
+  }
   // The engine (workers/card_ingest.js) polls for mounted cards and pushes the
   // list on 'card-ingest:cards'; a running ingest pushes 'card-ingest:update'.
   cardIngest = createCardIngest({
@@ -3656,6 +3664,15 @@ app.whenReady().then(() => {
     onCardsAdded: (added) => {
       if (!Notification.isSupported()) return;
       const n = new Notification({ title: 'Camera card detected', body: added.map(c => c.label).join(', ') });
+      n.on('click', () => { if (win) { win.show(); win.focus(); } });
+      n.show();
+    },
+    // In-app toast covers a focused window; the OS notification covers an
+    // editor working elsewhere (Resolve, or EditPanel hidden in the tray).
+    onRunFinished: (snap) => {
+      if (!snap || !Notification.isSupported()) return;
+      if (win && win.isVisible() && win.isFocused()) return;
+      const n = new Notification({ title: 'Card ingest finished', body: cardRunSummaryText(snap) });
       n.on('click', () => { if (win) { win.show(); win.focus(); } });
       n.show();
     }
