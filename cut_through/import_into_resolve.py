@@ -25,6 +25,7 @@ PLAN_FILE, MIC_FILES, ATEM_FILE). Report saved to OUT_DIR/import_<LABEL>.txt.
 import base64
 import json
 import os
+import re
 import struct
 import time
 import zlib
@@ -61,6 +62,7 @@ SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}
 OUT_DIR = globals().get("OUT_DIR") or os.path.expanduser("~/Desktop")   # EditPanel: the run folder
 os.makedirs(OUT_DIR, exist_ok=True)
 _lines: List[str] = []
+_TAKES_UNDO: list = []                                 # (clip, original name) renamed for this import
 _T0 = time.time()
 
 
@@ -81,11 +83,100 @@ def walk(folder: Any, skip=SKIP_BINS):
 def clip_label(item: Any) -> str:
     """The angle for multicam clips, the file name for plain clips (the mic WAVs)."""
     a = angle_of(item)
-    return a if a != "?" else str(_safe(lambda: item.GetName(), "?"))
+    return a if a != "?" else real_name(str(_safe(lambda: item.GetName(), "?")))
 
 
 def _norm(p: str) -> str:
     return str(p or "").replace("/", "\\").lower()
+
+
+# ── same-named takes ─────────────────────────────────────────────────────────
+# A recorder that makes a new file per take names them all alike (27 × 04MIC4.WAV in CQ-MT030…).
+# Resolve finds the import's source clips by NAME, so with 27 clips of one name in the search bins
+# it can't tell them apart (ELEVATE_MC_4, 2026-11-16: the import froze Resolve). So, for the
+# import only, each such clip gets a unique media pool name ("04MIC4.WAV [ct CQ-MT030]"), the
+# FCPXML asks for those names, and the names go back afterwards. A run that dies mid-import leaves
+# the tags on: the next run takes them off first (the suffix holds everything needed).
+_TAG = re.compile(r"^(.*) \[ct [^\]]*\]$")
+
+
+def real_name(n: str) -> str:
+    m = _TAG.match(str(n or ""))
+    return m.group(1) if m else str(n or "")
+
+
+def _rename(clip: Any, name: str) -> bool:
+    if not _safe(lambda: clip.SetName(name), False):
+        _safe(lambda: clip.SetClipProperty("Clip Name", name), False)
+    return _safe(lambda: clip.GetName()) == name
+
+
+def untag_all(mp: Any) -> int:
+    """Take off tags a previous run left (it stopped before it could)."""
+    n = 0
+    for _, c in walk(mp.GetRootFolder(), set()):
+        cur = str(_safe(lambda: c.GetName(), "") or "")
+        if _TAG.match(cur) and _rename(c, real_name(cur)):
+            n += 1
+    return n
+
+
+def tag_takes(mp: Any, folders: list, wanted: dict):
+    """Give every clip whose name the FCPXML uses for more than one file a unique name.
+    Returns ({normalized path: unique name}, [(clip, original name)] to put back)."""
+    by_path, undo = {}, []
+    multi = {n for n, paths in wanted.items() if len(paths) > 1}
+    if not multi:
+        return by_path, undo
+    for f in folders:
+        for c in _safe(lambda: f.GetClipList(), []) or []:
+            n = _safe(lambda: c.GetName())
+            if n not in multi:
+                continue
+            raw = str(_safe(lambda: c.GetClipProperty("File Path"), "") or "")
+            fp = _norm(raw)
+            if fp not in wanted[n] or fp in by_path:
+                continue
+            parent = os.path.basename(os.path.dirname(raw.replace("\\", "/"))) or str(len(by_path) + 1)
+            tag = f"{n} [ct {parent}]"
+            if tag in by_path.values():
+                tag = f"{n} [ct {parent} {len(by_path) + 1}]"
+            if _rename(c, tag):
+                by_path[fp] = tag
+                undo.append((c, n))
+    return by_path, undo
+
+
+def tagged_xml(path: str, by_path: dict) -> str:
+    """A copy of the FCPXML whose assets (and the clips cut from them) carry the unique names."""
+    from urllib.parse import unquote
+    from xml.sax.saxutils import quoteattr
+    txt = open(path, encoding="utf-8").read()
+    names = {}
+    for m in re.finditer(r'<asset ([^>]*)>\s*<media-rep[^>]*src="([^"]*)"', txt):
+        fp = _norm(unquote(m.group(2)).replace("file://localhost/", ""))
+        aid = re.search(r'\bid="([^"]*)"', m.group(1))
+        if fp in by_path and aid:
+            names[aid.group(1)] = by_path[fp]
+
+    def asset(m):
+        aid = re.search(r'\bid="([^"]*)"', m.group(0))
+        if not aid or aid.group(1) not in names:
+            return m.group(0)
+        return re.sub(r'\bname="[^"]*"', lambda _: "name=" + quoteattr(names[aid.group(1)]), m.group(0), count=1)
+
+    def clip(m):
+        ref = re.search(r'\bref="([^"]*)"', m.group(0))
+        if not ref or ref.group(1) not in names:
+            return m.group(0)
+        return re.sub(r'\bname="[^"]*"', lambda _: "name=" + quoteattr(names[ref.group(1)]), m.group(0), count=1)
+
+    txt = re.sub(r"<asset [^>]*>", asset, txt)
+    txt = re.sub(r"<asset-clip [^>]*>", clip, txt)
+    out = os.path.splitext(path)[0] + "_import.fcpxml"
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(txt)
+    return out
 
 
 def xml_sources(path: str) -> dict:
@@ -139,7 +230,7 @@ def wrong_sources(tl: Any, wanted: dict) -> list:
     for k in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
         for it in _safe(lambda: tl.GetItemListInTrack("audio", k), []) or []:
             mpi = _safe(lambda: it.GetMediaPoolItem())
-            n = _safe(lambda: mpi.GetName()) if mpi else None
+            n = real_name(_safe(lambda: mpi.GetName())) if mpi else None
             if n in wanted and _norm(_safe(lambda: mpi.GetClipProperty("File Path"), "")) not in wanted[n]:
                 bad.append((k, n, _safe(lambda: mpi.GetClipProperty("File Path"))))
     return bad
@@ -192,7 +283,7 @@ def fix_mic_tracks(project: Any, tl: Any, want: dict) -> None:
     moved = failed = 0
     for k in range(1, int(tl.GetTrackCount("audio") or 0) + 1):
         for it in list(_safe(lambda: tl.GetItemListInTrack("audio", k), []) or []):
-            dest = want.get(angle_of(it)) or want.get(_safe(lambda: it.GetName()))
+            dest = want.get(angle_of(it)) or want.get(real_name(_safe(lambda: it.GetName())))
             if dest and dest != k:
                 if _safe(lambda: it.SetPosition({"trackIndex": dest}, False), False):
                     moved += 1
@@ -317,21 +408,38 @@ def main() -> None:
     # bin the angles came in offline; with EVERY bin Resolve matched another recording's
     # same-named mic WAV (2026-11-05).
     wanted = xml_sources(path)
+    left = untag_all(mp)
+    if left:
+        say(f"    took the import tags off {left} clip(s) a stopped run left behind")
     folders, notes = source_bins(mp, wanted)
     for n_ in notes:
         say("    " + n_)
     if any(n_.startswith("✗") for n_ in notes):
         globals()["CHECK_OK"] = False
     opts = {"importSourceClips": False, "sourceClipsFolders": folders}   # timeline name: from the file
+    by_path, undo = tag_takes(mp, folders, wanted)
+    _TAKES_UNDO.extend(undo)
+    if undo:
+        want_n = sum(len(v) for n_, v in wanted.items() if len(v) > 1)
+        say(f"    same-named takes given unique names for the import: {len(by_path)} of {want_n}"
+            + ("" if len(by_path) == want_n else " ✗ (the rest may not match)"))
+        path = tagged_xml(path, by_path)
     mp.SetCurrentFolder(orig_folder)
     t1 = time.time()
     phase("Importing the timeline (Resolve makes one multicam copy)")
     tl = mp.ImportTimelineFromFile(path, opts)
     say(f"ImportTimelineFromFile → {'ok' if tl else 'FAILED'} in {time.time() - t1:.1f}s "
         f"(source clips searched in {len(folders)} bin(s))")
+    if not tl:
+        alive = _safe(lambda: project.GetTimelineCount()) is not None
+        if not alive:
+            raise RuntimeError("Resolve stopped answering during the import (it may have frozen). "
+                               "Restart Resolve and EditPanel before running Build again")
     new = [project.GetTimelineByIndex(i) for i in range(1, int(project.GetTimelineCount()) + 1)
            if project.GetTimelineByIndex(i).GetName() not in names_before]
     say(f"New timeline(s): {len(new)} — {[x.GetName() for x in new]}")
+    if not tl and not new:
+        raise RuntimeError("Resolve couldn't import the timeline (nothing was created)")
     after = multicams(mp, name)
     say(f"After: {len(after)} multicam(s) named {name!r} (+{len(after) - len(before)} copies for {len(new)} timeline(s))")
     copies = {}
@@ -436,6 +544,11 @@ except Exception as exc:
     CHECK_OK = False                                    # never split a copy whose import didn't finish
     IMPORT_ERROR = str(exc)
 finally:
+    if _TAKES_UNDO:                                     # the takes get their own names back
+        back = sum(1 for c, n in _TAKES_UNDO if _rename(c, n))
+        say(f"Take names put back: {back}/{len(_TAKES_UNDO)}"
+            + ("" if back == len(_TAKES_UNDO) else " ✗ (the next Build puts the rest back)"))
+        _TAKES_UNDO.clear()
     try:
         with open(os.path.join(OUT_DIR, f"import_{LABEL}.txt"), "w", encoding="utf-8") as fh:
             fh.write("\n".join(_lines) + "\n")
