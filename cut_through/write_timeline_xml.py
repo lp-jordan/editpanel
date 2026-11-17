@@ -11,11 +11,13 @@ written as FCPXML 1.14 the way Resolve exports a multicam edit:
                <mc-source srcEnable="audio">, cut with the picture. Using the multicam's audio is
                what makes the imported copy link that angle's sound (plain clips came in red).
                Enabled only on a camera-audio day (plan audio.source = "camera").
-      one lane per speaker: the mic WAVs placed under an angle in the multicam, as plain
-               <asset-clip>s of the WAV file (Resolve places clips inside an imported multicam by
-               timecode, and the recorder's WAVs start at 00:00:00:00, so they can't ride along in
-               the copy's angles); a mic recorded into the camera file is an audio <mc-clip>
-               instead. A closed mic = a disabled clip; a quieter backchannel gets adjust-volume.
+      one lane per speaker for a mic recorded into the camera file: an audio <mc-clip>.
+               A closed mic = a disabled clip; a quieter backchannel gets adjust-volume.
+  - mic WAVs placed under an angle in the multicam are NOT in the file: they go to
+    <out>_mics.json and import_into_resolve.py puts them on with AppendToTimeline after the import
+    (Resolve places clips inside an imported multicam by timecode and the recorder's WAVs start at
+    00:00:00:00, so they can't ride along in the copy's angles; and as ~3,800 plain clips in the
+    import file they froze Resolve three times — ELEVATE_MC_4, 2026-11-16/17).
 The <resources> (formats, assets, the multicam and its angle IDs) are copied from an FCPXML
 that Resolve exported from the same project, so the multicam definition matches exactly.
 
@@ -93,6 +95,7 @@ def atem_out(media_xml: str, atem_angle: str = "Camera 1"):
 LAST_ATEM = None                       # the angle whose multicam audio is on A1 in the last build (for the import)
 LAST_MIC_CLIPS = {}                    # mic WAV file name → how many clips of it the last build wrote (the import checks them all arrive)
 LAST_MIC_UNCOVERED = 0                 # mic frames in the last build that no WAV take covers (left as gaps)
+LAST_MIC_PIECES = []                   # mic WAV pieces for the import to append (also written to <out>_mics.json)
 
 
 def camera_audio_refs(resources: str) -> dict:
@@ -286,9 +289,19 @@ def main(argv=None) -> list:
                             + (f" (+{len(ws) - 1} more take(s))" if len(ws) > 1 else "")
                             for a, ws in sorted(angle_wavs.items())))
     atem_runs = []
-    global LAST_ATEM, LAST_MIC_CLIPS, LAST_MIC_UNCOVERED
+    global LAST_ATEM, LAST_MIC_CLIPS, LAST_MIC_UNCOVERED, LAST_MIC_PIECES
     LAST_ATEM = None
-    LAST_MIC_CLIPS, LAST_MIC_UNCOVERED = {}, 0
+    LAST_MIC_CLIPS, LAST_MIC_UNCOVERED, LAST_MIC_PIECES = {}, 0, []
+    # the mic WAV assets: their file paths (for the import to find the media pool clip) and own
+    # start (an asset-clip's start counts from it). They leave the file's resources (below).
+    from urllib.parse import unquote
+    wav_assets = {}
+    take_refs = {w[0] for ws in angle_wavs.values() for w in ws}
+    for m in re.finditer(r"<asset ([^>]*)>\s*<media-rep [^>]*src=\"([^\"]+)\"", resources):
+        a = attrs(m.group(1))
+        if a.get("id") in take_refs:
+            wav_assets[a["id"]] = (unquote(m.group(2)).replace("file://localhost/", "").replace("file://", ""),
+                                   secs(a.get("start", "0s")))
     # which angle's own audio goes on A1: the ATEM mix on Camera 1, or — on a day with no mic WAVs —
     # the angle Prep picked as the audio (plan audio.angle; angles may be named "Angle 1", not "Camera 1")
     angle_names = re.findall(r'<mc-angle [^>]*name="([^"]+)"', resources)
@@ -326,6 +339,7 @@ def main(argv=None) -> list:
     def spine(plan: dict, base: int):
         """Picture clips (record offset `base`) with the mics hanging off the first one."""
         global LAST_MIC_UNCOVERED
+        first_track = 2 if LAST_ATEM else 1                 # import: A1 = the multicam's audio, then one track per person
         pieces = plan["video"]
         offs, rec = [], 0
         for p in pieces:
@@ -371,7 +385,25 @@ def main(argv=None) -> list:
                          f'duration="{t(p["out"] - p["in"])}" offset="{t(seq_tc + base + off)}" start="{src_t(p["in"])}">')
             lines.append(f'                            <mc-source srcEnable="video" angleID="{angles[p["angle"]]}"/>')
             if k == 0:                                      # every mic hangs off the first clip
-                for lane, (role, clips) in enumerate(lanes, 1):
+                lane = 0
+                for role, clips in lanes:
+                    angle = mic_angle.get(role)
+                    takes = angle_wavs.get(angle) if role != "ATEM" else None
+                    if takes:                                # Jordan's mic WAV(s) under that angle, one per take:
+                        track = first_track + list(plan["mics"]).index(role)     # appended after the import
+                        for s, e, r0, on, gain in clips:     # multicam frames → the take that covers them
+                            got = wav_pieces(takes, s, e, FD)
+                            LAST_MIC_UNCOVERED += (e - s) - sum(b - a for a, b, _ in got)
+                            for a, b, (ref, fname, o, inp, _d) in got:
+                                path, a_start = wav_assets[ref]
+                                LAST_MIC_PIECES.append({
+                                    "role": role, "track": track, "file": fname, "path": path,
+                                    "rec": base + r0 + (a - s),            # record frame from the timeline start
+                                    "in": round((inp + Fraction(a) * FD - o - a_start) / FD),   # frames into the WAV
+                                    "len": b - a, "on": bool(on), "gain": gain})
+                                LAST_MIC_CLIPS[fname] = LAST_MIC_CLIPS.get(fname, 0) + 1
+                        continue
+                    lane += 1
                     if role == "ATEM":
                         lines.append(f'                            <spine lane="{-lane}" offset="{src_t(first["in"])}">')
                         pos = 0
@@ -386,30 +418,13 @@ def main(argv=None) -> list:
                             pos = r0 + (e_ - s_)
                         lines.append("                            </spine>")
                         continue
-                    angle = mic_angle.get(role)
                     if not angle:
                         raise SystemExit(f"no mic angle given for {role!r} (add {role}=\"Camera N\")")
-                    takes = angle_wavs.get(angle)            # Jordan's mic WAV(s) under that angle, one per take
                     lines.append(f'                            <spine lane="{-lane}" offset="{src_t(first["in"])}">')
                     pos = 0
                     for s, e, r0, on, gain in clips:
                         vol = (f'                                    <adjust-volume amount="{gain:+.1f}dB"/>'
                                if gain is not None else None)
-                        if takes:                                # multicam frames → the take that covers them
-                            got = wav_pieces(takes, s, e, FD)
-                            LAST_MIC_UNCOVERED += (e - s) - sum(b - a for a, b, _ in got)
-                            for a, b, (ref, fname, o, inp, _d) in got:
-                                ra = r0 + (a - s)
-                                if ra > pos:
-                                    lines.append(f'                                <gap name="Gap" duration="{t(ra - pos)}" '
-                                                 f'offset="{t(pos)}" start="3600/1s"/>')
-                                head = (f'                                <asset-clip ref="{ref}" name={quoteattr(fname)} '
-                                        f'duration="{t(b - a)}" offset="{t(ra)}" '
-                                        f'start="{fmt_s(inp + Fraction(a) * FD - o)}" enabled="{int(on)}"')
-                                lines += [head + ">", vol, "                                </asset-clip>"] if vol else [head + "/>"]
-                                LAST_MIC_CLIPS[fname] = LAST_MIC_CLIPS.get(fname, 0) + 1
-                                pos = ra + (b - a)
-                            continue
                         if r0 > pos:
                             lines.append(f'                                <gap name="Gap" duration="{t(r0 - pos)}" '
                                          f'offset="{t(pos)}" start="3600/1s"/>')
@@ -462,6 +477,16 @@ def main(argv=None) -> list:
     if LAST_MIC_CLIPS or LAST_MIC_UNCOVERED:
         print("  mic clips written: " + ", ".join(f"{n} {c}" for n, c in sorted(LAST_MIC_CLIPS.items()))
               + (f"; ⚠ {LAST_MIC_UNCOVERED} mic frame(s) no WAV take covers (left silent)" if LAST_MIC_UNCOVERED else ""))
+    # the mic WAVs aren't in the file any more: drop their assets so the import doesn't look for them
+    for ref in wav_assets:
+        if re.search(r'\bref="%s"' % re.escape(ref), "\n".join(body) + resources):
+            continue
+        resources = re.sub(r'\s*<asset [^>]*id="%s"[^>]*>.*?</asset>' % re.escape(ref), "", resources, flags=re.S)
+    out[3] = "    " + resources
+    mpath = out_path.rsplit(".", 1)[0] + "_mics.json"
+    json.dump({"timeline": joined, "pieces": LAST_MIC_PIECES}, open(mpath, "w", encoding="utf-8"), indent=0)
+    if LAST_MIC_PIECES:
+        print(f"{mpath}: {len(LAST_MIC_PIECES)} mic piece(s) for the import to append")
     out += project(joined, body, base)
     rpath = out_path.rsplit(".", 1)[0] + "_ranges.json"
     json.dump({"timeline": joined, "videos": ranges}, open(rpath, "w", encoding="utf-8"), indent=1)

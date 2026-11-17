@@ -12,6 +12,10 @@ timelines that use the original into ORIG_BIN too.
 
 The import goes through the scripting API with importSourceClips=False and sourceClipsFolders
 = only the bins holding the exact files the FCPXML names, then:
+  - appends the mic WAV pieces from <XML>_mics.json (MIC_PIECES) with AppendToTimeline, 50 at a
+    time, each naming the exact media pool clip by file path; closed mics disabled, quieter
+    backchannels set with AudioVolume (as ~3,800 clips inside the import file they froze Resolve
+    three times — ELEVATE_MC_4, 2026-11-16/17; the spike timed this route at ~5 ms/clip),
   - puts every mic clip on its person's track (A1 = the multicam's audio angle when there is one),
   - checks every audio clip uses the file the multicam uses,
   - self-checks the copy (a frame per picture angle: red = Media Offline; each audio track's
@@ -56,6 +60,8 @@ MICS = globals().get("MICS") or {}                     # role → mic angle; put
 ATEM_FILE = globals().get("ATEM_FILE")                 # the angle whose multicam audio is cut on A1 (write_timeline_xml LAST_ATEM), if any
 MIC_FILES = globals().get("MIC_FILES") or {}           # mic WAV file → the angle it sits under
 MIC_CLIPS = globals().get("MIC_CLIPS") or {}           # mic WAV file name → clips the build wrote (all must arrive)
+MIC_PIECES = globals().get("MIC_PIECES")               # <joined>_mics.json in OUT_DIR: the mic WAV pieces to append
+APPEND_BATCH = 50                                      # spike 2026-11-17: 50 per call placed, 200 placed nothing
 # the original is out of play in these. "MC QUARANTINE" is the archive bin's old name: projects
 # built before it was renamed still have their original multicam there
 SKIP_BINS = {ORIG_BIN, "MC QUARANTINE"}
@@ -293,6 +299,75 @@ def fix_mic_tracks(project: Any, tl: Any, want: dict) -> None:
         say(f"    mic clips moved to their person's track: {moved}" + (f" (✗ {failed} could not move)" if failed else ""))
 
 
+def append_mics(project: Any, mp: Any, tl: Any, pieces: list) -> None:
+    """Put the mic WAV pieces on `tl` (see the module docstring). A piece's `rec` counts from the
+    timeline's start frame, `in`/`len` are frames of the WAV; AppendToTimeline's endFrame is
+    exclusive (spike: in..in+n-1 came out one frame short)."""
+    if not pieces:
+        return
+    t1 = time.time()
+    need = {_norm(p["path"]) for p in pieces}
+    by_path = {}
+    for _, c in walk(mp.GetRootFolder(), set()):
+        fp = _norm(_safe(lambda: c.GetClipProperty("File Path"), ""))
+        if fp in need and fp not in by_path:
+            by_path[fp] = c
+    missing = sorted(need - set(by_path))
+    if missing:
+        say(f"    ✗ {len(missing)} mic WAV(s) not in the media pool, e.g. {missing[0]} — their pieces stay silent")
+        globals()["CHECK_OK"] = False
+    project.SetCurrentTimeline(tl)
+    t0 = int(tl.GetStartFrame())
+    top = max(p["track"] for p in pieces)
+    while int(tl.GetTrackCount("audio") or 0) < top:
+        if not _safe(lambda: tl.AddTrack("audio", "mono"), False):
+            raise RuntimeError(f"couldn't add audio track A{int(tl.GetTrackCount('audio') or 0) + 1} for the mics")
+    todo = [p for p in pieces if _norm(p["path"]) in by_path]
+
+    def info(p):
+        return {"mediaPoolItem": by_path[_norm(p["path"])], "startFrame": int(p["in"]),
+                "endFrame": int(p["in"]) + int(p["len"]), "mediaType": 2,
+                "trackIndex": int(p["track"]), "recordFrame": t0 + int(p["rec"])}
+
+    def place(batch):
+        """[(piece, item)] for the pieces Resolve placed (matched by track + start)."""
+        got = _safe(lambda: mp.AppendToTimeline([info(p) for p in batch]), []) or []
+        got = got if isinstance(got, list) else []
+        at = {}
+        for it in got:
+            tr = _safe(lambda: it.GetTrackTypeAndIndex(), None) or [None, None]
+            at[(tr[1], _safe(lambda: it.GetStart()))] = it
+        return [(p, at.get((p["track"], t0 + p["rec"]))) for p in batch]
+
+    placed, failed, retried = [], [], 0
+    for i in range(0, len(todo), APPEND_BATCH):
+        phase(f"Adding mic clips {i}/{len(todo)}")
+        res = place(todo[i:i + APPEND_BATCH])
+        placed += [(p, it) for p, it in res if it]
+        for p, it in res:
+            if it:
+                continue
+            retried += 1                                   # one at a time: one bad piece can sink a batch
+            one = place([p])[0]
+            (placed.append(one) if one[1] else failed.append(p))
+    phase("Setting closed mics and quieter backchannels")
+    muted = sum(1 for p, it in placed if not p["on"] and _safe(lambda: it.SetClipEnabled(False), False))
+    vol = sum(1 for p, it in placed if p.get("gain") is not None
+              and _safe(lambda: it.SetProperty("AudioVolume", float(p["gain"])), False))
+    off = [(p, it) for p, it in placed if _safe(lambda: it.GetDuration()) != p["len"]]
+    say(f"    mic clips appended: {len(placed)}/{len(pieces)} in {time.time() - t1:.1f}s"
+        + (f" ({retried} retried one at a time)" if retried else "")
+        + f"; closed {muted}/{sum(1 for p in pieces if not p['on'])}"
+        + f"; volume {vol}/{sum(1 for p in pieces if p.get('gain') is not None)}"
+        + (f"; ✗ {len(off)} not the asked length, e.g. {off[0][0]['len']} → {_safe(lambda: off[0][1].GetDuration())}"
+           if off else ""))
+    if failed:
+        p = failed[0]
+        say(f"    ✗ {len(failed)} mic piece(s) Resolve wouldn't place, e.g. {p['file']} in {p['in']} +{p['len']} "
+            f"at {p['rec']} on A{p['track']}")
+        globals()["CHECK_OK"] = False
+
+
 def self_check(project: Any, tl: Any) -> bool:
     """Look inside what the import built: a frame per picture angle (red = Media Offline) and
     the loudness of each mic track (-100 LUFS = silent). True when nothing looks broken."""
@@ -440,6 +515,14 @@ def main() -> None:
     say(f"New timeline(s): {len(new)} — {[x.GetName() for x in new]}")
     if not tl and not new:
         raise RuntimeError("Resolve couldn't import the timeline (nothing was created)")
+    if MIC_PIECES:
+        mpath = os.path.join(OUT_DIR, MIC_PIECES)
+        pieces = json.load(open(mpath, encoding="utf-8")).get("pieces") or [] if os.path.exists(mpath) else None
+        if pieces is None:
+            raise RuntimeError(f"{mpath} not found (the mic pieces to add)")
+        joined = tl or new[0]
+        say(f"Adding {len(pieces)} mic clip(s) to '{joined.GetName()}' through the API")
+        append_mics(project, mp, joined, pieces)
     after = multicams(mp, name)
     say(f"After: {len(after)} multicam(s) named {name!r} (+{len(after) - len(before)} copies for {len(new)} timeline(s))")
     copies = {}
@@ -554,5 +637,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("XML", "LABEL", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "MIC_CLIPS", "ATEM_FILE", "OUT_DIR", "PLAN_FILE"):  # CHECK_OK / IMPORT_ERROR stay for the caller; the console keeps run-line settings between runs
+    for _k in ("XML", "LABEL", "ARCHIVE", "ORIG_BIN", "RAW", "MICS", "MIC_FILES", "MIC_CLIPS", "MIC_PIECES", "ATEM_FILE", "OUT_DIR", "PLAN_FILE"):  # CHECK_OK / IMPORT_ERROR stay for the caller; the console keeps run-line settings between runs
         globals().pop(_k, None)

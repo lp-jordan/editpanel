@@ -222,6 +222,8 @@ def main() -> None:
                                           "ARCHIVE": True, "RAW": RAW, "MICS": MICS, "PLAN_FILE": PLAN_FILE,
                                               "MIC_FILES": {n: a for n, (_, a, *_) in wavs.items()},
                                               "MIC_CLIPS": dict(getattr(mk, "LAST_MIC_CLIPS", None) or {}),
+                                              "MIC_PIECES": (os.path.basename(out).rsplit(".", 1)[0] + "_mics.json"
+                                                             if getattr(mk, "LAST_MIC_PIECES", None) else None),
                                               "ATEM_FILE": getattr(mk, "LAST_ATEM", None)}, r)
     say(f"3. Import done ({time.time() - t1:.1f}s)")
     if g.get("IMPORT_ERROR"):
