@@ -16,8 +16,10 @@
  *            broadcast as a run snapshot on 'card-ingest:update'
  *
  * Per card the editor can deselect files (`skip`, card-relative paths — they
- * stay on the card, so the card is never "safe to format") and send stills to
- * their own folder (`stillDest`; empty = same folder as the clips).
+ * stay on the card, so the card is never "safe to format"), send stills to
+ * their own folder (`stillDest`; empty = same folder as the clips), and send
+ * any file to another folder (`routes`: card-relative path → folder, e.g. a
+ * card holding three projects' footage). Name clashes are checked per folder.
  *
  * Card layouts (FX3 / FX6, verified 2026-10-30):
  *   PRIVATE/M4ROOT/CLIP/*.MP4    FX3 clips (plain counter names, clash-prone)
@@ -130,8 +132,10 @@ function summarize(files, dest) {
   };
 }
 
-/** Folder a card file goes to: stills to stillDest when one is set. */
-function fileDest(f, dest, stillDest) {
+/** Folder a card file goes to: its route, else stills to stillDest, else dest. */
+function fileDest(f, dest, stillDest, routes) {
+  const routed = routes && typeof routes[f.relPath] === 'string' && routes[f.relPath];
+  if (routed) return routed;
   return f.kind === 'still' && stillDest ? stillDest : dest;
 }
 
@@ -223,7 +227,7 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
 
   /**
    * Check cards against the ledger and their destinations.
-   * targets: [{ root, dest|null, stillDest?, skip? }] — checked together so
+   * targets: [{ root, dest|null, stillDest?, skip?, routes? }] — checked together so
    * two cards headed for one folder never plan the same name. `skip` (card-
    * relative paths) marks files the editor deselected: they plan no name.
    */
@@ -235,14 +239,14 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
       return reservedByDest.get(key);
     };
     const results = [];
-    for (const { root, dest, stillDest, skip } of targets) {
+    for (const { root, dest, stillDest, skip, routes } of targets) {
       const card = cards.find(c => c.root === root) || (await describeCard(root));
       if (!card) { results.push({ root, error: 'Card not found' }); continue; }
       const files = await scanCard(root);
       const skipSet = new Set(Array.isArray(skip) ? skip : []);
       for (const f of files) {
         if (f.kind === 'unfinalized') { f.status = 'unfinalized'; continue; }
-        const dir = fileDest(f, dest, stillDest);
+        const dir = fileDest(f, dest, stillDest, routes);
         f.dest = dir || null;
         try {
           f.sample = await sampleHash(f.src, f.size);
@@ -541,7 +545,7 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
   }
 
   /**
-   * targets: [{ root, dest, stillDest?, skip? }] — re-checked here (never
+   * targets: [{ root, dest, stillDest?, skip?, routes? }] — re-checked here (never
    * trusts a stale plan), then one copy process per card.
    */
   async function startIngest(targets = []) {

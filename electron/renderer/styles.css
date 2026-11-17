@@ -5078,6 +5078,14 @@ button.status-bar-chip-btn:disabled {
   text-overflow: ellipsis;
 }
 .ci-path.is-empty { color: var(--text-dim); font-family: inherit; }
+.ci-dest-row.is-pickable { cursor: pointer; padding: 4px 6px; margin: -4px -6px; border-radius: var(--radius-sm); }
+.ci-dest-row.is-pickable:hover { background: var(--hover); }
+.ci-dest-row.is-active { background: var(--surface-inset); }
+.ci-swatch { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto; box-shadow: 0 0 0 2px transparent; }
+.ci-swatch.is-active { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px currentColor; color: var(--text); }
+.ci-swatch.is-small { display: inline-block; width: 10px; height: 10px; vertical-align: -1px; margin-left: 4px; }
+.ci-dest-count { flex: 0 0 auto; white-space: nowrap; }
+.ci-brush-hint { margin-left: 12px; }
 .ci-done-where { margin: 0; font-size: 12px; color: var(--text-dim); font-family: ui-monospace, Menlo, Consolas, monospace; }
 .ci-files {
   background: var(--surface-inset);

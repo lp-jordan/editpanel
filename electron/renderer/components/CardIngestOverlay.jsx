@@ -5,8 +5,10 @@
  *   check — every mounted card, checked against the ledger and its destination:
  *           to copy / already on NAS / renamed / unfinalized; a destination per
  *           card; nothing copies until Start ingest. Files to copy can be
- *           deselected (they stay on the card), and a card holding both clips
- *           and stills can send the stills to their own folder
+ *           deselected (they stay on the card), a card holding both clips
+ *           and stills can send the stills to their own folder, and extra
+ *           destinations (each a color) take whichever files are clicked
+ *           while that color is selected — e.g. three projects on one card
  *   run   — the engine's run snapshot: progress while running, then the report
  *           (safe to format, renames, failures) and an optional Resolve import
  *
@@ -84,11 +86,23 @@ function CiThumb({ root, relPath, size = 'row' }) {
 
 const CI_STRIP_MAX = 8;
 
+// Destination colors: [0] the card's main folder, then extra destinations.
+const CI_DEST_COLORS = ['#dbaf5f', '#5b9bd5', '#c084d6', '#5fbfa8', '#e08a6a'];
+const CI_MAX_EXTRA = CI_DEST_COLORS.length - 1;
+const CI_NO_EXTRA = [];
+const CI_NO_ROUTES = {};
+
+const ciParent = (p) => (p || '').replace(/[\\/][^\\/]*$/, '');
+const ciBase = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p;
+
 function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, onLog }) {
   const [cards, setCards]       = React.useState([]);
   const [dests, setDests]       = React.useState({});      // root → folder
   const [stillDests, setStillDests] = React.useState({});  // root → photos folder ('' = same as clips)
   const [deselected, setDeselected] = React.useState({});  // root → Set of relPaths not to copy
+  const [extraDests, setExtraDests] = React.useState({});  // root → [{ id, path }] (color = index + 1)
+  const [routes, setRoutes]     = React.useState({});      // root → { relPath: extra id }
+  const [brush, setBrush]       = React.useState({});      // root → 'main' | extra id (what a click assigns)
   const lastPick = React.useRef({});                       // root → index of the last file clicked
   const [excluded, setExcluded] = React.useState(() => new Set());
   const [checks, setChecks]     = React.useState({});      // root → check result
@@ -110,6 +124,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
   const [binTree, setBinTree]           = React.useState([]);
   const [importState, setImportState]   = React.useState('idle'); // idle|running|done|error
   const [importResult, setImportResult] = React.useState(null);
+  const [importFolder, setImportFolder] = React.useState(null); // null = not chosen yet; '' = all folders
 
   // Open: pick up a run in flight (or its report), else list cards.
   React.useEffect(() => {
@@ -117,6 +132,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
     setError(null);
     setImportState('idle');
     setImportResult(null);
+    setImportFolder(null);
     window.cardIngestAPI.snapshot().then(r => setRun(r?.data || null));
     window.cardIngestAPI.lastDest().then(r => setLastDest(r?.data || ''));
     window.cardIngestAPI.listCards().then(r => { if (r?.ok) setCards(r.data || []); });
@@ -137,25 +153,43 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
     });
   }, [cards, lastDest]);
 
-  // Re-check whenever the card set or a destination changes.
+  // relPath → folder for files sent to an extra destination (what the engine takes).
+  function routesFor(root) {
+    const extras = extraDests[root] || CI_NO_EXTRA;
+    const map = routes[root] || CI_NO_ROUTES;
+    const out = {};
+    for (const [relPath, id] of Object.entries(map)) {
+      const d = extras.find(x => x.id === id);
+      if (d && d.path) out[relPath] = d.path;
+    }
+    return out;
+  }
+
+  // Re-check whenever the card set, a destination or a file's route changes.
+  // Short delay so a run of clicks while assigning files re-checks once.
   const cardKey = cards.map(c => c.root).join('|');
-  const destKey = cards.map(c => `${dests[c.root] || ''}>${stillDests[c.root] || ''}`).join('|');
+  const destKey = cards.map(c => `${dests[c.root] || ''}>${stillDests[c.root] || ''}>${JSON.stringify(routesFor(c.root))}`).join('|');
   React.useEffect(() => {
-    if (!open || run || !window.cardIngestAPI) return;
-    if (cards.length === 0) { setChecks({}); return; }
+    if (!open || run || !window.cardIngestAPI) return undefined;
+    if (cards.length === 0) { setChecks({}); return undefined; }
     const seq = ++checkSeq.current;
     setChecking(true);
-    const ordered = [...cards].sort((a, b) => Number(excluded.has(a.root)) - Number(excluded.has(b.root)));
-    window.cardIngestAPI.check(ordered.map(c => ({ root: c.root, dest: dests[c.root] || null, stillDest: stillDests[c.root] || null })))
-      .then(res => {
-        if (seq !== checkSeq.current) return;
-        if (!res?.ok) { setError(res?.error || 'Check failed'); return; }
-        const map = {};
-        for (const r of res.data || []) map[r.root] = r;
-        setChecks(map);
-        setError(null);
-      })
-      .finally(() => { if (seq === checkSeq.current) setChecking(false); });
+    const timer = setTimeout(() => {
+      const ordered = [...cards].sort((a, b) => Number(excluded.has(a.root)) - Number(excluded.has(b.root)));
+      window.cardIngestAPI.check(ordered.map(c => ({
+        root: c.root, dest: dests[c.root] || null, stillDest: stillDests[c.root] || null, routes: routesFor(c.root)
+      })))
+        .then(res => {
+          if (seq !== checkSeq.current) return;
+          if (!res?.ok) { setError(res?.error || 'Check failed'); return; }
+          const map = {};
+          for (const r of res.data || []) map[r.root] = r;
+          setChecks(map);
+          setError(null);
+        })
+        .finally(() => { if (seq === checkSeq.current) setChecking(false); });
+    }, 250);
+    return () => clearTimeout(timer);
   }, [open, !!run, cardKey, destKey, recheck]);
 
   // Bins for the Resolve import (report view only).
@@ -191,6 +225,85 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
 
   function clearStillDest(root) {
     setStillDests(prev => ({ ...prev, [root]: '' }));
+  }
+
+  // ── Extra destinations (colors) ─────────────────────────
+
+  function extrasFor(root) { return extraDests[root] || CI_NO_EXTRA; }
+  function brushFor(root) {
+    const b = brush[root];
+    return b && extrasFor(root).some(d => d.id === b) ? b : 'main';
+  }
+  /** 'main' or the extra id a file is assigned to. */
+  function routeOf(root, relPath) {
+    const id = (routes[root] || CI_NO_ROUTES)[relPath];
+    return id && extrasFor(root).some(d => d.id === id) ? id : 'main';
+  }
+  function colorOf(root, id) {
+    if (id === 'main') return CI_DEST_COLORS[0];
+    const i = extrasFor(root).findIndex(d => d.id === id);
+    return CI_DEST_COLORS[i + 1] || CI_DEST_COLORS[0];
+  }
+
+  async function addDest(root) {
+    if (extrasFor(root).length >= CI_MAX_EXTRA) return;
+    const res = await window.dialogAPI?.pickFolder();
+    if (!res || res.canceled || !res.folderPath) return;
+    const id = `d${Date.now()}`;
+    setExtraDests(prev => ({ ...prev, [root]: [...(prev[root] || []), { id, path: res.folderPath }] }));
+    setBrush(prev => ({ ...prev, [root]: id }));
+    setExpanded(prev => new Set(prev).add(root));   // files are where the assigning happens
+  }
+
+  async function changeExtraDest(root, id) {
+    const res = await window.dialogAPI?.pickFolder();
+    if (!res || res.canceled || !res.folderPath) return;
+    setExtraDests(prev => ({ ...prev, [root]: (prev[root] || []).map(d => (d.id === id ? { ...d, path: res.folderPath } : d)) }));
+  }
+
+  function removeDest(root, id) {
+    setExtraDests(prev => ({ ...prev, [root]: (prev[root] || []).filter(d => d.id !== id) }));
+    setRoutes(prev => {
+      const next = { ...(prev[root] || {}) };
+      for (const k of Object.keys(next)) if (next[k] === id) delete next[k];
+      return { ...prev, [root]: next };
+    });
+    if (brush[root] === id) setBrush(prev => ({ ...prev, [root]: 'main' }));
+  }
+
+  // Click assigns one file to the selected color; shift-click the whole range
+  // since the last click. Assigning also selects the file.
+  function paint(root, files, index, shift) {
+    const f = files[index];
+    if (!f || !ciPickable(f)) return;
+    const id = brushFor(root);
+    const last = lastPick.current[root];
+    let range = [f];
+    if (shift && typeof last === 'number' && files[last]) {
+      const [a, b] = last < index ? [last, index] : [index, last];
+      range = files.slice(a, b + 1);
+    }
+    lastPick.current[root] = index;
+    const paths = range.filter(ciPickable).map(x => x.relPath);
+    setRoutes(prev => {
+      const next = { ...(prev[root] || {}) };
+      for (const p of paths) { if (id === 'main') delete next[p]; else next[p] = id; }
+      return { ...prev, [root]: next };
+    });
+    setPicked(root, paths, true);
+  }
+
+  /** Files to copy per destination id, after deselections. */
+  function destCounts(r) {
+    const skip = skipSetFor(r.root);
+    const out = {};
+    for (const f of r.files || []) {
+      if (!ciPickable(f) || skip.has(f.relPath)) continue;
+      const id = routeOf(r.root, f.relPath);
+      const c = out[id] || (out[id] = { files: 0, bytes: 0 });
+      c.files++; c.bytes += f.size;
+    }
+    return out;
   }
 
   // Both clips and stills on the card → offer a separate photos folder.
@@ -279,7 +392,8 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         root: r.root,
         dest: dests[r.root],
         stillDest: (hasBothKinds(r) && stillDests[r.root]) || null,
-        skip: r.files.filter(f => ciPickable(f) && skipSetFor(r.root).has(f.relPath)).map(f => f.relPath)
+        skip: r.files.filter(f => ciPickable(f) && skipSetFor(r.root).has(f.relPath)).map(f => f.relPath),
+        routes: routesFor(r.root)
       })));
       if (!res?.ok) setError(res?.error || 'Could not start the ingest');
       else setRun(res.run);
@@ -296,8 +410,9 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
 
   async function handleImport() {
     if (!run || !window.leaderpassAPI) return;
-    const files = run.cards.flatMap(c => c.files)
-      .filter(f => f.kind === 'video' && (f.state === 'copied' || f.state === 'on-nas') && f.where)
+    const folder = chosenImportFolder();
+    const files = importableClips()
+      .filter(f => !folder || ciParent(f.where) === folder)
       .map(f => ({ local_path: f.where, bin_segments: [] }));
     if (files.length === 0) return;
     setImportState('running');
@@ -312,6 +427,27 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
       onLog?.(`[Cards] Resolve import failed: ${msg}`);
       setImportState('error');
     }
+  }
+
+  function importableClips() {
+    return run ? run.cards.flatMap(c => c.files)
+      .filter(f => f.kind === 'video' && (f.state === 'copied' || f.state === 'on-nas') && f.where) : [];
+  }
+  /** Folders holding this run's clips, the first card's main folder first. */
+  function clipFolders() {
+    const seen = [];
+    const main = run?.cards?.[0]?.dest;
+    const all = importableClips().map(f => ciParent(f.where));
+    if (main && all.includes(main)) seen.push(main);
+    for (const d of all) if (!seen.includes(d)) seen.push(d);
+    return seen;
+  }
+  // Several folders → import one at a time by default (they're usually
+  // different projects); '' = all of them.
+  function chosenImportFolder() {
+    const folders = clipFolders();
+    if (folders.length < 2) return '';
+    return importFolder === null ? folders[0] : importFolder;
   }
 
   // ── Check view ──────────────────────────────────────────
@@ -371,15 +507,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
           </button>
         )}
 
-        {s && !done && (
-          <div className="ci-dest">
-            <p className="section-label">{split ? 'Videos' : 'Destination'}</p>
-            <div className="ci-dest-row">
-              <span className={`ci-path${dests[card.root] ? '' : ' is-empty'}`}>{dests[card.root] || 'Choose a folder'}</span>
-              <button className="btn ghost" onClick={() => pickDest(card.root)}>Browse…</button>
-            </div>
-          </div>
-        )}
+        {s && !done && renderDests(card.root, r, split)}
         {split && (
           <div className="ci-dest">
             <p className="section-label">Photos</p>
@@ -404,17 +532,74 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         }), {
           pickable: ciPickable,
           picked: (f) => !skipSetFor(card.root).has(f.relPath),
-          toggle: (index, shift) => togglePick(card.root, r.files, index, shift)
+          toggle: (index, shift) => togglePick(card.root, r.files, index, shift),
+          // With extra destinations a row click assigns the selected color
+          // (the checkbox still toggles copy / don't copy).
+          click: extrasFor(card.root).length
+            ? (index, shift) => paint(card.root, r.files, index, shift)
+            : (index, shift) => togglePick(card.root, r.files, index, shift),
+          color: extrasFor(card.root).length ? (f) => colorOf(card.root, routeOf(card.root, f.relPath)) : null
         })}
       </section>
     );
   }
 
+  // Main destination + extra colored ones. With extras, clicking a row
+  // selects that color for assigning files.
+  function renderDests(root, r, split) {
+    const extras = extrasFor(root);
+    const multi = extras.length > 0;
+    const active = brushFor(root);
+    const counts = multi ? destCounts(r) : {};
+    const swatch = (id) => (
+      <span className={`ci-swatch${active === id ? ' is-active' : ''}`} style={{ background: colorOf(root, id) }} aria-hidden="true" />
+    );
+    const count = (id) => {
+      const c = counts[id];
+      return <span className="ci-card-meta ci-dest-count">{c ? `${c.files} file${c.files !== 1 ? 's' : ''} · ${ciBytes(c.bytes)}` : '0 files'}</span>;
+    };
+    const rowProps = (id) => (multi ? {
+      className: `ci-dest-row is-pickable${active === id ? ' is-active' : ''}`,
+      onClick: () => setBrush(prev => ({ ...prev, [root]: id })),
+      title: 'Click files to send them here'
+    } : { className: 'ci-dest-row' });
+    const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
+    return (
+      <div className="ci-dest">
+        <p className="section-label">{multi ? 'Destinations' : split ? 'Videos' : 'Destination'}</p>
+        <div {...rowProps('main')}>
+          {multi && swatch('main')}
+          <span className={`ci-path${dests[root] ? '' : ' is-empty'}`}>{dests[root] || 'Choose a folder'}</span>
+          {multi && count('main')}
+          <button className="btn ghost" onClick={stop(() => pickDest(root))}>Browse…</button>
+        </div>
+        {extras.map(d => (
+          <div key={d.id} {...rowProps(d.id)}>
+            {swatch(d.id)}
+            <span className="ci-path">{d.path}</span>
+            {count(d.id)}
+            <button className="btn ghost" onClick={stop(() => changeExtraDest(root, d.id))}>Browse…</button>
+            <button className="btn ghost" onClick={stop(() => removeDest(root, d.id))} aria-label="Remove destination" title="Remove">×</button>
+          </div>
+        ))}
+        {extras.length < CI_MAX_EXTRA && dests[root] && (
+          <div><button className="btn ghost small" onClick={() => addDest(root)}>Add destination</button></div>
+        )}
+      </div>
+    );
+  }
+
   function renderPickBar(root, files, eff) {
     const both = files.some(f => ciPickable(f) && f.kind === 'video') && files.some(f => ciPickable(f) && f.kind === 'still');
+    const multi = extrasFor(root).length > 0;
     return (
       <div className="ci-pick-bar">
         <span className="ci-card-meta">{eff.toCopy} of {eff.pickable} selected</span>
+        {multi && (
+          <span className="ci-card-meta ci-brush-hint">
+            Click files to send to <span className="ci-swatch is-small" style={{ background: colorOf(root, brushFor(root)) }} aria-hidden="true" />
+          </span>
+        )}
         <span className="ci-push" />
         <button className="btn ghost small" onClick={() => pickOnly(root, files, 'all')}>All</button>
         <button className="btn ghost small" onClick={() => pickOnly(root, files, 'none')}>None</button>
@@ -445,9 +630,11 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
     };
     const rowProps = (f, i) => {
       if (!pick || !pick.pickable(f)) return {};
+      const color = pick.color && pick.picked(f) ? pick.color(f) : null;
       return {
-        onClick: (e) => pick.toggle(i, e.shiftKey),
+        onClick: (e) => (pick.click || pick.toggle)(i, e.shiftKey),
         onMouseDown: (e) => { if (e.shiftKey) e.preventDefault(); },   // no text selection on shift-click
+        ...(color ? { style: { boxShadow: `inset 4px 0 0 ${color}` } } : {}),
       };
     };
     const offCls = (f) => (pick && pick.pickable(f) && !pick.picked(f) ? ' is-off' : '');
@@ -575,7 +762,12 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         <div className="ci-card-head">
           <div className="ci-card-name">
             <span className="ci-card-title">{card.label}</span>
-            <span className="ci-card-meta ci-mono">→ {card.dest}{card.stillDest ? ` · photos → ${card.stillDest}` : ''}</span>
+            {(() => {
+              const folders = runFolders(card);
+              return folders.length > 1
+                ? <span className="ci-card-meta ci-mono" title={folders.join('\n')}>→ {folders.map(ciBase).join(' · ')}</span>
+                : <span className="ci-card-meta ci-mono">→ {card.dest}</span>;
+            })()}
           </div>
           <span className="ci-card-meta ci-push">{ciBytes(copied)} of {ciBytes(card.bytesTotal)}</span>
         </div>
@@ -587,6 +779,13 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         })))}
       </section>
     );
+  }
+
+  /** Folders a run card's files go to: main first, then photos, then routed. */
+  function runFolders(card) {
+    const out = [];
+    for (const d of [card.dest, card.stillDest, ...card.files.map(f => f.dest)]) if (d && !out.includes(d)) out.push(d);
+    return out;
   }
 
   function renderReportCard(card) {
@@ -629,29 +828,32 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
             ))}
           </div>
         )}
-        <div className="ci-dest-row">
-          <span className="ci-card-meta ci-mono">{card.stillDest ? `Videos · ${card.dest}` : card.dest}</span>
-          <button className="btn ghost small ci-push" onClick={() => window.cardIngestAPI.openFolder(card.dest)}>Open folder</button>
-        </div>
-        {card.stillDest && (
-          <div className="ci-dest-row">
-            <span className="ci-card-meta ci-mono">Photos · {card.stillDest}</span>
-            <button className="btn ghost small ci-push" onClick={() => window.cardIngestAPI.openFolder(card.stillDest)}>Open folder</button>
-          </div>
-        )}
+        {runFolders(card).map(folder => {
+          const n = card.files.filter(f => f.dest === folder && (f.state === 'copied' || f.state === 'on-nas')).length;
+          const label = card.stillDest && folder === card.stillDest ? 'Photos · '
+            : card.stillDest && folder === card.dest ? 'Videos · ' : '';
+          return (
+            <div key={folder} className="ci-dest-row">
+              <span className="ci-card-meta ci-mono">{label}{folder}</span>
+              <span className="ci-card-meta ci-push">{n} file{n !== 1 ? 's' : ''}</span>
+              <button className="btn ghost small" onClick={() => window.cardIngestAPI.openFolder(folder)}>Open folder</button>
+            </div>
+          );
+        })}
       </section>
     );
   }
 
   function renderReport() {
-    const videoCount = run.cards.flatMap(c => c.files)
-      .filter(f => f.kind === 'video' && (f.state === 'copied' || f.state === 'on-nas')).length;
+    const folders = clipFolders();
+    const chosen = chosenImportFolder();
+    const videoCount = importableClips().filter(f => !chosen || ciParent(f.where) === chosen).length;
     const options = binTree.length ? [...binTree] : [];
     if (!options.some(b => b.path === importBin)) options.unshift({ path: importBin, name: importBin, depth: 1 });
     return (
       <>
         {run.cards.map(renderReportCard)}
-        {videoCount > 0 && (
+        {folders.length > 0 && (
           <section className="ci-card ci-import">
             <div className="ci-card-name">
               <span className="ci-card-title">Import into Resolve</span>
@@ -659,14 +861,20 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
                 {resolveConnected ? `${videoCount} clips · ${resolveProject || 'Current project'}` : 'Resolve not connected'}
               </span>
             </div>
-            {resolveConnected && importState !== 'done' && (
+            {resolveConnected && (importState !== 'done' || folders.length > 1) && (
               <div className="ci-import-controls">
+                {folders.length > 1 && (
+                  <select className="settings-input" value={chosen} onChange={e => { setImportFolder(e.target.value); setImportState('idle'); setImportResult(null); }} disabled={importState === 'running'} aria-label="Folder to import" title={chosen || 'All folders'}>
+                    {folders.map(d => <option key={d} value={d}>{ciBase(d)}</option>)}
+                    <option value="">All folders</option>
+                  </select>
+                )}
                 <select className="settings-input" value={importBin} onChange={e => setImportBin(e.target.value)} disabled={importState === 'running'} aria-label="Import bin">
                   {options.map(b => (
                     <option key={b.path} value={b.path}>{b.depth > 1 ? '   '.repeat(b.depth - 1) : ''}{b.name}</option>
                   ))}
                 </select>
-                <button className="btn ghost" onClick={handleImport} disabled={importState === 'running'}>
+                <button className="btn ghost" onClick={handleImport} disabled={importState !== 'idle' && importState !== 'error' || videoCount === 0}>
                   {importState === 'running' ? 'Importing…' : 'Import'}
                 </button>
               </div>
