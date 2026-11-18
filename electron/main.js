@@ -2589,14 +2589,23 @@ function markRangeNotify(body) {
   new Notification({ title: 'Mark range', body, silent: true }).show();
 }
 
+function markRangeLog(line) {
+  console.log(`[mark-range] ${line}`);
+  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('helper-message', `[mark-range] ${line}`));
+}
+
 async function runMarkRange() {
   const prefs = controlPlane ? controlPlane.getPreferences() : {};
   const seconds = Number(prefs.markRangeSeconds) > 0 ? Number(prefs.markRangeSeconds) : MARK_RANGE_DEFAULTS.seconds;
+  markRangeLog(`${markRangeHotkey} pressed: marking ${seconds}s`);
   try {
-    await sendWorkerRequest({ cmd: 'mark_range', seconds }, WORKERS.resolve);
+    const res = await sendWorkerRequest({ cmd: 'mark_range', seconds }, WORKERS.resolve);
+    if (res && res.ok === false) throw new Error(res.error?.message || res.error || 'Resolve worker error');
+    const d = res?.data || {};
+    markRangeLog(`set in ${d.in} out ${d.out} (${d.frames}f); Resolve reads back ${JSON.stringify(d.readback || {})}`);
   } catch (err) {
     const msg = err?.message || err?.error || String(err);
-    console.warn(`[mark-range] ${msg}`);
+    markRangeLog(`failed: ${msg}`);
     markRangeNotify(msg);
   }
 }
@@ -2613,10 +2622,11 @@ function registerMarkRangeHotkey() {
   let ok = false;
   try { ok = globalShortcut.register(hotkey, () => { runMarkRange(); }); } catch (_) { ok = false; }
   if (!ok) {
-    console.warn(`[mark-range] could not register ${hotkey}`);
+    markRangeLog(`could not register ${hotkey} (taken by another app or invalid)`);
     return { ok: false, hotkey, error: `${hotkey} is in use by another app or isn't a valid shortcut` };
   }
   markRangeHotkey = hotkey;
+  markRangeLog(`shortcut ${hotkey} registered`);
   return { ok: true, hotkey };
 }
 
