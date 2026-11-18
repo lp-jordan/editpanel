@@ -14,6 +14,10 @@
  *      when the run starts, so they never push a file onto a _2 name.
  *   2. copy card → temp, hashing the source as it streams
  *   3. re-read the temp file from the NAS and hash it; mismatch = failed
+ *   A failed read (card or NAS) is retried from the same byte, reopening the
+ *   file, after 1, 3 and 10 s; errors say which side and step failed (a USB
+ *   reader dropping out mid-file gave a bare "UNKNOWN: unknown error, read",
+ *   Robin 11-3, 2026-11-18).
  *   4. copy the card's mtime, rename temp → final name
  * The card is only ever read.
  *
@@ -35,6 +39,7 @@ const { TEMP_SUFFIX, statOrNull, resolveTarget } = require('./card_ingest_fs');
 
 const CHUNK = 8 * 1024 * 1024;
 const BYTES_EVERY_MS = 200;
+const READ_RETRY_MS = [1000, 3000, 10000];
 
 const port = process.parentPort || null;
 function send(msg) {
@@ -79,24 +84,56 @@ async function reserve(dest, file) {
   throw new Error(`Could not reserve a name for ${file.name}`);
 }
 
-async function hashThrough(readPath, size, index, phase, writeFh) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const gb = (n) => `${(n / 1e9).toFixed(1)} GB`;
+
+/** Where a failure happened, in words: "Reading the card at 12.3 of 45.3 GB: …". */
+function located(what, done, size, err) {
+  const e = new Error(`${what} at ${(done / 1e9).toFixed(1)} of ${gb(size)}: ${err.message || err}`);
+  e.code = err.code;
+  return e;
+}
+
+async function hashThrough(readPath, size, index, phase, writeFh, test = {}) {
   const hash = crypto.createHash('sha1');
   const buf = Buffer.allocUnsafe(CHUNK);
-  const rfh = await fsp.open(readPath, 'r');
+  const side = phase === 'copy' ? 'Reading the card' : 'Checking: reading the NAS copy back';
+  const open = test.open || ((p) => fsp.open(p, 'r'));
+  let rfh;
+  try { rfh = await open(readPath); } catch (err) { throw located(side, 0, size, err); }
   let done = 0;
   let lastSent = 0;
+  let tries = 0;
   try {
     while (done < size) {
       if (canceled) throw new Canceled();
-      const { bytesRead } = await rfh.read(buf, 0, Math.min(CHUNK, size - done), done);
-      if (bytesRead === 0) throw new Error(`${path.basename(readPath)} ended early (${done} of ${size} bytes)`);
+      let bytesRead;
+      try {
+        ({ bytesRead } = await rfh.read(buf, 0, Math.min(CHUNK, size - done), done));
+      } catch (err) {
+        if (tries >= READ_RETRY_MS.length) {
+          throw located(side, done, size, new Error(`${err.message || err} (tried ${tries + 1} times)`));
+        }
+        await rfh.close().catch(() => {});
+        rfh = null;
+        await sleep((test.retryMs || READ_RETRY_MS)[tries++]);
+        if (canceled) throw new Canceled();
+        try { rfh = await open(readPath); } catch (_) { /* still gone: the next read fails and counts */ rfh = { read: () => Promise.reject(_), close: async () => {} }; }
+        continue;
+      }
+      if (bytesRead === 0) throw located(side, done, size, new Error(`${path.basename(readPath)} ended early`));
+      tries = 0;
       const chunk = buf.subarray(0, bytesRead);
       hash.update(chunk);
       if (writeFh) {
         let off = 0;
-        while (off < bytesRead) {
-          const { bytesWritten } = await writeFh.write(chunk, off, bytesRead - off, done + off);
-          off += bytesWritten;
+        try {
+          while (off < bytesRead) {
+            const { bytesWritten } = await writeFh.write(chunk, off, bytesRead - off, done + off);
+            off += bytesWritten;
+          }
+        } catch (err) {
+          throw located('Writing to the NAS', done + off, size, err);
         }
       }
       done += bytesRead;
@@ -107,7 +144,7 @@ async function hashThrough(readPath, size, index, phase, writeFh) {
       }
     }
   } finally {
-    await rfh.close();
+    if (rfh) await rfh.close().catch(() => {});
   }
   return hash.digest('hex');
 }
@@ -127,7 +164,7 @@ async function copyOne(dest, file) {
     await fh.close();
     fh = null;
     const destHash = await hashThrough(r.tempPath, file.size, file.index, 'verify', null);
-    if (destHash !== srcHash) throw new Error('Checksum mismatch after copy');
+    if (destHash !== srcHash) throw new Error('Checksum mismatch after copy: the NAS copy differs from the card');
     if (file.mtimeMs) {
       const t = new Date(file.mtimeMs);
       await fsp.utimes(r.tempPath, t, t).catch(() => {});
@@ -171,6 +208,8 @@ async function run({ runId: id, dest, files }) {
   }
   send({ type: 'finished', canceled });
 }
+
+module.exports = { hashThrough };            // for scripts/test-card-ingest-retry.js
 
 onMessage((msg) => {
   if (!msg || typeof msg !== 'object') return;
