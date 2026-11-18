@@ -444,11 +444,14 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
     if (!serverPort) return null;
     const ws = loadWs();
     const toImport = [];
+    let archived = false;
     const items = ws.items.map((it) => {
       const saved = it.snapshot;
       const hasFile = Boolean(it.rendered && it.rendered.file && fs.existsSync(it.rendered.file));
       const renderState = !saved || !hasFile ? 'none' : (it.rendered.hash === renderHash(ws, saved) ? 'current' : 'stale');
-      if (hasFile && it.stage === 'queue' && !it.imported) toImport.push(it.rendered.file);
+      // A rendered item leaves the queue for the archive.
+      if (renderState === 'current' && it.stage === 'queue') { it.stage = 'archived'; archived = true; }
+      if (hasFile && (it.stage === 'queue' || it.stage === 'archived') && !it.imported) toImport.push(it.rendered.file);
       return {
         id: it.id, name: it.name, kind: it.kind, stage: it.stage, mode: it.mode, templateId: it.templateId,
         code: it.code, fieldDefs: it.fields, values: mapValues(it.values, hydrate),
@@ -457,6 +460,7 @@ function createGraphics({ broadcast, getPrefs, setPrefs, isPackaged, appDir, use
         snapshot: saved ? { code: saved.code, fieldDefs: saved.fields, values: mapValues(saved.values, hydrate), mode: saved.mode } : null
       };
     });
+    if (archived) saveWs(ws);
     return { project: ws.project, ui: ws.ui, items, toImport, fps: ws.fps, durationSec: ws.durationSec, outDir: ws.outDir, binPath: ws.binPath, brand: brandOf(ws) };
   }
 

@@ -2,7 +2,7 @@
  * GraphicsPage — callouts and slides as Remotion overlays.
  *
  * Front end for electron/workers/graphics.js. Design works on one loaded slide or callout at a time;
- * Library holds every item as Editing, In review or Queue, per Resolve project. Previews run in a
+ * Library holds every item as Editing, In review, Queue or Archived, per Resolve project; a render moves it to Archived. Previews run in a
  * sandboxed iframe (no access to the app); the queue renders to transparent ProRes in the main process.
  * Copy stays minimal: labels, empty states, errors.
  *
@@ -582,7 +582,8 @@ function GpLibrary({ g, call, connected, previewShell }) {
   const lists = {
     editing: ws.items.filter((it) => it.stage === 'editing'),
     review: ws.items.filter((it) => it.stage === 'review'),
-    queue: ws.items.filter((it) => it.stage === 'queue')
+    queue: ws.items.filter((it) => it.stage === 'queue'),
+    archived: ws.items.filter((it) => it.stage === 'archived')
   };
   const shown = lists[filter] || [];
   const current = shown.find((it) => it.id === picked) || shown[0] || null;
@@ -623,7 +624,7 @@ function GpLibrary({ g, call, connected, previewShell }) {
       setImportError(String(err?.error?.message || err?.error || err?.message || 'Import failed'));
     }
   };
-  const tabs = [['editing', 'Editing'], ['review', 'In review'], ['queue', 'Queue']];
+  const tabs = [['editing', 'Editing'], ['review', 'In review'], ['queue', 'Queue'], ['archived', 'Archived']];
 
   return (
     <React.Fragment>
@@ -668,6 +669,7 @@ function GpLibrary({ g, call, connected, previewShell }) {
                   ? <button type="button" className={`gp-item-icon${confirmRemove === it.id ? ' is-confirm' : ''}`} aria-label={confirmRemove === it.id ? 'Confirm remove' : 'Remove'} title={confirmRemove === it.id ? 'Click again to remove' : 'Remove'} onClick={() => remove(it)}>
                       <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M2 2l10 10M12 2L2 12" /></svg>
                     </button>
+                  : it.stage === 'archived' && it.renderState === 'current' ? null
                   : <button type="button" className={`gp-item-icon${it.stage === 'queue' ? ' is-on' : ''}`} aria-pressed={it.stage === 'queue'} aria-label={it.stage === 'queue' ? 'Remove from render queue' : 'Add to render queue'} title={it.stage === 'queue' ? 'Remove from render queue' : 'Add to render queue'}
                       onClick={() => call('setStage', { itemId: it.id, stage: it.stage === 'queue' ? 'review' : 'queue' })}>
                       <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="15" height="12" rx="2" /><path d="M8.2 7.4v5.2l4.4-2.6z" fill="currentColor" /></svg>
