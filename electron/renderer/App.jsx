@@ -23,6 +23,34 @@ const ROUTE_LABELS = {
   '/graphics': 'Graphics'
 };
 
+// Settings → Mark range: turn a keydown into an Electron accelerator ("Ctrl+Alt+M").
+// Needs at least one modifier unless it's a function key, so plain typing keys aren't stolen system-wide.
+function keyEventToAccelerator(e) {
+  const code = e.code || '';
+  let key = '';
+  if (/^Key[A-Z]$/.test(code)) key = code.slice(3);
+  else if (/^Digit[0-9]$/.test(code)) key = code.slice(5);
+  else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) key = code;
+  else if (/^Numpad[0-9]$/.test(code)) key = 'num' + code.slice(6);
+  else {
+    const named = {
+      Space: 'Space', Enter: 'Enter', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+      Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Insert: 'Insert',
+      Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
+      Comma: ',', Period: '.', Slash: '/', Backslash: '\\', Backquote: '`'
+    };
+    key = named[code] || '';
+  }
+  if (!key) return '';
+  const mods = [];
+  if (e.ctrlKey) mods.push('Ctrl');
+  if (e.metaKey) mods.push('Super');
+  if (e.altKey) mods.push('Alt');
+  if (e.shiftKey) mods.push('Shift');
+  if (!mods.length && !/^F\d+$/.test(key)) return '';
+  return [...mods, key].join('+');
+}
+
 function getRouteFromHash() {
   const hash = window.location.hash || '#/';
   const route = hash.replace(/^#/, '') || '/';
@@ -172,7 +200,8 @@ function App() {
   const [anchored, setAnchored] = React.useState(false);
 
   // Settings state
-  const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '', atemHost: '', useSystemPython: false });
+  const [settingsDraft, setSettingsDraft] = React.useState({ displayName: '', lposUrl: '', atemHost: '', useSystemPython: false, markRangeHotkey: 'Alt+Shift+M', markRangeSeconds: '10' });
+  const [markRangeError, setMarkRangeError] = React.useState('');
   const [settingsSaved, setSettingsSaved] = React.useState(false);
   const [lposUrl, setLposUrl] = React.useState('');
   // 'unconfigured' | 'ok' | 'error' | 'signed-out'
@@ -280,7 +309,9 @@ function App() {
         const url = prefs.lposBaseUrl || 'https://lpos.leaderpass.com';
         const atem = prefs.atemFtpHost || '172.20.10.241';
         const useSystemPython = Boolean(prefs.useSystemPython);
-        setSettingsDraft({ displayName: name, lposUrl: url, atemHost: atem, useSystemPython });
+        const markRangeHotkey = prefs.markRangeHotkey === undefined ? 'Alt+Shift+M' : String(prefs.markRangeHotkey || '');
+        const markRangeSeconds = String(Number(prefs.markRangeSeconds) > 0 ? prefs.markRangeSeconds : 10);
+        setSettingsDraft({ displayName: name, lposUrl: url, atemHost: atem, useSystemPython, markRangeHotkey, markRangeSeconds });
         setLposUrl(url);
         setEpUserEmail(prefs.epUserEmail || '');
         setEpMachineName(prefs.epMachineName || '');
@@ -835,8 +866,11 @@ function App() {
       displayName: settingsDraft.displayName,
       lposBaseUrl: settingsDraft.lposUrl,
       atemFtpHost: settingsDraft.atemHost,
-      useSystemPython: settingsDraft.useSystemPython
-    }).then(() => {
+      useSystemPython: settingsDraft.useSystemPython,
+      markRangeHotkey: settingsDraft.markRangeHotkey,
+      markRangeSeconds: Number(settingsDraft.markRangeSeconds) > 0 ? Number(settingsDraft.markRangeSeconds) : 10
+    }).then((res) => {
+      setMarkRangeError(res?.markRange && !res.markRange.ok ? res.markRange.error : '');
       setLposUrl(settingsDraft.lposUrl);
       setLposStatus('unconfigured');        // will re-check on next poll cycle
       setSettingsSaved(true);
@@ -1321,6 +1355,44 @@ function App() {
                   </p>
                 )}
               </div>
+            </section>
+
+            <section className="panel settings-section">
+              <h2 className="section-title">Mark range</h2>
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="mark-range-hotkey">Shortcut</label>
+                <input
+                  id="mark-range-hotkey"
+                  type="text"
+                  readOnly
+                  className="settings-input"
+                  placeholder="Press keys"
+                  value={settingsDraft.markRangeHotkey}
+                  onKeyDown={(e) => {
+                    e.preventDefault();
+                    if (e.key === 'Tab') return;
+                    if ((e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+                      setSettingsDraft((prev) => ({ ...prev, markRangeHotkey: '' }));
+                      return;
+                    }
+                    const acc = keyEventToAccelerator(e);
+                    if (acc) setSettingsDraft((prev) => ({ ...prev, markRangeHotkey: acc }));
+                  }}
+                />
+              </div>
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="mark-range-seconds">Length (seconds)</label>
+                <input
+                  id="mark-range-seconds"
+                  type="number"
+                  min="0.1"
+                  step="any"
+                  className="settings-input"
+                  value={settingsDraft.markRangeSeconds}
+                  onChange={(e) => setSettingsDraft((prev) => ({ ...prev, markRangeSeconds: e.target.value }))}
+                />
+              </div>
+              {markRangeError && <p className="error-text">{markRangeError}</p>}
             </section>
 
             <section className="panel settings-section">

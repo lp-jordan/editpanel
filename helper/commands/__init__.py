@@ -13,6 +13,7 @@ from .shutdown import handle_shutdown
 from .spellcheck import handle_spellcheck
 from .update_text import handle_update_text
 from .goto import handle_goto
+from .mark_range import handle_mark_range
 from .sync_comment_markers import handle_sync_comment_markers
 from .list_timelines import handle_list_timelines
 from .flag_timelines import handle_flag_timelines
@@ -44,6 +45,7 @@ RESOLVE_HANDLERS = {
     "spellcheck": handle_spellcheck,
     "update_text": handle_update_text,
     "goto": handle_goto,
+    "mark_range": handle_mark_range,
     "sync_comment_markers": handle_sync_comment_markers,
     "list_timelines": handle_list_timelines,
     "flag_timelines": handle_flag_timelines,

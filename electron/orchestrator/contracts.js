@@ -21,6 +21,7 @@ const COMMAND_OWNER = Object.freeze({
   create_project_bins: WORKERS.resolve,
   update_text: WORKERS.resolve,
   goto: WORKERS.resolve,
+  mark_range: WORKERS.resolve,
 
   spellcheck: WORKERS.resolve,
   lp_base_export: WORKERS.resolve,
@@ -106,6 +107,7 @@ const COMMAND_SCHEMAS = Object.freeze({
   create_project_bins: { required: [] },
   update_text: { required: [] },
   goto: { required: [] },
+  mark_range: { required: ['seconds'], types: { seconds: 'number' } },
   spellcheck: { required: [] },
   export_preflight: { required: [], types: { export_bin_name: 'string' } },
   lp_base_export: {

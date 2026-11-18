@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell, Tray, nativeImage, utilityProcess, Notification } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell, Tray, nativeImage, utilityProcess, Notification, globalShortcut } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const { spawn, execFile } = require('child_process');
@@ -2578,6 +2578,48 @@ app.on('open-url', (event, url) => {
   if (argvUrl) pendingEpLinkUrl = argvUrl;
 }
 
+// --- Mark range hotkey ---
+// A system-wide shortcut (works while Resolve has focus) that sets In at the playhead and
+// Out a fixed number of seconds later on the current timeline. Settings → Mark range.
+const MARK_RANGE_DEFAULTS = { hotkey: 'Alt+Shift+M', seconds: 10 };
+let markRangeHotkey = null;
+
+function markRangeNotify(body) {
+  if (!Notification.isSupported()) return;
+  new Notification({ title: 'Mark range', body, silent: true }).show();
+}
+
+async function runMarkRange() {
+  const prefs = controlPlane ? controlPlane.getPreferences() : {};
+  const seconds = Number(prefs.markRangeSeconds) > 0 ? Number(prefs.markRangeSeconds) : MARK_RANGE_DEFAULTS.seconds;
+  try {
+    await sendWorkerRequest({ cmd: 'mark_range', seconds }, WORKERS.resolve);
+  } catch (err) {
+    const msg = err?.message || err?.error || String(err);
+    console.warn(`[mark-range] ${msg}`);
+    markRangeNotify(msg);
+  }
+}
+
+// Returns { ok, hotkey, error } so Settings can say when a combo is taken or invalid.
+function registerMarkRangeHotkey() {
+  if (markRangeHotkey) {
+    try { globalShortcut.unregister(markRangeHotkey); } catch (_) {}
+    markRangeHotkey = null;
+  }
+  const prefs = controlPlane ? controlPlane.getPreferences() : {};
+  const hotkey = prefs.markRangeHotkey === undefined ? MARK_RANGE_DEFAULTS.hotkey : String(prefs.markRangeHotkey || '');
+  if (!hotkey) return { ok: true, hotkey: '' };
+  let ok = false;
+  try { ok = globalShortcut.register(hotkey, () => { runMarkRange(); }); } catch (_) { ok = false; }
+  if (!ok) {
+    console.warn(`[mark-range] could not register ${hotkey}`);
+    return { ok: false, hotkey, error: `${hotkey} is in use by another app or isn't a valid shortcut` };
+  }
+  markRangeHotkey = hotkey;
+  return { ok: true, hotkey };
+}
+
 app.whenReady().then(() => {
   recipeCatalog = new RecipeCatalog();
 
@@ -2631,6 +2673,7 @@ app.whenReady().then(() => {
     broadcastJobEvent(event);
   });
   jobEngine.resumeRecoverableJobs();
+  registerMarkRangeHotkey();
 
   graphics = createGraphics({
     broadcast: (channel, payload) => BrowserWindow.getAllWindows().forEach(w => w.webContents.send(channel, payload)),
@@ -2834,8 +2877,16 @@ app.whenReady().then(() => {
         token:   prefs.epToken     || ''
       });
     }
+    if (patch.markRangeHotkey !== undefined) {
+      const reg = registerMarkRangeHotkey();
+      return { ok: true, data: prefs, markRange: reg };
+    }
     return { ok: true, data: prefs };
   });
+  ipcMain.handle('mark-range:status', async () => ({
+    ok: true,
+    data: { hotkey: markRangeHotkey, defaults: MARK_RANGE_DEFAULTS }
+  }));
 
   ipcMain.handle('dialog:pickFolder', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
@@ -4540,6 +4591,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  try { globalShortcut.unregisterAll(); } catch (_) {}
   if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
   if (cutThrough) cutThrough.cancel();   // don't leave a GPU transcription running
   if (lposHeartbeatTimer) { clearInterval(lposHeartbeatTimer); lposHeartbeatTimer = null; }

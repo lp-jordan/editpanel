@@ -120,6 +120,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('preferences:update', patch);
   },
 
+  getMarkRangeStatus() {
+    return ipcRenderer.invoke('mark-range:status');
+  },
+
   quit() {
     ipcRenderer.send('app:quit');
   }

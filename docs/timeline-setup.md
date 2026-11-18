@@ -175,3 +175,12 @@ Grades applied per-instance on a take-timeline do NOT propagate. Sources: Resolv
 v20.3 Python API reference; BMD forum t=81603; Larry Jordan "Color Grading
 Multicam Clips in Resolve 20"; Resolve manual "Editing Multicam Clips in the
 Timeline".
+
+## Mark range hotkey (1.2.177)
+
+A system-wide shortcut that sets In at the playhead and Out a fixed length later on the current timeline, so it works while Resolve has focus.
+
+- **Settings → Mark range:** click *Shortcut* and press the combo (needs a modifier unless it's an F-key; Backspace clears it), set *Length (seconds)*, Save. Default `Alt+Shift+M`, 10 s.
+- **Flow:** `globalShortcut` in `electron/main.js` (`registerMarkRangeHotkey` / `runMarkRange`) → `mark_range` on the Resolve worker (`helper/commands/mark_range.py`) → `Timeline.SetMarkInOut(in, out)` with frames counted from the timeline start; Out is inclusive (N frames = in .. in+N-1). Drop-frame timelines handled.
+- The shortcut is taken from every app while EditPanel runs, so pick one Resolve doesn't use. If another app holds it, Settings shows an error on Save. Failures (no timeline, Resolve offline) show a desktop notification.
+- **Not yet verified on Resolve 21:** that `SetMarkInOut` takes timeline-start-relative frames (same as `AddMarker`). The worker log line `mark_range: …` prints what Resolve read back.
