@@ -108,7 +108,7 @@ def main(argv):
     plans = []
     for t in targets:
         if os.path.isdir(t):
-            plans += sorted(p for p in glob.glob(os.path.join(t, "*_plan.json")) if not p.endswith(".preshift.json"))
+            plans += sorted(p for p in glob.glob(os.path.join(glob.escape(t), "*_plan.json")) if not p.endswith(".preshift.json"))
         else:
             plans.append(t)
     if not plans:
@@ -149,7 +149,7 @@ def main(argv):
 
     # The Check that runs after Build reads the words file against the built timeline; levels go with it.
     for folder in sorted({os.path.dirname(os.path.abspath(p)) for p in plans}):
-        for wp in sorted(glob.glob(os.path.join(folder, "words_*.json"))) + sorted(glob.glob(os.path.join(folder, "levels_*.json"))):
+        for wp in sorted(glob.glob(os.path.join(glob.escape(folder), "words_*.json"))) + sorted(glob.glob(os.path.join(glob.escape(folder), "levels_*.json"))):
             if wp.endswith(".preshift.json"):
                 continue
             d = json.load(open(wp, encoding="utf-8"))
