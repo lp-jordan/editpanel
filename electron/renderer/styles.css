@@ -5367,3 +5367,28 @@ button.status-bar-chip-btn:disabled {
 /* Cut-through source picker (2026-11-12): multicams + audio timelines, one click picks */
 .ct-source-row { width: 100%; display: flex; align-items: baseline; gap: 10px; text-align: left; background: none; border: 0; font: inherit; color: inherit; cursor: pointer; }
 .ct-source-meta { margin-left: auto; font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
+
+/* Cut-through queue (1.2.183): one row per multicam, a 3-step strip; done = green, running = blue, failed = red */
+.ct-queue-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ct-queue-head .ct-step-actions { margin-left: auto; display: flex; gap: 8px; }
+.ct-queue-open { margin-left: auto; }
+.ct-queue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ct-queue-row { display: grid; grid-template-columns: minmax(140px, 1.2fr) minmax(210px, 1fr) minmax(0, 1.6fr) auto; gap: 8px 16px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
+.ct-queue-row.is-open .ct-queue-name .ct-path { color: var(--accent-strong); }
+.ct-queue-name { display: flex; flex-direction: column; min-width: 0; }
+.ct-queue-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.ct-queue-step { display: flex; flex-direction: column; gap: 4px; font-size: 0.75rem; color: var(--text-dim); min-width: 0; }
+.ct-queue-step i { height: 4px; border-radius: 2px; background: var(--border); position: relative; overflow: hidden; }
+.ct-queue-step i b { position: absolute; inset: 0 auto 0 0; background: var(--info); transition: width 0.6s linear; }
+.ct-queue-step.is-done { color: var(--success); }
+.ct-queue-step.is-done i { background: var(--success); }
+.ct-queue-step.is-running { color: var(--info-strong); }
+.ct-queue-step.is-running i { background: var(--info-soft); }
+.ct-queue-step.is-failed { color: var(--danger); }
+.ct-queue-step.is-failed i { background: var(--danger); }
+.ct-queue-state { display: flex; flex-direction: column; gap: 2px; font-size: 0.86rem; min-width: 0; font-variant-numeric: tabular-nums; }
+.ct-queue-ready { color: var(--success); font-weight: 600; }
+.ct-queue-failed { color: var(--danger); overflow-wrap: anywhere; }
+.ct-queue-actions { display: flex; gap: 6px; }
+.ct-queue-pick { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+@media (max-width: 760px) { .ct-queue-row { grid-template-columns: minmax(0, 1fr) auto; } .ct-queue-steps, .ct-queue-state { grid-column: 1 / -1; } }

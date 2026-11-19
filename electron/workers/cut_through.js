@@ -41,6 +41,7 @@ const angleRulesLib = require('../shared/angle_rules');
 const videosLib = require('./cut_through_videos');
 const narrationLib = require('./cut_through_narration');
 const slateLib = require('./cut_through_slate');
+const { createQueue } = require('./cut_through_queue');
 const { checkTimeline, planTimeline, TAG: CHECK_TAG } = require('./cut_through_check');
 const compare = require('./cut_through_compare');
 const scorer = require('./cut_through_score');
@@ -216,6 +217,7 @@ function createCutThrough(opts) {
     getPack = () => packLib.installedPack(packRoot),
     desktopDir = path.join(os.homedir(), 'Desktop'),  // where runs before 1.2.94 left their files
     filesDir = path.join(os.homedir(), 'Documents', 'Cut-through'),  // default home of run files
+    onQueueEnded = null,           // ({ project, total, ready, failed }) => void: the multicam queue reached the end
     onBatchEnded = null            // ({ label, videos, minutes, counts, … }) => void: a queued batch has ended; also turns on the queue watch
   } = opts;
 
@@ -244,6 +246,7 @@ function createCutThrough(opts) {
     setup: { checking: false, checkedAt: null, gpus: null, available: null, availableError: null, installing: null, test: null }
   };
   let child = null;                 // transcribe / plan child process
+  let queue = null;                 // the multicam queue (cut_through_queue.js), made below
   let canceled = false;
   let claudeAbort = null;           // the Claude call in flight (Plan, Ask Claude): Cancel aborts it
   /** A fresh abort signal for the next Claude call. */
@@ -757,6 +760,7 @@ function createCutThrough(opts) {
     return { ...s, videos, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
       slateAngle: slateAngle(), slateBox: slateBox(), slateInfo: slateInfo(), estimate: costEstimate(),
       videosReady: videosToBuild().length,
+      queue: queue ? queue.state() : null,
       // Cancel can stop it: a child process (Transcribe, the placer, ffmpeg) or the slate read; not a Claude call or a Resolve step
       cancelable: Boolean(child) || Boolean(s.slateRead) || Boolean(claudeAbort) || s.busy === 'score' };
   }
@@ -1059,10 +1063,11 @@ function createCutThrough(opts) {
   /** Resolve's open project changed: show what this page last had for that project (its files
    *  stay in their run folders either way — switching never throws work away). Waits out a running step. */
   let pendingProject = null;
+  let projectHeld = false;          // the queue is running: Resolve project switches wait (1.2.183)
   function applyProject(name) {
     if (name && name === s.project) pendingProject = null;   // Resolve is back on this project: drop a queued switch
     if (!name || name === s.project) return;
-    if (s.busy) { pendingProject = name; return; }
+    if (s.busy || projectHeld) { pendingProject = name; return; }   // the queue keeps its project until it ends
     const first = s.project === null;
     s.project = name;
     const p = (getPrefs() || {}).cutThrough || {};
@@ -1074,7 +1079,7 @@ function createCutThrough(opts) {
 
   /** A project switch queued while something ran, now that nothing does. */
   function applyPendingProject() {
-    if (!pendingProject || s.busy) return;
+    if (!pendingProject || s.busy || projectHeld) return;
     const n = pendingProject;
     pendingProject = null;
     onProject(n);
@@ -2513,6 +2518,18 @@ function createCutThrough(opts) {
     s.project = last.lastProject || null;
     show(last.lastMc, last.lastLabel, last.lastSource);
   }
+  queue = createQueue({
+    eng: {
+      snapshot, select, runPrep, runTranscribe, readSlate, findVideos, cancel,
+      busy: () => s.busy,
+      project: () => s.project,
+      resolveProject: () => pendingProject || s.project,
+      holdProject: (on) => { projectHeld = Boolean(on); if (!on) applyPendingProject(); },
+      defaultLabel, sanitizeLabel
+    },
+    getPrefs, setPrefs, emit, onEnded: onQueueEnded
+  });
+
   // batches that ended while EditPanel was closed are announced shortly after it opens
   watchQueue();
   if (watchTimer) {
@@ -2520,47 +2537,61 @@ function createCutThrough(opts) {
     if (first.unref) first.unref();
   }
 
+  /** The page's select / step buttons wait while the queue runs (it switches labels itself). */
+  function notWhileQueued(fn) {
+    return (...args) => {
+      if (queue && queue.isRunning()) throw new Error('The queue is running — stop it first');
+      return fn(...args);
+    };
+  }
+
   return {
     snapshot,
     checkQueue,
+    queueAdd: (a) => { queue.add(a); return snapshot(); },
+    queueRemove: (a) => { queue.remove(a); return snapshot(); },
+    queueClear: () => { queue.clear(); return snapshot(); },
+    queueRun: () => { queue.run(); return snapshot(); },
+    queueStop: () => { queue.stop(); return snapshot(); },
+    queueWhenIdle: () => queue.whenIdle(),
     listMulticams,
-    select,
+    select: notWhileQueued(select),
     onProject,
-    setRunFolder,
+    setRunFolder: notWhileQueued(setRunFolder),
     updateSettings,
     checkSetup,
     installPack,
     testPack,
     saveAngleRules,
-    runPrep,
-    runTranscribe,
+    runPrep: notWhileQueued(runPrep),
+    runTranscribe: notWhileQueued(runTranscribe),
     cancel,
-    runPlan,
-    useExistingPlan,
+    runPlan: notWhileQueued(runPlan),
+    useExistingPlan: notWhileQueued(useExistingPlan),
     readMarks,
     listLposProjects,
     nameMulticamTimelines,
-    findVideos,
-    setManuscript,
-    readSlate,
-    setSlateAngle,
+    findVideos: notWhileQueued(findVideos),
+    setManuscript: notWhileQueued(setManuscript),
+    readSlate: notWhileQueued(readSlate),
+    setSlateAngle: notWhileQueued(setSlateAngle),
     setSlateBox,
     slateFrame,
-    updateVideo,
-    joinVideos,
-    splitVideo,
-    addMarkedVideo,
-    planVideos,
-    prepareBatch,
+    updateVideo: notWhileQueued(updateVideo),
+    joinVideos: notWhileQueued(joinVideos),
+    splitVideo: notWhileQueued(splitVideo),
+    addMarkedVideo: notWhileQueued(addMarkedVideo),
+    planVideos: notWhileQueued(planVideos),
+    prepareBatch: notWhileQueued(prepareBatch),
     discardBatch,
-    submitBatch,
+    submitBatch: notWhileQueued(submitBatch),
     refreshBatch,
     cancelBatch,
     collectBatch,
-    runBuild,
-    runCheck,
-    runCompare,
-    runScore,
+    runBuild: notWhileQueued(runBuild),
+    runCheck: notWhileQueued(runCheck),
+    runCompare: notWhileQueued(runCompare),
+    runScore: notWhileQueued(runScore),
     onWorkerLog
   };
 }

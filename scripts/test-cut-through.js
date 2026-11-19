@@ -957,6 +957,65 @@ sys.stdout.write(json.dumps(res))`;
   return { send, calls };
 }
 
+// ── queue: several multicams to "ready to plan" unattended (1.2.183) ──
+async function queueChain() {
+  const dir = path.join(TMP, 'queue-runs');
+  fs.mkdirSync(dir, { recursive: true });
+  let prefs = { cutThrough: { pipelineDir: FAKE_PIPELINE, wxPython: PY, runFolders: { 'Fake Project': dir } } };
+  const w = fakeWorker();
+  const prepAt = {};
+  const send = (pl) => { if (pl.script === 'prepare_multicam.py') prepAt[pl.settings.MC] = Date.now(); return w.send(pl); };
+  const ended = [];
+  const c = ct.createCutThrough({ sendWorkerRequest: send, broadcast: () => {}, getPrefs: () => prefs,
+    setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP, filesDir: FILES,
+    onQueueEnded: (r) => ended.push(r) });
+  await c.listMulticams();
+  let snap = c.queueAdd({ mcs: ['mc_test', 'mc_missing', 'mc_test'] });
+  assert.deepStrictEqual(snap.queue.items.map((it) => [it.mc, it.label, it.status]), [['mc_test', 'mc_test', 'queued'], ['mc_missing', 'mc_missing', 'queued']]);
+  assert.strictEqual(snap.queue.project, 'Fake Project');
+  snap = c.queueRun();
+  assert.ok(snap.queue.running, 'not running');
+  assert.throws(() => c.select({ mc: 'mc_test' }), /queue is running/);
+  assert.throws(() => c.queueAdd({ mcs: ['x'] }), /queue is running/);
+  await c.queueWhenIdle();
+  let q = c.snapshot().queue;
+  const [good, bad] = q.items;
+  assert.ok(good.status === 'ready' && good.done.prep && good.done.transcribe && good.done.videos, JSON.stringify(good));
+  assert.ok(good.result && good.result.videos >= 1 && good.result.lpos === false, JSON.stringify(good.result));
+  assert.ok(bad.status === 'failed' && bad.phase === 'prep' && bad.error, JSON.stringify(bad));
+  assert.deepStrictEqual(ended, [{ project: 'Fake Project', total: 2, ready: 1, failed: 1 }]);
+  // every multicam is prepped before the first transcription (a problem shows while the editor is still there)
+  const words = path.join(dir, 'Fake Project', 'mc_test', 'words_mc_test.json');
+  assert.ok(prepAt.mc_missing && prepAt.mc_missing < fs.statSync(words).mtimeMs, 'prep of the second multicam came after the first transcription');
+  assert.ok(fs.existsSync(path.join(dir, 'Fake Project', 'mc_test', 'videos_mc_test.json')));
+  // saved: a new engine shows the same queue
+  assert.strictEqual(prefs.cutThrough.queue.items[0].status, 'ready');
+  // run again: done steps are skipped by their files; a newer Prep makes Transcribe run again.
+  // A Resolve project switch during the run waits for the queue to end.
+  c.queueRemove({ label: 'mc_missing' });
+  const wordsBefore = fs.statSync(words).mtimeMs;
+  await new Promise((r) => setTimeout(r, 20));
+  const later = Date.now() / 1000 + 5;
+  fs.utimesSync(path.join(dir, 'Fake Project', 'mc_test', 'day_mc_test.json'), later, later);
+  prefs.cutThrough.queue.items[0].status = 'stopped';
+  const c2 = ct.createCutThrough({ sendWorkerRequest: send, broadcast: () => {}, getPrefs: () => prefs,
+    setPrefs: (patch) => { prefs = { ...prefs, ...patch }; }, pythonCmd: PY, desktopDir: DESKTOP, filesDir: FILES });
+  await c2.listMulticams();
+  const preps = Object.keys(prepAt).length;
+  delete prepAt.mc_test;
+  c2.queueRun();
+  c2.onProject('Other Project');
+  assert.strictEqual(c2.snapshot().project, 'Fake Project', 'the project switched mid-queue');
+  await c2.queueWhenIdle();
+  q = c2.snapshot().queue;
+  assert.strictEqual(q.items[0].status, 'ready', JSON.stringify(q.items[0]));
+  assert.ok(!prepAt.mc_test && preps === 2, 'Prep ran again although its file was there');
+  assert.ok(fs.statSync(words).mtimeMs > wordsBefore, 'Transcribe did not run again after a newer Prep');
+  assert.strictEqual(c2.snapshot().project, 'Other Project', 'the held project switch never landed');
+  assert.throws(() => c2.queueRun(), /Open Fake Project in Resolve first/);
+  console.log('✓ queue: prep all first, then transcribe + videos each; a failed multicam doesn\'t stop the rest; page locked while it runs; resumes by files; project switch waits; end notice');
+}
+
 // ── 3a0. phantom doubles: Whisper's doubted repeat goes, a real or one-letter repeat stays ──
 {
   const src = fs.readFileSync(path.join(PIPELINE, 'transcribe.py'), 'utf8');
@@ -1864,6 +1923,7 @@ async function scoreChain() {
   await new Promise((r) => setTimeout(r, 200));
   assert.ok(updates.length > 0, 'no updates broadcast');
   console.log('✓ orchestrator: select → prep → transcribe (cancel + run) → plan → build; earlier runs; solo seam');
+  await queueChain();
   await scoreChain();
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log('cut-through checks passed');

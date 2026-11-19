@@ -475,6 +475,125 @@ function CtSourcePicker({ multicams, audio, current, loading, onPick, onRefresh,
   );
 }
 
+const CT_QUEUE_PHASES = [['prep', 'Prep'], ['transcribe', 'Transcribe'], ['videos', 'Videos']];
+
+/** One queued multicam's state, in words. */
+function ctQueueState(it, current, stepPct) {
+  if (it.status === 'running' && current && current.label === it.label) {
+    const name = { prep: 'Prepping', transcribe: 'Transcribing', videos: 'Finding videos' }[current.phase] || 'Running';
+    return stepPct != null ? `${name} ${Math.round(stepPct)}%` : name;
+  }
+  if (it.status === 'ready') return 'Ready to plan';
+  if (it.status === 'failed') return `Failed at ${(CT_QUEUE_PHASES.find(([k]) => k === it.phase) || [, 'a step'])[1]}`;
+  if (it.status === 'stopped') return 'Stopped';
+  if (it.status === 'waiting') return it.done && it.done.transcribe ? 'Transcribed' : it.done && it.done.prep ? 'Prepped' : 'Waiting';
+  return 'Queued';
+}
+
+/** Add multicams to the queue: the open project's multicams, ticked. */
+function CtQueuePicker({ multicams, queued, loading, onAdd, onRefresh, onClose }) {
+  const [picked, setPicked] = React.useState([]);
+  const avail = multicams.filter((m) => !queued.includes(m.name));
+  const toggle = (name) => setPicked(picked.includes(name) ? picked.filter((x) => x !== name) : [...picked, name]);
+  return (
+    <div className="export-picker-overlay ct-dialog-overlay" role="dialog" aria-modal="true" aria-label="Add multicams to the queue"
+      onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}>
+      <div className="export-picker ct-dialog">
+        <header className="export-picker-head">
+          <h3>Add to queue</h3>
+          <button type="button" className="btn small ghost" disabled={loading} onClick={onRefresh}>{loading ? 'Loading…' : 'Refresh'}</button>
+        </header>
+        <div className="export-picker-body">
+          {!loading && !avail.length && <p className="hint">{multicams.length ? 'Every multicam is already queued.' : 'No multicams in this project.'}</p>}
+          {avail.map((m) => (
+            <label key={m.name} className="export-project-row ct-queue-pick">
+              <input type="checkbox" checked={picked.includes(m.name)} onChange={() => toggle(m.name)} />
+              <span className="export-project-row-name">{m.name}</span>
+              {m.bin && <span className="dim ct-source-meta">{m.bin}</span>}
+            </label>
+          ))}
+        </div>
+        <footer className="export-picker-foot">
+          <button type="button" className="btn ghost" onClick={onClose}>Close</button>
+          <button type="button" className="btn" disabled={!picked.length} onClick={() => onAdd(picked)}>Add {picked.length || ''}</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+/** The multicam queue: Prep all → Transcribe each → Read slate / Find videos, then ready to plan. */
+function CtQueue({ queue, steps, project, busy, error, onAdd, onRun, onStop, onClear, onRemove, onOpen, current: openLabel }) {
+  const items = (queue && queue.items) || [];
+  const running = Boolean(queue && queue.running);
+  const cur = queue && queue.current;
+  const st = cur && cur.phase !== 'videos' ? steps[cur.phase] : null;   // the slate read shows its own bar in Videos
+  const p = st && st.status === 'running' ? (st.progress || {}) : null;
+  const pct = p ? (p.overall ?? p.bar ?? null) : null;
+  const ready = items.filter((it) => it.status === 'ready').length;
+  const otherProject = queue && queue.project && project && queue.project !== project;
+  return (
+    <section className="panel ct-panel ct-queue">
+      <div className="ct-queue-head">
+        <h3 className="ct-step-title">Queue</h3>
+        <span className="ct-step-status">{items.length ? `${ready} of ${items.length} ready to plan${queue.project ? ` · ${queue.project}` : ''}` : 'Empty'}</span>
+        <div className="ct-step-actions">
+          {!running && <button type="button" className="btn small ghost" disabled={busy} onClick={onAdd}>Add multicams</button>}
+          {!running && items.length > 0 && <button type="button" className="btn small ghost" onClick={onClear}>Clear</button>}
+          {running
+            ? <button type="button" className="btn small ghost" disabled={queue.stopping} onClick={onStop}>{queue.stopping ? 'Stopping…' : 'Stop'}</button>
+            : items.length > 0 && ready < items.length && <button type="button" className="btn small" disabled={busy || otherProject} onClick={onRun}>Run queue</button>}
+        </div>
+      </div>
+      {otherProject && !running && <div className="notice warning">Open {queue.project} in Resolve to run this queue</div>}
+      {queue && queue.error && <div className="notice error">{queue.error}</div>}
+      {error && <div className="notice error">{error}</div>}
+      {items.length > 0 && (
+        <ul className="ct-queue-list">
+          {items.map((it) => {
+            const live = running && it.status === 'running';
+            const r = it.result;
+            return (
+              <li key={it.label} className={`ct-queue-row is-${it.status}${openLabel === it.label ? ' is-open' : ''}`}>
+                <div className="ct-queue-name">
+                  <span className="ct-path" title={it.mc}>{it.mc}</span>
+                  {it.label !== it.mc && <span className="dim ct-source-meta">{it.label}</span>}
+                </div>
+                <div className="ct-queue-steps" aria-label="Steps">
+                  {CT_QUEUE_PHASES.map(([k, name]) => {
+                    const cls = it.done && it.done[k] ? 'is-done' : (live && cur && cur.phase === k) ? 'is-running' : (it.status === 'failed' && it.phase === k) ? 'is-failed' : '';
+                    return (
+                      <span key={k} className={`ct-queue-step ${cls}`}>
+                        <i>{cls === 'is-running' && pct != null && <b style={{ width: `${Math.round(pct)}%` }} />}</i>
+                        <span>{name}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+                <div className="ct-queue-state">
+                  <span className={it.status === 'ready' ? 'ct-queue-ready' : it.status === 'failed' ? 'ct-queue-failed' : 'dim'}>{ctQueueState(it, cur, live ? pct : null)}</span>
+                  {r && it.status === 'ready' && (
+                    <span className="dim">
+                      {r.videos} video{r.videos === 1 ? '' : 's'}{r.flagged ? ` · ${r.flagged} flagged` : ''}{r.shootDay ? ` · ${r.shootDay}` : ''}
+                      {r.lpos && r.shootDaySure === false && <span className="tag warning"> Shoot day unclear</span>}
+                      {!r.lpos && <span className="tag warning"> No slate</span>}
+                    </span>
+                  )}
+                  {it.error && <span className="ct-queue-failed">{it.error}</span>}
+                </div>
+                <div className="ct-queue-actions">
+                  {!running && <button type="button" className="btn small ghost" disabled={busy} onClick={() => onOpen(it)}>Open</button>}
+                  {!running && <button type="button" className="btn small ghost" aria-label={`Remove ${it.mc}`} onClick={() => onRemove(it.label)}>×</button>}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function CutThroughPage({ connected }) {
   const api = window.cutThroughAPI;
   const [ct, setCt] = React.useState(null);
@@ -499,6 +618,8 @@ function CutThroughPage({ connected }) {
   const [directionDraft, setDirectionDraft] = React.useState('');
   const [planMode, setPlanMode] = React.useState(null);
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [queuePickerOpen, setQueuePickerOpen] = React.useState(false);
+  const [queueShown, setQueueShown] = React.useState(false);
   const [offsetDraft, setOffsetDraft] = React.useState('');
   const [firstCodeDraft, setFirstCodeDraft] = React.useState(null);
   const settingsRef = React.useRef(null);
@@ -571,7 +692,9 @@ function CutThroughPage({ connected }) {
   const steps = ct.steps;
   const day = steps.prep.data;
   const runFolder = ct.settings.runFolder;
-  const stepRunning = Boolean(ct.busy);
+  const queue = ct.queue || { items: [] };
+  const queueRunning = Boolean(queue.running);
+  const stepRunning = Boolean(ct.busy) || queueRunning;   // the queue switches labels itself: the page waits
   const needsFolder = Boolean(ct.project) && !runFolder;
   const busy = stepRunning || needsFolder;   // no folder yet: everything waits for it
   const mcOptions = ct.multicams || [];
@@ -1224,7 +1347,21 @@ function CutThroughPage({ connected }) {
         <h2 className="section-title">Cut-through</h2>
         <span className="tag ct-beta">Beta</span>
         {ct.project && <span className="dim ct-project">{ct.project}</span>}
+        {!queue.items.length && !queueShown && (
+          <button type="button" className="btn small ghost ct-queue-open" disabled={!connected} onClick={() => setQueueShown(true)}>Queue</button>
+        )}
       </div>
+
+      {(queue.items.length > 0 || queueShown) && (
+        <CtQueue queue={queue} steps={steps} project={ct.project} busy={Boolean(ct.busy) || needsFolder || !connected} error={errors.queue}
+          current={ct.label}
+          onAdd={() => { setQueuePickerOpen(true); if (!ct.multicamsLoading) call('multicams', () => api.listMulticams()); }}
+          onRun={() => call('queue', () => api.queueRun())}
+          onStop={() => call('queue', () => api.queueStop())}
+          onClear={() => { setQueueShown(false); call('queue', () => api.queueClear()); }}
+          onRemove={(label) => call('queue', () => api.queueRemove(label))}
+          onOpen={(it) => call('select', () => api.select({ mc: it.mc, label: it.label, source: 'multicam' }))} />
+      )}
 
       {batchLive && (
         <div className="ct-banner" role="status">
@@ -1274,6 +1411,13 @@ function CutThroughPage({ connected }) {
       {renderPlan()}
       {renderBuild()}
       {!narr && renderReview()}
+
+      {queuePickerOpen && (
+        <CtQueuePicker multicams={mcOptions} queued={queue.items.map((it) => it.mc)} loading={ct.multicamsLoading}
+          onRefresh={() => call('multicams', () => api.listMulticams())}
+          onClose={() => setQueuePickerOpen(false)}
+          onAdd={(mcs) => { setQueuePickerOpen(false); call('queue', () => api.queueAdd(mcs)); }} />
+      )}
 
       {pickerOpen && (
         <CtSourcePicker multicams={mcOptions} audio={ct.audioTimelines || []} loading={ct.multicamsLoading}

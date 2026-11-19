@@ -2719,6 +2719,14 @@ app.whenReady().then(() => {
       n.on('click', () => { if (win) { win.show(); win.focus(); } });
       n.show();
     },
+    // the multicam queue reached the end: every multicam ready to plan (or failed)
+    onQueueEnded: (r) => {
+      if (!Notification.isSupported()) return;
+      const body = `${r.project} · ${r.ready} of ${r.total} ready${r.failed ? ` · ${r.failed} failed` : ''}`;
+      const n = new Notification({ title: r.ready ? 'Cut-through queue ready to plan' : 'Cut-through queue stopped', body });
+      n.on('click', () => { if (win) { win.show(); win.focus(); } });
+      n.show();
+    },
     markRenderJobsOwned: (jobs) => markJobsOwned(jobs)
   });
 
@@ -3651,6 +3659,11 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:state', ctCall(() => cutThrough.snapshot()));
   ipcMain.handle('cut-through:list-multicams', ctCall(() => cutThrough.listMulticams()));
   ipcMain.handle('cut-through:select', ctCall((a) => cutThrough.select(a)));
+  ipcMain.handle('cut-through:queue-add', ctCall((a) => cutThrough.queueAdd(a)));
+  ipcMain.handle('cut-through:queue-remove', ctCall((a) => cutThrough.queueRemove(a)));
+  ipcMain.handle('cut-through:queue-clear', ctCall(() => cutThrough.queueClear()));
+  ipcMain.handle('cut-through:queue-run', ctCall(() => cutThrough.queueRun()));
+  ipcMain.handle('cut-through:queue-stop', ctCall(() => cutThrough.queueStop()));
   ipcMain.handle('cut-through:settings', ctCall((a) => cutThrough.updateSettings(a)));
   ipcMain.handle('cut-through:check-setup', ctCall(() => cutThrough.checkSetup()));
   ipcMain.handle('cut-through:install-pack', ctCall(() => cutThrough.installPack()));
