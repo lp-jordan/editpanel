@@ -210,7 +210,9 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
   let speedSamples = [];
 
   async function poll() {
-    if (polling) return;
+    // No polling during an ingest: on Windows it probes D:–Z: (the NAS too),
+    // and those calls stall behind the copy and starve the main process.
+    if (polling || run?.state === 'running') return;
     polling = true;
     try {
       const next = await listCards();
