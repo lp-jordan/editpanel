@@ -15,6 +15,10 @@
  *
  * (PowerShell does not support cmd's `set VAR=... &&` syntax — use the $env: form.)
  *
+ * macOS: build on an Apple Silicon Mac with `npx electron-builder --mac dmg --arm64`
+ * (ad-hoc signed via mac.identity "-"), then copy the .dmg and latest-mac.yml (yml
+ * last) into the same NAS folder. LPOS serves both on /ep-update.
+ *
  * electron-builder writes latest.yml LAST, so LPOS never picks up a build before
  * the .exe has finished copying — no separate copy step needed.
  */

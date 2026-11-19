@@ -89,7 +89,7 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.video",
-      "identity": null
+      "identity": "-"
     },
     "nsis": {
       "oneClick": false,
