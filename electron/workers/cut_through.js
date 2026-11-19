@@ -537,11 +537,17 @@ function createCutThrough(opts) {
     return (label && (p.directions || {})[label]) || '';
   }
 
-  /** This project's angle roles (else the last project's, else the usual setup), for the day's angles. */
+  /** The multicam these settings belong to (angle maps differ between a day's multicams, e.g. MC_2's shifted angles). */
+  function mcKey() {
+    return s.mc || (s.day && s.day.multicam) || '';
+  }
+
+  /** This multicam's angle roles (else this project's last saved, else the last project's, else the usual setup), for the day's angles. */
   function angleRoles() {
     const angles = (s.day && s.day.angles) || [];
     const p = (getPrefs() || {}).cutThrough || {};
-    const saved = (s.project && (p.angleRoles || {})[s.project]) || p.lastAngleRoles || {};
+    const mine = (s.project && mcKey() && ((p.angleRolesByMc || {})[s.project] || {})[mcKey()]) || null;
+    const saved = mine || (s.project && (p.angleRoles || {})[s.project]) || p.lastAngleRoles || {};
     const base = defaultAngleRoles(angles);
     const out = {};
     for (const a of angles) out[a] = ANGLE_ROLES.includes(saved[a]) ? saved[a] : base[a];
@@ -555,15 +561,23 @@ function createCutThrough(opts) {
     if (!Object.keys(clean).length) return;
     const p = (getPrefs() || {}).cutThrough || {};
     const next = { ...p, lastAngleRoles: { ...(p.lastAngleRoles || {}), ...clean } };
-    if (s.project) next.angleRoles = { ...(p.angleRoles || {}), [s.project]: { ...((p.angleRoles || {})[s.project] || {}), ...clean } };
+    if (s.project) {
+      // the project-level copy stays as the starting point for this project's next multicam
+      next.angleRoles = { ...(p.angleRoles || {}), [s.project]: { ...((p.angleRoles || {})[s.project] || {}), ...clean } };
+      if (mcKey()) {
+        const proj = (p.angleRolesByMc || {})[s.project] || {};
+        next.angleRolesByMc = { ...(p.angleRolesByMc || {}), [s.project]: { ...proj, [mcKey()]: { ...(proj[mcKey()] || {}), ...clean } } };
+      }
+    }
     setPrefs({ cutThrough: next });
   }
 
-  /** The angle that films the slate screen, per Resolve project (default: an angle named "…slate…"). */
+  /** The angle that films the slate screen, per multicam (else this project's last pick, else an angle named "…slate…"). */
   function slateAngle() {
     const angles = (s.day && s.day.angles) || [];
     const p = (getPrefs() || {}).cutThrough || {};
-    const saved = s.project ? (p.slateAngles || {})[s.project] : undefined;
+    const proj = s.project ? ((p.slateAnglesByMc || {})[s.project] || {}) : {};
+    const saved = s.project ? (mcKey() in proj ? proj[mcKey()] : (p.slateAngles || {})[s.project]) : undefined;
     if (saved === '') return null;                     // turned off
     if (saved && angles.includes(saved)) return saved;
     return angles.find((a) => /slate/i.test(a)) || null;
@@ -573,7 +587,9 @@ function createCutThrough(opts) {
     if (!s.project || !s.day) throw new Error('Pick a multicam and run Prep first');
     const a = angle && (s.day.angles || []).includes(angle) ? angle : '';
     const p = (getPrefs() || {}).cutThrough || {};
-    setPrefs({ cutThrough: { ...p, slateAngles: { ...(p.slateAngles || {}), [s.project]: a } } });
+    const next = { ...p, slateAngles: { ...(p.slateAngles || {}), [s.project]: a } };
+    if (mcKey()) next.slateAnglesByMc = { ...(p.slateAnglesByMc || {}), [s.project]: { ...((p.slateAnglesByMc || {})[s.project] || {}), [mcKey()]: a } };
+    setPrefs({ cutThrough: next });
     forgetDisk();
     emit();
     return snapshot();
@@ -1806,10 +1822,12 @@ function createCutThrough(opts) {
     let notes = [];
     let first = '';
     let offset;
+    let shootDay = null;
     if (again) {
       notes = again.slateNotes;
       first = again.firstCode || '';
       offset = again.offset;
+      shootDay = again.shootDay || null;
     } else {
       if (lp) {
         const c = lposClient();
@@ -1821,6 +1839,11 @@ function createCutThrough(opts) {
       if (first) {
         notes = videosLib.notesFrom(s.day, notes, first);
         if (!notes) throw new Error(`${first} isn't on this slate`);
+      } else if (lp && notes.length) {
+        // no first code: the shoot day that fits this multicam's recordings (rows carry their date since 2026-11-10)
+        const pick = videosLib.pickShootDay(s.day, notes);
+        notes = pick.notes;
+        shootDay = { date: pick.date, days: pick.days, sure: pick.sure };
       }
       const auto = videosLib.slateOffset(s.day, notes);
       const manual = offsetSec !== undefined && offsetSec !== null && String(offsetSec).trim() !== '' && Number.isFinite(Number(offsetSec));
@@ -1857,7 +1880,7 @@ function createCutThrough(opts) {
     });
     const codes = notes.filter((n) => n.code && n.code !== 'ATEM').length;
     writeVideos({
-      label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes, firstCode: first, offset,
+      label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes, firstCode: first, shootDay, offset,
       slateNotes: notes, slateCodes: reads, active: Boolean(s.videos && s.videos.active), batch: null, videos, joins, marks
     });
     emit();

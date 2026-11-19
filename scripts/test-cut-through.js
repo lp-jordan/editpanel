@@ -1074,6 +1074,21 @@ const vlib = require('../electron/workers/cut_through_videos');
   assert.deepStrictEqual(startH6.map((v) => v.name), ['H6', 'H7', 'H8']);
   assert.strictEqual(startH6[0].from, 0, 'typed 40 s late, still names the first recording');
   assert.strictEqual(vlib.notesFrom(dayM, multiDay, 'Q1'), null);
+  // no first code: the dated shoot day whose ATEM start/stops line up with the recordings (2026-11-19)
+  const D = (date, timestamp, code, note = '') => ({ timestamp, code, note, date });
+  const dated = [
+    D('2026-11-12', '10:00:00:00', 'ATEM', 'Recording started'), D('2026-11-12', '10:00:05:00', 'A1'), D('2026-11-12', '10:10:00:00', 'ATEM', 'Recording stopped'),
+    D('2026-11-13', '10:00:00:00', 'ATEM', 'Recording started'), D('2026-11-13', '10:00:05:00', 'H6'), D('2026-11-13', '10:10:00:00', 'ATEM', 'Recording stopped'),
+    D('2026-11-13', '10:11:40:00', 'ATEM', 'Recording started'), D('2026-11-13', '10:11:45:00', 'H8'), D('2026-11-13', '10:20:00:00', 'ATEM', 'Recording stopped')
+  ];
+  const pick = vlib.pickShootDay(dayM, dated);
+  assert.ok(pick.date === '2026-11-13' && pick.days === 2 && pick.sure, JSON.stringify({ ...pick, notes: undefined }));
+  assert.deepStrictEqual(vlib.findVideos({ day: dayM, notes: pick.notes, offsetSec: 0, label: 'Day' }).map((x) => x.name), ['H6', 'H8']);
+  // two days that fit the same: not sure (the page asks for the first code)
+  const twin = [...dated.slice(3), ...dated.slice(3).map((n) => ({ ...n, date: '2026-11-14', code: n.code === 'ATEM' ? 'ATEM' : `${n.code}x` }))];
+  assert.strictEqual(vlib.pickShootDay(dayM, twin).sure, false);
+  // one day only: the notes as they are
+  assert.strictEqual(vlib.pickShootDay(dayM, dated.slice(3)).notes.length, 6);
   console.log('✓ videos: slate clock found (time zone + seconds), J-code split in a pause, same code across a stop = one video, flags, no slate');
 }
 
@@ -1304,6 +1319,14 @@ async function videosEndToEnd({ w, getPrefs, setPrefs }) {
   const third = snap.videos.videos[2];
   fs.writeFileSync(c2.snapshot().files.slate, JSON.stringify({ angle: 'Camera 1', reads: [{ from: third.from, to: third.to, code: 'R7', sure: true }] }));
   c2.setSlateAngle('Camera 1');
+  // the slate angle is saved per multicam too: another multicam's pick doesn't move this one's
+  {
+    const { project: pj, mc: m2 } = c2.snapshot();
+    const cur = getPrefs().cutThrough;
+    assert.strictEqual(cur.slateAnglesByMc[pj][m2], 'Camera 1');
+    setPrefs({ cutThrough: { ...cur, slateAngles: { ...cur.slateAngles, [pj]: '' }, slateAnglesByMc: { [pj]: { ...cur.slateAnglesByMc[pj], OTHER_MC: '' } } } });
+    assert.strictEqual(c2.snapshot().slateAngle, 'Camera 1');
+  }
   snap = await c2.findVideos({});
   assert.ok(snap.videos.videos.some((v) => v.code === 'R7'), JSON.stringify(snap.videos.videos.map((v) => v.code)));
   c2.setSlateAngle('');                // the file no longer counts …
@@ -1786,6 +1809,17 @@ async function scoreChain() {
   assert.strictEqual(c3.snapshot().angleRoles['Camera 3'], 'skip');
   assert.strictEqual(c3.snapshot().angleRoles['Camera 4'], 'slider');
   assert.strictEqual(prefs.cutThrough.lastAngleRoles['Camera 3'], 'skip');
+  // roles are saved per multicam: another multicam in the same project (shifted angles) doesn't change
+  // this one's, and this one's beat the project-level copy (2026-11-19)
+  {
+    const { project: pj, mc: m3 } = c3.snapshot();
+    assert.strictEqual(prefs.cutThrough.angleRolesByMc[pj][m3]['Camera 3'], 'skip');
+    prefs.cutThrough = { ...prefs.cutThrough,
+      angleRoles: { ...prefs.cutThrough.angleRoles, [pj]: { 'Camera 3': 'wide', 'Camera 4': 'wide' } },
+      angleRolesByMc: { [pj]: { ...prefs.cutThrough.angleRolesByMc[pj], OTHER_MC: { 'Camera 3': 'slider' } } } };
+    assert.strictEqual(c3.snapshot().angleRoles['Camera 3'], 'skip');
+    assert.strictEqual(c3.snapshot().angleRoles['Camera 4'], 'slider');
+  }
   assert.ok(/Delivery: Live on stage/.test(requests[requests.length - 1].messages[0].content));
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(RUN('Solo2', 'removals_Solo2.json'), 'utf8')).pauses, { max: 36, left: 18, min_save: 36 });
   assert.ok(stage.log.some((l) => /pauses > 36 fr → 18 fr/.test(l)), stage.log.join('\n'));

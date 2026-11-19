@@ -905,7 +905,8 @@ function CutThroughPage({ connected }) {
                     onChange={(e) => setOffsetDraft(e.target.value.replace(/[^\d.\-]/g, ''))} />
                   <input className="settings-input ct-num" aria-label="First J-code on this multicam" disabled={locked}
                     placeholder="First code" value={firstCode} onChange={(e) => setFirstCodeDraft(e.target.value)} />
-                  {offset && <span className="dim ct-num-text">{offset.manual ? `using ${offset.used} s` : `auto ${offset.auto} s`}{vids.notes != null ? ` · ${vids.notes} J-codes` : ''}</span>}
+                  {offset && <span className="dim ct-num-text">{offset.manual ? `using ${offset.used} s` : `auto ${offset.auto} s`}{vids.notes != null ? ` · ${vids.notes} J-codes` : ''}{!vids.firstCode && vids.shootDay && vids.shootDay.days > 1 && vids.shootDay.date ? ` · ${vids.shootDay.date}` : ''}</span>}
+                  {!vids?.firstCode && vids?.shootDay && !vids.shootDay.sure && <span className="tag warning">Shoot day unclear · enter first code</span>}
                 </CtRow>
               )}
               {day && (

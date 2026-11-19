@@ -86,16 +86,11 @@ function slateOffset(day, notes) {
 }
 
 /**
- * "This multicam starts at H6": only that shoot day's notes, from H6 on. A day = one slate tab, split
- * again where the row's date changes (rows since 2026-11-10) or the time of day jumps backwards. If
- * the code is on several days, the day that fits the multicam's recordings best; ties = the
- * earliest. The ATEM notes just before the code stay (they set the clock offset). null = not found.
+ * The slate's shoot days: one slate tab plus the untabbed rows (LPOS's ATEM rows never carry a tab),
+ * split again where the row's date changes (rows since 2026-11-10) or the time of day jumps
+ * backwards (several days in one tab, or no tabs). Each day = its notes in order.
  */
-function notesFrom(day, notes, firstCode) {
-  const want = String(firstCode || '').trim().toLowerCase();
-  if (!want) return null;
-  // a shoot day = one slate tab plus the untabbed rows (LPOS's ATEM rows never carry a tab),
-  // split again where the time of day jumps backwards (several days in one tab, or no tabs)
+function shootDays(notes) {
   const all = notes || [];
   const tabs = [...new Set(all.map((n) => n.tabId).filter(Boolean))];
   const byTab = new Map(tabs.length ? tabs.map((t) => [t, all.filter((n) => !n.tabId || n.tabId === t)]) : [['', all]]);
@@ -106,7 +101,6 @@ function notesFrom(day, notes, firstCode) {
     runs.push([]);
     for (const n of list) {
       const t = slateSeconds(n.timestamp);
-      // rows from LPOS since 2026-11-10 carry their shoot day: a new date = a new day
       const newDate = n.date && lastDate && n.date !== lastDate;
       if (newDate || (t !== null && last !== null && t < last - 60)) runs.push([]);
       runs[runs.length - 1].push(n);
@@ -114,8 +108,43 @@ function notesFrom(day, notes, firstCode) {
       if (n.date) lastDate = n.date;
     }
   }
+  return runs.filter((r) => r.length);
+}
+
+const isCode = (n) => n.code && n.code !== 'ATEM' && String(n.code).trim();
+/** Better fit to the multicam's recordings: more ATEM start/stop rows on a recording edge, then more codes inside. */
+const fitsBetter = (a, b) => !b || a.matched > b.matched || (a.matched === b.matched && a.codesInside > b.codesInside);
+
+/**
+ * No first code typed: the shoot day whose slate fits this multicam's recordings best, so another
+ * day logged on the same times of day can't put its codes here. Returns { notes, date, days, sure }:
+ * sure = the best day lines up with at least one recording edge and beats every other day.
+ * One day (or none with codes) = the notes as they are.
+ */
+function pickShootDay(day, notes) {
+  const days = shootDays(notes).filter((r) => r.some(isCode));
+  if (days.length <= 1) return { notes: notes || [], date: (days[0] || []).map((n) => n.date).find(Boolean) || null, days: days.length, sure: true };
   let best = null;
-  for (const run of runs) {
+  let second = null;
+  for (const run of days) {
+    const fit = slateOffset(day, run);
+    if (fitsBetter(fit, best && best.fit)) { second = best; best = { notes: run, fit }; } else if (fitsBetter(fit, second && second.fit)) second = { notes: run, fit };
+  }
+  const tie = second && second.fit.matched === best.fit.matched && second.fit.codesInside === best.fit.codesInside;
+  return { notes: best.notes, date: best.notes.map((n) => n.date).find(Boolean) || null, days: days.length,
+    sure: best.fit.matched > 0 && !tie };
+}
+
+/**
+ * "This multicam starts at H6": only that shoot day's notes, from H6 on. If the code is on several
+ * days, the day that fits the multicam's recordings best; ties = the earliest. The ATEM notes just
+ * before the code stay (they set the clock offset). null = not found.
+ */
+function notesFrom(day, notes, firstCode) {
+  const want = String(firstCode || '').trim().toLowerCase();
+  if (!want) return null;
+  let best = null;
+  for (const run of shootDays(notes)) {
     let i = run.findIndex((n) => String(n.code || '').trim().toLowerCase() === want);
     if (i < 0) continue;
     while (i > 0 && run[i - 1].code === 'ATEM') i -= 1;
@@ -356,4 +385,4 @@ function spanTimelines({ day, notes = [], offsetSec = 0, label = 'video' }) {
   });
 }
 
-module.exports = { spanTimelines, findVideos, notesFrom, slateOffset, cleanName };
+module.exports = { spanTimelines, findVideos, notesFrom, pickShootDay, shootDays, slateOffset, cleanName };
