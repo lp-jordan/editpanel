@@ -26,6 +26,10 @@
  *   PRIVATE/XDROOT/Clip/*.MXF    FX6 clips
  *   PRIVATE/{M4ROOT,XDROOT}/SUB  proxies (.MP4 too) — skipped by folder
  *   DCIM/*\/*.ARW                stills (JPGs skipped)
+ *   AHCQ/USBMTK/<take>/*.WAV     audio mixer (Allen & Heath CQ) multitrack
+ *                                takes — each take keeps its own subfolder
+ *                                under the destination (file names repeat
+ *                                from take to take)
  * Nothing is ever written to a card.
  */
 
@@ -35,11 +39,14 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { sampleHash, resolveTarget, statOrNull } = require('./card_ingest_fs');
 
-const MEDIA_EXT = new Set(['.mxf', '.mp4', '.arw']);
+const MEDIA_EXT = new Set(['.mxf', '.mp4', '.arw', '.wav']);
 const VIDEO_EXT = new Set(['.mxf', '.mp4']);
+const AUDIO_EXT = new Set(['.wav']);
 const UNFINALIZED_EXT = '.rsv';
 const SKIP_DIRS = new Set(['sub', 'thmbnl', 'system volume information', '$recycle.bin']);
-const CARD_MARKERS = [['PRIVATE', 'M4ROOT'], ['PRIVATE', 'XDROOT'], ['DCIM']];
+const CARD_MARKERS = [['PRIVATE', 'M4ROOT'], ['PRIVATE', 'XDROOT'], ['DCIM'], ['AHCQ', 'USBMTK']];
+// Audio takes live in subfolders of this card path; the subfolders are kept.
+const AUDIO_ROOT = ['ahcq', 'usbmtk'];
 const POLL_MS = 3000;
 const UPDATE_EVERY_MS = 250;
 const SPEED_WINDOW_MS = 5000;
@@ -70,6 +77,7 @@ async function describeCard(root) {
   if (found[0]) formats.push('XAVC');
   if (found[1]) formats.push('XDCAM');
   if (found[2]) formats.push('Stills');
+  if (found[3]) formats.push('Audio');
   let usedBytes = null;
   try {
     const s = await fsp.statfs(root);
@@ -83,6 +91,17 @@ async function listCards() {
   const roots = await mountRoots();
   const cards = await Promise.all(roots.map(r => describeCard(r).catch(() => null)));
   return cards.filter(Boolean);
+}
+
+/**
+ * Subfolder an audio file keeps under the destination: the folders between
+ * AHCQ/USBMTK and the file ("Take 3" for AHCQ/USBMTK/Take 3/CH01.WAV), or ''.
+ */
+function audioSubdir(relPath) {
+  const parts = relPath.split('/');
+  const lower = parts.map(p => p.toLowerCase());
+  if (lower[0] !== AUDIO_ROOT[0] || lower[1] !== AUDIO_ROOT[1]) return '';
+  return parts.slice(2, -1).join('/');
 }
 
 /** Every media and .RSV file on a card, relative to its root. */
@@ -101,12 +120,14 @@ async function scanCard(root) {
       }
       if (!e.isFile()) continue;
       const ext = path.extname(e.name).toLowerCase();
-      const kind = MEDIA_EXT.has(ext) ? (VIDEO_EXT.has(ext) ? 'video' : 'still')
-        : ext === UNFINALIZED_EXT ? 'unfinalized' : null;
+      const kind = VIDEO_EXT.has(ext) ? 'video' : AUDIO_EXT.has(ext) ? 'audio'
+        : MEDIA_EXT.has(ext) ? 'still' : ext === UNFINALIZED_EXT ? 'unfinalized' : null;
       if (!kind) continue;
       const st = await statOrNull(abs);
       if (!st) continue;
-      out.push({ src: abs, relPath, name: e.name, size: st.size, mtimeMs: st.mtimeMs, kind });
+      const subdir = kind === 'audio' ? audioSubdir(relPath) : '';
+      out.push({ src: abs, relPath, name: e.name, size: st.size, mtimeMs: st.mtimeMs, kind,
+        subdir, display: subdir ? `${subdir}/${e.name}` : e.name });
     }
   }
   await walk(root, '');
@@ -132,11 +153,14 @@ function summarize(files, dest) {
   };
 }
 
-/** Folder a card file goes to: its route, else stills to stillDest, else dest. */
+/**
+ * Folder a card file goes to: its route, else stills to stillDest, else dest.
+ * Audio takes then go one level deeper, into their take's own folder.
+ */
 function fileDest(f, dest, stillDest, routes) {
   const routed = routes && typeof routes[f.relPath] === 'string' && routes[f.relPath];
-  if (routed) return routed;
-  return f.kind === 'still' && stillDest ? stillDest : dest;
+  const base = routed || (f.kind === 'still' && stillDest ? stillDest : dest);
+  return base && f.subdir ? path.join(base, ...f.subdir.split('/')) : base;
 }
 
 /**
@@ -561,7 +585,7 @@ function createCardIngest({ broadcast, jobsDb, utilityProcess, log = () => {}, o
       cards: checked.map(c => ({
         root: c.root, label: c.label, formats: c.formats, dest: c.dest, stillDest: c.stillDest, state: 'running',
         files: c.files.map(f => ({
-          name: f.name, relPath: f.relPath, size: f.size, kind: f.kind, sample: f.sample, dest: f.dest,
+          name: f.name, display: f.display || f.name, subdir: f.subdir || '', relPath: f.relPath, size: f.size, kind: f.kind, sample: f.sample, dest: f.dest,
           destName: f.destName || f.name, where: f.where || null, error: f.error || null,
           state: f.kind === 'unfinalized' ? 'unfinalized'
             : f.status === 'on-nas' ? 'on-nas'

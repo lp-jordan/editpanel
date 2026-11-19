@@ -526,7 +526,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         {isOpen && r?.files && renderFiles(card.root, r.files.map(f => {
           const skippedHere = ciPickable(f) && skipSetFor(card.root).has(f.relPath);
           return {
-            f, st: CI_CHECK_STATE[skippedHere ? 'skipped' : f.status] || CI_CHECK_STATE.copy, name: f.name,
+            f, st: CI_CHECK_STATE[skippedHere ? 'skipped' : f.status] || CI_CHECK_STATE.copy, name: f.display || f.name,
             title: f.status === 'rename' ? `A different ${f.name} is already in this folder` : (f.where || f.error || f.relPath)
           };
         }), {
@@ -774,7 +774,7 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
         <div className="ci-pad"><div className="run-progress-track"><div className="run-progress-fill" style={{ width: `${pct}%` }} /></div></div>
         {renderFiles(card.root, card.files.map(f => ({
           f, st: CI_RUN_STATE[f.state] || CI_RUN_STATE.waiting,
-          name: f.destName && f.destName !== f.name ? `${f.name} → ${f.destName}` : f.name,
+          name: f.destName && f.destName !== f.name ? `${f.display || f.name} → ${f.destName}` : (f.display || f.name),
           title: f.error || f.where || f.relPath
         })))}
       </section>
@@ -784,7 +784,9 @@ function CardIngestOverlay({ open, onClose, resolveConnected, resolveProject, on
   /** Folders a run card's files go to: main first, then photos, then routed. */
   function runFolders(card) {
     const out = [];
-    for (const d of [card.dest, card.stillDest, ...card.files.map(f => f.dest)]) if (d && !out.includes(d)) out.push(d);
+    // Audio takes each get a subfolder; list the folder holding them, not every take.
+    const folderOf = (f) => (f.subdir && f.dest ? f.dest.slice(0, f.dest.length - f.subdir.length - 1) : f.dest);
+    for (const d of [card.dest, card.stillDest, ...card.files.map(folderOf)]) if (d && !out.includes(d)) out.push(d);
     return out;
   }
 
