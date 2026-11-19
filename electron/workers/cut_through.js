@@ -1789,7 +1789,7 @@ function createCutThrough(opts) {
    * a pause and to tell solo from conversation). offsetSec: '' = work it out from the slate.
    * Earlier choices (tick, type, name) and plans stay with a video that comes back unchanged.
    */
-  async function findVideos({ offsetSec, firstCode, again = null } = {}) {
+  async function findVideos({ offsetSec, firstCode, again = null, marks: newMarks = null } = {}) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
     if (isNarration(s.day)) throw new Error('Narration splits by chapter: load the manuscript instead');
     needRunFolder();
@@ -1830,7 +1830,8 @@ function createCutThrough(opts) {
     // the visual slate read: Join / Split use the one the last Find used (not the file again)
     const reads = again ? (again.slateCodes || null) : ((slateReads() || {}).reads || null);
     const joins = (s.videos && Array.isArray(s.videos.joins)) ? s.videos.joins : [];
-    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first, reads, joins });
+    const marks = newMarks || ((s.videos && Array.isArray(s.videos.marks)) ? s.videos.marks : []);
+    const found = videosLib.findVideos({ day: s.day, words, notes, offsetSec: used, label: s.label, firstCode: first, reads, joins, marks });
     const before = (s.videos && s.videos.videos) || [];
     const old = new Map(before.map((v) => [v.id, v]));
     // a video whose range didn't move keeps its id (its plan file is named by it), even when a join
@@ -1857,7 +1858,7 @@ function createCutThrough(opts) {
     const codes = notes.filter((n) => n.code && n.code !== 'ATEM').length;
     writeVideos({
       label: s.label, multicam: s.day.multicam, madeAt: Date.now(), lpos: lp, notes: codes, firstCode: first, offset,
-      slateNotes: notes, slateCodes: reads, active: Boolean(s.videos && s.videos.active), batch: null, videos, joins
+      slateNotes: notes, slateCodes: reads, active: Boolean(s.videos && s.videos.active), batch: null, videos, joins, marks
     });
     emit();
     return snapshot();
@@ -1899,15 +1900,38 @@ function createCutThrough(opts) {
     return Array.isArray(v.slateNotes) && v.offset && 'slateCodes' in v ? findVideos({ again: v }) : findAgain();
   }
 
-  /** Undo the join a video came from. */
+  /** Undo the join or the In/Out mark a video came from. */
   async function splitVideo(id) {
     if (!s.videos) throw new Error('Find the videos first');
     if (batchLive() || (s.videos.batch && s.videos.batch.status === 'draft')) throw new Error('Discard or finish the batch first');
     const v = s.videos.videos.find((x) => x.id === id);
     if (!v) throw new Error('No such video');
-    const joins = (s.videos.joins || []).filter((r) => !(r[1] >= v.from && r[0] <= v.to));
-    writeVideos({ ...s.videos, joins });
+    const off = (r) => !(r[1] >= v.from && r[0] <= v.to);
+    const joins = (s.videos.joins || []).filter(off);
+    const marks = (s.videos.marks || []).filter(off);
+    writeVideos({ ...s.videos, joins, marks });
     return refind();
+  }
+
+  /** The In/Out marked on the multicam in Resolve becomes one video (a conversation with no
+   *  J-codes, say); it stays one video through Find again until removed. */
+  async function addMarkedVideo() {
+    if (s.busy) throw new Error(`${s.busy} is still running`);
+    if (isNarration(s.day)) throw new Error('Narration splits by chapter');
+    if (s.videos && (batchLive() || (s.videos.batch && s.videos.batch.status === 'draft'))) throw new Error('Discard or finish the batch first');
+    await readMarks();
+    const { from, to } = s.marks;
+    const marks = [...((s.videos && s.videos.marks) || []).filter((r) => r[1] <= from || r[0] >= to), [from, to]].sort((a, b) => a[0] - b[0]);
+    if (s.videos) writeVideos({ ...s.videos, marks });
+    if (s.videos) await refind();
+    else await findVideos({ marks });
+    const v = s.videos.videos.find((x) => x.marked && x.from < to && x.to > from);
+    if (!v) {
+      writeVideos({ ...s.videos, marks: (s.videos.marks || []).filter((r) => !(r[0] === from && r[1] === to)) });
+      await refind();
+      throw new Error('No recording inside that In/Out');
+    }
+    return snapshot();
   }
 
   /**
@@ -2502,6 +2526,7 @@ function createCutThrough(opts) {
     updateVideo,
     joinVideos,
     splitVideo,
+    addMarkedVideo,
     planVideos,
     prepareBatch,
     discardBatch,

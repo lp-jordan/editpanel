@@ -407,12 +407,14 @@ function CtVideoRow({ v, next, soloDefault, locked, busy, estimate, onPatch, onR
       </span>
       <span className="ct-vflags">
         {v.joined && <span className="tag info" title="Joined by hand">Joined</span>}
+        {v.marked && <span className="tag info" title="From a Resolve In/Out">Marked</span>}
         {flags.length > 0 && (
           <span className="tag warning" title={flags.join('\n')}>{flags.length === 1 ? flags[0] : `${flags[0]} +${flags.length - 1}`}</span>
         )}
       </span>
       <span className="ct-vjoin">
-        {v.joined && onSplit && <button type="button" className="btn small ghost" disabled={locked} onClick={onSplit} title="Undo the join">Split</button>}
+        {v.joined && !v.marked && onSplit && <button type="button" className="btn small ghost" disabled={locked} onClick={onSplit} title="Undo the join">Split</button>}
+        {v.marked && onSplit && <button type="button" className="btn small ghost" disabled={locked} onClick={onSplit} title="Back to how Find videos splits it">Unmark</button>}
         {next && onJoin && (
           <button type="button" className="btn small ghost ct-join" disabled={locked} onClick={onJoin}
             title={`Join with ${next.name} (one video)`} aria-label={`Join ${v.name} with ${next.name}`}>Join ↓</button>
@@ -833,13 +835,21 @@ function CutThroughPage({ connected }) {
       list.length > 0 && { label: 'Find again', onClick: () => call('videos', () => api.findVideos({ offsetSec: offsetDraft, firstCode })), disabled: locked || !transcribed }
     ] : null;
     let actions = null;
+    const addMarked = mode === 'videos' && !narr && api.addMarkedVideo && (
+      <button type="button" className="btn small ghost" disabled={locked || Boolean(needs.videos) || !connected}
+        title={!connected ? 'Needs Resolve' : needs.videos || 'One video from the In/Out on the multicam in Resolve'}
+        onClick={() => call('videos', () => api.addMarkedVideo())}>Add from In/Out</button>
+    );
     if (slateRun) actions = cancelBtn('videos');
     else if (mode === 'videos' && !list.length) {
       actions = (
-        <button type="button" className={btn('find')} disabled={locked || Boolean(needs.videos)} title={needs.videos || ''}
-          onClick={() => call('videos', () => api.findVideos({ offsetSec: offsetDraft, firstCode }))}>Find videos</button>
+        <>
+          {addMarked}
+          <button type="button" className={btn('find')} disabled={locked || Boolean(needs.videos)} title={needs.videos || ''}
+            onClick={() => call('videos', () => api.findVideos({ offsetSec: offsetDraft, firstCode }))}>Find videos</button>
+        </>
       );
-    }
+    } else if (addMarked) actions = addMarked;
     return (
       <CtStep key="videos" n={3} title="Videos" status={status} statusText={statusText}
         need={!transcribed ? needs.videos : null} open={open} onToggle={toggle('videos', open)}

@@ -235,6 +235,7 @@ contextBridge.exposeInMainWorld('cutThroughAPI', {
   updateVideo: (id, patch) => ipcRenderer.invoke('cut-through:update-video', { id, patch }),
   joinVideos: (ids) => ipcRenderer.invoke('cut-through:join-videos', { ids }),
   splitVideo: (id) => ipcRenderer.invoke('cut-through:split-video', { id }),
+  addMarkedVideo: () => ipcRenderer.invoke('cut-through:add-marked-video'),
   planVideos: (payload) => ipcRenderer.invoke('cut-through:plan-videos', payload),
   prepareBatch: (payload) => ipcRenderer.invoke('cut-through:batch-prepare', payload),
   discardBatch: () => ipcRenderer.invoke('cut-through:batch-discard'),

@@ -3685,6 +3685,7 @@ app.whenReady().then(() => {
   ipcMain.handle('cut-through:update-video', ctCall((a) => cutThrough.updateVideo(a && a.id, a && a.patch)));
   ipcMain.handle('cut-through:join-videos', ctCall((a) => cutThrough.joinVideos((a && a.ids) || [])));
   ipcMain.handle('cut-through:split-video', ctCall((a) => cutThrough.splitVideo(a && a.id)));
+  ipcMain.handle('cut-through:add-marked-video', ctCall(() => cutThrough.addMarkedVideo()));
   ipcMain.handle('cut-through:plan-videos', ctCall((a) => cutThrough.planVideos(a)));
   ipcMain.handle('cut-through:batch-prepare', ctCall((a) => cutThrough.prepareBatch(a)));
   ipcMain.handle('cut-through:batch-discard', ctCall(() => cutThrough.discardBatch()));

@@ -17,6 +17,8 @@
  *     (mergeReads); the notes fill in where it wasn't. Flags only (no J-code, short, few words,
  *     J-code again later = an earlier take). Nothing is ever unticked by default.
  *   - Solo vs conversation per video, from who talks in it.
+ *   - A range the editor marked (In/Out in Resolve) is exactly one video, whatever the slate says:
+ *     for a conversation with no J-codes (2026-11-19). It wins over joins.
  */
 
 const SPLIT_LOOKBACK_SEC = 45;      // a code typed up to this long after the video began
@@ -204,7 +206,7 @@ const tcLabel = (day, f) => frameToTc(f, day);
  *   label     the run label (names videos that have no J-code)
  *   firstCode the editor says the multicam starts on this code (notes already cut by notesFrom)
  */
-function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'video', firstCode = '', reads = null, joins = [] }) {
+function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'video', firstCode = '', reads = null, joins = [], marks = [] }) {
   const fs_ = frameSec(day);
   const sec = (x) => Math.round(x / fs_);
   const W = wordList(words);
@@ -238,11 +240,29 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
     pieces.push({ from: start, to: b, code, recStart: start === a, recEnd: true });
   }
 
+  // 1b. the editor's marked ranges: cut the pieces at their edges, and say which piece is in which
+  const M = (marks || []).filter((r) => Array.isArray(r) && r[1] > r[0]);
+  const edges = [...new Set(M.flat())].sort((x, y) => x - y);
+  const cut = [];
+  for (const p of pieces) {
+    let start = p.from;
+    for (const e of edges.filter((x) => x > p.from && x < p.to)) {
+      cut.push({ ...p, from: start, to: e, recStart: p.recStart && start === p.from, recEnd: false });
+      start = e;
+    }
+    cut.push({ ...p, from: start, to: p.to, recStart: p.recStart && start === p.from, recEnd: p.recEnd });
+  }
+  for (const p of cut) {
+    const mid = (p.from + p.to) / 2;
+    const m = M.findIndex((r) => mid >= r[0] && mid <= r[1]);
+    p.markIdx = m >= 0 ? m : null;
+  }
+
   // 2. the same code across a stop = one video with a restart (the gap between recordings is cut)
   const merged = [];
-  for (const p of pieces) {
+  for (const p of cut) {
     const last = merged[merged.length - 1];
-    if (last && p.code && last.code === p.code && last.recEnd && p.recStart) {
+    if (last && p.code && last.code === p.code && last.recEnd && p.recStart && last.markIdx === p.markIdx) {
       last.gaps.push([last.to, p.from]);
       last.to = p.to;
       last.restarts += 1;
@@ -257,18 +277,19 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
   const joined = [];
   for (const p of merged) {
     const mid = (p.from + p.to) / 2;
-    const j = (joins || []).findIndex((r) => Array.isArray(r) && mid >= r[0] && mid <= r[1]);
+    const ji = (joins || []).findIndex((r) => Array.isArray(r) && mid >= r[0] && mid <= r[1]);
+    const j = p.markIdx !== null ? `m${p.markIdx}` : ji >= 0 ? `j${ji}` : null;
     const last = joined[joined.length - 1];
-    if (j >= 0 && last && last.joinIdx === j) {
+    if (j !== null && last && last.joinIdx === j) {
       if (p.from > last.to) last.gaps.push([last.to, p.from]);
       last.gaps.push(...p.gaps);
       last.to = p.to;
       last.restarts += p.restarts;
       last.recEnd = p.recEnd;
       last.code = last.code || p.code;
-      last.joined = true;
+      last.joined = p.markIdx === null;
     } else {
-      joined.push({ ...p, gaps: [...p.gaps], joinIdx: j >= 0 ? j : null, joined: false });
+      joined.push({ ...p, gaps: [...p.gaps], joinIdx: j, joined: false, marked: p.markIdx !== null });
     }
   }
 
@@ -278,7 +299,7 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
     const n = i + 1;
     const flags = [];
     const span = (v.to - v.from - v.gaps.reduce((t, [g0, g1]) => t + (g1 - g0), 0)) * fs_;
-    if (!v.code) flags.push('No J-code');
+    if (!v.code && !v.marked) flags.push('No J-code');
     if (span < SHORT_SEC) flags.push('Short');
     if (v.restarts) flags.push(v.restarts > 1 ? `${v.restarts} restarts` : 'Restart');
     const who = speakersIn(W, v.from, v.to);
@@ -304,7 +325,8 @@ function findVideos({ day, words = null, notes = [], offsetSec = 0, label = 'vid
       n, name, code: v.code || null, from: v.from, to: v.to, gaps: v.gaps,
       fromTc: tcLabel(day, v.from), toTc: tcLabel(day, v.to), minutes: span / 60,
       words: who.words, kind, talker, delivery: kind === 'convo' ? 'convo' : null, flags, include: true,
-      ...(v.joined ? { joined: true } : {})
+      ...(v.joined ? { joined: true } : {}),
+      ...(v.marked ? { marked: true } : {})
     };
   });
   // a name used twice: the first gets "(1)" too, so neither is a plain J-code
