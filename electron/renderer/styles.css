@@ -4849,7 +4849,8 @@ button.status-bar-chip-btn:disabled {
 
 /* Prep: angles with their roles */
 .ct-angles { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px 14px; }
-.ct-angle { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 0.86rem; }
+.ct-angle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; font-size: 0.86rem; }
+.ct-angle .ct-shows { margin-left: 84px; }
 .ct-angle-name { flex: 0 0 76px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ct-angle.is-odd .ct-angle-name { color: var(--warning); }
 .ct-mics { flex: 1 1 100%; display: flex; flex-direction: column; gap: 4px; min-width: 0; }

@@ -43,7 +43,11 @@ Measured from Jordan's conversation edits (guidelines, not rules — cut like an
 - **Long answers get broken up**: the talker's close-up holds for a thought (often 6–10 s, longer for a story), then a **reaction shot** of the listener (~2 s, on a nod, a laugh, a reaction), or **the wide** (~3–4 s), then back to the talker.
 - **The close-up carries the conversation**: the key point, a story, emotion, a punchline. Hold it while a thought lands.
 - **The wide is much rarer than the close-ups** (in Jordan's edit about 1 shot in 13, median ~3.6 s): it opens and closes the conversation, covers moments when both talk at once, is the usual cover at a removal, and gives a reset after a long stretch in close. Don't use it just for variety.
-- **Extra angles** (side / slider) are an alternate on a talker — enter from that person's close-up, return to it.
+- **The slider is a regular part of the rhythm, not a rare extra.** The angle list says what it shows:
+  - **On one person**: that person's alternate angle while they talk — their close-up → slider (~5.5 s, 4–8 s) → back to their close-up. In Jordan's edit it was about 1 shot in 8, roughly once a minute while that person talked, on a strong line, a list, an example or a story beat. It shows them, so never use it while the other person talks.
+  - **On everyone** (a moving two-shot) as well as a still wide: a second wide used inside the conversation — never the opening or closing shot.
+  - **On everyone and there's no other wide**: it is the wide; use it as the wide.
+- **Other extra angles** (side) are an alternate on a talker — enter from that person's close-up, return to it.
 - **Every removal must land on an angle change** (the program enforces it; choose the angle so it's a good one — often the wide or the other person). Change angle at the removal itself — don't cut away just before it and back right after.
 - About 8 cuts a minute overall; shots under ~2 s only for a deliberate reaction.
 - **Energy hints** (`⟨energy …⟩`): where it's fast or loud, shots can run toward the short end of the ranges above; where it's slow or quiet (a story, a reflective point), hold longer. Never shorter than the limits above — energy only moves a shot within them.

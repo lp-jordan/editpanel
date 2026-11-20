@@ -191,6 +191,13 @@ def main(argv) -> None:
     W = sorted((w for w in data["words"] if w.get("own", True) and not w.get("ghost") and
                 (talker is None or w["mic"] == talker or (multi and w["mic"] in people))), key=lambda w: w["s"])
     lo_req, hi_req = int(o.get("start", 0)), int(o.get("end", total))
+
+    def talker_at(a, b):
+        """A conversation: the close-up of whoever talks most in [a, b) (angle N = the person on mic N)."""
+        if not multi:
+            return None
+        said = Counter(w["mic"] for w in W if a <= w["s"] < b and w["mic"] in angles)
+        return said.most_common(1)[0][0] if said else None
     W = [w for w in W if lo_req <= w["s"] < hi_req]
     if not W:
         raise SystemExit("No words in that range")
@@ -485,7 +492,11 @@ def main(argv) -> None:
                 if moving_ok(g, sh["from"], sh["to"]):
                     out.append(sh)
                     continue
-                alt = punch if punch not in (g, None) else wide
+                def alt_for(a, b):
+                    # a conversation: the talker's own close-up, not the fixed one (Jordan 2026-11-20)
+                    who = talker_at(a, b)
+                    return who if who not in (g, None) else (punch if punch not in (g, None) else wide)
+                alt = alt_for(sh["from"], sh["to"])
                 best = max(((max(x, sh["from"]), min(y, sh["to"])) for x, y in motion[g]),
                            key=lambda r: r[1] - r[0], default=None)
                 a = b = None
@@ -496,10 +507,10 @@ def main(argv) -> None:
                     out.append({**sh, "angle": alt, "kind": "slider"})
                     continue
                 if a > sh["from"]:
-                    out.append({**sh, "to": a, "angle": alt, "kind": "slider"})
+                    out.append({**sh, "to": a, "angle": alt_for(sh["from"], a), "kind": "slider"})
                 out.append({**sh, "from": a, "to": b, "join": sh["join"] and a == sh["from"]})
                 if b < sh["to"]:
-                    out.append({**sh, "from": b, "join": False, "angle": alt, "kind": "slider"})
+                    out.append({**sh, "from": b, "join": False, "angle": alt_for(b, sh["to"]), "kind": "slider"})
             return out
 
         shots = []
@@ -633,7 +644,8 @@ def main(argv) -> None:
                 continue
             prev = shots[k - 1] if k else None
             nxt = shots[k + 1] if k + 1 < len(shots) else None
-            cands = [a for a in [punch, wide] + sorted(angles, key=cam_no) if a not in motion]
+            who = talker_at(sh["from"], sh["to"])
+            cands = [a for a in [who, punch, wide] + sorted(angles, key=cam_no) if a and a not in motion]
             clash = lambda a, strict: ((prev and a == prev["angle"] and (strict or sh["join"])) or
                                        (nxt and a == nxt["angle"] and (strict or nxt["join"])))
             pick = next((a for a in cands if not clash(a, True)), None) or next((a for a in cands if not clash(a, False)), None)

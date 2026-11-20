@@ -70,6 +70,15 @@ const ANGLE_HABITS = {
   other: 'another angle — use only where it clearly helps'
 };
 
+// a conversation's slider (Jordan 2026-11-20): on one person, it's their alternate angle (measured on
+// Jordan's CedricConvo edit, docs/ai-rough-cut-style-guide.md: ~1 shot in 8, median 5.5 s, guest CU →
+// slider → guest CU, 94% of its shots while that person talks); on everyone, a second wide
+const CONVO_SLIDER = {
+  person: (p) => `the slider on the person on the ${p} mic (moving shot) — their alternate angle: ~5.5 s (4–8 s), only while they talk, entered from their close-up and back to it; Jordan uses it for about 1 shot in 8 (roughly once a minute while they talk)`,
+  everyone: 'the slider on everyone (a moving two-shot) — a second wide, used inside the conversation: ~4–6 s on a strong line, when both talk, as cover at a removal, or a reset after a long run of close-ups; never the opening or closing shot',
+  unknown: 'the slider (moving shot) — an alternate angle: ~5.5 s (4–8 s), about 1 shot in 8; who it shows isn\'t set, so use it on the person it frames (enter from their close-up, back to it)'
+};
+
 // the slider's moving stretches are read from its video (on trial 2026-11-10); the placer enforces them
 const SLIDER_MOVING = '; only usable while it is moving — the program keeps your slider shots to its moving stretches (a few seconds each) and gives the rest to the close-up, so keep slider shots short';
 
@@ -499,11 +508,14 @@ function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model,
   const side = roles.side || [];
   const insert = (a) => (slider.includes(a) ? ANGLE_HABITS.slider + (sliderMoving ? SLIDER_MOVING : '') : side.includes(a) ? ANGLE_HABITS.side
     : (roles.extra || []).includes(a) ? ANGLE_HABITS.insert : ANGLE_HABITS.other);
+  const shows = roles.sliderShows || {};
+  const convoSlider = (a) => (shows[a] === 'everyone' ? CONVO_SLIDER.everyone : people.includes(shows[a]) ? CONVO_SLIDER.person(shows[a]) : CONVO_SLIDER.unknown)
+    + (sliderMoving ? SLIDER_MOVING.replace('to the close-up', "to the talker's close-up") : '');
   const roster = multi
-    ? angles.map((a) => `${a} = ${a === wide ? `the wide (everyone in shot)` : people.includes(a) ? `close-up of the person speaking on the ${a} mic` :
-      insert(a)}`)
+    ? angles.map((a) => `${a} = ${a === wide ? (slider.includes(a) || shows[a] === 'everyone' ? 'the wide (everyone in shot; a moving slider — use it as the wide)' : 'the wide (everyone in shot)')
+      : people.includes(a) ? `close-up of the person speaking on the ${a} mic` : slider.includes(a) ? convoSlider(a) : insert(a)}`)
     : angles.map((a) => `${a} = ${a === wide ? ANGLE_HABITS.wide : a === punch ? ANGLE_HABITS.closeup : insert(a)}`);
-  const insertNote = angles.some((a) => slider.includes(a) || side.includes(a))
+  const insertNote = !multi && angles.some((a) => slider.includes(a) || side.includes(a))
     ? 'Inserts are part of Jordan\'s rhythm, not an exception: about a quarter of his cuts after a removal land on one, and he uses the slider about 1.5× as often as the side. Put them on strong lines, lists, examples and story beats.'
     : null;
   const narration = day.source === 'audio_timeline';

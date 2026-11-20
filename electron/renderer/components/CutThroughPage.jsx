@@ -603,6 +603,7 @@ function CutThroughPage({ connected }) {
   const [minutes, setMinutes] = React.useState('');
   const [planForm, setPlanForm] = React.useState({ start: '', end: '', delivery: 'scripted', useMarks: false });
   const [rolesDraft, setRolesDraft] = React.useState({});
+  const [showsDraft, setShowsDraft] = React.useState({});
   const [rulesOpen, setRulesOpen] = React.useState(false);
   const [boxOpen, setBoxOpen] = React.useState(false);
   const [rulesBusy, setRulesBusy] = React.useState(false);
@@ -656,7 +657,7 @@ function CutThroughPage({ connected }) {
 
   // another project (or multicam) has its own angle roles: drop this page's unsaved edits
   const roleKey = `${ct?.project || ''}|${ct?.mc || ''}`;
-  React.useEffect(() => { setRolesDraft({}); }, [roleKey]);
+  React.useEffect(() => { setRolesDraft({}); setShowsDraft({}); }, [roleKey]);
 
   // Multicams + bins whenever Resolve (re)connects.
   React.useEffect(() => {
@@ -723,6 +724,8 @@ function CutThroughPage({ connected }) {
   // what each angle is (saved per Resolve project in the main process; the draft is this page's edits)
   const roles = { ...(ct.angleRoles || {}), ...rolesDraft };
   const micAngles = solo ? [] : (day?.micAngles || []);
+  // a conversation's slider: who it films (everyone, or one person by their mic angle)
+  const sliderShows = { ...(ct.sliderShows || {}), ...showsDraft };
   // angle rules: only between angles a cut can use (not "Don't use"); mic angles are close-ups
   const usable = sortedAngles.filter((a) => roles[a] !== 'skip' || micAngles.includes(a));
   const ruleCount = (ct.angleRules || []).filter((r) => r.split('>').every((a) => usable.includes(a))).length;
@@ -731,7 +734,7 @@ function CutThroughPage({ connected }) {
   const audioChoice = day && day.audioSource === 'camera' ? (day.mics[0] || {}).angle || '' : '';
   const slateRun = ct.slateInfo && ct.slateInfo.running;
   const transcribed = steps.transcribe.status === 'done';
-  const planForm_ = { roles, direction: directionDraft, delivery: soloDefault };
+  const planForm_ = { roles, sliderShows, direction: directionDraft, delivery: soloDefault };
 
   // A finished step is out of date when a step it reads from finished after it.
   const RUN_TITLES = { prep: 'Prep', transcribe: 'Transcribe', plan: 'Plan', build: 'Build' };
@@ -882,6 +885,14 @@ function CutThroughPage({ connected }) {
                         <option value="side">Side</option>
                         <option value="other">Other</option>
                         <option value="skip">Don't use</option>
+                      </select>
+                    )}
+                    {!micAngles.includes(a) && roles[a] === 'slider' && micAngles.length > 1 && (
+                      <select className="settings-input ct-select ct-shows" value={sliderShows[a] || ''} disabled={stepRunning} aria-label={`${a} shows`}
+                        onChange={(e) => setShowsDraft({ ...showsDraft, [a]: e.target.value })}>
+                        <option value="">Shows…</option>
+                        <option value="everyone">Everyone</option>
+                        {micAngles.map((m) => <option key={m} value={m}>{m} person</option>)}
                       </select>
                     )}
                   </div>
@@ -1185,7 +1196,7 @@ function CutThroughPage({ connected }) {
     } else if (ct.planKind) {
       actions = (
         <button type="button" className={btn('plan')} disabled={busy || Boolean(needs.plan)} title={needs.plan || ''}
-          onClick={() => call('plan', () => api.runPlan({ ...planForm, delivery, roles, direction: directionDraft }))}>{ct.planExists ? 'Plan again' : 'Plan'}</button>
+          onClick={() => call('plan', () => api.runPlan({ ...planForm, delivery, roles, sliderShows, direction: directionDraft }))}>{ct.planExists ? 'Plan again' : 'Plan'}</button>
       );
     }
     const menu = [
@@ -1433,7 +1444,7 @@ function CutThroughPage({ connected }) {
           onCancel={() => setRulesOpen(false)}
           onSave={(list_) => {
             setRulesBusy(true);
-            call('rules', () => api.saveAngleRules({ rules: list_, roles })).then((r) => {
+            call('rules', () => api.saveAngleRules({ rules: list_, roles, sliderShows })).then((r) => {
               setRulesBusy(false);
               if (r) setRulesOpen(false);
             });

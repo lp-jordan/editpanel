@@ -172,14 +172,21 @@ function defaultAngleRoles(angles = []) {
   return out;
 }
 
-/** Roles → the placer's / Claude's terms: one wide, one close-up (punch-in), inserts, skipped. */
-function rolesOf(map = {}, angles = []) {
+/** Roles → the placer's / Claude's terms: one wide, one close-up (punch-in), inserts, skipped.
+ *  shows: what each slider films on a conversation ('everyone' or a person's mic angle, Jordan
+ *  2026-11-20). A slider on everyone with no Wide angle IS the wide (used like the wide). */
+function rolesOf(map = {}, angles = [], shows = {}) {
   const sorted = [...angles].sort((x, y) => angleNumber(x) - angleNumber(y));
   const by = (r) => sorted.filter((a) => map[a] === r);
-  const wide = by('wide')[0] || sorted.find((a) => map[a] !== 'skip') || null;
+  const movingWide = !by('wide').length ? by('slider').find((a) => shows[a] === 'everyone') : null;
+  const wide = by('wide')[0] || movingWide || sorted.find((a) => map[a] !== 'skip') || null;
   const punch = by('closeup').find((a) => a !== wide) || null;
-  return { wide, punch, slider: by('slider'), side: by('side'), other: [...by('other'), ...by('closeup').filter((a) => a !== punch), ...by('wide').filter((a) => a !== wide)],
-    skip: by('skip') };
+  const slider = by('slider').filter((a) => a !== wide);
+  const sliderShows = {};
+  for (const a of slider) if (shows[a] && (shows[a] === 'everyone' || angles.includes(shows[a]))) sliderShows[a] = shows[a];
+  if (movingWide && wide === movingWide) sliderShows[wide] = 'everyone';
+  return { wide, punch, slider, side: by('side'), other: [...by('other'), ...by('closeup').filter((a) => a !== punch), ...by('wide').filter((a) => a !== wide)],
+    skip: by('skip'), sliderShows };
 }
 
 function mtime(p) {
@@ -575,6 +582,31 @@ function createCutThrough(opts) {
     setPrefs({ cutThrough: next });
   }
 
+  /** What each slider films on this multicam's conversation: 'everyone' or a person's mic angle (Jordan 2026-11-20). */
+  function sliderShows() {
+    const angles = (s.day && s.day.angles) || [];
+    const p = (getPrefs() || {}).cutThrough || {};
+    const saved = (s.project && mcKey() && ((p.sliderShowsByMc || {})[s.project] || {})[mcKey()]) || {};
+    const out = {};
+    for (const a of angles) if (saved[a] === 'everyone' || angles.includes(saved[a])) out[a] = saved[a];
+    return out;
+  }
+
+  function saveSliderShows(map) {
+    if (!map || typeof map !== 'object' || !s.project || !mcKey()) return;
+    const angles = (s.day && s.day.angles) || [];
+    const clean = {};
+    for (const a of angles) if (a in map) clean[a] = map[a] === 'everyone' || angles.includes(map[a]) ? map[a] : '';
+    const p = (getPrefs() || {}).cutThrough || {};
+    const proj = (p.sliderShowsByMc || {})[s.project] || {};
+    setPrefs({ cutThrough: { ...p, sliderShowsByMc: { ...(p.sliderShowsByMc || {}), [s.project]: { ...proj, [mcKey()]: { ...(proj[mcKey()] || {}), ...clean } } } } });
+  }
+
+  /** This multicam's roles in the placer's / Claude's terms. */
+  function planRoles() {
+    return rolesOf(angleRoles(), (s.day && s.day.angles) || [], sliderShows());
+  }
+
   /** The angle that films the slate screen, per multicam (else this project's last pick, else an angle named "…slate…"). */
   function slateAngle() {
     const angles = (s.day && s.day.angles) || [];
@@ -665,9 +697,10 @@ function createCutThrough(opts) {
     return { angles: ((s.day && s.day.angles) || []).filter((a) => roles[a] !== 'skip'), roles };
   }
 
-  function saveAngleRules({ rules, roles: roleMap } = {}) {
+  function saveAngleRules({ rules, roles: roleMap, sliderShows: showsMap } = {}) {
     if (!s.project || !s.mc || !s.day) throw new Error('Pick a multicam and run Prep first');
     if (roleMap && typeof roleMap === 'object') saveAngleRoles(roleMap);
+    saveSliderShows(showsMap);
     const list = angleRulesLib.clean(rules, s.day.angles || []);
     const { angles, roles } = usableAngles();
     const { errors } = angleRulesLib.check(angles, list, roles);
@@ -757,7 +790,7 @@ function createCutThrough(opts) {
   function snapshot() {
     // the saved slate notes stay in the worker (Join / Split use them); the page doesn't need them
     const videos = s.videos && (s.videos.slateNotes || s.videos.slateCodes) ? (({ slateNotes, slateCodes, ...rest }) => rest)(s.videos) : s.videos;
-    return { ...s, videos, direction: direction(), angleRoles: angleRoles(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
+    return { ...s, videos, direction: direction(), angleRoles: angleRoles(), sliderShows: sliderShows(), angleRules: angleRules(), settings: settings(), files: s.label ? files() : null,
       slateAngle: slateAngle(), slateBox: slateBox(), slateInfo: slateInfo(), estimate: costEstimate(),
       videosReady: videosToBuild().length,
       queue: queue ? queue.state() : null,
@@ -1624,7 +1657,7 @@ function createCutThrough(opts) {
    *  per label from the slider's own video. A failure only logs — Plan carries on without it. */
   async function ensureSliderMotion(st, f, st0) {
     if (!st0.sliderMotion || !s.day) return;
-    const sliders = rolesOf(angleRoles(), s.day.angles || []).slider;
+    const sliders = planRoles().slider;
     if (!sliders.length) return;
     const have = readJson(f.motion) || {};
     const ff = ffmpegPath || 'ffmpeg';
@@ -1649,7 +1682,7 @@ function createCutThrough(opts) {
     }
   }
 
-  async function runPlan({ start, end, roles: roleMap, delivery, direction: note, useMarks = false } = {}) {
+  async function runPlan({ start, end, roles: roleMap, sliderShows: showsMap, delivery, direction: note, useMarks = false } = {}) {
     if (!s.day) throw new Error('Run Prep first');
     const kind = planKind(s.day);
     const f = files();
@@ -1674,7 +1707,8 @@ function createCutThrough(opts) {
     const started = Date.now();
     // what each angle is: the page's roles (saved for this project), else the saved/usual ones
     if (roleMap && typeof roleMap === 'object') saveAngleRoles(roleMap);
-    const R = rolesOf(angleRoles(), (s.day && s.day.angles) || []);
+    saveSliderShows(showsMap);
+    const R = planRoles();
     const extras = [...new Set([...R.slider, ...R.side, ...R.other])].filter((x) => x !== R.punch && x !== R.wide);
     const o = { files: f, start: Math.round(a), end: Math.round(b), wide: R.wide, punch: R.punch || null, extra: extras, skip: R.skip,
       roles: R };
@@ -1704,7 +1738,7 @@ function createCutThrough(opts) {
         kind, minutes: (o.end - o.start) * tcClock(s.day).fsec / 60,
         delivery: kind === 'narration' ? 'narration' : claude.DELIVERY[delivery] ? delivery : (kind === 'convo' ? 'convo' : 'scripted'),
         roles: { wide: o.wide || undefined, punch: o.punch || undefined, extra: o.extra, slider: o.roles.slider, side: o.roles.side,
-          other: o.roles.other, skip: o.skip },
+          other: o.roles.other, skip: o.skip, sliderShows: o.roles.sliderShows },
         direction: direction(),
         client: claudeClient,
         signal: claudeSignal(),
@@ -2143,7 +2177,8 @@ function createCutThrough(opts) {
       manuscript: kind === 'narration' ? narrationLib.sliceText(readJson(f.manuscript), v.chapters || null) : '',
       start: v.from, end: v.to, model: st0.claudeModel, effort: st0.claudeEffort, energy: st0.energyHints, sliderMoving: Boolean(st0.sliderMotion && fs.existsSync(f.motion)), noCut: planRules(), delivery,
       talker: kind !== 'convo' ? v.talker || null : null,
-      roles: { wide: R.wide || undefined, punch: R.punch || undefined, extra: R.extra, slider: R.slider, side: R.side, other: R.other, skip: R.skip },
+      roles: { wide: R.wide || undefined, punch: R.punch || undefined, extra: R.extra, slider: R.slider, side: R.side, other: R.other, skip: R.skip,
+        sliderShows: R.sliderShows },
       direction: direction(), kind, minutes: v.minutes
     };
   }
@@ -2171,7 +2206,7 @@ function createCutThrough(opts) {
   }
 
   /** Shared start of a videos Plan: roles + direction saved, Claude key, videos chosen. */
-  function videosPlanSetup({ ids, roles: roleMap, direction: note }) {
+  function videosPlanSetup({ ids, roles: roleMap, sliderShows: showsMap, direction: note }) {
     if (!s.day) throw new Error('Run Prep first');
     if (!fs.existsSync(files().words)) throw new Error('Run Transcribe first');
     if (!s.videos || !s.videos.videos.length) throw new Error('Find the videos first');
@@ -2182,10 +2217,11 @@ function createCutThrough(opts) {
       setPrefs({ cutThrough: { ...p, directions: { ...(p.directions || {}), [s.label]: String(note).trim().slice(0, 4000) } } });
     }
     if (roleMap && typeof roleMap === 'object') saveAngleRoles(roleMap);
+    saveSliderShows(showsMap);
     const want = ids && ids.length ? new Set(ids) : null;
     const list = s.videos.videos.filter((v) => (want ? want.has(v.id) : v.include));
     if (!list.length) throw new Error('No videos ticked');
-    return { list, R: rolesOf(angleRoles(), s.day.angles || []) };
+    return { list, R: planRoles() };
   }
 
   function claudeApi() {
@@ -2193,8 +2229,8 @@ function createCutThrough(opts) {
   }
 
   /** Plan the ticked videos now, one Claude call after another (ids: just those, e.g. a re-send). */
-  async function planVideos({ ids, roles, direction: note, delivery } = {}) {
-    const { list, R } = videosPlanSetup({ ids, roles, direction: note });
+  async function planVideos({ ids, roles, sliderShows: shows, direction: note, delivery } = {}) {
+    const { list, R } = videosPlanSetup({ ids, roles, sliderShows: shows, direction: note });
     await assertNoQueuedBatch();
     const st = begin('plan');
     st.progress = { phase: 'Getting ready', phaseAt: Date.now(), bar: null };
@@ -2270,8 +2306,8 @@ function createCutThrough(opts) {
    * Batch, step 1: prepare every ticked video's request and price it (token count; output from
    * earlier runs). Nothing is sent: the page shows the list and the estimate → Submit or Discard.
    */
-  async function prepareBatch({ ids, roles, direction: note, delivery } = {}) {
-    const { list, R } = videosPlanSetup({ ids, roles, direction: note });
+  async function prepareBatch({ ids, roles, sliderShows: shows, direction: note, delivery } = {}) {
+    const { list, R } = videosPlanSetup({ ids, roles, sliderShows: shows, direction: note });
     await assertNoQueuedBatch();
     const st = begin('plan');
     return inStep('plan', st, async () => {
@@ -2407,7 +2443,7 @@ function createCutThrough(opts) {
     return inStep('plan', st, async () => {
       st.progress = { phase: 'Reading the batch results', phaseAt: Date.now(), bar: null };
       emit();
-      const R = rolesOf(angleRoles(), s.day.angles || []);
+      const R = planRoles();
       const f = files();
       const st0 = settings();
       const got = {};

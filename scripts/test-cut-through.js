@@ -106,7 +106,14 @@ fs.mkdirSync(FAKE_PIPELINE, { recursive: true });
   const dr = ct.defaultAngleRoles(['Camera 3', 'Camera 1', 'Slate', 'Camera 2', 'Camera 4']);
   assert.deepStrictEqual(dr, { 'Camera 3': 'side', 'Camera 1': 'wide', Slate: 'skip', 'Camera 2': 'closeup', 'Camera 4': 'slider' });
   assert.deepStrictEqual(ct.rolesOf({ ...dr, 'Camera 2': 'side', 'Camera 3': 'closeup' }, Object.keys(dr)),
-    { wide: 'Camera 1', punch: 'Camera 3', slider: ['Camera 4'], side: ['Camera 2'], other: [], skip: ['Slate'] });
+    { wide: 'Camera 1', punch: 'Camera 3', slider: ['Camera 4'], side: ['Camera 2'], other: [], skip: ['Slate'], sliderShows: {} });
+  // a conversation's slider (2026-11-20): who it shows rides along; on everyone with no Wide it IS the wide
+  assert.deepStrictEqual(ct.rolesOf(dr, Object.keys(dr), { 'Camera 4': 'Camera 2' }).sliderShows, { 'Camera 4': 'Camera 2' });
+  assert.deepStrictEqual(ct.rolesOf(dr, Object.keys(dr), { 'Camera 4': 'everyone' }).wide, 'Camera 1');
+  const noWide = ct.rolesOf({ ...dr, 'Camera 1': 'closeup' }, Object.keys(dr), { 'Camera 4': 'everyone' });
+  assert.strictEqual(noWide.wide, 'Camera 4');
+  assert.deepStrictEqual(noWide.slider, []);
+  assert.deepStrictEqual(noWide.sliderShows, { 'Camera 4': 'everyone' });
   assert.strictEqual(ct.defaultAngleRoles(['Angle 2', 'Angle 5'])['Angle 2'], 'wide');   // no Camera 1: the lowest angle is the wide
   console.log('✓ helpers');
 }
@@ -889,7 +896,34 @@ print(json.dumps(out))
   assert.ok(sl.every(([, a, b]) => (a >= 25 && b <= 40) || (a >= 85 && b <= 95)), JSON.stringify(slOut.on));
   assert.ok(slOut.on.every((v, k) => !k || v[0] !== slOut.on[k - 1][0]), JSON.stringify(slOut.on));
   assert.ok(slOut.off.some((v) => v[0] === 'Angle 4' && v[1] < 25), 'without motion, Claude\'s slider shot is untouched');
-  // angle rules (2026-11-10): "never Angle 2 ↔ Angle 4" — Claude's 1 → 4 → 2 → 4 → 1 never cuts 2 ↔ 4
+  // a conversation (2026-11-20): a slider shot where the slider stands still goes to the TALKER's close-up,
+  // not the fixed close-up (Angle 2 is the punch-in; Angle 3 is talking)
+  const cv = JSON.parse(execFileSync(PY, ['-c', String.raw`
+import json, os, sys, subprocess
+os.chdir(sys.argv[2])
+fps = 24
+words = []
+t = 1.0
+while t < 120:
+    words.append({"mic": "Angle 3" if t < 60 else "Angle 2", "w": "word", "s": round(t * fps, 1), "e": round(t * fps + 8, 1), "p": 0.9, "own": True, "clear": True})
+    t += 0.5
+A = ["Angle 1", "Angle 2", "Angle 3", "Angle 4"]
+json.dump({"label": "C", "multicam": "mc", "fps": fps, "frame_sec": [1, 24], "angles": A, "mics": ["Angle 2", "Angle 3"], "words": words}, open("words_C.json", "w"))
+mic = lambda a: {"name": a + ".mxf", "angle": a, "path": "x", "file_zero_sec": 0, "from_sec": 0, "to_sec": 125, "channels": 1, "camera": True}
+json.dump({"multicam": "mc", "fps": fps, "frame_sec": [1, 24], "tc_start_sec": 0, "length_sec": 125, "angles": A,
+  "mics": [mic("Angle 2"), mic("Angle 3")], "audio_source": "camera", "label": "C"}, open("day_C.json", "w"))
+st = lambda sec, a: {"at": int(sec * fps), "start": sec * fps, "prev_end": sec * fps - 4, "angle": a}
+json.dump({"start": 0, "end": 125 * fps, "delivery": "convo", "removals": [], "review": [],
+  "shots": [{**st(1, "Angle 1"), "prev_end": None}, st(10, "Angle 3"), st(25, "Angle 4"), st(45, "Angle 1"), st(61, "Angle 2"), st(100, "Angle 1")]}, open("removals_C.json", "w"))
+json.dump({"Angle 4": {"moving": [[85 * fps, 95 * fps]]}}, open("motion_C.json", "w"))
+subprocess.run([sys.executable, os.path.join(sys.argv[1], "place_cuts.py"), "words_C.json", "day_C.json", "C_on.json", "removals=removals_C.json",
+                "punch=Angle 2", "extra=Angle 4", "motion=motion_C.json"], check=True, stdout=subprocess.DEVNULL)
+print(json.dumps([[v["angle"], round(v["in"] / fps, 1), round(v["out"] / fps, 1)] for v in json.load(open("C_on.json"))["video"]]))
+`, PIPELINE, slDir], { encoding: 'utf8' }));
+  assert.ok(!cv.some((v) => v[0] === 'Angle 4'), JSON.stringify(cv));
+  assert.ok(!cv.some(([a, x, y]) => a === 'Angle 2' && y <= 60), `the listener's close-up never stands in for the slider: ${JSON.stringify(cv)}`);
+  assert.ok(cv.some(([a, x, y]) => a === 'Angle 3' && x < 45 && y > 30), JSON.stringify(cv));
+  // angle rules (2026-11-10): "never Angle 2 ↔ Angle 4\" — Claude's 1 → 4 → 2 → 4 → 1 never cuts 2 ↔ 4
   const nc = JSON.parse(execFileSync(PY, ['-c', String.raw`
 import json, os, sys, subprocess
 os.chdir(sys.argv[2])
