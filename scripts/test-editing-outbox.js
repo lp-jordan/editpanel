@@ -51,6 +51,33 @@ try {
   drain();
   assert.equal(db.takeOutbox().length, 0);
 
+  // ATEM pull: counts done files, cams and size once it leaves 'running'.
+  const atem = db.createAtemLog('Session 3', '10.0.0.5', 'N:/x', 3);
+  db.markAtemFileDone(atem, 'CAM1.mov', 'N:/x/CAM1.mov', 1, 1, 30e9);
+  db.markAtemFileDone(atem, 'CAM2.mov', 'N:/x/CAM2.mov', 2, 1, 31.2e9);
+  db.markAtemFileFailed(atem, 'CAM3.mov', 'timeout');
+  db.updateAtemLog(atem, { filesDone: 2 });
+  assert.deepEqual(kinds(), []);
+  db.updateAtemLog(atem, { state: 'completed', finishedAt: Date.now() });
+  db.updateAtemLog(atem, { state: 'completed' }); // already finished → nothing
+  let e = db.takeOutbox(10);
+  assert.deepEqual(e.map((x) => x.kind), ['ingest.atem.finished']);
+  assert.equal(e[0].title, 'ATEM pull Session 3: 2 files, 2 cams, 61.2 GB, 1 failed');
+  assert.equal(e[0].phase, 'failed');
+  drain();
+
+  // Card ingest.
+  db.createCardIngestRun('ci-1', Date.now());
+  db.finishCardIngestRun('ci-1', 'done', { cards: [
+    { label: 'E:', report: { copied: 40, copiedBytes: 100e9, failed: 0, onNas: 0, safeToFormat: true } },
+    { label: 'F:', report: { copied: 44, copiedBytes: 112.4e9, failed: 0, onNas: 2, safeToFormat: true } },
+  ] });
+  e = db.takeOutbox(10);
+  assert.equal(e[0].kind, 'ingest.card.finished');
+  assert.equal(e[0].title, 'Card ingest E:, F: · 84 files, 212.4 GB, 2 already on the NAS, safe to format');
+  assert.equal(e[0].phase, undefined);
+  drain();
+
   // Outbox is capped.
   for (let i = 0; i < 5010; i++) db.emitEvent('x.y', { title: `t${i}` });
   assert.equal(db.takeOutbox(10000).length, 5000);

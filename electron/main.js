@@ -466,12 +466,18 @@ function scheduleWorkerRestart(state, reason) {
 // and a concrete fix. Goes to both the slideout console (helper-message) and
 // a dedicated channel the renderer uses to render a persistent banner.
 // Idempotent per advisory.code so we don't spam during the slow-poll retry.
+// The machine's current problem for LPOS /editing ({ severity, text, at }), sent with the heartbeat.
+let lastProblem = null;
+
 function emitResolveAdvisory(state, advisory) {
   if (state.advisoryActive && state.advisoryCode === advisory.code) {
     return;
   }
   state.advisoryActive = true;
   state.advisoryCode = advisory.code;
+  // LPOS /editing: an Activity line and the machine row's problem until Resolve reconnects
+  lastProblem = { severity: 'bad', text: advisory.title, at: new Date().toISOString() };
+  if (jobsDb) jobsDb.emitEvent('resolve.crashed', { title: advisory.title, details: { code: advisory.code } });
   const payload = {
     code: advisory.code,
     title: advisory.title,
@@ -490,6 +496,7 @@ function emitResolveAdvisory(state, advisory) {
 
 function clearResolveAdvisory(state) {
   if (!state.advisoryActive) return;
+  lastProblem = null;
   state.advisoryActive = false;
   state.advisoryCode = null;
   BrowserWindow.getAllWindows().forEach(w => {
@@ -2754,7 +2761,24 @@ app.whenReady().then(() => {
       n.on('click', () => { if (win) { win.show(); win.focus(); } });
       n.show();
     },
-    markRenderJobsOwned: (jobs) => markJobsOwned(jobs)
+    markRenderJobsOwned: (jobs) => markJobsOwned(jobs),
+    // LPOS /editing: one Activity line per cut-through step that ends
+    onStepFinished: (e) => {
+      if (!jobsDb) return;
+      const NAMES = { prep: 'Prep', transcribe: 'Transcribe', plan: 'Plan', build: 'Build', check: 'Check', compare: 'Compare', score: 'Score' };
+      const name = NAMES[e.step] || e.step;
+      const end = e.status === 'done' ? 'finished' : e.status === 'failed' ? 'failed' : 'cancelled';
+      const what = e.label || e.multicam || 'cut-through';
+      const done = e.step === 'build' ? `Rough cut built: ${what}`
+        : e.step === 'plan' && e.videos ? `Plan ready: ${what}, ${e.videos} ${e.videos === 1 ? 'video' : 'videos'}`
+        : `${name} done: ${what}`;
+      const title = end === 'finished' ? done
+        : end === 'failed' ? `${name} failed: ${what}${e.error ? ` (${String(e.error).slice(0, 120)})` : ''}`
+        : `${name} stopped: ${what}`;
+      jobsDb.emitEvent(`cut_through.${e.step}.${end}`, {
+        title, details: { step: e.step, label: e.label || null, multicam: e.multicam || null, project: e.project || null },
+      });
+    }
   });
 
   // --- Result items DB ---
@@ -2818,7 +2842,9 @@ app.whenReady().then(() => {
         jobs_running: jobs.filter(j => j.state === 'running').length,
         active_jobs: collectActiveJobs(jobs),
         app_version: app.getVersion(),
-        unassigned_renders: jobsDb ? jobsDb.countUnassignedExports() : null
+        unassigned_renders: jobsDb ? jobsDb.countUnassignedExports() : null,
+        last_problem: lastProblem,
+        cut_through: cutThrough && typeof cutThrough.dashboardState === 'function' ? cutThrough.dashboardState() : null
       });
       await flushEditingOutbox(instanceId, prefs?.displayName || instanceId);
     } catch (_err) {
@@ -3534,6 +3560,16 @@ app.whenReady().then(() => {
       // Label intentionally compact — no equation. Counts live in the report's
       // summary chips. JobPanel surfaces this as "Comment pull - <project>".
       const label = `Comment pull - ${projectLabel}`;
+      if (jobsDb && (totalPlaced > 0 || totalRemoved > 0)) {
+        const bits = [];
+        if (totalPlaced) bits.push(`${totalPlaced} ${totalPlaced === 1 ? 'comment' : 'comments'} placed as markers`);
+        if (totalRemoved) bits.push(`${totalRemoved} removed`);
+        jobsDb.emitEvent('markers.pulled', {
+          title: `${bits.join(', ')} (${projectLabel})`,
+          projectId: typeof projectId === 'string' ? projectId : null,
+          details: { placed: totalPlaced, removed: totalRemoved, kept: totalKept, skipped: totalSkipped },
+        });
+      }
       // Why a failed save matters: without the run row the Jobs panel has
       // nothing to list, so the editor can't open the report. Surface it.
       let saveError = jobsDb ? null : 'Jobs history database is not open';

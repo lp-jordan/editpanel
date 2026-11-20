@@ -18,6 +18,12 @@ const path = require('node:path');
 /** Events kept waiting for LPOS at most; the oldest are dropped beyond this. */
 const OUTBOX_MAX = 5000;
 
+/** "61.2 GB" (or MB under 1 GB). */
+function gb(bytes) {
+  const n = Number(bytes) || 0;
+  return n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
+}
+
 /** Display name for an export's files: "J104_v3.mov", or "J104_v3.mov +2 more". */
 function exportLabel(jobs) {
   const list = Array.isArray(jobs) ? jobs : [];
@@ -471,8 +477,42 @@ class JobsDb {
     if (error      !== undefined) { fields.push('error = ?');       values.push(error); }
     if (finishedAt !== undefined) { fields.push('finished_at = ?'); values.push(finishedAt); }
     if (fields.length === 0) return;
+    const prev = state !== undefined
+      ? this.db.prepare(`SELECT state FROM atem_ingest_log WHERE id = ?`).get(id)?.state
+      : undefined;
     values.push(id);
     this.db.prepare(`UPDATE atem_ingest_log SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    if (prev === 'running' && ['completed', 'failed', 'canceled'].includes(state)) this._atemEvent(id, state);
+  }
+
+  /** /editing event for a finished ATEM pull: "ATEM pull Session 3: 12 files, 4 cams, 61.2 GB". */
+  _atemEvent(id, state) {
+    try {
+      const log = this.db.prepare(`SELECT session, error FROM atem_ingest_log WHERE id = ?`).get(id);
+      if (!log) return;
+      const t = this.db.prepare(
+        `SELECT COUNT(*) AS files, COALESCE(SUM(size_bytes), 0) AS bytes, COUNT(DISTINCT cam_number) AS cams
+           FROM atem_ingest_files WHERE log_id = ? AND state = 'done'`
+      ).get(id) || {};
+      const failed = this.db.prepare(
+        `SELECT COUNT(*) AS n FROM atem_ingest_files WHERE log_id = ? AND state = 'failed'`
+      ).get(id)?.n || 0;
+      const parts = [`${t.files || 0} ${t.files === 1 ? 'file' : 'files'}`];
+      if (t.cams) parts.push(`${t.cams} ${t.cams === 1 ? 'cam' : 'cams'}`);
+      parts.push(gb(t.bytes));
+      if (failed) parts.push(`${failed} failed`);
+      const error = log.error ? String(log.error).slice(0, 160) : '';
+      const details = { session: log.session, files: t.files || 0, bytes: t.bytes || 0, cams: t.cams || 0, failed };
+      if (state === 'canceled') {
+        this.emitEvent('ingest.atem.cancelled', { title: `ATEM pull ${log.session} stopped: ${parts.join(', ')}`, details });
+      } else if (state === 'failed') {
+        this.emitEvent('ingest.atem.failed', { title: `ATEM pull ${log.session} failed${error ? ` (${error})` : ''}`, details });
+      } else {
+        this.emitEvent('ingest.atem.finished', {
+          title: `ATEM pull ${log.session}: ${parts.join(', ')}`, phase: failed ? 'failed' : undefined, details,
+        });
+      }
+    } catch (_) { /* non-fatal */ }
   }
 
   /** Mark an individual file as done. */
@@ -528,6 +568,33 @@ class JobsDb {
     this.db.prepare(
       `UPDATE card_ingest_runs SET state = ?, finished_at = ?, report_json = ? WHERE id = ?`
     ).run(state, Date.now(), JSON.stringify(report), id);
+    this._cardEvent(state, report);
+  }
+
+  /** /editing event for a finished card ingest: "Card ingest E:, F: · 84 files, 212.4 GB, safe to format". */
+  _cardEvent(state, run) {
+    try {
+      const cards = Array.isArray(run?.cards) ? run.cards : [];
+      const sum = (k) => cards.reduce((t, c) => t + (Number(c.report?.[k]) || 0), 0);
+      const copied = sum('copied');
+      const failed = sum('failed');
+      const bytes = sum('copiedBytes');
+      const onNas = sum('onNas');
+      const labels = cards.map((c) => c.label).filter(Boolean).join(', ') || 'cards';
+      const safe = cards.length > 0 && cards.every((c) => c.report?.safeToFormat);
+      const parts = [`${copied} ${copied === 1 ? 'file' : 'files'}`, gb(bytes)];
+      if (onNas) parts.push(`${onNas} already on the NAS`);
+      if (failed) parts.push(`${failed} failed`);
+      else if (safe) parts.push('safe to format');
+      const details = { cards: cards.length, copied, failed, bytes, onNas, safeToFormat: safe };
+      if (state === 'canceled') {
+        this.emitEvent('ingest.card.cancelled', { title: `Card ingest ${labels} stopped · ${parts.join(', ')}`, details });
+      } else {
+        this.emitEvent('ingest.card.finished', {
+          title: `Card ingest ${labels} · ${parts.join(', ')}`, phase: failed ? 'failed' : undefined, details,
+        });
+      }
+    } catch (_) { /* non-fatal */ }
   }
 
   addCardIngestFile({ runId, cardLabel, originalName, srcRelPath, destName, destPath, sizeBytes, sampleHash, fullHash }) {
@@ -580,14 +647,14 @@ class JobsDb {
         .run(event.id, Date.now(), JSON.stringify(event));
       this.db.prepare(
         `DELETE FROM ep_outbox WHERE id IN (
-           SELECT id FROM ep_outbox ORDER BY created_at DESC LIMIT -1 OFFSET ?)`
+           SELECT id FROM ep_outbox ORDER BY rowid DESC LIMIT -1 OFFSET ?)`
       ).run(OUTBOX_MAX);
     } catch (_) { /* non-fatal */ }
   }
 
   /** Oldest waiting events first, as sent on the wire. */
   takeOutbox(limit = 100) {
-    return this.db.prepare(`SELECT body FROM ep_outbox ORDER BY created_at, id LIMIT ?`)
+    return this.db.prepare(`SELECT body FROM ep_outbox ORDER BY rowid LIMIT ?`)
       .all(limit)
       .map((r) => { try { return JSON.parse(r.body); } catch (_) { return null; } })
       .filter(Boolean);

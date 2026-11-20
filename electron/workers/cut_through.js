@@ -225,7 +225,8 @@ function createCutThrough(opts) {
     desktopDir = path.join(os.homedir(), 'Desktop'),  // where runs before 1.2.94 left their files
     filesDir = path.join(os.homedir(), 'Documents', 'Cut-through'),  // default home of run files
     onQueueEnded = null,           // ({ project, total, ready, failed }) => void: the multicam queue reached the end
-    onBatchEnded = null            // ({ label, videos, minutes, counts, … }) => void: a queued batch has ended; also turns on the queue watch
+    onBatchEnded = null,           // ({ label, videos, minutes, counts, … }) => void: a queued batch has ended; also turns on the queue watch
+    onStepFinished = null          // ({ step, status, label, multicam, project, error, videos }) => void: a step ended (LPOS /editing)
   } = opts;
 
   const s = {
@@ -885,6 +886,13 @@ function createCutThrough(opts) {
     st.progress = st.status === 'done' && st.progress ? { ...st.progress, pct: 100, overall: 100 } : st.progress;
     s.busy = null;
     child = null;
+    if (onStepFinished) {
+      try {
+        const vids = (s.videos && s.videos.videos) || [];
+        onStepFinished({ step, status: st.status, label: s.label, multicam: s.mc, project: s.project, error: st.error,
+          videos: vids.filter((v) => v.include).length || vids.length || null });
+      } catch (_) { /* never stops the step */ }
+    }
     if (ratesMemo) ratesMemo.at = 0;                 // a run just ended: learn the rates again
     refreshFiles();
     applyPendingProject();
@@ -2612,8 +2620,32 @@ function createCutThrough(opts) {
     };
   }
 
+  /** The few fields LPOS /editing shows (sent with the heartbeat): the label's main phases, what's
+   *  running now and how far. Null until a label is picked and a step has run. */
+  function dashboardState() {
+    if (!s.label) return null;
+    const phases = ['prep', 'transcribe', 'plan', 'build', 'check'];
+    const current = s.busy && s.steps[s.busy] ? s.busy : [...phases].reverse().find((k) => s.steps[k].status !== 'pending');
+    if (!current) return null;
+    const st = s.steps[current];
+    const p = st.progress || {};
+    const running = s.busy === current;
+    const pct = !running ? null : Number.isFinite(p.overall) ? p.overall : Number.isFinite(p.bar) ? p.bar : null;
+    return {
+      label: s.label,
+      multicam: s.mc || null,
+      project: s.project || null,
+      phase: current,
+      status: st.status,
+      pct: pct == null ? null : Math.round(pct),
+      text: running && p.phase ? String(p.phase).slice(0, 120) : null,
+      steps: Object.fromEntries(phases.map((k) => [k, s.steps[k].status])),
+    };
+  }
+
   return {
     snapshot,
+    dashboardState,
     checkQueue,
     queueAdd: (a) => { queue.add(a); return snapshot(); },
     queueRemove: (a) => { queue.remove(a); return snapshot(); },
