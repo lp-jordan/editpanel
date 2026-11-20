@@ -12,6 +12,9 @@ can't guess from context:
     including ones the transcript never had (Whisper wrote the word once, or Transcribe marked the
     second copy a "ghost") — and truncated words at joins ("impor" where the transcript has "important").
   * join_check.py's forced alignment + edge loudness at every join (the Score measures).
+False repeat cuts: Whisper often writes one spoken word twice and the edit cuts a copy as a flub, taking
+the real word with it (Elevate: 115 such cuts). Where the plan cut one copy of a doubled word, the decoder
+listens at that join; if the kept copy isn't heard whole, the copy is given back.
 Existing markers on the timeline (build review markers, Check markers, your own) are hints: a join near
 a "cut off" / "clipped" marker is fixed on one sign instead of two, a "repeat" marker widens the repeat
 search there, and the report says for every marker whether the audio confirmed it.
@@ -57,6 +60,8 @@ TAG = "ct-word-edges"
 PAD = 3                     # frames of air kept after / before a word at a moved join (place_cuts' non-scripted pad)
 MAX_MOVE = 12               # a join never moves more than this to save a word
 MIN_SHOT = 12               # frames: a fix never leaves a shot shorter than this
+GIVE_BACK = 36              # frames: a false repeat cut gives back at most this (a whole word)
+DOUBLE_GAP_FR = 24          # frames: two same words this close in the transcript count as a doubled word
 MIN_ANGLE_SHOT = 36         # frames: a shot given a new angle (to avoid a jump cut) is at least this long
 REPEAT_GAP_SEC = 1.2        # copies further apart than this aren't a repeat …
 REPEAT_GAP_HINT_SEC = 2.5   # … unless a "repeat" marker sits there
@@ -324,6 +329,58 @@ def analyze(job_path):
                          "hints": [h["name"] for h in hint], "conf": round(min(h["p"] for h in A + B), 2)})
         i += 2 * n
 
+    # 3c. false repeat cuts: Whisper often writes one spoken word twice, and the edit cuts a copy as a flub
+    # (Elevate: 115 such cuts, 2026-11-20) — which takes the real word with it. Where the plan cut one copy
+    # of a doubled word, listen at that join: if the kept copy doesn't come out whole, it was never said twice.
+    def is_kept(w):
+        mid = (w["s"] + w["e"]) / 2
+        return any(p["src_in"] <= mid < p["src_out"] for p in pieces)
+
+    def whole_word(h, want):
+        return h == want or (len(want) >= 5 and abs(len(h) - len(want)) <= 1
+                             and difflib.SequenceMatcher(None, h, want).ratio() >= 0.8)
+
+    seen = set()
+    for a, b in zip(words, words[1:]):
+        if norm(a["w"]) != norm(b["w"]) or len(norm(a["w"])) < 2 or b["s"] - a["e"] > DOUBLE_GAP_FR:
+            continue
+        ka, kb = is_kept(a), is_kept(b)
+        if ka == kb:
+            continue
+        gone, kept_w = (a, b) if kb else (b, a)
+        gm = (gone["s"] + gone["e"]) / 2
+        k = next((k for k in joins if pieces[k]["src_out"] <= gm < pieces[k + 1]["src_in"]), None)
+        if k is None or k in seen:
+            continue
+        side = "after" if kb else "before"           # where the kept copy sits against the join
+        kp = pieces[k + 1] if side == "after" else pieces[k]
+        if not kp["src_in"] <= (kept_w["s"] + kept_w["e"]) / 2 < kp["src_out"]:
+            continue
+        seen.add(k)
+        cut = pieces[k]["end"]
+        want = norm(kept_w["w"])
+        # where the kept copy plays on the timeline; only what is heard right there counts
+        ks = kp["start"] + (kept_w["s"] - kp["src_in"])
+        ke = kp["start"] + (kept_w["e"] - kp["src_in"])
+        near = [h for h in heard if h["re"] > ks - 6 and h["rs"] < ke + 6]
+        whole = any(whole_word(h["w"], want) for h in near)
+        part = next((h["w"] for h in near if len(h["w"]) < len(want) and (want.startswith(h["w"]) or want.endswith(h["w"]))), None)
+        m = (by_cut.get(cut) or {}).get(side) or {}
+        signs = jc.side_flags(m, False)[0] if m else []
+        hint = hint_near(cut, EDGE_HINT) + hint_near(cut, REPEAT_HINT)
+        if whole and not hint:
+            continue                                   # the kept copy plays whole: the cut was fine
+        weak = min(a.get("p", 1), b.get("p", 1)) < 0.8
+        close = b["s"] - a["e"] <= 6
+        reasons = ([] if whole else [f"heard \"{part}\" for \"{want}\"" if part else f"\"{want}\" not heard whole at the join"]) \
+            + signs + (["a copy Whisper doubted"] if weak else []) + (["copies touch"] if close else [])
+        rem = next((r for r in plan.get("removals") or [] if r["from"] - 3 <= gm <= r["to"] + 3), None)
+        findings.append({"kind": "false_repeat_cut", "rec": cut, "piece": k, "side": side, "word": kept_w["w"].strip(),
+                         "gone_s": gone["s"], "gone_e": gone["e"], "kept_s": kept_w["s"], "kept_e": kept_w["e"],
+                         "p": [a.get("p"), b.get("p")], "gap": round(b["s"] - a["e"], 1), "why_cut": (rem or {}).get("why", ""),
+                         "heard": " ".join(h["w"] for h in near), "signs": reasons, "whole": whole,
+                         "fix": (not whole) and bool(part or signs or weak or close or hint), "hints": [h["name"] for h in hint]})
+
     # 4. the refined plan
     fixes = []
     new_video = [dict(v) for v in video]
@@ -334,19 +391,19 @@ def analyze(job_path):
         if v["angle"] not in angles_used:
             angles_used.append(v["angle"])
 
-    def first_sound_end(f_end):
-        """Last frame with sound in [f_end-2, f_end+MAX_MOVE] (the word's real tail), else the word end."""
+    def first_sound_end(f_end, reach=MAX_MOVE):
+        """Last frame with sound in [f_end-2, f_end+reach] (the word's real tail), else the word end."""
         last = None
-        for f in range(int(f_end) - 2, int(f_end) + MAX_MOVE + 1):
+        for f in range(int(f_end) - 2, int(f_end) + reach + 1):
             if sound(f):
                 last = f
             elif last is not None and f - last > 2:
                 break
         return (last + 1) if last is not None else int(round(f_end))
 
-    def first_sound_start(f_start):
+    def first_sound_start(f_start, reach=MAX_MOVE):
         first = None
-        for f in range(int(f_start) + 2, int(f_start) - MAX_MOVE - 1, -1):
+        for f in range(int(f_start) + 2, int(f_start) - reach - 1, -1):
             if sound(f):
                 first = f
             elif first is not None and first - f > 2:
@@ -455,11 +512,52 @@ def analyze(job_path):
         else:
             fixed_joins.discard(jk)
 
+    # then false repeat cuts: the copy the plan cut goes back (the join opens to the whole word's sound)
+    for f in sorted((f for f in findings if f["fix"] and f["kind"] == "false_repeat_cut"), key=lambda f: f["rec"]):
+        k = f["piece"]
+        if k in fixed_joins:
+            f["result"] = "left (a repeat cut moved this join)"
+            continue
+        if f["side"] == "after":                       # copy 1 was cut: the shot after the join starts earlier
+            old = pieces[k + 1]["src_in"]
+            v = next((x for x in new_video if x["in"] == old), None)
+            pv = next((x for x in new_video if x["out"] == pieces[k]["src_out"]), None)
+            # back to where the kept word's own sound starts (one run of sound: a real earlier word
+            # after a silence stays out)
+            # copies that touch are one word split in two: back to the cut copy's start; apart, the kept
+            # copy is the word and its start runs at most MAX_MOVE early (else a removed redo comes back)
+            lim = f["gone_s"] if f["gap"] <= 6 else f["kept_s"] - MAX_MOVE
+            target = max(first_sound_start(f["kept_s"], GIVE_BACK) - PAD, int(lim) - PAD, old - GIVE_BACK)
+            if pv and target <= pv["out"] <= old:       # meets the shot before: plays on as one take
+                target = pv["out"]
+            ok = v is not None and target < old
+            if ok:
+                v["in"] = target
+        else:                                          # copy 2 was cut: the shot before the join ends later
+            old = pieces[k]["src_out"]
+            v = next((x for x in new_video if x["out"] == old), None)
+            nv = next((x for x in new_video if x["in"] == pieces[k + 1]["src_in"]), None)
+            lim = f["gone_e"] if f["gap"] <= 6 else f["kept_e"] + MAX_MOVE
+            target = min(first_sound_end(f["kept_e"], GIVE_BACK) + PAD, int(lim + 0.999) + PAD, old + GIVE_BACK)
+            if nv and old <= nv["in"] <= target:
+                target = nv["in"]
+            ok = v is not None and target > old
+            if ok:
+                v["out"] = target
+        if not ok:
+            f["result"] = "not fixed (shot not found or no room)"
+            continue
+        move_mic(old, target, f["side"] == "before")
+        move_removal(old, target, f["side"] == "before")
+        fixed_joins.add(k)
+        f["result"] = f"copy given back ({abs(target - old)} fr)"
+        fixes.append({"kind": "false_repeat_cut", "src": old, "to": target, "word": f["word"]})
+
     # then words clipped at a join: the join moves to the word's real edge
     for f in sorted((f for f in findings if f["fix"] and f["kind"].startswith("clipped")), key=lambda f: f["rec"]):
         k = f["piece"]
         if k in fixed_joins:
-            f["result"] = "left (a repeat cut moved this join)"
+            f["result"] = "left (this join already moved)"
             continue
         if f["kind"] == "clipped_end":
             old = pieces[k]["src_out"]
@@ -515,7 +613,7 @@ def analyze(job_path):
         rp = dict(plan)
         rp["video"] = new_video
         rp["mics"] = mics
-        rp["removals"] = sorted(removals, key=lambda r: r["from"])
+        rp["removals"] = sorted((r for r in removals if r["to"] > r["from"]), key=lambda r: r["from"])
         rp["refined_from"] = os.path.basename(job["plan"])
         rp["refine"] = fixes
         # review markers: the plan's own + one Cyan per fix (source frames, as Build reads them)
@@ -528,7 +626,8 @@ def analyze(job_path):
                 rv = json.load(open(local, encoding="utf-8"))
         for fx in fixes:
             label = fx.get("text") or fx.get("word") or ""
-            what = {"repeat": "repeat cut", "clipped_end": "word end given back", "clipped_start": "word start given back"}[fx["kind"]]
+            what = {"repeat": "repeat cut", "clipped_end": "word end given back", "clipped_start": "word start given back",
+                    "false_repeat_cut": "false repeat given back"}[fx["kind"]]
             rv["markers"].append({"frame": int(min(fx["src"], fx["to"])), "color": "Cyan",
                                   "name": f"Refined: {what}", "note": f"\"{label}\" ({fx['src']} → {fx['to']})"})
         rv["markers"].sort(key=lambda m: m["frame"])
@@ -714,7 +813,7 @@ def _console():
         f = int(rec) - t0
         s = f / fps
         return f"{int(s // 60):02d}:{s % 60:05.2f}"
-    color = {"repeat": "Pink", "clipped_end": "Lavender", "clipped_start": "Lavender"}
+    color = {"repeat": "Pink", "clipped_end": "Lavender", "clipped_start": "Lavender", "false_repeat_cut": "Yellow"}
     taken = set((tl.GetMarkers() or {}).keys())
     placed = 0
     say("")
@@ -725,6 +824,9 @@ def _console():
                     + (" across a join" if f["across_join"] else " inside a shot")
                     + (" — Transcribe marked a copy as a ghost" if f["ghost_marked"] else "")
                     + (" — legit double, left" if f["legit"] else ""))
+        elif f["kind"] == "false_repeat_cut":
+            head = (f"false repeat cut: \"{f['word']}\" said once, a copy cut"
+                    + (f" ({f['why_cut']})" if f.get("why_cut") else "") + f" — {', '.join(f['signs']) or 'marker only'}")
         else:
             head = f"{'end' if f['kind'] == 'clipped_end' else 'start'} of \"{f['word']}\" — {', '.join(f['signs']) or 'marker only'}"
         res_txt = f.get("result") or ("flag only" if not f["fix"] else "")

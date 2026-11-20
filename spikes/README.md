@@ -49,6 +49,10 @@ Refines ONE built cut-through timeline from what its audio really plays. In Reso
   can't fill a chopped or doubled word in from context the way Whisper does → phantom repeats
   ("the | the" across a join, stutters inside a shot, copies Transcribe marked "ghost") and truncated words
 - **join_check.py** forced alignment + edge loudness at every join (Score's measures)
+- **false repeat cuts** (what Jordan expands by hand): where the plan cut one copy of a word the transcript
+  has twice (Whisper writes one spoken word twice; the edit cuts a copy as a flub), it listens at that join;
+  if the kept copy isn't heard whole, the copy is given back (copies that touch = one word: back to the cut
+  copy's start; apart: ≤ 12 fr before the kept word, so a removed redo stays out). Yellow marker on the timeline.
 - existing markers are hints ("cut off"/"clipped" → fixed on one sign, "repeat" → wider search) and each
   gets a verdict in the report
 - writes `<plan>__refined.json` (original untouched): clipped joins move to the word's real edge (≤ 12 fr),
@@ -59,8 +63,8 @@ Refines ONE built cut-through timeline from what its audio really plays. In Reso
   makes a new multicam copy: delete the extra copy + the losing timeline after comparing.
 
 Report: `<RUN_DIR>\word_edges\word_edges_<TIMELINE>.txt/.json`. Options: `PLAN=`, `FIX=False`, `SEQ_BIN=`,
-`KEEP_RENDER=True`, `PACK_PYTHON=`. Tested on the Mac with the models stubbed on a real Elevate plan
-(ELEVATE_MC_2 J1); not yet run in Resolve.
+`KEEP_RENDER=True`, `PACK_PYTHON=`. Tested on the Mac with the models stubbed on real Elevate plans
+(ELEVATE_MC_2 J1; ELEVATE_MC_1 A2 + B3 for false repeat cuts); not yet run in Resolve.
 
 ### `spike_scan_past_edits.py`
 
