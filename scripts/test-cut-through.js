@@ -448,6 +448,65 @@ print(json.dumps([a, b, c]))
   console.log('✓ python: no mic WAVs → Camera 1 camera audio (TOD timecode), AUDIO_ANGLE pick, angle without audio refused');
 }
 
+// ── 2b'. RB_MC_2 (2026-11-20): the ATEM mp4's sound under a 4K MXF picture ──
+// Was read as a mic WAV without the file's own start (its timecode) → 10.7 h off → silence → no
+// words. The 4K picture's own (unused) audio isn't the angle's audio; a split clip's sound runs
+// its audioDuration; a recorder WAV (start 0) is still a mic; Build folds the ATEM sound into the picture.
+{
+  const XML = `<fcpxml version="1.10"><resources>
+<format id="r0" frameDuration="1001/24000s"/><format id="r3" frameDuration="1001/24000s"/>
+<asset id="r4" name="451_1513.MXF" hasVideo="1" hasAudio="1" start="36000s" format="r3" duration="4000s"><media-rep src="file:///N:/4K/451_1513.MXF"/></asset>
+<asset id="r5" name="CAM 1 02.mp4" hasVideo="1" hasAudio="1" start="45000s" format="r0" duration="2000s"><media-rep src="file:///N:/CAM%201/CAM%201%2002.mp4"/></asset>
+<asset id="r14" name="CAM 1 01.mp4" hasAudio="1" start="38000s" duration="3600s"><media-rep src="file:///N:/CAM%201/CAM%201%2001.mp4"/></asset>
+<asset id="r20" name="01MIC1.WAV" hasAudio="1" start="0s" duration="3600s"><media-rep src="file:///N:/mix/01MIC1.WAV"/></asset>
+<media id="m1" name="mc"><multicam format="r0" tcStart="38000s">
+<mc-angle name="Camera 1" angleID="a1">
+ <clip name="451_1513.MXF" offset="2s" start="36010s" duration="3000s"><video offset="36010s" ref="r4" start="36010s" duration="3000s"/></clip>
+ <asset-clip name="CAM 1 02.mp4" ref="r5" offset="5000s" start="45000s" duration="2s" audioStart="45000s" audioDuration="1500s"/>
+ <gap offset="0s" start="3600s" duration="1s"/>
+ <clip name="CAM 1 01.mp4" offset="1s" start="38000s" duration="3000s"><audio offset="38000s" ref="r14" start="38000s" duration="3000s"/></clip>
+</mc-angle>
+<mc-angle name="Camera 2" angleID="a2">
+ <gap offset="0s" start="3600s" duration="1s"/>
+ <asset-clip name="01MIC1.WAV" ref="r20" offset="10s" start="5s" duration="100s"/>
+</mc-angle>
+</multicam></media></resources></fcpxml>`;
+  const xmlFile = path.join(TMP, 'rb_mc_2.fcpxml');
+  fs.writeFileSync(xmlFile, XML);
+  const out = execFileSync(PY, ['-c', String.raw`
+import json, re, sys
+p = ${JSON.stringify(path.join(REPO, 'cut_through', 'prepare_multicam.py'))}
+code = open(p, encoding="utf-8").read()
+g = {"__file__": p, "OUT_DIR": ${JSON.stringify(TMP)}, "LABEL": "rb", "__name__": "t"}
+exec(compile(code[:code.index("\ntry:\n    main()")], p, "exec"), g)
+xml = open(${JSON.stringify(xmlFile)}, encoding="utf-8").read()
+day = g["describe"](xml, "mc")
+cams = [[c["name"], c["file_zero_sec"], c["from_sec"], c["to_sec"]] for c in day["camera_audio"]]
+mics = [[m["name"], m["file_zero_sec"], m["from_sec"]] for m in day["mics"]]
+sys.path.insert(0, ${JSON.stringify(path.join(REPO, 'cut_through'))})
+import write_timeline_xml as w
+w.FD = w.frame_duration(xml, {"mc"})
+res = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
+res2, promoted = w.promote_camera_sound(res)
+refs = {**w.camera_audio_refs(res2), **promoted}
+block = re.search(r"<media [^>]*>\s*<multicam .*?</media>", res2, re.S).group(0)
+fixed, dropped = w.fold_camera_audio(block, refs)
+folded = [m.group(0) for m in re.finditer(r'<audio lane="-1"[^>]*>', fixed)]
+print(json.dumps({"cams": cams, "mics": mics, "promoted": sorted(promoted), "dropped": sorted(dropped), "folded": folded,
+                  "r14": re.search(r'<asset id="r14"[^>]*>', res2).group(0)}))
+`], { env: PY_ENV, encoding: 'utf8' });
+  const r = JSON.parse(out.trim().split('\n').pop());
+  // ATEM sound: at 1 s, file 0:00 at 1 s (not 1 − 38000); the split clip runs its 1500 s of sound; no MXF audio
+  assert.deepStrictEqual(r.cams, [['CAM 1 02.mp4', 5000, 5000, 6500], ['CAM 1 01.mp4', 1, 1, 3001]], JSON.stringify(r.cams));
+  assert.deepStrictEqual(r.mics, [['01MIC1.WAV', 5, 10]], 'a recorder WAV is still a mic, placed as before');
+  assert.deepStrictEqual(r.promoted, ['r14']);
+  assert.ok(/hasVideo="1" format="r0"/.test(r.r14), r.r14);
+  assert.deepStrictEqual(r.dropped, [], 'the promoted asset is kept (the folded sound points at it)');
+  assert.strictEqual(r.folded.length, 1, JSON.stringify(r.folded));
+  assert.ok(/ref="r14"/.test(r.folded[0]) && /start="38001(\/1)?s"/.test(r.folded[0]), r.folded[0]);   // multicam 2 s = file 1 s
+  console.log("✓ python: camera sound under another file's picture (RB_MC_2) placed by its own timecode, kept as camera audio, folded in by Build");
+}
+
 // ── 2c. the real transcribe.py on that day, Whisper/PyAV stubbed ──
 // Needs numpy: CT_TEST_PYTHON=<python with numpy> (skipped otherwise).
 if (process.env.CT_TEST_PYTHON) {

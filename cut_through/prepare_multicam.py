@@ -69,6 +69,14 @@ def _s(v) -> Fraction:
     return _c.secs(v or "0s")
 
 
+AUDIO_EXTS = {".wav", ".bwf", ".aif", ".aiff", ".aifc", ".flac", ".mp3", ".m4a", ".caf", ".ogg"}
+
+
+def is_audio_file(p: str) -> bool:
+    """A recorder/mixer audio file (a person's mic), not a camera or ATEM video file."""
+    return os.path.splitext(p)[1].lower() in AUDIO_EXTS
+
+
 def describe(xml: str, mc_name: str = None) -> dict:
     """Multicam facts + every audio-only clip in it. Positions are seconds from the multicam's
     start. A clip at angle position P with media start S has its file's 0:00 at P − S."""
@@ -88,11 +96,16 @@ def describe(xml: str, mc_name: str = None) -> dict:
         return unquote((rep.get("src") if rep is not None else "").replace("file://localhost/", ""))
 
     angles, mics, cams, pics, length = [], [], [], [], Fraction(0)
-    # an audio-only asset of a file that is also a picture asset = that camera's own sound on its
-    # own track (Bill Smith mc_1, 2026-11-05): camera audio, not a mic WAV
-    pic_paths = {path(i) for i, a in assets.items() if a.get("hasVideo") == "1"}
+    pic_sound = []      # picture clips whose file has sound the multicam doesn't use (a pick for the Audio menu)
 
     def visit(el, angle, pos0, start0):
+        """One rule for every audio piece, whatever its file: it sits at `pos` in the angle, and its
+        start counts in the file's own time, which begins at the asset's start (a camera/ATEM file's
+        timecode; 0 for a recorder WAV) — so the file's 0:00 is at pos − (start − asset start).
+        RB_MC_2 (2026-11-20): the ATEM mp4's sound under the 4K picture was read as a WAV without
+        the asset start → placed 10.7 h off → silence → no words.
+        What it is goes by the FILE: an audio file (.wav …) is a person's mic; a camera or ATEM
+        video file's sound is camera audio, whatever picture the angle shows."""
         for ch in el:
             if "offset" not in ch.attrib:
                 continue
@@ -100,29 +113,35 @@ def describe(xml: str, mc_name: str = None) -> dict:
             dur = _s(ch.get("duration"))
             ref = ch.get("ref")
             a = assets.get(ref)
-            cam_track = a is not None and a.get("hasVideo") != "1" and a.get("hasAudio") == "1" and path(ref) in pic_paths
-            if a is not None and a.get("hasVideo") == "1":
+            if a is not None and a.get("hasVideo") == "1" and ch.tag in ("asset-clip", "video"):
                 # every picture clip, for reading the slider's movement (Cut-through, 2026-11-10)
                 start = _s(ch.get("start")) - _s(a.get("start"))
                 pic = {"angle": angle, "path": path(ref), "file_zero_sec": float(pos - start),
                        "from_sec": float(pos), "to_sec": float(pos + dur)}
                 if not any(x["angle"] == angle and x["path"] == pic["path"] and x["from_sec"] == pic["from_sec"] for x in pics):
                     pics.append(pic)
-            if a is not None and a.get("hasVideo") != "1" and a.get("hasAudio") == "1" and not cam_track:
-                start = _s(ch.get("start"))
-                mics.append({"name": a.get("name"), "angle": angle, "path": path(ref),
-                             "file_zero_sec": float(pos - start),      # where the file's 0:00 sits
-                             "from_sec": float(pos), "to_sec": float(pos + dur),
-                             "channels": int(a.get("audioChannels") or 1)})
-            elif a is not None and a.get("hasAudio") == "1" and (a.get("hasVideo") == "1" or cam_track):
-                # camera clip with its own audio (ATEM mix or in-camera): fallback when no WAVs.
-                # Its start is in the file's timecode, which begins at the asset's start.
-                start = _s(ch.get("start")) - _s(a.get("start"))
+                    if a.get("hasAudio") == "1":           # its file's own sound: only for an angle with no sound pieces
+                        pic_sound.append({**pic, "name": a.get("name"), "channels": int(a.get("audioChannels") or 1),
+                                          "camera": True})
+            # the clip's SOUND: an <audio> piece, or an asset-clip (picture + sound, maybe a split
+            # edit: audioStart/audioDuration). A <video> piece is picture only (RB_MC_1/2: the 4K
+            # MXF's own scratch audio isn't used, so it isn't the angle's audio).
+            sound = (a is not None and a.get("hasAudio") == "1"
+                     and (ch.tag == "audio" or (ch.tag == "asset-clip" and ch.get("srcEnable", "all") in ("all", "audio"))))
+            if sound:
+                a_start = _s(ch.get("audioStart") or ch.get("start"))
+                a_dur = _s(ch.get("audioDuration") or ch.get("duration"))
+                a_pos = pos + a_start - _s(ch.get("start"))        # a split edit's sound can start off the picture
                 item = {"name": a.get("name"), "angle": angle, "path": path(ref),
-                        "file_zero_sec": float(pos - start), "from_sec": float(pos), "to_sec": float(pos + dur),
-                        "channels": int(a.get("audioChannels") or 1), "camera": True}
-                if not any(c["angle"] == angle and c["path"] == item["path"] and c["from_sec"] == item["from_sec"] for c in cams):
-                    cams.append(item)      # a <clip> holds the same file as <video> and <audio>; a punch-in angle shares its files with another angle and keeps its own entry
+                        "file_zero_sec": float(a_pos - (a_start - _s(a.get("start")))),   # where the file's 0:00 sits
+                        "from_sec": float(a_pos), "to_sec": float(a_pos + a_dur),
+                        "channels": int(a.get("audioChannels") or 1)}
+                if is_audio_file(item["path"] or a.get("name") or ""):
+                    mics.append(item)
+                else:
+                    item["camera"] = True
+                    if not any(c["angle"] == angle and c["path"] == item["path"] and c["from_sec"] == item["from_sec"] for c in cams):
+                        cams.append(item)      # a punch-in angle shares its files with another angle and keeps its own entry
             visit(ch, angle, pos, _s(ch.get("start")))
 
     def has_picture(el) -> bool:
@@ -140,9 +159,30 @@ def describe(xml: str, mc_name: str = None) -> dict:
                 length = max(length, _s(ch.get("offset")) + _s(ch.get("duration")))
                 if ch.tag != "gap" and not re.search(r"slate", ang.get("name") or "", re.I) and has_picture(ch):
                     pictures.append((_s(ch.get("offset")), _s(ch.get("offset")) + _s(ch.get("duration"))))
+    with_sound = {c["angle"] for c in cams}
+    cams += [p for p in pic_sound if p["angle"] not in with_sound]
     return {"multicam": media.get("name"), "fps": float(1 / fd), "frame_sec": [fd.numerator, fd.denominator],
             "tc_start_sec": float(_s(mc.get("tcStart"))), "length_sec": float(length),
             "angles": angles, "mics": mics, "camera_audio": cams, "picture_clips": pics, "recordings": recordings(pictures)}
+
+
+def pick_audio(day: dict, audio_angle: str = None) -> None:
+    """The day's audio. Mic files (WAVs from the outside mixer) → each angle's mic is that
+    person's own track (two or more angles = a conversation). None (or AUDIO_ANGLE set, the page's
+    Audio pick) → one angle's camera audio: the ATEM mix on Camera 1 by default, every clip of that
+    angle on one track. Four identical ATEM sounds under four angles are camera audio, so still one
+    speaker."""
+    cams = day.pop("camera_audio")
+    day["camera_audio_angles"] = sorted({c["angle"] for c in cams}, key=lambda a: (len(a), a))
+    day["audio_source"] = "wav"
+    day["wav_mics"] = len(day["mics"])
+    if not day["mics"] or audio_angle:
+        want = audio_angle or ("Camera 1" if "Camera 1" in day["camera_audio_angles"] else
+                               (day["camera_audio_angles"] or [None])[0])
+        picked = [c for c in cams if c["angle"] == want]
+        if not picked:
+            raise RuntimeError(f"No mic WAVs, and no camera audio on {want or 'any angle'}")
+        day["mics"], day["audio_source"] = picked, "camera"
 
 
 def recordings(pictures, join_sec: float = 0.5) -> list:
@@ -173,19 +213,7 @@ def main() -> None:
         raise RuntimeError("FCPXML export failed")
     day = describe(open(src, encoding="utf-8").read(), orig.GetName())
     day.update({"label": LABEL, "project": project.GetName()})
-    cams = day.pop("camera_audio")
-    day["camera_audio_angles"] = sorted({c["angle"] for c in cams}, key=lambda a: (len(a), a))
-    day["audio_source"] = "wav"
-    day["wav_mics"] = len(day["mics"])
-    if not day["mics"] or AUDIO_ANGLE:
-        # No person mics placed (only the ATEM mix or in-camera audio on track 1): transcribe one
-        # angle's camera audio instead. Every clip of that angle is one source on the same track.
-        want = AUDIO_ANGLE or ("Camera 1" if "Camera 1" in day["camera_audio_angles"] else
-                               (day["camera_audio_angles"] or [None])[0])
-        picked = [c for c in cams if c["angle"] == want]
-        if not picked:
-            raise RuntimeError(f"No mic WAVs, and no camera audio on {want or 'any angle'}")
-        day["mics"], day["audio_source"] = picked, "camera"
+    pick_audio(day, AUDIO_ANGLE)
     out = os.path.join(OUT_DIR, f"day_{LABEL}.json")
     json.dump(day, open(out, "w", encoding="utf-8"), indent=1)
     say(f"Multicam '{day['multicam']}': {day['length_sec'] / 60:.1f} min at {day['fps']:.3f} fps; "

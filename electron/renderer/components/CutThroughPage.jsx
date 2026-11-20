@@ -572,6 +572,7 @@ function CtQueue({ queue, steps, project, busy, error, onAdd, onRun, onStop, onC
                 </div>
                 <div className="ct-queue-state">
                   <span className={it.status === 'ready' ? 'ct-queue-ready' : it.status === 'failed' ? 'ct-queue-failed' : 'dim'}>{ctQueueState(it, cur, live ? pct : null)}</span>
+                  {r && it.status === 'ready' && r.audio && <span className="ct-queue-audio">{r.audio}</span>}
                   {r && it.status === 'ready' && (
                     <span className="dim">
                       {r.videos} video{r.videos === 1 ? '' : 's'}{r.flagged ? ` · ${r.flagged} flagged` : ''}{r.shootDay ? ` · ${r.shootDay}` : ''}

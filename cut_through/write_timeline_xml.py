@@ -36,6 +36,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 from fractions import Fraction
+from urllib.parse import unquote
 from xml.sax.saxutils import quoteattr
 
 
@@ -96,6 +97,37 @@ LAST_ATEM = None                       # the angle whose multicam audio is on A1
 LAST_MIC_CLIPS = {}                    # mic WAV file name → how many clips of it the last build wrote (the import checks them all arrive)
 LAST_MIC_UNCOVERED = 0                 # mic frames in the last build that no WAV take covers (left as gaps)
 LAST_MIC_PIECES = []                   # mic WAV pieces for the import to append (also written to <out>_mics.json)
+
+
+VIDEO_EXTS = {".mp4", ".mov", ".mxf", ".m4v", ".avi", ".mts", ".m2ts", ".braw", ".crm", ".r3d", ".mkv"}
+
+
+def promote_camera_sound(resources: str):
+    """An audio-only asset of a camera/ATEM VIDEO file that no picture asset shares: the ATEM mix
+    placed under ANOTHER file's picture (RB_MC_2, 2026-11-20: CAM 1 01.mp4's sound under the 4K MXF).
+    Make it a full asset of that file (picture + sound, the format of a picture asset beside it), so
+    camera_audio_refs sees camera audio and fold_camera_audio carries it inside the picture clips —
+    left as a lone audio-only clip, Resolve imports an empty compound (silent A1), and taken as a
+    mic WAV it would be stripped from the angle. Returns (resources, {asset id: {asset id}}) — the
+    promoted ones in camera_audio_refs' shape (the file's own picture asset is itself)."""
+    rows, promoted = [], {}
+    for m in re.finditer(r"<asset ([^>]*)>\s*<media-rep [^>]*src=\"([^\"]+)\"", resources):
+        rows.append((m.group(1), dict(re.findall(r'(\w+)="([^"]*)"', m.group(1))), m.group(2)))
+    pic_src = {src: a for _, a, src in rows if a.get("hasVideo") == "1" and a.get("format")}
+    for head, a, src in rows:
+        ext = os.path.splitext(unquote(src))[1].lower()
+        if a.get("hasVideo") == "1" or a.get("hasAudio") != "1" or ext not in VIDEO_EXTS or src in pic_src:
+            continue
+        folder = os.path.dirname(src)
+        twin = next((p for s, p in pic_src.items() if os.path.dirname(s) == folder and
+                     os.path.splitext(s)[1].lower() == ext), None) or \
+            next((p for s, p in pic_src.items() if os.path.splitext(s)[1].lower() == ext), None)
+        if not twin:
+            continue
+        resources = resources.replace(f"<asset {head}>", f'<asset {head} hasVideo="1" format="{twin["format"]}" videoSources="1">', 1)
+        promoted[a.get("id")] = {a.get("id")}
+        print(f"  camera sound without its picture: {a.get('name')} made a full asset (format of {twin.get('name')})")
+    return resources, promoted
 
 
 def camera_audio_refs(resources: str) -> dict:
@@ -176,7 +208,8 @@ def fold_camera_audio(media_xml: str, cam_refs: dict):
             if rn and k > 0 and items[k - 1][0] == rn and items[k - 1][1].tag == "gap":
                 ang.remove(items[k - 1][1])
             ang.remove(el)
-            touched.add(aud.get("ref"))
+            if aud.get("ref") not in refs:            # a promoted asset (promote_camera_sound) is its own picture: keep it
+                touched.add(aud.get("ref"))
     return ET.tostring(root, encoding="unicode"), touched - used_by_unfolded
 
 
@@ -269,7 +302,8 @@ def main(argv=None) -> list:
     FD = frame_duration(xml, {p["multicam"] for _, p in jobs})
     resources = re.search(r"<resources>.*?</resources>", xml, re.S).group(0)
     angle_wavs = {}
-    cam_refs = camera_audio_refs(resources)
+    resources, promoted = promote_camera_sound(resources)
+    cam_refs = {**camera_audio_refs(resources), **promoted}
     if cam_refs:
         for block in re.findall(r"<media [^>]*>\s*<multicam .*?</media>", resources, re.S):
             fixed, folded = fold_camera_audio(block, cam_refs)

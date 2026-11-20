@@ -5392,3 +5392,4 @@ button.status-bar-chip-btn:disabled {
 .ct-queue-actions { display: flex; gap: 6px; }
 .ct-queue-pick { display: flex; align-items: center; gap: 10px; cursor: pointer; }
 @media (max-width: 760px) { .ct-queue-row { grid-template-columns: minmax(0, 1fr) auto; } .ct-queue-steps, .ct-queue-state { grid-column: 1 / -1; } }
+.ct-queue-audio { font-weight: 600; }

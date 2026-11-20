@@ -22,6 +22,20 @@ function mtime(p) {
 }
 
 /** Angles Build can't find again by name (same rule as Transcribe's own check). */
+/** What the multicam will be planned as, from Prep's audio pick — scanned in the queue before Plan
+ *  (Jordan 2026-11-20): "Solo · Camera 1 audio", "Conversation · 2 mics (Camera 2, Camera 3)".
+ *  day: the day file (audio_source, mics). Same rule as planKind: two or more mic angles = a
+ *  conversation. The Audio menu on the page changes it. */
+function audioSummary(day) {
+  if (!day) return null;
+  if (day.source === 'audio_timeline') return 'Narration';
+  const angles = [];
+  for (const m of day.mics || []) if (m && m.angle && !angles.includes(m.angle)) angles.push(m.angle);
+  if (day.audio_source === 'camera') return `Solo · ${angles[0] || '?'} audio`;
+  if (angles.length >= 2) return `Conversation · ${angles.length} mics (${[...angles].sort((x, y) => x.localeCompare(y, undefined, { numeric: true })).join(', ')})`;
+  return angles.length ? `Solo · ${angles[0]} mic` : null;
+}
+
 function oddAngles(day) {
   return ((day && day.angles) || []).filter((a) => !/^Camera \d+$/.test(a) && !/slate/i.test(a));
 }
@@ -118,7 +132,8 @@ function createQueue({ eng, getPrefs, setPrefs, emit, onEnded = null }) {
       shootDaySure: v.firstCode ? true : (v.shootDay ? v.shootDay.sure !== false : null),
       firstCode: v.firstCode || '',
       lpos: Boolean(v.lpos),
-      slateNeedsClaude: (snap.slateInfo && snap.slateInfo.needsClaude) || 0
+      slateNeedsClaude: (snap.slateInfo && snap.slateInfo.needsClaude) || 0,
+      audio: audioSummary(snap.day)
     };
   }
 
@@ -225,4 +240,4 @@ function createQueue({ eng, getPrefs, setPrefs, emit, onEnded = null }) {
   return { state, add, remove, clear, run, stop, isRunning: () => running, whenIdle: () => runPromise || Promise.resolve() };
 }
 
-module.exports = { createQueue, PHASES };
+module.exports = { createQueue, PHASES, audioSummary };
