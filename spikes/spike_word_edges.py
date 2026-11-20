@@ -673,6 +673,10 @@ def analyze(job_path):
     print(f"✓ {len(findings)} finding(s), {len(fixes)} fix(es) in {result['seconds']}s", flush=True)
 
 
+class Stop(RuntimeError):
+    """A reason the console run stops (Resolve's console swallows SystemExit silently)."""
+
+
 def _safe_name(s):
     return re.sub(r"[^\w.-]+", "_", str(s))
 
@@ -687,7 +691,7 @@ def _console():
         r = dvr.scriptapp("Resolve")
     run_dir = g.get("RUN_DIR")
     if not run_dir or not os.path.isdir(run_dir):
-        raise SystemExit("Set RUN_DIR to the Cut-through run folder first (the one with words_<LABEL>.json)")
+        raise Stop("Set RUN_DIR to the Cut-through run folder first (the one with words_<LABEL>.json)")
     project = r.GetProjectManager().GetCurrentProject()
     tl = None
     want = g.get("TIMELINE")
@@ -697,7 +701,7 @@ def _console():
             tl = t
     tl = tl or (None if want else project.GetCurrentTimeline())
     if tl is None:
-        raise SystemExit(f"No timeline named {want!r}")
+        raise Stop(f"No timeline named {want!r}")
     name = tl.GetName()
     out_dir = os.path.join(run_dir, "word_edges")
     os.makedirs(out_dir, exist_ok=True)
@@ -724,7 +728,7 @@ def _console():
         # plan by clip lengths, and the plan gives each clip's frames on the session clock
         items = sorted(tl.GetItemListInTrack("audio", 1) or [], key=lambda it: it.GetStart())
         if not items:
-            raise SystemExit(f"{name}: no multicam pieces on a video track and no clips on A1")
+            raise Stop(f"{name}: no multicam pieces on a video track and no clips on A1")
         clips = [{"start": int(it.GetStart()), "end": int(it.GetEnd())} for it in items]
         pieces = []
     else:
@@ -756,7 +760,7 @@ def _console():
     plan_path = g.get("PLAN")
     if not plan_path:
         best = (0.0, None)
-        for pth in glob.glob(os.path.join(run_dir, "*_plan.json")) + glob.glob(os.path.join(run_dir, "*__refined.json")):
+        for pth in glob.glob(os.path.join(glob.escape(run_dir), "*_plan.json")) + glob.glob(os.path.join(glob.escape(run_dir), "*__refined.json")):
             try:
                 sc = match(json.load(open(pth, encoding="utf-8")))
             except Exception:
@@ -765,11 +769,11 @@ def _console():
                 best = (sc, pth)
         plan_path = best[1] if best[0] >= 0.9 else None
         if not plan_path:
-            raise SystemExit(f"No plan in {run_dir} matches {name}'s shots (edited after Build?). Set PLAN=r\"…\" to force one.")
+            raise Stop(f"No plan in {run_dir} matches {name}'s shots (edited after Build?). Set PLAN=r\"…\" to force one.")
     plan = json.load(open(plan_path, encoding="utf-8"))
     sc = match(plan)
     if sc < 0.9:
-        raise SystemExit(f"{name} doesn't match {os.path.basename(plan_path)} ({sc:.0%} of shots) — run on the timeline as Build left it")
+        raise Stop(f"{name} doesn't match {os.path.basename(plan_path)} ({sc:.0%} of shots) — run on the timeline as Build left it")
     label = str(plan.get("label") or "").split("__")[0]
     if narr:                                         # each clip's place on the session clock, from the plan
         pieces = [{"start": c["start"], "end": c["end"], "src_in": q["src_in"], "src_out": q["src_out"]}
@@ -777,7 +781,7 @@ def _console():
     words = os.path.join(run_dir, f"words_{label}.json")
     levels = os.path.join(run_dir, f"levels_{label}.json")
     if not os.path.exists(words):
-        raise SystemExit(f"No words_{label}.json in {run_dir}")
+        raise Stop(f"No words_{label}.json in {run_dir}")
     say(f"Word edges — {name} — plan {os.path.basename(plan_path)} — {len(pieces)} {'clips (narration)' if narr else 'shots'}")
 
     # markers already on it (ours from an earlier run are dropped first)
@@ -799,7 +803,7 @@ def _console():
     if codec:
         project.SetCurrentRenderFormatAndCodec(fmt, codec)
     rname = f"word_edges_{_safe_name(name)}"
-    for old in glob.glob(os.path.join(out_dir, rname + ".*")):
+    for old in glob.glob(os.path.join(glob.escape(out_dir), rname + ".*")):
         try:
             os.remove(old)
         except OSError:
@@ -811,7 +815,7 @@ def _console():
             project.SetRenderSettings({k: v})
     job_id = project.AddRenderJob()
     if not job_id:
-        raise SystemExit("AddRenderJob failed (Deliver page settings?)")
+        raise Stop("AddRenderJob failed (Deliver page settings?)")
     say(f"Rendering audio ({fmt}/{codec}) …")
     t_r = time.time()
     try:
@@ -822,10 +826,10 @@ def _console():
     finally:
         project.DeleteRenderJob(job_id)
     if st.get("JobStatus") != "Complete":
-        raise SystemExit(f"Render ended: {st}")
-    render = next(iter(glob.glob(os.path.join(out_dir, rname + ".*"))), None)
+        raise Stop(f"Render ended: {st}")
+    render = next(iter(glob.glob(os.path.join(glob.escape(out_dir), rname + ".*"))), None)
     if not render:
-        raise SystemExit(f"Render finished but no {rname}.* in {out_dir}")
+        raise Stop(f"Render finished but no {rname}.* in {out_dir}")
     say(f"  {os.path.basename(render)} ({time.time() - t_r:.0f}s)")
 
     # the analysis, in the transcription pack's Python
@@ -838,7 +842,7 @@ def _console():
     py = g.get("PACK_PYTHON") or (os.path.join(root, str(cur.get("version")), cur.get("python") or os.path.join("python", "python.exe"))
                                   if cur.get("version") else r"C:\wxbench\Scripts\python.exe")
     if not os.path.exists(py):
-        raise SystemExit(f"No transcription-pack Python at {py} (install it from EditPanel's Cut-through Setup, or set PACK_PYTHON)")
+        raise Stop(f"No transcription-pack Python at {py} (install it from EditPanel's Cut-through Setup, or set PACK_PYTHON)")
     env = dict(os.environ)
     if cur.get("version"):
         models = os.path.join(root, str(cur["version"]), "models")
@@ -865,7 +869,7 @@ def _console():
         say("✗ Analysis failed:")
         for l_ in tail:
             say("    " + l_)
-        raise SystemExit("analysis failed")
+        raise Stop("analysis failed")
     res = json.load(open(res_path, encoding="utf-8"))
 
     # the findings as markers on this timeline
@@ -950,6 +954,12 @@ if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[1] == "analyze":
 elif "resolve" in globals() or globals().get("RUN_DIR"):
     try:
         _console()
+    except Stop as exc:
+        print(f"✗ STOPPED: {exc}")
+    except Exception:
+        import traceback
+        print("✗ STOPPED with an error:")
+        traceback.print_exc()
     finally:
         for _k in ("TIMELINE", "RUN_DIR", "PLAN", "REBUILD", "SEQ_BIN", "FIX", "KEEP_RENDER", "PACK_PYTHON", "SPIKE_FILE"):
             globals().pop(_k, None)
