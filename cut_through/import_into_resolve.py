@@ -404,10 +404,14 @@ def self_check(project: Any, tl: Any) -> bool:
                 if v > -90:
                     break
         silent = lufs is not None and lufs <= -90
-        ok &= not silent
+        # a mic-WAV day: the mics are the cut's sound and A1 is only the camera lane — what that
+        # camera recorded doesn't matter (VV_Nov_26, 2026-11-20: Camera 1's MXF has no sound at all)
+        camera_lane = k == 1 and bool(ATEM_FILE) and bool(MIC_CLIPS or MIC_FILES)
+        ok &= not silent or camera_lane
         secs = (_safe(lambda: used.GetDuration(), 0) or 0) / max(1.0, float(_safe(lambda: tl.GetSetting("timelineFrameRate"), 24) or 24))
         say(f"    check A{k} ({clip_label(used)}, longest {secs:.1f} s clip): {lufs} LUFS "
-            f"{'✗ silent' if silent else '✓' if lufs is not None else '(not measured)'}")
+            + ("— camera lane on a mic day, not checked" if camera_lane else
+               '✗ silent' if silent else '✓' if lufs is not None else '(not measured)'))
     return ok
 
 
