@@ -796,6 +796,10 @@ function App() {
           : null;
       showToast(parts.join(' · '), { tone: problems > 0 ? 'warning' : 'success', detail, duration: 6000 });
     }
+    if (d.saveError) {
+      appendLog(`Pull comments: markers placed, but the report couldn't be saved to Jobs: ${d.saveError}`);
+      showToast('Report not saved to Jobs.', { tone: 'error', detail: 'Details are in the Console.', duration: 8000 });
+    }
     if (d.jobId) openJobsTo('comments', d.jobId);
   }, [appendLog, project, openJobsTo, showToast]);
 

@@ -3506,6 +3506,9 @@ app.whenReady().then(() => {
       // Label intentionally compact — no equation. Counts live in the report's
       // summary chips. JobPanel surfaces this as "Comment pull - <project>".
       const label = `Comment pull - ${projectLabel}`;
+      // Why a failed save matters: without the run row the Jobs panel has
+      // nothing to list, so the editor can't open the report. Surface it.
+      let saveError = jobsDb ? null : 'Jobs history database is not open';
       if (jobsDb) {
         try {
           // 5c.7: always write a __summary__ row carrying the aggregate stats
@@ -3544,13 +3547,17 @@ app.whenReady().then(() => {
           // project_name = the Resolve project the pull ran in, so the Jobs
           // drawer can file it under "This project" (the label keeps the LPOS side).
           jobsDb.initRun(jobId, 'comment_pull', label, [summaryItem, ...timelineItems], { projectName: resolveProjectName || resolveProject || projectLabel });
-        } catch (_) { /* non-fatal */ }
+        } catch (err) {
+          saveError = err?.message || String(err);
+          console.error('[pull-comments] could not save the Jobs run:', saveError);
+        }
       }
 
       return {
         ok: true,
         data: {
-          jobId,
+          jobId: saveError ? null : jobId,
+          saveError,
           timelines: timelineResults,
           scannedCount,
           matchedCount: entriesByUid.size,

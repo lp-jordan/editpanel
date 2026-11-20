@@ -301,6 +301,9 @@ function JobPanel({ open, onClose, focusRequest, dashboard, activeExport, cutThr
   React.useEffect(() => {
     if (!focusRequest) return;
     if (focusRequest.tab) setActiveTab(focusRequest.tab);
+    // A task just reported in. If the panel was already open, the open-effect
+    // won't re-run, so reload the runs here or the new row never shows.
+    setReloadTick(t => t + 1);
     setHighlightId(focusRequest.highlightId || null);
     if (focusRequest.section === 'peers') {
       // Wait for the slide-up so the section is laid out before scrolling.
