@@ -756,7 +756,9 @@ def _console():
         pieces, skipped, ratios = [], [], []
         for it in items:
             mpi = it.GetMediaPoolItem()
-            fp = nrm(mpi.GetClipProperty("File Path")) if mpi else ""
+            if not mpi:                                 # a crossfade / transition, not a clip
+                continue
+            fp = nrm(mpi.GetClipProperty("File Path"))
             m = files.get(fp) or files.get(os.path.basename(fp))
             st, en = int(it.GetStart()), int(it.GetEnd())
             si, so = it.GetSourceStartFrame(), it.GetSourceEndFrame()
@@ -847,36 +849,53 @@ def _console():
     # render the audio
     project.SetCurrentTimeline(tl)
     time.sleep(0.5)
-    formats = project.GetRenderFormats() or {}
-    fmt = next((e for l_, e in formats.items() if str(e).lower() == "wav" or "wav" in str(l_).lower()), None) or "mov"
-    codecs = project.GetRenderCodecs(fmt) or {}
-    codec = next((v for l_, v in codecs.items() if "pcm" in str(l_).lower() or "pcm" in str(v).lower()), None) \
-        or (list(codecs.values())[0] if codecs else None)
-    if codec:
-        project.SetCurrentRenderFormatAndCodec(fmt, codec)
+    # audio-only WAV, as spike_collect_example.py rendered it (worked in Resolve 21): Resolve's audio
+    # render formats + AudioFormat/AudioCodec settings, and a retried start — the first render of a run
+    # sometimes never leaves "Ready"
+    def _try(fn, default=None):
+        try:
+            return fn()
+        except Exception:
+            return default
+    fmts = _try(lambda: project.GetAudioRenderFormats(), {}) or {}
+    ext = next((e for f_, e in fmts.items() if "wav" in f"{f_} {e}".lower()), "wav")
+    codecs = _try(lambda: project.GetAudioRenderCodecs(ext), {}) or {}
+    codec = next((c for d_, c in codecs.items() if "pcm" in f"{d_} {c}".lower()), next(iter(codecs.values()), None))
     rname = f"word_edges_{_safe_name(name)}"
     for old in glob.glob(os.path.join(glob.escape(out_dir), rname + ".*")):
         try:
             os.remove(old)
         except OSError:
             pass
-    settings = {"SelectAllFrames": True, "ExportVideo": False, "ExportAudio": True, "TargetDir": out_dir,
-                "CustomName": rname, "UniqueFilename": False}
+    settings = {"SelectAllFrames": True, "TargetDir": out_dir, "CustomName": rname, "ExportVideo": False, "ExportAudio": True,
+                "AudioFormat": ext, "AudioBitDepth": 16, "AudioSampleRate": 48000}
+    if codec:
+        settings["AudioCodec"] = codec
     if not project.SetRenderSettings(settings):
-        for k, v in settings.items():
-            project.SetRenderSettings({k: v})
+        raise Stop("Resolve rejected the audio-only WAV render settings")
     job_id = project.AddRenderJob()
     if not job_id:
         raise Stop("AddRenderJob failed (Deliver page settings?)")
-    say(f"Rendering audio ({fmt}/{codec}) …")
+    say(f"Rendering audio ({ext}/{codec}) …")
     t_r = time.time()
+    st = {}
     try:
-        project.StartRendering([job_id], False)
-        while project.IsRenderingInProgress():
-            time.sleep(1)
-        st = project.GetRenderJobStatus(job_id) or {}
+        for attempt in range(1, 4):
+            started = _try(lambda: project.StartRendering(job_id), "raised")
+            t1 = time.time()
+            while not _try(lambda: project.IsRenderingInProgress(), False) and time.time() - t1 < 20:
+                if (_try(lambda: project.GetRenderJobStatus(job_id), {}) or {}).get("JobStatus") == "Complete":
+                    break                              # a short render can finish before we look
+                time.sleep(0.5)
+            while _try(lambda: project.IsRenderingInProgress(), False) and time.time() - t_r < 3600:
+                time.sleep(1)
+            st = _try(lambda: project.GetRenderJobStatus(job_id), {}) or {}
+            if st.get("JobStatus") == "Complete":
+                break
+            say(f"  attempt {attempt}: StartRendering → {started}, status {st.get('JobStatus')}; retrying")
+            time.sleep(3)
     finally:
-        project.DeleteRenderJob(job_id)
+        _try(lambda: project.DeleteRenderJob(job_id))
     if st.get("JobStatus") != "Complete":
         raise Stop(f"Render ended: {st}")
     render = next(iter(glob.glob(os.path.join(glob.escape(out_dir), rname + ".*"))), None)
