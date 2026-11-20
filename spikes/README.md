@@ -16,6 +16,7 @@ assume old file layouts.
 | `bench_whisper.py` | faster-whisper speed, CPU vs GPU — run on a new GPU machine |
 | `spike_scan_past_edits.py` | Read-only house-style stats from finished edits (feeds `docs/ai-rough-cut-style-guide.md`) |
 | `spike_video_quality.py` | How this Resolve build takes a bitrate (re-run on a new Resolve version) |
+| `spike_word_edges.py` | Cut-through round 2 by hand: one built timeline's rendered audio → clipped words + phantom repeats → refined plan → rebuild |
 
 ### `spike_video_quality.py`
 
@@ -36,6 +37,30 @@ Workspace ▸ Console ▸ `Py3`, then
 Report prints and saves to `Desktop\resolve_bitrate_probe.txt`. Never queues or
 renders; reloads the preset at the end, and never edits the saved preset.
 
+
+### `spike_word_edges.py`
+
+Refines ONE built cut-through timeline from what its audio really plays. In Resolve's Py3 console
+(timeline as Build left it):
+`TIMELINE="J1"; RUN_DIR=r"<run folder>"; exec(open(r"C:\lp-app-ecosystem\editpanel\spikes\spike_word_edges.py", encoding="utf-8").read())`
+
+- renders the timeline's audio (WAV), then runs the analysis in the transcription pack's Python
+- **greedy CTC decode** (the pack's wav2vec2, letters only, no language model) = what is heard, so it
+  can't fill a chopped or doubled word in from context the way Whisper does → phantom repeats
+  ("the | the" across a join, stutters inside a shot, copies Transcribe marked "ghost") and truncated words
+- **join_check.py** forced alignment + edge loudness at every join (Score's measures)
+- existing markers are hints ("cut off"/"clipped" → fixed on one sign, "repeat" → wider search) and each
+  gets a verdict in the report
+- writes `<plan>__refined.json` (original untouched): clipped joins move to the word's real edge (≤ 12 fr),
+  repeats lose the first copy (re-angling a ≥ 36 fr shot so there's no jump cut; refused otherwise),
+  plus Cyan "Refined: …" review markers; findings go on the current timeline as markers (tag `ct-word-edges`)
+- prints the rebuild line (`build_rough_cut.py` with `PLAN_FILES=[[refined, "<name> refined"]]`, `ARCHIVE=False`
+  so the multicam copy in use isn't renamed `_original`); `REBUILD=True` runs it straight away. Every import
+  makes a new multicam copy: delete the extra copy + the losing timeline after comparing.
+
+Report: `<RUN_DIR>\word_edges\word_edges_<TIMELINE>.txt/.json`. Options: `PLAN=`, `FIX=False`, `SEQ_BIN=`,
+`KEEP_RENDER=True`, `PACK_PYTHON=`. Tested on the Mac with the models stubbed on a real Elevate plan
+(ELEVATE_MC_2 J1); not yet run in Resolve.
 
 ### `spike_scan_past_edits.py`
 

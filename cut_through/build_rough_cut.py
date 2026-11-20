@@ -38,6 +38,9 @@ LABEL = globals().get("LABEL", "ConvoTest")
 MICS = globals().get("MICS") or {}                     # role → angle carrying that person's mic
 SEQ_BIN = globals().get("SEQ_BIN")
 RAW = globals().get("RAW")
+# ARCHIVE=False: a rebuild on a multicam that is already the primary copy (spike_word_edges.py) — leave it
+# where it is instead of renaming it <name>_original next to the true original
+ARCHIVE = globals().get("ARCHIVE", True)
 # the pipeline folder is this script's own (EditPanel's Resolve worker sets __file__); a console
 # exec(open(...).read()) has no __file__, so it falls back to the LP1 checkout
 PIPELINE = (os.path.dirname(os.path.abspath(globals()["__file__"])) if globals().get("__file__")
@@ -219,7 +222,7 @@ def main() -> None:
     phase("Importing into Resolve")
     t1 = time.time()
     g = run_script("import_into_resolve.py", {"XML": os.path.basename(out), "LABEL": LABEL, "OUT_DIR": OUT_DIR,
-                                          "ARCHIVE": True, "RAW": RAW, "MICS": MICS, "PLAN_FILE": PLAN_FILE,
+                                          "ARCHIVE": bool(ARCHIVE), "RAW": RAW, "MICS": MICS, "PLAN_FILE": PLAN_FILE,
                                               "MIC_FILES": {n: a for n, (_, a, *_) in wavs.items()},
                                               "MIC_CLIPS": dict(getattr(mk, "LAST_MIC_CLIPS", None) or {}),
                                               "MIC_PIECES": (os.path.basename(out).rsplit(".", 1)[0] + "_mics.json"
@@ -252,5 +255,5 @@ finally:
             fh.write("\n".join(_lines) + "\n")
     except Exception as exc:
         print(f"(Couldn't save report: {exc})")
-    for _k in ("LABEL", "MICS", "SEQ_BIN", "RAW", "OUT_DIR", "PLAN_FILE", "PLAN_FILES"):   # the console keeps run-line settings between runs
+    for _k in ("LABEL", "MICS", "SEQ_BIN", "RAW", "ARCHIVE", "OUT_DIR", "PLAN_FILE", "PLAN_FILES"):   # the console keeps run-line settings between runs
         globals().pop(_k, None)
