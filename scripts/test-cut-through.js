@@ -772,16 +772,25 @@ class It:
     def GetStart(s): return 1000 + s.a
     def GetEnd(s): return 1000 + s.b
     def AddTransition(s, o): s.tr.append(o["duration"]); return True
-    def GetLinkedItems(s): return [] if getattr(s, "ln", True) is False else [s]
+    def GetLinkedItems(s): return [x for x in getattr(s, "grp", []) if x is not s]
 class TL:
-    def __init__(s): s.m, s.its = {}, [It(0, 300), It(300, 320), It(320, 500)]
+    def __init__(s):
+        s.m, s.its = {}, [It(0, 300), It(300, 320), It(320, 500)]
+        s.its[0].grp = s.its[1].grp = [s.its[0], s.its[1]]   # two linked clips, one not (like A1 vs the mics)
     def GetStartFrame(s): return 1000
     def AddMarker(s, f, c, n, note, d): s.m[f] = c; return True
     def GetTrackCount(s, kind): return 1 if kind == "audio" else 0
     def GetItemListInTrack(s, kind, k): return s.its
 class LinkTL(TL):
+    # Resolve 21.2 as the spike found it (2026-11-20): any unlinked clip in the list → refused;
+    # part of a group → True but nothing changes; the whole group → unlinked
     def SetClipsLinked(s, its, on):
-        for i in its: i.ln = on
+        if any(not getattr(i, "grp", None) for i in its):
+            return False
+        for i in its:
+            if not all(x in its for x in i.grp):
+                return True
+        for i in its: i.grp = []
         return True
 v = json.load(open("out_ranges.json"))["videos"][0]
 tl = TL()
@@ -796,8 +805,9 @@ print(json.dumps({"v": v, "line": line, "marks": tl.m, "tr": [i.tr for i in tl.i
   assert.deepStrictEqual(wr.marks, { 50: 'Red', 200: 'Yellow' });
   assert.deepStrictEqual(wr.tr, [[2], [2], []], wr.line);
   // finished timelines come out unlinked (Bill Smith 2026-11-11: a trim dragged all of A1); no API → told to do it by hand
-  assert.strictEqual(wr.unlinked, '3 clip(s) unlinked ✓');
-  assert.ok(/^✗ unlink failed \(3 clip\(s\)\); 3 still linked; unlink by hand/.test(wr.no_api), wr.no_api);
+  // only the linked clips go to Resolve (every clip at once is refused: ELEVATE_MC_4 spike 2026-11-20)
+  assert.strictEqual(wr.unlinked, '2 linked clip(s) unlinked ✓');
+  assert.ok(/^✗ unlink failed: 2 of 2 linked clip\(s\) still linked; unlink by hand/.test(wr.no_api), wr.no_api);
   assert.ok(/markers 2\/2 \(red 1, yellow 1\); backchannels opened quieter: 1\/1, 2 crossfade/.test(wr.line), wr.line);
   // stage (Bill Smith, 2026-11-05): a short pause isn't worth an angle change; a trimmed long one is
   // covered on the other angle for a beat, then back to Claude's shot (and its later shots kept)

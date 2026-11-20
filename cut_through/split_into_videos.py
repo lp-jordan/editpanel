@@ -57,6 +57,18 @@ def _safe(fn, default=None):
         return default
 
 
+def _common():
+    """common.py from this script's own folder, loaded fresh each run (see its docstring).
+    build_rough_cut.py sets __file__; a console exec(open(...).read()) has none → the LP1 checkout."""
+    import importlib.util
+    here = (os.path.dirname(os.path.abspath(globals()["__file__"])) if globals().get("__file__")
+            else r"C:\lp-app-ecosystem\editpanel\cut_through")
+    spec = importlib.util.spec_from_file_location("cut_through_common", os.path.join(here, "common.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def find_folder(root: Any, path: str) -> Optional[Any]:
     current = root
     segs = [x.strip() for x in path.split(" / ") if x.strip()]
@@ -159,19 +171,10 @@ def review(tl: Any, v: dict) -> str:
 
 
 def unlink(tl: Any) -> str:
-    """Unlink every clip (picture from its sound, and the clips stacked under it), so trimming one
-    clip doesn't drag the rest of A1 with it (Bill Smith mc_1, 2026-11-11: a trim on the first clip
-    slid all the audio 1s13f). Runs last, after the split's ripple deletes, fades and markers."""
-    its = [it for v in tracks(tl).values() for it in v]
-    if not its:
-        return "nothing to unlink"
-    ok = bool(_safe(lambda: tl.SetClipsLinked(its, False), False))
-    linked = [_safe(lambda: it.GetLinkedItems()) for it in its]
-    still = sum(1 for x in linked if x)
-    if ok and not still:
-        return f"{len(its)} clip(s) unlinked ✓"
-    known = " " + str(still) + " still linked;" if any(x is not None for x in linked) else ""
-    return f"✗ unlink failed ({len(its)} clip(s));{known} unlink by hand: select all, Clip → Link Clips"
+    """Unlink the finished timeline's linked clips (common.unlink_timeline: only the linked clips
+    and their partners go to Resolve; every clip at once failed on every video, 2026-11-11..20).
+    Runs last, after the split's ripple deletes, fades and markers."""
+    return _common().unlink_timeline(tl)
 
 
 def tracks(tl: Any) -> Dict[str, List[Any]]:

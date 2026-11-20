@@ -9,6 +9,7 @@ exec'd by EditPanel's Resolve worker with __file__ set, and pasted into Resolve'
 __file__), and Resolve's long-lived Python would otherwise keep a stale copy in sys.modules.
 
   Resolve media pool   ARCHIVE_BINS, _safe, walk
+  timelines            unlink_timeline
   FCPXML               secs, attrs, frame_duration, bundle_xml, export_multicam
   angles               cam_no, angle_of
   recordings           group_spans, merge_spans
@@ -41,6 +42,58 @@ def walk(folder: Any, skip=ARCHIVE_BINS):
     for sub in _safe(lambda: folder.GetSubFolderList(), []) or []:
         if _safe(lambda: sub.GetName()) not in skip:
             yield from walk(sub, skip)
+
+
+# ── timelines ────────────────────────────────────────────────────────────────
+def unlink_timeline(tl: Any) -> str:
+    """Unlink every linked clip on `tl`, so trimming one clip doesn't drag the others (Bill Smith
+    mc_1, 2026-11-11: a trim slid all of A1 1s13f). Returns a report line.
+
+    Resolve (21.2, spike_unlink 2026-11-20 on ELEVATE_MC_4 B1_Convo) only unlinks when the list
+    holds exactly the linked clips: every clip on the timeline (unlinked picture + mic clips too)
+    fails, and one clip of a group alone returns True but stays linked. So: the linked clips plus
+    their partners in one call, then one call per group for anything left. The return value isn't
+    trusted; links are counted again afterwards."""
+    its = []
+    for kind in ("video", "audio"):
+        for k in range(1, int(_safe(lambda: tl.GetTrackCount(kind), 0) or 0) + 1):
+            its += list(_safe(lambda: tl.GetItemListInTrack(kind, k), []) or [])
+    if not its:
+        return "nothing to unlink"
+
+    def key(it):
+        return _safe(lambda: it.GetUniqueId()) or id(it)
+
+    def linked():
+        """{key: clip} for every clip that is linked, and every clip it's linked to."""
+        out = {}
+        for it in its:
+            partners = list(_safe(lambda: it.GetLinkedItems(), None) or [])
+            if partners:
+                for x in [it] + partners:
+                    out.setdefault(key(x), x)
+        return out
+
+    before = linked()
+    if not before:
+        return f"nothing linked ({len(its)} clip(s))"
+    _safe(lambda: tl.SetClipsLinked(list(before.values()), False), False)
+    left = linked()
+    groups = 0
+    while left:                                        # one call per group (clip + its partners)
+        first = next(iter(left.values()))
+        group = {key(first): first, **{key(x): x for x in (_safe(lambda: first.GetLinkedItems(), None) or [])}}
+        _safe(lambda: tl.SetClipsLinked(list(group.values()), False), False)
+        groups += 1
+        now = linked()
+        if len(now) >= len(left):                      # this group won't unlink: stop
+            left = now
+            break
+        left = now
+    if not left:
+        return f"{len(before)} linked clip(s) unlinked ✓" + (f" ({groups} group(s) one at a time)" if groups else "")
+    return (f"✗ unlink failed: {len(left)} of {len(before)} linked clip(s) still linked; "
+            "unlink by hand: select all, Clip → Link Clips")
 
 
 # ── FCPXML ───────────────────────────────────────────────────────────────────
