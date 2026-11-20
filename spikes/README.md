@@ -16,6 +16,7 @@ assume old file layouts.
 | `bench_whisper.py` | faster-whisper speed, CPU vs GPU — run on a new GPU machine |
 | `spike_scan_past_edits.py` | Read-only house-style stats from finished edits (feeds `docs/ai-rough-cut-style-guide.md`) |
 | `spike_video_quality.py` | How this Resolve build takes a bitrate (re-run on a new Resolve version) |
+| `spike_project_status.py` | LPOS project-status rings: timeline flags (Green reviewed, Orange left out), multicam lengths, read time (read-only) |
 | `spike_word_edges.py` | Cut-through round 2 by hand: one built timeline's rendered audio → clipped words + phantom repeats → refined plan → rebuild |
 
 ### `spike_video_quality.py`
