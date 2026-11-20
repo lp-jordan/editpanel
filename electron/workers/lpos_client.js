@@ -153,6 +153,15 @@ class LposClient {
    * Online EditPanel instances (including this one) with their open Resolve
    * project and live jobs. Returns { peers: [...] }.
    */
+  /**
+   * Send editing-dashboard events (POST /api/ep/events).
+   * payload: { instance_id, display_name, events: [{ id, kind, at, title, … }] }
+   * Returns { done: [ids], rejected: [{ id, reason }], recorded }.
+   */
+  async pushEvents(payload) {
+    return this._uploadRequest('POST', '/api/ep/events', { json: payload, timeout: 20_000 });
+  }
+
   async getPeers() {
     return this._request('GET', '/api/ep/peers');
   }

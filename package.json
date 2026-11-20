@@ -1,6 +1,6 @@
 {
   "name": "editpanel",
-  "version": "1.2.190",
+  "version": "1.2.191",
   "description": "EditPanel — DaVinci Resolve companion app for the LPOS ecosystem",
   "author": "LeaderPass <tools@leaderpass.com>",
   "main": "electron/main.js",
@@ -18,7 +18,8 @@
     "test:card-retry": "node scripts/test-card-ingest-retry.js",
     "test:batch-watch": "node scripts/test-batch-watch.js",
     "test:slate-shift": "node scripts/test-slate-shift.js",
-    "test:narration-parts": "node scripts/test-narration-parts.js"
+    "test:narration-parts": "node scripts/test-narration-parts.js",
+    "test:editing-outbox": "node scripts/test-editing-outbox.js"
   },
   "build": {
     "appId": "com.leaderpass.editpanel",

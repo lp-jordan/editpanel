@@ -1187,6 +1187,28 @@ function persistActiveExport() {
   } catch (_) { /* non-fatal */ }
 }
 
+// Send waiting /editing events (jobsDb ep_outbox) to LPOS, oldest first, up
+// to a few batches per heartbeat. Recorded and refused ids are dropped; on a
+// network error or 5xx everything stays for the next beat. A 404 means this
+// LPOS has no /api/ep/events yet — keep the events too.
+let outboxFlushing = false;
+async function flushEditingOutbox(instanceId, displayName) {
+  if (!jobsDb || !lposClient || outboxFlushing) return;
+  outboxFlushing = true;
+  try {
+    for (let round = 0; round < 5; round++) {
+      const events = jobsDb.takeOutbox(100);
+      if (events.length === 0) return;
+      const res = await lposClient.pushEvents({ instance_id: instanceId, display_name: displayName, events });
+      const gone = [...(res?.done || []), ...(res?.rejected || []).map((r) => (typeof r === 'string' ? r : r?.id))];
+      jobsDb.dropOutbox(gone);
+      if (events.length < 100 || gone.length === 0) return;
+    }
+  } finally {
+    outboxFlushing = false;
+  }
+}
+
 function finalizeExport(state, error = null) {
   stopExportPoll();
   uploadQueue = [];  // abandon any not-yet-started uploads
@@ -1284,7 +1306,8 @@ function finalizeExport(state, error = null) {
           targetDir:   activeExport.targetDir,
           projectId:   null,
           projectName: null,
-          jobs:        [j]
+          jobs:        [j],
+          emit:        false
         });
         jobsDb.updateExportRun(childId, {
           state:      'complete_unassigned',
@@ -1705,7 +1728,10 @@ function startExportTracking({ exportId, jobs, targetDir, projectId, projectName
   uploadWorkerActive = false;
   if (jobsDb) {
     try {
-      jobsDb.createExportRun({ exportId, targetDir, projectId, projectName, jobs: activeExport.jobs });
+      jobsDb.createExportRun({
+        exportId, targetDir, projectId, projectName, jobs: activeExport.jobs,
+        state: started ? 'rendering' : 'queued'
+      });
     } catch (_) { /* non-fatal */ }
   }
   persistActiveExport();  // sync the real state (queued vs rendering) into the row
@@ -1729,10 +1755,9 @@ function persistQueuedBatch({ exportId, jobs, targetDir, projectId, projectName 
         targetDir: targetDir || null,
         projectId: projectId || null,
         projectName: projectName || null,
-        jobs: built
+        jobs: built,
+        state: 'queued'
       });
-      // createExportRun hardcodes state='rendering'; flip it to queued.
-      jobsDb.updateExportRun(exportId, { state: 'queued' });
     } catch (_) { /* non-fatal */ }
   }
   // Nudge the JobPanel / Exports list to reload so the queued batch appears.
@@ -2791,8 +2816,11 @@ app.whenReady().then(() => {
         resolve_timeline: resolveTimeline || null,
         jobs_queued: jobs.filter(j => j.state === 'queued').length,
         jobs_running: jobs.filter(j => j.state === 'running').length,
-        active_jobs: collectActiveJobs(jobs)
+        active_jobs: collectActiveJobs(jobs),
+        app_version: app.getVersion(),
+        unassigned_renders: jobsDb ? jobsDb.countUnassignedExports() : null
       });
+      await flushEditingOutbox(instanceId, prefs?.displayName || instanceId);
     } catch (_err) {
       // silent — transient network failures are expected
     }

@@ -12,6 +12,23 @@
  */
 
 const { DatabaseSync } = require('node:sqlite');
+const crypto = require('node:crypto');
+const path = require('node:path');
+
+/** Events kept waiting for LPOS at most; the oldest are dropped beyond this. */
+const OUTBOX_MAX = 5000;
+
+/** Display name for an export's files: "J104_v3.mov", or "J104_v3.mov +2 more". */
+function exportLabel(jobs) {
+  const list = Array.isArray(jobs) ? jobs : [];
+  const nameOf = (j) => {
+    if (!j) return '';
+    if (j.outputPath) return path.basename(String(j.outputPath).replace(/\\/g, '/'));
+    return j.OutputFilename || j.name || j.CustomName || j.TimelineName || j.RenderJobName || '';
+  };
+  const first = nameOf(list[0]) || 'render';
+  return list.length > 1 ? `${first} +${list.length - 1} more` : first;
+}
 
 class JobsDb {
   constructor(dbPath) {
@@ -130,6 +147,15 @@ class JobsDb {
       );
 
       CREATE INDEX IF NOT EXISTS idx_export_runs_started ON export_runs(started_at);
+
+      -- Editing dashboard (LPOS /editing): events waiting to be sent to
+      -- POST /api/ep/events. Written where the state change is saved, sent
+      -- by the heartbeat, deleted once LPOS confirms them.
+      CREATE TABLE IF NOT EXISTS ep_outbox (
+        id         TEXT    PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        body       TEXT    NOT NULL
+      );
     `);
 
     // 2026-06-03 — Phase 3.5 orphan-export reconciliation.
@@ -529,27 +555,142 @@ class JobsDb {
 
   // ─── Export / render runs ─────────────────────────────────
 
-  /** Record a new export run (one render queue dispatched by EditPanel). */
-  createExportRun({ exportId, targetDir, projectId, projectName, jobs }) {
+  // ─── Editing dashboard outbox ─────────────────────────────
+
+  /**
+   * Queue one event for LPOS /editing. Never throws — a lost event must not
+   * break the work it describes.
+   *   kind   — 'render.finished', 'upload.delivered', … (LPOS validates)
+   *   fields — { title, phase?, projectId?, assetId?, details? }
+   */
+  emitEvent(kind, { title, phase, projectId, assetId, details } = {}) {
+    try {
+      if (!kind || !title) return;
+      const event = {
+        id: `ep-${crypto.randomUUID()}`,
+        kind,
+        at: new Date().toISOString(),
+        title: String(title).slice(0, 200),
+      };
+      if (phase) event.phase = phase;
+      if (projectId) event.project_id = String(projectId);
+      if (assetId) event.asset_id = String(assetId);
+      if (details && typeof details === 'object') event.details = details;
+      this.db.prepare(`INSERT INTO ep_outbox (id, created_at, body) VALUES (?, ?, ?)`)
+        .run(event.id, Date.now(), JSON.stringify(event));
+      this.db.prepare(
+        `DELETE FROM ep_outbox WHERE id IN (
+           SELECT id FROM ep_outbox ORDER BY created_at DESC LIMIT -1 OFFSET ?)`
+      ).run(OUTBOX_MAX);
+    } catch (_) { /* non-fatal */ }
+  }
+
+  /** Oldest waiting events first, as sent on the wire. */
+  takeOutbox(limit = 100) {
+    return this.db.prepare(`SELECT body FROM ep_outbox ORDER BY created_at, id LIMIT ?`)
+      .all(limit)
+      .map((r) => { try { return JSON.parse(r.body); } catch (_) { return null; } })
+      .filter(Boolean);
+  }
+
+  /** Forget events LPOS has recorded or refused. */
+  dropOutbox(ids) {
+    const list = (Array.isArray(ids) ? ids : []).filter((id) => typeof id === 'string');
+    if (list.length === 0) return;
+    this.db.prepare(`DELETE FROM ep_outbox WHERE id IN (${list.map(() => '?').join(',')})`).run(...list);
+  }
+
+  /** Event for an export row entering `state` from `prev`, or nothing. */
+  _exportEvent(row, prev, state) {
+    if (!row || prev === state) return;
+    let jobs = [];
+    try { jobs = JSON.parse(row.jobs_json || '[]'); } catch (_) { jobs = []; }
+    const label = exportLabel(jobs);
+    const error = row.error ? String(row.error).slice(0, 160) : '';
+    let delivery = null;
+    try { delivery = row.lpos_delivery_json ? JSON.parse(row.lpos_delivery_json) : null; } catch (_) { delivery = null; }
+    const projectId = delivery?.project_id || row.project_id || null;
+    const projectName = delivery?.project_name || row.project_name || null;
+    const details = { exportId: row.export_id, files: jobs.length };
+    if (error) details.error = error;
+
+    switch (state) {
+      case 'rendering':
+        this.emitEvent('render.started', {
+          title: `${prev === 'interrupted' ? 'Render resumed' : 'Rendering'} ${label}`,
+          phase: 'running', projectId, details,
+        });
+        break;
+      case 'completed':
+        this.emitEvent('render.finished', { title: `Rendered ${label}`, projectId, details });
+        break;
+      case 'complete_unassigned':
+        this.emitEvent('render.unassigned', { title: `${label} not assigned to a project`, details });
+        break;
+      case 'delivered':
+        this.emitEvent('upload.delivered', {
+          title: projectName ? `Delivered ${label} to ${projectName}` : `Delivered ${label}`,
+          projectId,
+          assetId: jobs.length === 1 && Array.isArray(delivery?.file_ids) ? delivery.file_ids[0] : null,
+          details,
+        });
+        break;
+      case 'partial':
+        this.emitEvent('upload.failed', {
+          title: `Some uploads failed: ${label}${error ? ` (${error})` : ''}`, projectId, details,
+        });
+        break;
+      case 'failed':
+        this.emitEvent(prev === 'uploading' ? 'upload.failed' : 'render.failed', {
+          title: `${prev === 'uploading' ? 'Upload' : 'Render'} failed: ${label}${error ? ` (${error})` : ''}`,
+          projectId, details,
+        });
+        break;
+      case 'canceled':
+        this.emitEvent('render.cancelled', { title: `Render cancelled: ${label}`, projectId, details });
+        break;
+      default:
+        break;
+    }
+  }
+
+  // ─── Export / render runs ─────────────────────────────────
+
+  /**
+   * Record a new export run (one render queue dispatched by EditPanel).
+   * `state` is 'rendering' (started now) or 'queued'. `emit: false` skips the
+   * "Rendering …" event (used for the per-file rows a finished batch splits into).
+   */
+  createExportRun({ exportId, targetDir, projectId, projectName, jobs, state = 'rendering', emit = true }) {
     const list = Array.isArray(jobs) ? jobs : [];
     this.db.prepare(
       `INSERT OR REPLACE INTO export_runs
          (export_id, target_dir, project_id, project_name, job_count, jobs_done, percent, state, jobs_json, started_at)
-       VALUES (?, ?, ?, ?, ?, 0, 0, 'rendering', ?, ?)`
+       VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`
     ).run(
       exportId,
       targetDir || null,
       projectId || null,
       projectName || null,
       list.length,
+      state,
       JSON.stringify(list),
       Date.now()
     );
+    if (emit && state === 'rendering') {
+      this._exportEvent(this.db.prepare(`SELECT * FROM export_runs WHERE export_id = ?`).get(exportId), null, state);
+    }
     return exportId;
   }
 
-  /** Partial update of an export run (only provided keys are written). */
+  /**
+   * Partial update of an export run (only provided keys are written). A state
+   * change also queues the matching /editing event.
+   */
   updateExportRun(exportId, { state, jobsDone, percent, jobs, error, finishedAt } = {}) {
+    const prev = state !== undefined
+      ? this.db.prepare(`SELECT state FROM export_runs WHERE export_id = ?`).get(exportId)?.state
+      : undefined;
     const fields = [];
     const values = [];
     if (state      !== undefined) { fields.push('state = ?');       values.push(state); }
@@ -561,6 +702,9 @@ class JobsDb {
     if (fields.length === 0) return;
     values.push(exportId);
     this.db.prepare(`UPDATE export_runs SET ${fields.join(', ')} WHERE export_id = ?`).run(...values);
+    if (state !== undefined && prev !== undefined && prev !== state) {
+      this._exportEvent(this.db.prepare(`SELECT * FROM export_runs WHERE export_id = ?`).get(exportId), prev, state);
+    }
   }
 
   /**
@@ -725,6 +869,9 @@ class JobsDb {
       JSON.stringify(list),
       Number.isFinite(startedAt) ? startedAt : Date.now()
     );
+    if (info.changes > 0 && state === 'rendering') {
+      this._exportEvent(this.db.prepare(`SELECT * FROM export_runs WHERE export_id = ?`).get(exportId), null, state);
+    }
     return { exportId, inserted: info.changes > 0 };
   }
 
