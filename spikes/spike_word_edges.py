@@ -403,8 +403,13 @@ def analyze(job_path):
     fixes = []
     narr = bool(plan.get("narration"))
     talker = (plan.get("audio") or {}).get("angle") or next(iter(plan.get("mics") or {}), None)
-    if narr:                                         # sound only: the kept spans are the "shots", one "angle"
-        video = [{"in": int(k[0]), "out": int(k[1]), "angle": talker} for k in (plan.get("mics") or {}).get(talker) or []]
+    if narr:                                         # sound only: the kept spans are the "shots", one "angle" —
+        video = []                                   # read off the timeline as it is now (your edits included)
+        for p in pieces:
+            if video and abs(p["src_in"] - video[-1]["out"]) <= 0:
+                video[-1]["out"] = p["src_out"]      # a file edge, not a cut
+            else:
+                video.append({"in": int(p["src_in"]), "out": int(p["src_out"]), "angle": talker})
     new_video = [dict(v) for v in video]
     mics = {r: [list(o) for o in opens] for r, opens in (plan.get("mics") or {}).items()}
     removals = [dict(r) for r in plan.get("removals") or []]
@@ -723,66 +728,113 @@ def _console():
                                                "src_in": int(round(float(it.GetSourceStartFrame()))),
                                                "src_out": int(round(float(it.GetSourceEndFrame())))})
     narr = not by_track
+    t0 = int(tl.GetStartFrame() or 0)
+    plan_path = g.get("PLAN")
+    note = ""
     if narr:
-        # no multicam picture: a narration timeline (build_narration.py), its clips on A1 — matched to a
-        # plan by clip lengths, and the plan gives each clip's frames on the session clock
+        # no multicam picture: a narration timeline (build_narration.py). Each A1 clip is a stretch of one
+        # session WAV; the day file says where each WAV sits on the session clock (the words' clock), so the
+        # timeline is read as it is now, edits included, and the plan is only where the fixes are written.
         items = sorted(tl.GetItemListInTrack("audio", 1) or [], key=lambda it: it.GetStart())
         if not items:
             raise Stop(f"{name}: no multicam pieces on a video track and no clips on A1")
-        clips = [{"start": int(it.GetStart()), "end": int(it.GetEnd())} for it in items]
-        pieces = []
-    else:
-        pieces = sorted(by_track[max(by_track, key=lambda k: len(by_track[k]))], key=lambda p: p["start"])
-    t0 = int(tl.GetStartFrame() or 0)
-    days = {}
-
-    def plan_pieces(plan):
-        if not plan.get("narration"):
-            return [{"src_in": v["in"], "src_out": v["out"]} for v in plan.get("video") or []]
-        lab = str(plan.get("label") or "").split("__")[0]
-        if lab not in days:
-            dp = os.path.join(run_dir, f"day_{lab}.json")
-            days[lab] = json.load(open(dp, encoding="utf-8")) if os.path.exists(dp) else None
-        return narration_pieces(plan, days[lab]) if days[lab] else []
-
-    # the plan: given, or the one whose shots (narration: clips) match
-    def match(plan):
-        if bool(plan.get("narration")) != narr:
-            return 0.0
-        pp = plan_pieces(plan)
-        if narr:
-            if len(pp) != len(clips):
-                return 0.0
-            return sum(abs((c["end"] - c["start"]) - (q["src_out"] - q["src_in"])) <= 1 for c, q in zip(clips, pp)) / len(clips)
-        if len(pp) != len(pieces):
-            return 0.0
-        return sum(abs(v["src_in"] - p["src_in"]) <= 1 and abs(v["src_out"] - p["src_out"]) <= 1 for v, p in zip(pp, pieces)) / len(pieces)
-    plan_path = g.get("PLAN")
-    if not plan_path:
-        best = (0.0, None)
-        for pth in glob.glob(os.path.join(glob.escape(run_dir), "*_plan.json")) + glob.glob(os.path.join(glob.escape(run_dir), "*__refined.json")):
+        nrm = lambda x: os.path.normcase(os.path.normpath(str(x or "")))
+        day, day_path = None, None
+        for dp in glob.glob(os.path.join(glob.escape(run_dir), "day_*.json")):
             try:
-                sc = match(json.load(open(pth, encoding="utf-8")))
+                d = json.load(open(dp, encoding="utf-8"))
             except Exception:
                 continue
-            if sc > best[0]:
-                best = (sc, pth)
-        plan_path = best[1] if best[0] >= 0.9 else None
+            if d.get("source") == "audio_timeline":
+                day, day_path = d, dp
+                break
+        if not day:
+            raise Stop(f"No narration day_<LABEL>.json in {run_dir}")
+        fsec = day["frame_sec"][0] / day["frame_sec"][1]
+        files = {nrm(m["path"]): m for m in day["mics"]}
+        files.update({os.path.basename(nrm(m["path"])): m for m in day["mics"]})
+        pieces, skipped, ratios = [], [], []
+        for it in items:
+            mpi = it.GetMediaPoolItem()
+            fp = nrm(mpi.GetClipProperty("File Path")) if mpi else ""
+            m = files.get(fp) or files.get(os.path.basename(fp))
+            st, en = int(it.GetStart()), int(it.GetEnd())
+            si, so = it.GetSourceStartFrame(), it.GetSourceEndFrame()
+            if not m or si is None or en <= st:
+                skipped.append(str(it.GetName()))
+                continue
+            if so is not None and float(so) > float(si):
+                ratios.append((float(so) - float(si)) / (en - st))
+            pieces.append({"start": st, "end": en, "_si": float(si), "_zero": m["file_zero_sec"] / fsec})
+        if not pieces:
+            raise Stop(f"{name}: none of the A1 clips is a file from {os.path.basename(day_path)}")
+        ratio = sorted(ratios)[len(ratios) // 2] if ratios else 1.0
+        unit = 1.0 if abs(ratio - 1) < 0.05 else ratio      # source frames, or samples per timeline frame
+        for p in pieces:
+            p["src_in"] = int(round(p.pop("_zero") + p.pop("_si") / unit))
+            p["src_out"] = p["src_in"] + (p["end"] - p["start"])
+        if skipped:
+            note = f"{len(skipped)} A1 clip(s) not from the session files, left out: {', '.join(skipped[:5])}"
+        label = str(day.get("label") or os.path.basename(day_path)[4:-5])
+        if not plan_path:                                   # the narration plan this timeline covers most of
+            best = (0.0, None)
+            kept_f = sum(p["src_out"] - p["src_in"] for p in pieces)
+            for pth in glob.glob(os.path.join(glob.escape(run_dir), f"{glob.escape(label)}*_plan.json")) \
+                    + glob.glob(os.path.join(glob.escape(run_dir), f"{glob.escape(label)}*__refined.json")):
+                try:
+                    pl = json.load(open(pth, encoding="utf-8"))
+                except Exception:
+                    continue
+                if not pl.get("narration"):
+                    continue
+                spans = narration_pieces(pl, day)
+                inside = sum(max(0, min(p["src_out"], q["src_out"]) - max(p["src_in"], q["src_in"])) for p in pieces for q in spans
+                             if q["src_in"] < p["src_out"] and p["src_in"] < q["src_out"])
+                sc = inside / max(1, kept_f)
+                if sc > best[0]:
+                    best = (sc, pth)
+            if best[0] < 0.5:
+                raise Stop(f"No narration plan in {run_dir} covers {name} ({best[0]:.0%} at best). Set PLAN=r\"…\" to force one.")
+            plan_path = best[1]
+        plan = json.load(open(plan_path, encoding="utf-8"))
+        as_built = narration_pieces(plan, day)
+        same = len(as_built) == len(pieces) and all(abs(p["src_in"] - q["src_in"]) <= 1 and abs(p["src_out"] - q["src_out"]) <= 1
+                                                     for p, q in zip(pieces, as_built))
+        say(f"Word edges — {name} — plan {os.path.basename(plan_path)} — {len(pieces)} clips (narration"
+            + (", as built)" if same else f", edited since Build: {len(as_built)} clips then; the refined plan starts from the timeline as it is now)")
+            + ("" if unit == 1.0 else f" [source in units of {unit:.0f}/frame]"))
+        if note:
+            say("  " + note)
+    else:
+        pieces = sorted(by_track[max(by_track, key=lambda k: len(by_track[k]))], key=lambda p: p["start"])
+
+        def match(plan):
+            vid = plan.get("video") or []
+            if plan.get("narration") or len(vid) != len(pieces):
+                return 0.0
+            return sum(abs(v["in"] - p["src_in"]) <= 1 and abs(v["out"] - p["src_out"]) <= 1 for v, p in zip(vid, pieces)) / len(pieces)
         if not plan_path:
-            raise Stop(f"No plan in {run_dir} matches {name}'s shots (edited after Build?). Set PLAN=r\"…\" to force one.")
-    plan = json.load(open(plan_path, encoding="utf-8"))
-    sc = match(plan)
-    if sc < 0.9:
-        raise Stop(f"{name} doesn't match {os.path.basename(plan_path)} ({sc:.0%} of shots) — run on the timeline as Build left it")
-    label = str(plan.get("label") or "").split("__")[0]
-    if narr:                                         # each clip's place on the session clock, from the plan
-        pieces = [{"start": c["start"], "end": c["end"], "src_in": q["src_in"], "src_out": q["src_out"]}
-                  for c, q in zip(clips, plan_pieces(plan))]
+            best = (0.0, None)
+            for pth in glob.glob(os.path.join(glob.escape(run_dir), "*_plan.json")) + glob.glob(os.path.join(glob.escape(run_dir), "*__refined.json")):
+                try:
+                    sc = match(json.load(open(pth, encoding="utf-8")))
+                except Exception:
+                    continue
+                if sc > best[0]:
+                    best = (sc, pth)
+            plan_path = best[1] if best[0] >= 0.9 else None
+            if not plan_path:
+                raise Stop(f"No plan in {run_dir} matches {name}'s shots (edited after Build?). Set PLAN=r\"…\" to force one.")
+        plan = json.load(open(plan_path, encoding="utf-8"))
+        sc = match(plan)
+        if sc < 0.9:
+            raise Stop(f"{name} doesn't match {os.path.basename(plan_path)} ({sc:.0%} of shots) — run on the timeline as Build left it")
+        label = str(plan.get("label") or "").split("__")[0]
+        say(f"Word edges — {name} — plan {os.path.basename(plan_path)} — {len(pieces)} shots")
     words = os.path.join(run_dir, f"words_{label}.json")
     levels = os.path.join(run_dir, f"levels_{label}.json")
     if not os.path.exists(words):
         raise Stop(f"No words_{label}.json in {run_dir}")
-    say(f"Word edges — {name} — plan {os.path.basename(plan_path)} — {len(pieces)} {'clips (narration)' if narr else 'shots'}")
 
     # markers already on it (ours from an earlier run are dropped first)
     for fr, m in list((tl.GetMarkers() or {}).items()):
