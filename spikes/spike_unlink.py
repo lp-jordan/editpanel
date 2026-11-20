@@ -112,9 +112,13 @@ def copy(n):
     old = [t for t in old if t.GetName() == name]
     if old:
         mp.DeleteTimelines(old)
-    d = src.DuplicateTimeline(name)
+    d = safe(lambda: src.DuplicateTimeline(name), None)
     if not d:
-        raise RuntimeError(f"DuplicateTimeline({name!r}) failed")
+        # fallback: duplicate the current timeline from the media pool side (some builds refuse the call above)
+        found = safe(lambda: [c for c in mp.GetCurrentFolder().GetClipList() if c.GetName() == src.GetName()], []) or []
+        say(f"    DuplicateTimeline({name!r}) returned nothing; media-pool clips named {src.GetName()!r} "
+            f"in the current bin: {len(found)}")
+        raise RuntimeError(f"DuplicateTimeline({name!r}) failed: can't make a scratch copy")
     copies.append(d)
     project.SetCurrentTimeline(d)
     return d
@@ -131,20 +135,25 @@ def attempt(tl, label, its):
 
 
 try:
-    say("\n1. One linked pair")
+    say("\n1. One linked clip with its partners (any track: on B1_Convo only A1 clips are linked, to each other)")
     d = copy(1)
-    lk = [(it, links(it)) for it in items(d) if where(it) == "V1" and links(it)]
+    lk = [(it, links(it)) for it in items(d) if links(it)]
     if not lk:
-        say("  no linked picture clip on V1: nothing to test")
+        say("  no linked clip: nothing to test")
     else:
         v, partners = lk[0]
-        say(f"  pair: {where(v)} '{v.GetName()}' ↔ {[where(o) + ' ' + o.GetName() for o in partners]}")
-        attempt(d, "picture + its partners", [v] + list(partners))
-        say(f"    that picture now linked to: {[where(o) for o in (links(v) or [])]}")
-        if len(lk) > 1:
-            v2, _ = lk[1]
-            attempt(d, "picture alone (next pair)", [v2])
-            say(f"    that picture now linked to: {[where(o) for o in (links(v2) or [])]}")
+        say(f"  clip: {where(v)} '{v.GetName()}' ↔ {len(partners)} partner(s) on {sorted({where(o) for o in partners})}")
+        attempt(d, "clip + its partners", [v] + list(partners))
+        say(f"    that clip now linked to: {[where(o) for o in (links(v) or [])]}")
+        rest = [(it, x) for it, x in ((it, links(it)) for it in items(d)) if x]
+        if rest:
+            v2, _ = rest[0]
+            attempt(d, "one clip alone (a still-linked one)", [v2])
+            say(f"    that clip now linked to: {[where(o) for o in (links(v2) or [])]}")
+
+    say("\n1b. A1 clips only in one call")
+    d = copy("1b")
+    attempt(d, "A1 only", list(d.GetItemListInTrack("audio", 1) or []))
 
     say("\n2. All linked clips in one call (no mic clips)")
     d = copy(2)
@@ -171,6 +180,11 @@ try:
     say("\nResult on the copies (what's still linked):")
     for d in copies:
         say(f"  {d.GetName()}: {linked_count(d)} linked")
+except Exception:  # noqa: BLE001 — the report must say why it stopped (the console traceback isn't saved)
+    import traceback
+    say("\nSTOPPED with an error:")
+    for line in traceback.format_exc().rstrip().splitlines():
+        say(f"  {line}")
 finally:
     project.SetCurrentTimeline(src)
     if copies and not KEEP:
