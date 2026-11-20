@@ -21,7 +21,9 @@ line to keep them for a look).
 Run in Resolve (project "Elevate Pools" open): Workspace → Console → Py3, then
     exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_unlink.py", encoding="utf-8").read())
 Another timeline: set TIMELINE = "D6_Convo" in the console first (default: B1_Convo, else the
-current timeline). Report: printed, and saved to Desktop\\spike_unlink.txt.
+current timeline). Report: printed, and saved to the NAS spike-report folder
+(N:\\Client AV Assets\\[1] ACTIVE\\Elevate Pools\\Cut-Through\\spike reports\\spike_unlink_<date>_<time>.txt;
+the Desktop if N: isn't there).
 """
 import os
 import time
@@ -29,7 +31,15 @@ from collections import Counter
 
 TIMELINE = globals().get("TIMELINE") or "B1_Convo"
 KEEP = bool(globals().get("KEEP"))
-REPORT = os.path.join(os.path.expanduser("~"), "Desktop", "spike_unlink.txt")
+# Reports go to the NAS so they can be read from the Mac without copying (Jordan, 2026-11-20).
+# Dated names: each run is kept.
+REPORT_DIR = r"N:\Client AV Assets\[1] ACTIVE\Elevate Pools\Cut-Through\spike reports"
+_name = f"spike_unlink_{time.strftime('%Y-%m-%d_%H%M%S')}.txt"
+try:
+    os.makedirs(REPORT_DIR, exist_ok=True)
+    REPORT = os.path.join(REPORT_DIR, _name)
+except OSError:
+    REPORT = os.path.join(os.path.expanduser("~"), "Desktop", _name)
 _out = []
 
 
