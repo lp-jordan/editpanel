@@ -384,7 +384,7 @@ function createCutThrough(opts) {
     if (live) {
       if (endedBatches().includes(b.id)) return;   // the queue watch saw it end; this label's file is just behind
       setQueuedBatches({ ...q, [b.id]: { project: s.project, mc: s.mc || (s.day && s.day.multicam) || null, label: s.label,
-        videos: Object.keys(b.items || {}).length, submittedAt: b.submittedAt || Date.now(), model: b.model || null } });
+        videos: Object.keys(b.items || {}).length, requests: Object.values(b.items || {}).reduce((n, x) => n + (x.parts || 1), 0), submittedAt: b.submittedAt || Date.now(), model: b.model || null } });
       watchQueue();
     } else if (b.status === 'ended') {
       batchEnded(b.id, q[b.id], { createdAt: b.createdAt || null, endedAt: b.endedAt || null, counts: b.counts || null });
@@ -423,7 +423,7 @@ function createCutThrough(opts) {
     logBatchTime([startedAt ? new Date(startedAt).toISOString() : '', new Date(endedAt).toISOString(), minutes, e.project, e.mc, e.label,
       e.videos, c.succeeded, c.errored, c.canceled, c.expired, e.model, id]);
     if (onBatchEnded) {
-      try { onBatchEnded({ id, project: e.project || null, mc: e.mc || null, label: e.label, videos: e.videos, minutes, counts: t.counts || null }); } catch (_) { /* never stops the queue */ }
+      try { onBatchEnded({ id, project: e.project || null, mc: e.mc || null, label: e.label, videos: e.videos, requests: e.requests || e.videos, minutes, counts: t.counts || null }); } catch (_) { /* never stops the queue */ }
     }
     watchQueue();
   }
@@ -2300,17 +2300,23 @@ function createCutThrough(opts) {
           skipped.push(`${v.name}: ${err.message}`);
           continue;
         }
-        let input = null;
-        try {
-          const counted = await api.messages.countTokens({ model: ctx.params.model, system: ctx.params.system, messages: ctx.params.messages });
-          input = counted && Number(counted.input_tokens);
-        } catch (_) { /* estimate below */ }
-        if (!Number.isFinite(input) || input <= 0) input = Math.round((ctx.system.length + ctx.params.messages[0].content.length) / 3.5);
+        // a long narration read goes as several parts (one request each, `<id>__p<n>`), joined on collect
+        let input = 0;
+        for (const p of ctx.parts) {
+          let n = null;
+          try {
+            const counted = await api.messages.countTokens({ model: p.params.model, system: p.params.system, messages: p.params.messages });
+            n = counted && Number(counted.input_tokens);
+          } catch (_) { /* estimate below */ }
+          if (!Number.isFinite(n) || n <= 0) n = Math.round((ctx.system.length + p.params.messages[0].content.length) / 3.5);
+          input += n;
+        }
         const output = Math.round(input * ratio);
         const usd = claude.costOf(ctx.model, { input_tokens: input, output_tokens: output }, 0.5);
         const { label: _l, wordsPath: _w, dayPath: _d, outDir: _o, costsDir: _c, promptPath: _p, ...keep } = args;
-        requests.push({ custom_id: v.id, params: ctx.params });
-        items[v.id] = { name: v.name, input, output, usd, args: keep };
+        if (ctx.parts.length > 1) ctx.parts.forEach((p, k) => requests.push({ custom_id: `${v.id}__p${k + 1}`, params: p.params }));
+        else requests.push({ custom_id: v.id, params: ctx.params });
+        items[v.id] = { name: v.name, input, output, usd, args: keep, ...(ctx.parts.length > 1 ? { parts: ctx.parts.length } : {}) };
       }
       if (!requests.length) {
         finish('plan', { error: `Nothing to send: ${skipped.join('; ')}`, report: st.log.slice() });
@@ -2364,7 +2370,7 @@ function createCutThrough(opts) {
     writeVideos({ ...s.videos, active: true, videos, batch: { ...b, status: created.processing_status || 'in_progress', id: created.id,
       submittedAt: Date.now(), createdAt: created.created_at ? Date.parse(created.created_at) : null,
       counts: created.request_counts || null, endedAt: null, collected: false } });
-    pushLog('plan', `Batch sent: ${created.id} (${draft.requests.length} video(s))`);
+    pushLog('plan', `Batch sent: ${created.id} (${Object.keys(b.items).length} video(s)${draft.requests.length > Object.keys(b.items).length ? `, ${draft.requests.length} requests` : ''})`);
     pollBatch();
     emit();
     return snapshot();
@@ -2422,36 +2428,57 @@ function createCutThrough(opts) {
         st.progress = { phase: `${v.name} · placing the cuts`, phaseAt: Date.now(), bar: Math.round((k / ids.length) * 100) };
         emit();
         pushLog('plan', `── ${v.name} ──`);
-        const result = got[id];
-        let error = null;
+        const nParts = item.parts || 1;
+        const keys = nParts > 1 ? Array.from({ length: nParts }, (_, k) => `${id}__p${k + 1}`) : [id];
+        const resultError = (result, k) => {
+          const where = nParts > 1 ? `part ${k + 1} of ${nParts}: ` : '';
+          if (!result) return `${where}No answer in the batch`;
+          if (result.type === 'errored') return `${where}Batch error: ${result.error?.error?.message || result.error?.type || 'unknown'}`;
+          if (result.type === 'canceled') return `${where}Canceled before it ran`;
+          if (result.type === 'expired') return `${where}Expired (not run within 24 h)`;
+          return null;
+        };
+        let error = keys.map((key, k) => resultError(got[key], k)).find(Boolean) || null;
         let summary = null;
         let cost = null;
-        if (!result) error = 'No answer in the batch';
-        else if (result.type === 'errored') error = `Batch error: ${result.error?.error?.message || result.error?.type || 'unknown'}`;
-        else if (result.type === 'canceled') error = 'Canceled before it ran';
-        else if (result.type === 'expired') error = 'Expired (not run within 24 h)';
-        else {
-          const args = { ...item.args, label: videoFiles(id).tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
-            promptPath: path.join(st0.pipelineDir, 'editor_briefs', item.args.kind === 'convo' ? 'conversation.md' : 'solo.md') };
-          const msg = result.message;
+        const args = { ...item.args, label: videoFiles(id).tag, wordsPath: f.words, dayPath: f.day, outDir: f.dir, costsDir: st0.filesDir,
+          promptPath: path.join(st0.pipelineDir, 'editor_briefs', briefFor(item.args.kind)) };
+        // every answer that came back is billed: read and log each, even when another part failed
+        const answers = [];
+        let readErr = null;
+        keys.forEach((key, k) => {
+          const result = got[key];
+          if (!result || result.type !== 'succeeded') return;
+          const minutes = nParts > 1 ? null : (item.args.minutes || v.minutes);
           try {
-            const res = claude.readMessage(msg, b.model);
+            const res = claude.readMessage(result.message, b.model);
             claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan', model: res.model, effort: args.effort, usage: res.usage, factor: 0.5,
-              minutes: item.args.minutes || v.minutes, kind: item.args.kind });
-            cost = claude.costOf(res.model, res.usage, 0.5);
-            spent += cost;
-            const ctx = claude.preparePlan(args);
-            const out = claude.finishPlan(ctx, res, { outDir: f.dir, factor: 0.5, via: 'batch' });
-            out.lines.forEach((line) => pushLog('plan', line));
-            ({ error, summary } = await placeVideo(v, args, out.removalsFile, R));
+              minutes, kind: item.args.kind });
+            const c = claude.costOf(res.model, res.usage, 0.5);
+            cost = (cost || 0) + c;
+            spent += c;
+            answers[k] = res;
           } catch (err) {
             if (err.usage) {
               const c = claude.costOf(err.model || b.model, err.usage, 0.5);
               claude.logCost({ costsDir: st0.filesDir, outDir: f.dir, label: args.label, step: 'batch_plan_failed', model: err.model || b.model, effort: args.effort, usage: err.usage, factor: 0.5,
-                minutes: item.args.minutes || v.minutes, kind: item.args.kind });
+                minutes, kind: item.args.kind });
               spent += c;
               err.message += ` (billed $${c})`;
             }
+            readErr = readErr || `Claude: ${nParts > 1 ? `part ${k + 1} of ${nParts}: ` : ''}${err.message}`;
+          }
+        });
+        error = error || readErr;
+        if (!error) {
+          try {
+            const ctx = claude.preparePlan(args);
+            if (ctx.parts.length !== nParts) throw new Error(`the recording now splits into ${ctx.parts.length} part(s), the batch sent ${nParts} — plan it again`);
+            const res = nParts > 1 ? claude.mergeParts(ctx, answers) : answers[0];
+            const out = claude.finishPlan(ctx, res, { outDir: f.dir, factor: 0.5, via: nParts > 1 ? `batch, ${nParts} parts` : 'batch' });
+            out.lines.forEach((line) => pushLog('plan', line));
+            ({ error, summary } = await placeVideo(v, args, out.removalsFile, R));
+          } catch (err) {
             error = `Claude: ${err.message}`;
           }
         }

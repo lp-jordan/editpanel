@@ -2714,7 +2714,9 @@ app.whenReady().then(() => {
       const canceled = !c.succeeded && c.canceled > 0;
       const m = b.minutes;
       const took = m == null ? '' : ` · took ${m < 60 ? `${Math.max(1, Math.round(m))} min` : `${Math.floor(m / 60)} h ${Math.round(m % 60)} min`}`;
-      const videos = c.succeeded != null && !canceled ? `${c.succeeded} of ${b.videos} videos` : `${b.videos} videos`;
+      const videos = c.succeeded != null && !canceled
+        ? (b.requests && b.requests !== b.videos ? `${b.videos} video(s), ${c.succeeded} of ${b.requests} parts` : `${c.succeeded} of ${b.videos} videos`)
+        : `${b.videos} videos`;
       const n = new Notification({ title: canceled ? 'Cut-through batch canceled' : 'Cut-through batch ready', body: `${b.label} · ${videos}${took}` });
       n.on('click', () => { if (win) { win.show(); win.focus(); } });
       n.show();

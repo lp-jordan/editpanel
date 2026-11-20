@@ -19,6 +19,7 @@ const path = require('path');
 const AnthropicModule = require('@anthropic-ai/sdk');
 const { energyModel, energyLabel } = require('./cut_through_energy');
 const { angleNo, REFUSAL_FALLBACK, withRefusalFallback } = require('./cut_through_util');
+const narrationLib = require('./cut_through_narration');
 
 const Anthropic = AnthropicModule.default || AnthropicModule;
 
@@ -51,6 +52,12 @@ const PAUSES = { narration: { max: 30, left: 18, min_save: 0, before: 4, join_af
 const LINE_GAP_SEC = 0.6;
 const MAX_WORDS = 15000;           // ≈ 2.4 h of talk ≈ $1.75 on Opus: the most one Claude pass may take
 const SHOW_PAUSE_SEC = 1.5;
+// narration is planned in parts (2026-11-20): one pass over a 2-hour read (Ben webinar, 11-12)
+// found 74 removals in 118 min; course videos reach Claude as 5–15 min J-code videos. Parts are
+// for planning only: their answers merge back into one edit per chapter (seconds below).
+const PART = { target: 12 * 60, min: 8 * 60, max: 15 * 60 };
+const PART_CONTEXT_WORDS = 60;     // read-only words shown either side of a part
+const PART_PARALLEL = 3;           // live: parts asked at once
 const ENERGY_EVERY_SEC = 10;      // energy hints: one reading per talker per ~10 s at most
 
 // What Jordan's own edits do with each kind of angle (docs/ai-rough-cut-style-guide.md, measured).
@@ -155,7 +162,7 @@ function clock(sec) {
  * mic angle → label) every line says who's talking and a new line starts when the talker changes:
  * `[12:41] Camera 2: 412 the …`.
  */
-function renderTranscript(tokens, frameSec, speakers = null, energy = null) {
+function renderTranscript(tokens, frameSec, speakers = null, energy = null, range = null) {
   const lines = [];
   let cur = null;
   let prevEnd = null;
@@ -163,7 +170,10 @@ function renderTranscript(tokens, frameSec, speakers = null, energy = null) {
   // energy hints (on trial, 2026-11-10): read at most every ENERGY_EVERY_SEC, shown only on a change
   const said = {};
   const readAt = {};
-  tokens.forEach((t, i) => {
+  // range [i0, i1]: just that part, numbered with the whole recording's token numbers
+  const off = range ? range[0] : 0;
+  (range ? tokens.slice(range[0], range[1] + 1) : tokens).forEach((t, k) => {
+    const i = k + off;
     const gap = prevEnd === null ? 0 : (t.s - prevEnd) * frameSec;
     if (!cur || gap > LINE_GAP_SEC || (speakers && t.who !== prevWho)) {
       if (cur) lines.push(cur);
@@ -184,6 +194,103 @@ function renderTranscript(tokens, frameSec, speakers = null, energy = null) {
   });
   if (cur) lines.push(cur);
   return lines.join('\n');
+}
+
+const CUE_WORDS = new Set(['slide', 'chapter', 'part', 'section']);
+const bare = (t) => String((t && t.text) || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Planning parts for a long read: token ranges [i0, i1] of about PART.target seconds, never over
+ * PART.max (a last stretch under PART.max + PART.min is halved, so no tiny part). Each split sits
+ * before a token where the read naturally breaks: a long pause scores its length (up to 10 s), a
+ * spoken cue starting after a pause ("Slide 12…", "End of slide", "Chapter…") 4 more, and every 2 min away from
+ * the aim costs 1. A short read is one part.
+ */
+function partRanges(tokens, frameSec, part = PART) {
+  if (!tokens.length) return [];
+  const last = tokens.length - 1;
+  const out = [];
+  let i0 = 0;
+  while (i0 <= last) {
+    const t0 = tokens[i0].s;
+    const left = (tokens[last].e - t0) * frameSec;
+    if (left <= part.max) { out.push([i0, last]); break; }
+    const aim = left < part.max + part.min ? left / 2 : part.target;
+    const lo = Math.max(aim * 0.5, aim - 4 * 60);
+    const hi = Math.min(part.max, aim + 3 * 60);
+    let best = -1;
+    let bestScore = -Infinity;
+    let prevEnd = tokens[i0].e;
+    for (let i = i0 + 1; i <= last; i += 1) {
+      const at = (tokens[i].s - t0) * frameSec;
+      if (at > hi) break;
+      const gap = Math.max(0, (tokens[i].s - prevEnd) * frameSec);
+      prevEnd = Math.max(prevEnd, tokens[i].e);
+      if (at < lo) continue;
+      // a cue starts here ("Slide 12…", "Chapter…", "End of slide…") after a real pause — not
+      // "the slide shows" mid-sentence
+      const cue = gap >= 0.4 && (CUE_WORDS.has(bare(tokens[i])) || (bare(tokens[i]) === 'end' && bare(tokens[i + 1]) === 'of'));
+      const score = Math.min(gap, 10) + (cue ? 4 : 0) - Math.abs(at - aim) / 120;
+      if (score > bestScore) { bestScore = score; best = i; }
+    }
+    if (best <= i0) {                                 // no token in the window: cut at the first past it
+      best = i0 + 1;
+      while (best < last && (tokens[best].s - t0) * frameSec < aim) best += 1;
+    }
+    // "Slide | number 20": a cue word left at the end of the part goes with what it announces
+    if (best - 1 > i0 && CUE_WORDS.has(bare(tokens[best - 1]))) best -= 1;
+    out.push([i0, best - 1]);
+    i0 = best;
+  }
+  return out;
+}
+
+/** Plain words of tokens (no numbers): the read-only context beside a part. */
+function plainText(tokens, frameSec) {
+  if (!tokens.length) return '';
+  return `[${clock(tokens[0].s * frameSec)}] ${tokens.map((t) => (t.kind === 'u' ? '⟨sound⟩' : t.text)).join(' ')}`;
+}
+
+/** The stretch of the manuscript a part covers: from a little before where its first words are
+ *  found to a little after where the next part's are; the whole text when they can't be found. */
+function manuscriptSlice(script, tokens, range, nextRange, margin = 60) {
+  const raw = [...String(script || '').matchAll(/\S+/g)];
+  if (!raw.length) return '';
+  const seq = [];
+  const rawOf = [];
+  raw.forEach((m, r) => narrationLib.normWords(m[0]).forEach((n) => { seq.push(n); rawOf.push(r); }));
+  const target = (i0) => narrationLib.normWords(tokens.slice(i0, i0 + 30).filter((t) => t.kind === 'w').map((t) => t.text).join(' ')).slice(0, 12);
+  const a = range[0] === 0 ? 0 : narrationLib.locate(seq, target(range[0]), 0);
+  const b = nextRange ? narrationLib.locate(seq, target(nextRange[0]), Math.max(0, a)) : seq.length;
+  const r0 = a > 0 ? Math.max(0, rawOf[a] - margin) : 0;
+  const r1 = b >= 0 && b < seq.length ? Math.min(raw.length, rawOf[b] + margin) : raw.length;
+  if (r1 <= r0) return String(script);
+  const end = r1 < raw.length ? raw[r1].index : script.length;
+  return String(script).slice(raw[r0].index, end).trim();
+}
+
+/**
+ * Parts' answers (readMessage results, in ctx.parts order) → one answer for finishPlan: removals,
+ * beats, notes and shots joined; anything numbered outside its own part is dropped (a part only
+ * sees its own numbers); usage summed. Returns { parsed, usage, model, problems }.
+ */
+function mergeParts(ctx, answers) {
+  const parsed = { removals: [], beats: [], notes: [], shots: [] };
+  const problems = [];
+  const usage = {};
+  ctx.parts.forEach((p, k) => {
+    const a = answers[k];
+    const inside = (i) => Number.isInteger(i) && i >= p.range[0] && i <= p.range[1];
+    for (const r of (a.parsed && a.parsed.removals) || []) {
+      if (inside(Number(r.from)) && inside(Number(r.to))) parsed.removals.push(r);
+      else problems.push(`part ${k + 1}: skipped ${JSON.stringify({ from: r.from, to: r.to })}: outside the part`);
+    }
+    parsed.beats.push(...((a.parsed && a.parsed.beats) || []).filter(inside));
+    parsed.notes.push(...((a.parsed && a.parsed.notes) || []).filter((n) => typeof n === 'string' || n.at == null || inside(n.at)));
+    parsed.shots.push(...((a.parsed && a.parsed.shots) || []).filter((x) => inside(x.from)));
+    for (const [key, v] of Object.entries(a.usage || {})) if (typeof v === 'number') usage[key] = (usage[key] || 0) + v;
+  });
+  return { parsed, usage, model: (answers[0] && answers[0].model) || ctx.model, problems };
 }
 
 /** Check Claude's ranges; returns {ok:[...], problems:[...]} (sorted, de-overlapped). */
@@ -401,15 +508,22 @@ function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model,
     : null;
   const narration = day.source === 'audio_timeline';
   const script = String(manuscript || '').trim();
-  const meta = narration ? [
-    `Recording: ${label}, ${((e0 - s0) * frameSec / 60).toFixed(1)} min of audiobook narration, one narrator, ` +
-      `${nWords} words, ${nUnheard} unheard-sound marks. Audio only: there are no camera angles and no shots.`,
+  const narrationMeta = ({ minutes, words: nw, unheard: nu, text, part = null }) => [
+    `Recording: ${label}, ${minutes.toFixed(1)} min of audiobook narration, one narrator, ` +
+      `${nw} words, ${nu} unheard-sound marks. Audio only: there are no camera angles and no shots.`,
+    ...(part ? ['', `This is part ${part.n} of ${part.of} of one longer recording; each part is edited on its own and the parts are joined in order. ` +
+      'The lines under "Just before this part" and "Just after this part" are context only (no token numbers): they are edited in the neighbouring part. ' +
+      'Use them at your part\'s edges: a line at the end of your part that is read again just after it is an earlier take (remove it here); ' +
+      'a line at the start of your part that re-reads one just before it is the take to keep. Never refer to them in removals, beats or notes.',
+    ...(part.before ? ['', `Just before this part:\n${part.before}`] : []),
+    ...(part.after ? ['', `Just after this part:\n${part.after}`] : [])] : []),
     `Delivery: ${DELIVERY.narration}`,
-    ...(script ? ['', 'The manuscript for this part of the recording (what the narrator should read; the transcript is what they actually said):',
-      `<manuscript>\n${script}\n</manuscript>`] : ['', 'No manuscript was given: judge the takes from the transcript alone.']),
+    ...(text ? ['', 'The manuscript for this part of the recording (what the narrator should read; the transcript is what they actually said):',
+      `<manuscript>\n${text}\n</manuscript>`] : ['', 'No manuscript was given: judge the takes from the transcript alone.']),
     ...(String(direction || '').trim() ? ['', `Direction from Jordan for this recording (follow it; where it disagrees with the guidelines in your brief, it wins):`,
       String(direction).trim()] : [])
-  ].join('\n') : [
+  ].join('\n');
+  const meta = narration ? narrationMeta({ minutes: (e0 - s0) * frameSec / 60, words: nWords, unheard: nUnheard, text: script }) : [
     `Recording: ${label}, ${((e0 - s0) * frameSec / 60).toFixed(1)} min, ` +
       (multi ? `${people.length} people, each on their own mic (${people.join(', ')}); a line's label says who is talking, ` :
         `one speaker (audio: ${talker || 'mic'}), `) +
@@ -427,13 +541,30 @@ function preparePlan({ label, wordsPath, dayPath, promptPath, start, end, model,
   ].join('\n');
   // one pass over a whole day can run out of output room and is billed anyway (2026-11-06):
   // refuse a section that long before sending it (~6,200 words per raw hour)
-  if (nWords > MAX_WORDS) {
-    throw new Error(`Too long for one Claude pass: ${nWords} words (about ${(nWords / 6200).toFixed(1)} h). ` +
+  const ranges = narration ? partRanges(tokens, frameSec) : [[0, tokens.length - 1]];
+  const parts = ranges.length < 2
+    ? [{ range: ranges[0], transcript, meta, nWords, minutes: (e0 - s0) * frameSec / 60 }]
+    : ranges.map((range, k) => {
+      const [i0, i1] = range;
+      const own = tokens.slice(i0, i1 + 1);
+      const words = own.filter((t) => t.kind === 'w').length;
+      const before = plainText(tokens.slice(0, i0).filter((t) => t.kind === 'w').slice(-PART_CONTEXT_WORDS), frameSec);
+      const after = plainText(tokens.slice(i1 + 1).filter((t) => t.kind === 'w').slice(0, PART_CONTEXT_WORDS), frameSec);
+      const text = script ? manuscriptSlice(script, tokens, range, ranges[k + 1]) : '';
+      return { range, nWords: words, minutes: (own[own.length - 1].e - own[0].s) * frameSec / 60,
+        transcript: renderTranscript(tokens, frameSec, speakers, energy, range),
+        meta: narrationMeta({ minutes: (own[own.length - 1].e - own[0].s) * frameSec / 60, words, unheard: own.length - words, text,
+          part: { n: k + 1, of: ranges.length, before, after } }) };
+    });
+  const longest = Math.max(...parts.map((p) => p.nWords));
+  if (longest > MAX_WORDS) {
+    throw new Error(`Too long for one Claude pass: ${longest} words (about ${(longest / 6200).toFixed(1)} h). ` +
       `Pick a From/To of about ${Math.floor(MAX_WORDS / 6200 * 4) * 15} minutes or less.`);
   }
-  const params = requestParams({ model: model || DEFAULT_MODEL, effort, system, transcript, meta, angles });
+  parts.forEach((p) => { p.params = requestParams({ model: model || DEFAULT_MODEL, effort, system, transcript: p.transcript, meta: p.meta, angles }); });
+  const params = parts[0].params;
   return { label, tokens, s0, e0, frameSec, angles, system, transcript, meta, nWords, minutes: (e0 - s0) * frameSec / 60,
-    model: model || DEFAULT_MODEL, effort, delivery, direction, energy: !!energy, params };
+    model: model || DEFAULT_MODEL, effort, delivery, direction, energy: !!energy, params, parts };
 }
 
 const COST_HEADER = 'when,label,step,model,effort,input_tokens,output_tokens,cache_read,cache_write,usd,seconds,minutes,kind';
@@ -465,25 +596,43 @@ function logCost({ costsDir, outDir, label, step, model, effort, usage, seconds 
 async function planWithClaude(o) {
   const { outDir, costsDir, apiKey, client, log = () => {}, onEvent } = o;
   const ctx = preparePlan(o);
-  log(`Asking ${ctx.model} to edit the ${ctx.minutes.toFixed(1)}-minute recording (${ctx.nWords} words)…`);
+  const many = ctx.parts.length > 1;
+  log(`Asking ${ctx.model} to edit the ${ctx.minutes.toFixed(1)}-minute recording (${ctx.nWords} words)` +
+    (many ? ` in ${ctx.parts.length} parts of ~${Math.round(ctx.minutes / ctx.parts.length)} min` : '') + '…');
   const t0 = Date.now();
-  let res;
-  try {
-    res = await askClaude({ apiKey, model: ctx.model, effort: ctx.effort, system: ctx.system, transcript: ctx.transcript, meta: ctx.meta,
-      angles: ctx.angles, client, onEvent, signal: o.signal || null });
-  } catch (err) {
-    if (err.usage) {
-      const m = err.model || ctx.model;
-      logCost({ costsDir, outDir, label: ctx.label, step: err.canceled ? 'solo_plan_canceled' : 'solo_plan_failed', model: m, effort: ctx.effort, usage: err.usage, seconds: (Date.now() - t0) / 1000,
-        minutes: o.minutes || ctx.minutes, kind: o.kind });
-      err.message += ` (billed $${costOf(m, err.usage)})`;
+  const answers = new Array(ctx.parts.length);
+  let failure = null;
+  let next = 0;
+  // live parts go a few at a time; one failing part fails the edit (the others are billed and logged)
+  const worker = async () => {
+    while (next < ctx.parts.length && !failure) {
+      const k = next;
+      next += 1;
+      const p = ctx.parts[k];
+      const started = Date.now();
+      try {
+        answers[k] = await askClaude({ apiKey, model: ctx.model, effort: ctx.effort, system: ctx.system, transcript: p.transcript, meta: p.meta,
+          angles: ctx.angles, client, onEvent, signal: o.signal || null });
+      } catch (err) {
+        if (err.usage) {
+          const m = err.model || ctx.model;
+          logCost({ costsDir, outDir, label: ctx.label, step: err.canceled ? 'solo_plan_canceled' : 'solo_plan_failed', model: m, effort: ctx.effort, usage: err.usage, seconds: (Date.now() - started) / 1000,
+            minutes: many ? p.minutes : (o.minutes || ctx.minutes), kind: o.kind });
+          err.message += ` (billed $${costOf(m, err.usage)})`;
+        }
+        if (many) err.message = `part ${k + 1} of ${ctx.parts.length}: ${err.message}`;
+        failure = failure || err;
+        return;
+      }
+      logCost({ costsDir, outDir, label: ctx.label, step: 'solo_plan', model: answers[k].model, effort: ctx.effort, usage: answers[k].usage, seconds: (Date.now() - started) / 1000,
+        minutes: many ? p.minutes : (o.minutes || ctx.minutes), kind: o.kind || (ctx.delivery === 'convo' ? 'convo' : 'solo') });
+      if (many) log(`  part ${k + 1} of ${ctx.parts.length} back (${p.minutes.toFixed(1)} min)`);
     }
-    throw err;
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(PART_PARALLEL, ctx.parts.length) }, worker));
+  if (failure) throw failure;
   const seconds = Math.round((Date.now() - t0) / 1000);
-  logCost({ costsDir, outDir, label: ctx.label, step: 'solo_plan', model: res.model, effort: ctx.effort, usage: res.usage, seconds,
-    minutes: o.minutes || ctx.minutes, kind: o.kind || (ctx.delivery === 'convo' ? 'convo' : 'solo') });
-  return finishPlan(ctx, res, { outDir, seconds });
+  return finishPlan(ctx, many ? mergeParts(ctx, answers) : answers[0], { outDir, seconds, via: many ? `${ctx.parts.length} parts` : '' });
 }
 
 /**
@@ -493,6 +642,7 @@ async function planWithClaude(o) {
 function finishPlan(ctx, res, { outDir, seconds = 0, factor = 1, via = '' }) {
   const { label, tokens, s0, e0, frameSec, angles, effort, delivery, direction, energy } = ctx;
   const { ok, problems } = validateRemovals(res.parsed.removals, tokens.length);
+  problems.unshift(...(res.problems || []));
   const spans = toFrameSpans(tokens, ok, { start: s0, end: e0 });
   const sv = validateShots(res.parsed.shots, ok, tokens.length, angles);
   problems.push(...sv.problems);
@@ -536,4 +686,5 @@ function finishPlan(ctx, res, { outDir, seconds = 0, factor = 1, via = '' }) {
   return { removalsFile, claudeFile, lines, cost, problems };
 }
 
-module.exports = { planWithClaude, preparePlan, finishPlan, readMessage, makeClient, logCost, renderTranscript, costOf, DEFAULT_MODEL, DELIVERY, PRICES };
+module.exports = { planWithClaude, preparePlan, finishPlan, mergeParts, partRanges, manuscriptSlice, readMessage, makeClient, logCost, renderTranscript, costOf,
+  DEFAULT_MODEL, DELIVERY, PRICES, PART };

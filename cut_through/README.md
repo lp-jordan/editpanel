@@ -27,6 +27,14 @@ manuscript text (no shots). `place_cuts.py` keeps sound only. Build runs `build_
 2-frame crossfades at joins, 8-frame head/tail fades and the review markers. Check and Compare
 aren't built for narration yet. Untested on a real book.
 
+**Narration in parts (1.2.185).** Chapters only decide the output timelines. Planning is split
+separately: a chapter (or a read with no manuscript) longer than 15 min goes to Claude in parts of
+~12 min (`partRanges` in `cut_through_claude.js`), split at a long pause or a spoken cue ("Slide 12…",
+"End of slide", "Chapter…"). Each part keeps the whole read's token numbers, sees ~60 words of
+read-only context either side and its own stretch of the manuscript; the answers merge into one
+edit, so `place_cuts.py` and Build are unchanged. Live: 3 parts at a time; batch: one request per
+part (`c01__p1`…), and a failed part fails the chapter. Tests: `node scripts/test-narration-parts.js`.
+
 | Step | File | What it does |
 |---|---|---|
 | Prep | `prepare_multicam.py` | Reads the multicam from Resolve: its angles, its length, where each mic or camera's audio sits, and the recordings (where the cameras rolled). Writes `day_<LABEL>.json`. |

@@ -1232,7 +1232,7 @@ function CutThroughPage({ connected }) {
               {batchLive && batch.counts && (
                 <div className="ct-grow-block">
                   <CtProgress text={`Sent ${batch.submittedAt ? ctWhen(batch.submittedAt) : ''}`} startedAt={null} now={now}
-                    pct={Math.round(((batch.counts.succeeded + batch.counts.errored + batch.counts.canceled + batch.counts.expired) / Math.max(1, Object.keys(batch.items || {}).length)) * 100)} />
+                    pct={Math.round(((batch.counts.succeeded + batch.counts.errored + batch.counts.canceled + batch.counts.expired) / Math.max(1, Object.values(batch.items || {}).reduce((n, x) => n + (x.parts || 1), 0))) * 100)} />
                 </div>
               )}
               {!batchDraft && !batchLive && (
@@ -1365,7 +1365,7 @@ function CutThroughPage({ connected }) {
 
       {batchLive && (
         <div className="ct-banner" role="status">
-          Batch in the queue{batch.counts ? ` · ${batch.counts.succeeded + batch.counts.errored + batch.counts.canceled + batch.counts.expired}/${Object.keys(batch.items || {}).length}` : ''}
+          Batch in the queue{batch.counts ? ` · ${batch.counts.succeeded + batch.counts.errored + batch.counts.canceled + batch.counts.expired}/${Object.values(batch.items || {}).reduce((n, x) => n + (x.parts || 1), 0)}` : ''}
           {batch.submittedAt ? ` · sent ${ctWhen(batch.submittedAt)}` : ''}
         </div>
       )}
