@@ -22,6 +22,7 @@ Every removal becomes a cut, so one removal per problem, covering the whole prob
 - **Engineer and narrator talk** between takes ("pickup from 'the rain'", "let me go again", "sorry", "rolling", page-turn comments, counts): remove whole.
 - **Pre-roll / post-roll:** remove everything before the first line of the read and after the last.
 - **Chapter and section headings** ("Chapter Three. The Long Road.") are part of the read: keep them, and their retakes follow the same rules.
+- **Spoken cues for the editor are never part of the read.** A narrator reading slides says where each slide starts and ends: "Slide 12, titled Humidity Effects on Hydration", "Slide number nine, title, stage four", "This is slide 15", "End of slide", "Next slide", "Jumping ahead to slide 28". Remove every one whole, including the slide's title words and any chatter around it. The timeline is already named after the slide, so nothing is lost. The same goes for a cue the transcript splits across a pause ("End of … slide.").
 - `⟨unheard sound⟩` between attempts is a dropped stumble or a noise: remove it with the failed attempt. Inside a clean sentence, keep it — it is usually a breath.
 - Don't remove natural breaths, fillers that are written in the manuscript, or deliberate repetition the manuscript contains.
 

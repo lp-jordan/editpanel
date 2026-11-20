@@ -207,6 +207,115 @@ function findChapters({ day, words, chapters, label = 'narration', tcLabel = (f)
   });
 }
 
+// ── no manuscript: split at the spoken slide cues ────────────────
+// A webinar / slide read (Ben Kaiser, 2026-11-20): the narrator says "Slide 12, titled Humidity
+// Effects…" at each slide so the editor knows where the slides change. With no manuscript those
+// cues are the chapters: one timeline per slide, named by the cue (the cue itself is cut by Claude).
+const SLIDE_SKIP = new Set(['number', 'no', 'num']);
+const TITLE_SKIP = new Set(['title', 'titled', 'called', 'is', 'its', 'and']);
+const TITLE_MAX = 10;              // words of a title
+const TITLE_GAP = 30;              // frames of silence that end a title (a cue is said with ~0.7 s gaps)
+
+/** Number words at the start of `toks` → { value, used } (1–199), or null. */
+function readNumber(toks) {
+  const one = (t) => ONES.indexOf(t);
+  let i = 0;
+  let v = 0;
+  if (toks[i] === 'one' && toks[i + 1] === 'hundred') { v = 100; i += 2; if (toks[i] === 'and') i += 1; }
+  const t = toks[i];
+  if (t && TENS.indexOf(t) >= 2) {
+    v += TENS.indexOf(t) * 10;
+    i += 1;
+    if (toks[i] && one(toks[i]) > 0 && one(toks[i]) < 10) { v += one(toks[i]); i += 1; }
+  } else if (t && one(t) > 0) {
+    v += one(t);
+    i += 1;
+  }
+  return v > 0 && v < 200 && i > 0 ? { value: v, used: i } : null;
+}
+
+/** Every "slide [number] N [title …]" in the transcript → [{ k (word index), n, title }]. */
+function slideCues(words) {
+  const W = ((words && words.words) || []).filter((w) => w.own !== false && !w.ghost).sort((a, b) => a.s - b.s);
+  const toks = [];                                   // [{ t, k }] normalised tokens with their word
+  W.forEach((w, k) => normWords(w.w).forEach((t) => toks.push({ t, k })));
+  const cues = [];
+  for (let j = 0; j < toks.length; j += 1) {
+    if (toks[j].t !== 'slide' && toks[j].t !== 'slides') continue;
+    let p = j + 1;
+    while (p < toks.length && p - j <= 2 && SLIDE_SKIP.has(toks[p].t)) p += 1;
+    const num = readNumber(toks.slice(p, p + 4).map((x) => x.t));
+    if (!num) continue;
+    // the title: what follows the number, up to a pause, another cue or TITLE_MAX words
+    // (whole words from here: the word after the number's last word)
+    const numK = toks[p + num.used - 1].k;
+    const title = [];
+    let k = numK + 1;
+    while (k < W.length && TITLE_SKIP.has(normWords(W[k].w).join(' ')) && W[k].s - W[k - 1].e <= TITLE_GAP) k += 1;
+    for (; k < W.length && title.length < TITLE_MAX; k += 1) {
+      if (W[k].s - W[k - 1].e > TITLE_GAP) break;
+      const n = normWords(W[k].w);
+      if (n.includes('slide') || n[0] === 'end') break;
+      title.push(String(W[k].w).replace(/[^\w'’-]+/g, ''));
+      if (/[.?!]$/.test(String(W[k].w).trim())) break;   // the title's sentence ended
+    }
+    cues.push({ k: toks[j].k, n: num.value, title: title.filter(Boolean).join(' ') });
+  }
+  return { W, cues };
+}
+
+/** The longest run of cues whose slide numbers go up (a stray "slide two" in the chit-chat before
+ *  the read, a wrong slide read and cancelled, or a cue said twice for a retake drop out). Ties keep
+ *  the earliest cue. */
+function risingCues(cues) {
+  const best = cues.map(() => 1);
+  const prev = cues.map(() => -1);
+  for (let i = 0; i < cues.length; i += 1) {
+    for (let j = 0; j < i; j += 1) {
+      if (cues[j].n < cues[i].n && best[j] + 1 > best[i]) { best[i] = best[j] + 1; prev[i] = j; }
+    }
+  }
+  let end = -1;
+  best.forEach((b, i) => { if (end < 0 || b > best[end]) end = i; });
+  const out = [];
+  for (let i = end; i >= 0; i = prev[i]) out.unshift(cues[i]);
+  return out;
+}
+
+function titleCase(t) {
+  return String(t || '').split(' ').map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w)).join(' ');
+}
+
+/**
+ * No manuscript → one "video" per spoken slide cue (same shape as findChapters). The text before
+ * the first cue (pre-roll) rides with the first slide. Fewer than 2 cues → null (one part).
+ */
+function findSlides({ day, words, label = 'narration', tcLabel = (f) => String(f) }) {
+  const { W, cues } = slideCues(words);
+  // the cut sits at the first time a slide is announced; the name comes from its last (clean) announcement
+  const use = risingCues(cues).map((c, i, arr) => {
+    const next = arr[i + 1] ? arr[i + 1].k : Infinity;
+    const again = cues.filter((x) => x.n === c.n && x.k > c.k && x.k < next && x.title);
+    return again.length ? { ...c, title: again[again.length - 1].title } : c;
+  });
+  if (use.length < 2) return null;
+  const fsec = day.frame_sec[0] / day.frame_sec[1];
+  const total = Math.round(day.length_sec / fsec);
+  const cutAt = (k) => (k > 0 ? Math.round((W[k - 1].e + W[k].s) / 2) : 0);
+  return use.map((c, i) => {
+    const a = i === 0 ? 0 : cutAt(c.k);
+    const b = i + 1 < use.length ? cutAt(use[i + 1].k) : total;
+    const n = i + 1;
+    const nWords = W.filter((w) => w.s >= a && w.s < b).length;
+    return {
+      id: `c${String(n).padStart(2, '0')}`, n, name: cleanTitle(`Slide ${c.n}${c.title ? ` ${titleCase(c.title)}` : ''}`) || `${label} part ${n}`,
+      code: null, from: a, to: b, gaps: [], fromTc: tcLabel(a), toTc: tcLabel(b), minutes: (b - a) * fsec / 60, words: nWords,
+      kind: 'narration', talker: (words && words.mics && words.mics[0]) || 'Narrator', delivery: 'narration',
+      flags: nWords ? [] : ['Few words'], include: true, chapters: null
+    };
+  });
+}
+
 /** A Resolve timeline name from a heading. */
 function cleanTitle(t) {
   return String(t || '').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
@@ -220,4 +329,4 @@ function sliceText(manuscript, range) {
   return ch.slice(i, j + 1).map((c) => c.text).join('\n\n');
 }
 
-module.exports = { readManuscript, splitChapters, findChapters, sliceText, normWords, docxText, unzipEntry, locate };
+module.exports = { readManuscript, splitChapters, findChapters, findSlides, slideCues, risingCues, sliceText, normWords, docxText, unzipEntry, locate };

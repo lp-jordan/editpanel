@@ -81,6 +81,27 @@ assert.deepStrictEqual(chapters.map((c) => c.title), ['Chapter 1', 'Chapter II: 
 assert.ok(chapters[0].text.startsWith('The Long Road'), 'front matter rides with the first chapter');
 assert.deepStrictEqual(narration.splitChapters('Just some text.\nNo headings.').map((c) => c.title), ['Full read']);
 assert.throws(() => narration.readManuscript(path.join(TMP, 'x.pdf')), /PDF isn't supported/);
+
+// no manuscript: spoken slide cues split the read (Ben's webinar, 2026-11-20)
+{
+  let t = 0;
+  const said = (text, gap = 4) => text.split(' ').map((w) => { t += gap; const x = { mic: 'Narrator', w, s: t, e: t + 3 }; t += 3; return x; });
+  const pause = () => { t += 60; return []; };
+  const ws = [
+    ...said('so I just say slide two'), ...pause(),                       // chit-chat before the read
+    ...said('Slide number one, the introduction.', 20), ...pause(), ...said('Hello everyone and welcome'), ...pause(),
+    ...said('End of slide.'), ...pause(), ...said('Slide two, titled, What Is Curing?', 20), ...pause(), ...said('Curing is a process'), ...pause(),
+    ...said('Slide 3, titled wrong one'), ...pause(), ...said('Slide 3, titled Does It Matter?', 20), ...pause(), ...said('It does matter')
+  ];
+  const sday = { frame_sec: [1001, 24000], length_sec: (t + 100) * 1001 / 24000 };
+  const v = narration.findSlides({ day: sday, words: { words: ws, mics: ['Narrator'] } });
+  assert.deepStrictEqual(v.map((x) => x.name), ['Slide 1 The Introduction', 'Slide 2 What Is Curing', 'Slide 3 Does It Matter'], JSON.stringify(v.map((x) => x.name)));
+  assert.strictEqual(v[0].from, 0, 'the pre-roll rides with the first slide');
+  assert.ok(v[1].from > ws.find((w) => w.w === 'End').e && v[1].from < ws.filter((w) => w.w === 'Slide')[1].s, 'cut before the cue');
+  assert.ok(v[2].from < ws.find((w) => w.w === 'wrong').s, 'a re-said cue: cut at the first one, named by the last');
+  assert.strictEqual(narration.findSlides({ day: sday, words: { words: said('no cues here at all'), mics: ['Narrator'] } }), null);
+  console.log('✓ no manuscript: one chapter per spoken slide cue (stray mention dropped, re-said cue named by its clean take)');
+}
 console.log('✓ manuscript: .docx read, chapters split at headings (front matter kept), no headings = one part, PDF refused');
 
 // ── 2. chapters in the transcript ────────────────────────────
@@ -229,7 +250,7 @@ console.log('✓ build_narration.py: kept pieces split at file edges and mapped 
   assert.ok(bc.settings.DAY_FILE.endsWith('day_Book1.json'));
   assert.ok(!calls.some((x) => x.cmd === 'ct_read_timeline'), 'Check ran on a narration build');
   await assert.rejects(() => c.runCheck({}), /narration/);
-  // dropping the manuscript: one part, no script
+  // dropping the manuscript: one part, no script (no slide cues in this read)
   const one = await c.setManuscript({ file: null });
   assert.strictEqual(one.videos.videos.length, 1);
   assert.strictEqual(one.manuscript, null);

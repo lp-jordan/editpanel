@@ -328,6 +328,35 @@ def test_doubles(words: list, by_mic: dict, fs: float, model, meta, device, alig
     return out
 
 
+ORDER_SLACK = 1.0            # frames a word may start before the one Whisper heard before it
+
+
+def keep_spoken_order(words: list) -> int:
+    """Alignment works chunk by chunk over padded slices, so an unsure word at the start of one chunk
+    can be pinned onto the end of the chunk before it (Ben's webinar, 2026-11-20: "what your End of
+    slide. products are experiencing" — 41 such swaps, so Claude read a scrambled transcript and
+    couldn't cut the cues out). Words keep Whisper's order: one that lands before the word Whisper
+    heard before it goes back to Whisper's own time, and never before that word's end. Returns how
+    many moved."""
+    moved = 0
+    for mic in {w["mic"] for w in words}:
+        seq = [w for w in words if w["mic"] == mic and w.get("own", True) and not w.get("ghost")]
+        seq.sort(key=lambda w: w.get("ws", w["s"]))      # Whisper's order (stable: ties keep list order)
+        prev = None
+        for w in seq:
+            if prev is not None and w["s"] < prev["s"] - ORDER_SLACK:
+                # straight after the word before it (not at Whisper's time, which can run ~1 s late
+                # and would push the good words after it out of order too)
+                dur = max(0.5, min(w["e"] - w["s"], w.get("we", w["e"]) - w.get("ws", w["s"])))
+                s = prev["e"]
+                w["s"], w["e"] = round(s, 1), round(s + dur, 1)
+                w["a"] = min(w.get("a") or 0, 0.05)     # its time is a guess now
+                w["reordered"] = True
+                moved += 1
+            prev = w
+    return moved
+
+
 def align_words(words: list, mics: list, fs: float, progress=None, label: str = None) -> str:
     """WhisperX forced alignment (wav2vec2): pins every word Whisper wrote to the audio. Whisper's
     own word times touch each other and run 3–25 frames off (Elevate, 2026-11-06: "reconnect" cut
@@ -438,9 +467,10 @@ def align_words(words: list, mics: list, fs: float, progress=None, label: str = 
     if label:
         with open(os.path.join(RUN_DIR, f"doubles_{label}.json"), "w", encoding="utf-8") as fh:
             json.dump({"rules": {"gap": DOUBLE_GAP, "weak": DOUBLE_WEAK, "one_ok": DOUBLE_ONE_OK, "fit_gain": DOUBLE_FIT_GAIN}, **dbl}, fh, indent=1)
+    reordered = keep_spoken_order(words)
     words.sort(key=lambda w: (w["s"], w["mic"]))
     return (f"Aligned {done} of {len(todo)} words to the audio on {device} in {time.time() - t0:.0f}s "
-            f"({moved} moved ≥ 1 fr; {phantoms + ghosts} doubled word(s) Whisper invented, ignored; {skipped} kept Whisper's times); "
+            f"({moved} moved ≥ 1 fr; {phantoms + ghosts} doubled word(s) Whisper invented, ignored; {skipped} kept Whisper's times; {reordered} put back in spoken order); "
             f"doubled words: {len(dbl['pairs'])} pair(s) tested, {dbl['fake']} said once (copy ignored), {dbl['real']} real, "
             f"{dbl.get('untested', 0)} untested")
 

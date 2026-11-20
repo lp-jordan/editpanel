@@ -362,6 +362,9 @@ def main(argv) -> None:
             if (talker is None or u.get("mic") == talker or (multi and u.get("mic") in people)) and start <= u["s"] < end]
     speech = sorted([(int(w["s"]), int(w["e"]) + 1) for w in W if not removed(int(w["s"]))] +
                     [x for x in loud if not removed(x[0])])
+    def inside_cut(f):
+        return next((r for r in merged if r["from"] <= f < r["to"]), None)
+
     last = None
     for s, e in speech:
         free = any(last is not None and last <= f <= s for f in shot_starts)   # a shot change is here anyway
@@ -370,7 +373,18 @@ def main(argv) -> None:
                 beat = BEAT if is_beat(last - 1) else 0  # a finished thought keeps its beat
                 pad_b = int(gp.get("before", pause_left - pause_left // 2))
                 a = after_sound(last, s - 2, pause_left - pad_b + beat)
+                # The trim starts inside a removal (the silence is after Claude's cut): start it after
+                # that cut's end instead of dropping it. Ben's webinar, 2026-11-20: dropped, so 17 s,
+                # 45 s and a 2-min break stayed in.
+                for _ in range(4):
+                    r = inside_cut(a)
+                    if r is None:
+                        break
+                    a = max(int(math.ceil(r["to"])), after_sound(r["to"], s - 2, pause_left - pad_b))
                 b = before_sound(s, a + 1, pad_b)
+                r = inside_cut(b - 1)
+                if r is not None and r["from"] > a:      # …and end it before a cut that starts in the silence
+                    b = int(r["from"])
                 if b <= a:
                     last = e if last is None else max(last, e)
                     continue

@@ -35,6 +35,18 @@ read-only context either side and its own stretch of the manuscript; the answers
 edit, so `place_cuts.py` and Build are unchanged. Live: 3 parts at a time; batch: one request per
 part (`c01__p1`…), and a failed part fails the chapter. Tests: `node scripts/test-narration-parts.js`.
 
+**Slide reads with no manuscript (1.2.190).** "No manuscript (split at slides)" makes one chapter,
+so one timeline, per spoken slide cue ("Slide 12, titled Humidity Effects…"), named `Slide 12
+Humidity Effects…` (`findSlides` in `cut_through_narration.js`). The longest rising run of slide
+numbers is used, so a stray "slide two" in the pre-roll chat or a wrong slide read and cancelled drops
+out; a cue said twice is cut at its first time and named by its last. No cues = one part. The
+narration brief tells Claude to remove every spoken cue ("Slide N…", "End of slide", "Jumping
+ahead…"). Transcribe also keeps aligned words in spoken order (`keep_spoken_order`): a word pinned
+before the word Whisper heard before it goes straight after that word. Before, chunk edges scrambled
+the transcript ("what your End of slide. products are experiencing"). `place_cuts.py` no longer
+drops a pause trim whose start lands inside a removal: it starts after the removal instead (before,
+silence right after a Claude cut was never trimmed).
+
 | Step | File | What it does |
 |---|---|---|
 | Prep | `prepare_multicam.py` | Reads the multicam from Resolve: its angles, its length, where each mic or camera's audio sits, and the recordings (where the cameras rolled). Writes `day_<LABEL>.json`. |

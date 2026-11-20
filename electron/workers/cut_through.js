@@ -2119,7 +2119,8 @@ function createCutThrough(opts) {
   /**
    * Narration: read the manuscript (.docx / .txt / .md, on this machine), split it at its chapter
    * headings, save it in the run folder, and find each chapter in the transcript → one "video" per
-   * chapter (planned and built one by one, like Videos). No file = drop the manuscript: one part.
+   * chapter (planned and built one by one, like Videos). No file = drop the manuscript: one part
+   * per spoken slide cue when the read has them ("Slide 12, titled …"), else one part.
    */
   async function setManuscript({ file } = {}) {
     if (s.busy) throw new Error(`${s.busy} is still running`);
@@ -2151,7 +2152,10 @@ function createCutThrough(opts) {
     if (!words) throw new Error('Run Transcribe first');
     const ms = readJson(f.manuscript);
     const chapters = ms && ms.chapters && ms.chapters.length ? ms.chapters : [{ title: s.label, text: '' }];
-    const found = narrationLib.findChapters({ day: s.day, words, chapters, label: s.label, tcLabel: (fr) => frameToTc(fr, s.day) });
+    const tcLabel = (fr) => frameToTc(fr, s.day);
+    // no manuscript: one chapter per spoken slide cue ("Slide 12, titled …"), else one part
+    const found = (!ms && narrationLib.findSlides({ day: s.day, words, label: s.label, tcLabel })) ||
+      narrationLib.findChapters({ day: s.day, words, chapters, label: s.label, tcLabel });
     const old = new Map(((s.videos && s.videos.videos) || []).map((v) => [v.id, v]));
     const videos = found.map((v) => {
       const o = old.get(v.id);

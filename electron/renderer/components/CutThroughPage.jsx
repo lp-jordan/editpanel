@@ -1113,7 +1113,7 @@ function CutThroughPage({ connected }) {
     const open = isOpen('videos', transcribed);
     const menu = [
       list.length > 0 && { label: 'Change manuscript', onClick: load, disabled: locked || !transcribed },
-      { label: ms ? 'Drop the manuscript (one part)' : 'No manuscript (one part)', onClick: none, disabled: locked || !transcribed }
+      { label: ms ? 'Drop the manuscript (split at slides)' : 'No manuscript (split at slides)', onClick: none, disabled: locked || !transcribed }
     ];
     return (
       <CtStep key="videos" n={3} title="Chapters" status={list.length ? 'done' : 'pending'}
