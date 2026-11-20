@@ -90,6 +90,21 @@ def same_word(a, b):
     return min(len(a), len(b)) >= 5 and abs(len(a) - len(b)) <= 1 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.8
 
 
+def narration_pieces(plan, day):
+    """A narration plan's kept spans (session clock) → the clips build_narration.py appends, in order:
+    split at file edges. [{src_in, src_out}] on the session clock (the words' clock)."""
+    fsec = day["frame_sec"][0] / day["frame_sec"][1]
+    talker = (plan.get("audio") or {}).get("angle") or next(iter(plan.get("mics") or {}), None)
+    out = []
+    for a, b in [list(map(int, k[:2])) for k in (plan.get("mics") or {}).get(talker) or []]:
+        for c in day["mics"]:
+            cf, ct = int(round(c["from_sec"] / fsec)), int(round(c["to_sec"] / fsec))
+            x, y = max(a, cf), min(b, ct)
+            if y > x:
+                out.append({"src_in": x, "src_out": y})
+    return out
+
+
 # ─────────────────────── analysis (pack Python) ───────────────────────
 
 def _load(path, name):
@@ -383,6 +398,10 @@ def analyze(job_path):
 
     # 4. the refined plan
     fixes = []
+    narr = bool(plan.get("narration"))
+    talker = (plan.get("audio") or {}).get("angle") or next(iter(plan.get("mics") or {}), None)
+    if narr:                                         # sound only: the kept spans are the "shots", one "angle"
+        video = [{"in": int(k[0]), "out": int(k[1]), "angle": talker} for k in (plan.get("mics") or {}).get(talker) or []]
     new_video = [dict(v) for v in video]
     mics = {r: [list(o) for o in opens] for r, opens in (plan.get("mics") or {}).items()}
     removals = [dict(r) for r in plan.get("removals") or []]
@@ -416,6 +435,8 @@ def analyze(job_path):
         return min(cands, key=lambda c: (lvl(c), -c)) if LV else int(f) - 1
 
     def move_mic(old, new, end_side):
+        if narr:
+            return                                   # narration: the spans ARE the shots, written at the end
         for opens in mics.values():
             for o in opens:
                 if end_side and abs(o[1] - old) <= 3 and new > o[1]:
@@ -479,7 +500,7 @@ def analyze(job_path):
                 fresh.add(v["in"])
         if any(v["out"] - v["in"] < MIN_SHOT for v in out if v not in new_video):
             return "not fixed (would leave a shot under %d fr)" % MIN_SHOT
-        got = no_jumps(out, fresh)
+        got = (out, []) if narr else no_jumps(out, fresh)   # narration: no picture, no jump cuts
         if got is None:
             return "not fixed (no angle change without a jump cut or a flash shot)"
         new_video, notes = got
@@ -611,8 +632,17 @@ def analyze(job_path):
         stem = job["plan"][:-5] if job["plan"].endswith(".json") else job["plan"]
         refined = f"{stem}__refined.json"
         rp = dict(plan)
-        rp["video"] = new_video
-        rp["mics"] = mics
+        if narr:
+            spans = []
+            for v in new_video:                      # back to kept spans, continuous ones joined
+                if spans and abs(v["in"] - spans[-1][1]) <= 0:
+                    spans[-1][1] = v["out"]
+                else:
+                    spans.append([v["in"], v["out"]])
+            rp["mics"] = {**mics, talker: spans}
+        else:
+            rp["video"] = new_video
+            rp["mics"] = mics
         rp["removals"] = sorted((r for r in removals if r["to"] > r["from"]), key=lambda r: r["from"])
         rp["refined_from"] = os.path.basename(job["plan"])
         rp["refine"] = fixes
@@ -685,17 +715,41 @@ def _console():
             by_track.setdefault(t, []).append({"mc": mpi.GetName(), "start": int(it.GetStart()), "end": int(it.GetEnd()),
                                                "src_in": int(round(float(it.GetSourceStartFrame()))),
                                                "src_out": int(round(float(it.GetSourceEndFrame())))})
-    if not by_track:
-        raise SystemExit(f"{name}: no multicam pieces on any video track")
-    pieces = sorted(by_track[max(by_track, key=lambda k: len(by_track[k]))], key=lambda p: p["start"])
+    narr = not by_track
+    if narr:
+        # no multicam picture: a narration timeline (build_narration.py), its clips on A1 — matched to a
+        # plan by clip lengths, and the plan gives each clip's frames on the session clock
+        items = sorted(tl.GetItemListInTrack("audio", 1) or [], key=lambda it: it.GetStart())
+        if not items:
+            raise SystemExit(f"{name}: no multicam pieces on a video track and no clips on A1")
+        clips = [{"start": int(it.GetStart()), "end": int(it.GetEnd())} for it in items]
+        pieces = []
+    else:
+        pieces = sorted(by_track[max(by_track, key=lambda k: len(by_track[k]))], key=lambda p: p["start"])
     t0 = int(tl.GetStartFrame() or 0)
+    days = {}
 
-    # the plan: given, or the one whose shots match
+    def plan_pieces(plan):
+        if not plan.get("narration"):
+            return [{"src_in": v["in"], "src_out": v["out"]} for v in plan.get("video") or []]
+        lab = str(plan.get("label") or "").split("__")[0]
+        if lab not in days:
+            dp = os.path.join(run_dir, f"day_{lab}.json")
+            days[lab] = json.load(open(dp, encoding="utf-8")) if os.path.exists(dp) else None
+        return narration_pieces(plan, days[lab]) if days[lab] else []
+
+    # the plan: given, or the one whose shots (narration: clips) match
     def match(plan):
-        vid = plan.get("video") or []
-        if len(vid) != len(pieces):
+        if bool(plan.get("narration")) != narr:
             return 0.0
-        return sum(abs(v["in"] - p["src_in"]) <= 1 and abs(v["out"] - p["src_out"]) <= 1 for v, p in zip(vid, pieces)) / len(pieces)
+        pp = plan_pieces(plan)
+        if narr:
+            if len(pp) != len(clips):
+                return 0.0
+            return sum(abs((c["end"] - c["start"]) - (q["src_out"] - q["src_in"])) <= 1 for c, q in zip(clips, pp)) / len(clips)
+        if len(pp) != len(pieces):
+            return 0.0
+        return sum(abs(v["src_in"] - p["src_in"]) <= 1 and abs(v["src_out"] - p["src_out"]) <= 1 for v, p in zip(pp, pieces)) / len(pieces)
     plan_path = g.get("PLAN")
     if not plan_path:
         best = (0.0, None)
@@ -714,11 +768,14 @@ def _console():
     if sc < 0.9:
         raise SystemExit(f"{name} doesn't match {os.path.basename(plan_path)} ({sc:.0%} of shots) — run on the timeline as Build left it")
     label = str(plan.get("label") or "").split("__")[0]
+    if narr:                                         # each clip's place on the session clock, from the plan
+        pieces = [{"start": c["start"], "end": c["end"], "src_in": q["src_in"], "src_out": q["src_out"]}
+                  for c, q in zip(clips, plan_pieces(plan))]
     words = os.path.join(run_dir, f"words_{label}.json")
     levels = os.path.join(run_dir, f"levels_{label}.json")
     if not os.path.exists(words):
         raise SystemExit(f"No words_{label}.json in {run_dir}")
-    say(f"Word edges — {name} — plan {os.path.basename(plan_path)} — {len(pieces)} shots")
+    say(f"Word edges — {name} — plan {os.path.basename(plan_path)} — {len(pieces)} {'clips (narration)' if narr else 'shots'}")
 
     # markers already on it (ours from an earlier run are dropped first)
     for fr, m in list((tl.GetMarkers() or {}).items()):
@@ -847,11 +904,21 @@ def _console():
             say(f"  {tc(int(m['rec']) + t0)}  {m.get('color', '')} {m.get('name', '')!s:.40} → {m['status']}")
 
     seq_bin = g.get("SEQ_BIN") or "MASTER / SEQUENCES"
-    new_name = f"{name} refined"
+    day_file = os.path.join(run_dir, f"day_{label}.json")
+    if narr:                                         # build_narration adds " (cut-through)" itself
+        base = name[:-len(" (cut-through)")] if name.endswith(" (cut-through)") else name
+        new_name = f"{base} refined"
+        build_args = {"LABEL": label, "OUT_DIR": out_dir, "DAY_FILE": day_file, "SEQ_BIN": seq_bin}
+        build_file = "build_narration.py"
+    else:
+        new_name = f"{name} refined"
+        build_args = {"LABEL": label, "OUT_DIR": out_dir, "SEQ_BIN": seq_bin, "ARCHIVE": False}
+        build_file = "build_rough_cut.py"
     if res.get("refined_plan"):
         rp = res["refined_plan"]
-        line = (f'LABEL="{label}"; PLAN_FILES=[[r"{rp}", "{new_name}"]]; OUT_DIR=r"{out_dir}"; SEQ_BIN="{seq_bin}"; ARCHIVE=False; '
-                f'exec(open(r"{os.path.join(CHECKOUT, "cut_through", "build_rough_cut.py")}", encoding="utf-8").read())')
+        line = "; ".join([f'PLAN_FILES=[[r"{rp}", "{new_name}"]]'] + [
+            f'{k}=r"{v}"' if isinstance(v, str) and k.endswith(("DIR", "FILE")) else f"{k}={v!r}" for k, v in build_args.items()]
+            + [f'exec(open(r"{os.path.join(CHECKOUT, "cut_through", build_file)}", encoding="utf-8").read())'])
         say("")
         say(f"Refined plan: {rp}  ({len(res['fixes'])} fix(es))")
         say("Rebuild line:")
@@ -870,9 +937,8 @@ def _console():
 
     if g.get("REBUILD") and res.get("refined_plan"):
         print(f"\nRebuilding as '{new_name}' …")
-        build = os.path.join(job["pipeline"], "build_rough_cut.py")
-        ns = {"__name__": "__main__", "__file__": build, "resolve": r, "LABEL": label,
-              "PLAN_FILES": [[res["refined_plan"], new_name]], "OUT_DIR": out_dir, "SEQ_BIN": seq_bin, "ARCHIVE": False}
+        build = os.path.join(job["pipeline"], build_file)
+        ns = {"__name__": "__main__", "__file__": build, "resolve": r, "PLAN_FILES": [[res["refined_plan"], new_name]], **build_args}
         exec(compile(open(build, encoding="utf-8").read(), build, "exec"), ns)
 
 
