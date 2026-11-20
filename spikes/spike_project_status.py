@@ -17,8 +17,8 @@ This probe checks, on a real project:
   4. Multicam clips and their length: GetClipProperty("Frames" / "FPS" / "Duration")
   5. How long the whole read takes (it would run every few minutes on a busy machine)
 
-Nothing in the project is changed. The report prints and is saved to the Desktop as
-project_status_probe.txt.
+Nothing in the project is changed. The report prints and is saved on the NAS as
+N:\\LPOS\\spike reports\\project_status_<project>.txt (the Desktop if the NAS isn't reachable).
 
 HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
 Workspace > Console > Py3, then
@@ -37,7 +37,8 @@ REVIEWED_FLAG = "Green"
 EXCLUDE_FLAG = "Orange"
 CUT_THROUGH_SUFFIX = "(cut-through)"
 DESKTOP = os.path.expanduser("~/Desktop")
-REPORT_PATH = os.path.join(DESKTOP, "project_status_probe.txt")
+# The shared NAS (N:\\ on Windows, /Volumes/LeaderPass Main on the Mac): Claude reads it from there.
+NAS_DIR = r"N:\LPOS\spike reports" if os.name == "nt" else "/Volumes/LeaderPass Main/LPOS/spike reports"
 
 _lines: List[str] = []
 
@@ -199,12 +200,18 @@ def main() -> None:
     say()
     say(f"Total read time: {t_timelines + t_walk + t_flags:.2f}s")
 
-    try:
-        with open(REPORT_PATH, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(_lines) + "\n")
-        print(f"\nSaved {REPORT_PATH}")
-    except Exception as err:
-        print(f"\nCould not save the report: {err}")
+    safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in str(_safe(lambda: project.GetName(), "project"))).strip() or "project"
+    body = "\n".join(_lines) + "\n"
+    for folder in (NAS_DIR, DESKTOP):
+        path = os.path.join(folder, f"project_status_{safe_name}.txt")
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            print(f"\nSaved {path}")
+            return
+        except Exception as err:
+            print(f"\nCould not save to {folder}: {err}")
 
 
 main()

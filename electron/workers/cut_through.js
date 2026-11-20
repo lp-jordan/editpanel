@@ -2622,7 +2622,39 @@ function createCutThrough(opts) {
 
   /** The few fields LPOS /editing shows (sent with the heartbeat): the label's main phases, what's
    *  running now and how far. Null until a label is picked and a step has run. */
+  /** The multicam queue for /editing: how much of the whole queue is done. Null when there's no
+   *  queue worth showing (empty, or finished more than 12 hours ago with nothing left to look at). */
+  function dashboardQueue() {
+    const qs = queue ? queue.state() : null;
+    const items = (qs && qs.items) || [];
+    if (!items.length) return null;
+    const unsettled = items.some((it) => ['stopped', 'failed', 'queued', 'waiting', 'running'].includes(it.status));
+    const recent = qs.endedAt && Date.now() - qs.endedAt < 12 * 60 * 60 * 1000;
+    if (!qs.running && !unsettled && !recent) return null;
+    const QUEUE_PHASES = ['prep', 'transcribe', 'videos'];
+    const stepsDone = items.reduce((t, it) => t + (it.status === 'ready' ? QUEUE_PHASES.length
+      : QUEUE_PHASES.filter((ph) => it.done && it.done[ph]).length), 0);
+    const cur = qs.current ? items.findIndex((it) => it.label === qs.current.label) : -1;
+    return {
+      running: Boolean(qs.running),
+      total: items.length,
+      ready: items.filter((it) => it.status === 'ready').length,
+      failed: items.filter((it) => it.status === 'failed').length,
+      stepsDone,
+      stepsTotal: items.length * QUEUE_PHASES.length,
+      current: qs.current ? { label: qs.current.label, phase: qs.current.phase, index: cur + 1 } : null,
+      error: qs.error ? String(qs.error).slice(0, 160) : null,
+    };
+  }
+
   function dashboardState() {
+    const q = dashboardQueue();
+    const one = dashboardLabel();
+    if (!one && !q) return null;
+    return { ...(one || { label: q.current ? q.current.label : '', phase: q.current ? q.current.phase : 'prep', status: q.running ? 'running' : 'pending', pct: null, text: null, steps: {} }), queue: q };
+  }
+
+  function dashboardLabel() {
     if (!s.label) return null;
     const phases = ['prep', 'transcribe', 'plan', 'build', 'check'];
     const current = s.busy && s.steps[s.busy] ? s.busy : [...phases].reverse().find((k) => s.steps[k].status !== 'pending');

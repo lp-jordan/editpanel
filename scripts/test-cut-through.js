@@ -1078,6 +1078,9 @@ async function queueChain() {
   assert.strictEqual(snap.queue.project, 'Fake Project');
   snap = c.queueRun();
   assert.ok(snap.queue.running, 'not running');
+  // /editing sees the whole queue, not only the multicam that's running
+  const dq = c.dashboardState().queue;
+  assert.ok(dq && dq.running && dq.total === 2 && dq.stepsTotal === 6 && dq.ready === 0, JSON.stringify(dq));
   assert.throws(() => c.select({ mc: 'mc_test' }), /queue is running/);
   assert.throws(() => c.queueAdd({ mcs: ['x'] }), /queue is running/);
   await c.queueWhenIdle();
@@ -1087,6 +1090,8 @@ async function queueChain() {
   assert.ok(good.result && good.result.videos >= 1 && good.result.lpos === false, JSON.stringify(good.result));
   assert.ok(bad.status === 'failed' && bad.phase === 'prep' && bad.error, JSON.stringify(bad));
   assert.deepStrictEqual(ended, [{ project: 'Fake Project', total: 2, ready: 1, failed: 1 }]);
+  const dqEnd = c.dashboardState().queue;
+  assert.ok(dqEnd && !dqEnd.running && dqEnd.ready === 1 && dqEnd.failed === 1 && dqEnd.stepsDone === 3 && dqEnd.current === null, JSON.stringify(dqEnd));
   // every multicam is prepped before the first transcription (a problem shows while the editor is still there)
   const words = path.join(dir, 'Fake Project', 'mc_test', 'words_mc_test.json');
   assert.ok(prepAt.mc_missing && prepAt.mc_missing < fs.statSync(words).mtimeMs, 'prep of the second multicam came after the first transcription');
