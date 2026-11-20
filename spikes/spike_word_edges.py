@@ -28,6 +28,9 @@ Fixes go into a copy of the video's plan (<plan>__refined.json; the original is 
 Every fix also becomes a Cyan "Refined: …" review marker on the rebuilt timeline; the findings go on the
 current timeline as markers tagged ct-word-edges (re-runs replace only those).
 
+Narration timelines (audio only, build_narration.py) work too: A1 clips are matched to the plan by length,
+fixes patch the plan's kept spans, no angle rules, and the rebuild runs build_narration.py.
+
 Run in Resolve (project open; the timeline as Build left it — a reviewed one won't match its plan):
 Workspace → Console → Py3:
     TIMELINE="J1234"; RUN_DIR=r"<run folder>"; exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_word_edges.py", encoding="utf-8").read())

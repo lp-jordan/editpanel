@@ -62,9 +62,13 @@ Refines ONE built cut-through timeline from what its audio really plays. In Reso
   so the multicam copy in use isn't renamed `_original`); `REBUILD=True` runs it straight away. Every import
   makes a new multicam copy: delete the extra copy + the losing timeline after comparing.
 
+**Narration timelines** (audio only, `build_narration.py`, e.g. `BenWebinarNov2026 (cut-through)`): the A1 clips are
+matched to the plan by length, fixes patch the plan's kept spans (`mics.<talker>`), no angle rules, and the
+rebuild runs `build_narration.py` as `<chapter> refined (cut-through)`.
+
 Report: `<RUN_DIR>\word_edges\word_edges_<TIMELINE>.txt/.json`. Options: `PLAN=`, `FIX=False`, `SEQ_BIN=`,
 `KEEP_RENDER=True`, `PACK_PYTHON=`. Tested on the Mac with the models stubbed on real Elevate plans
-(ELEVATE_MC_2 J1; ELEVATE_MC_1 A2 + B3 for false repeat cuts); not yet run in Resolve.
+(ELEVATE_MC_2 J1; ELEVATE_MC_1 A2 + B3 for false repeat cuts; Ben webinar narration); not yet run in Resolve.
 
 ### `spike_scan_past_edits.py`
 
