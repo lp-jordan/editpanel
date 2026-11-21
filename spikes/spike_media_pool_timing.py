@@ -23,7 +23,7 @@ HOW TO RUN (Windows Resolve machine, a big project open, after `git pull`):
 Workspace > Console > Py3, then
     exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_media_pool_timing.py", encoding="utf-8").read())
 
-Takes a minute or two on a big project. Put a Green flag on a couple of timelines and an Orange
+Takes a minute or two on a big project. Put a Green flag on a couple of timelines and a Yellow
 flag on one first, so the report shows what GetFlagList returns.
 """
 

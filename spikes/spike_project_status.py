@@ -7,7 +7,7 @@ The /editing Projects section (docs/editing-dashboard-plan.md) shows three rings
   Cut       multicam minutes that finished cut-through (Prep through Check)
   Reviewed  timelines with a GREEN flag, out of the counted ones
   Uploaded  timelines that are in LPOS, out of the counted ones (LPOS works this out itself)
-Counted = every timeline, minus ORANGE-flagged ones, minus cut-through's own
+Counted = every timeline, minus YELLOW-flagged ones, minus cut-through's own
 "(cut-through)" rough cuts.
 
 This probe checks, on a real project:
@@ -24,7 +24,7 @@ HOW TO RUN (Windows Resolve machine, project open, after `git pull`):
 Workspace > Console > Py3, then
     exec(open(r"C:\\lp-app-ecosystem\\editpanel\\spikes\\spike_project_status.py", encoding="utf-8").read())
 
-Before running, it helps to put a Green flag on a couple of timelines and an Orange flag on
+Before running, it helps to put a Green flag on a couple of timelines and a Yellow flag on
 one (right-click the timeline in the Media Pool > Flags), so the report shows them.
 """
 
@@ -34,7 +34,7 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 REVIEWED_FLAG = "Green"
-EXCLUDE_FLAG = "Orange"
+EXCLUDE_FLAG = "Yellow"  # Resolve has no Orange flag
 CUT_THROUGH_SUFFIX = "(cut-through)"
 DESKTOP = os.path.expanduser("~/Desktop")
 # The shared NAS (N:\\ on Windows, /Volumes/LeaderPass Main on the Mac): Claude reads it from there.
