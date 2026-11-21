@@ -1194,6 +1194,68 @@ function persistActiveExport() {
   } catch (_) { /* non-fatal */ }
 }
 
+// --- /editing project rings (docs/editing-dashboard-plan.md) ---
+// The timelines + flags take ~5-10 s of Resolve calls, the multicam search ~70 s,
+// so the multicams are only re-read once an hour per project (and on the first
+// read of a project; the helper keeps them in between).
+const PROJECT_STATUS_EVERY_MS = 3 * 60_000;
+const PROJECT_STATUS_MULTICAMS_EVERY_MS = 60 * 60_000;
+const PROJECT_STATUS_WAIT_MS = 5 * 60_000;
+let projectStatusTimer = null;
+let projectStatusRunning = false;
+const projectStatusMulticamsAt = new Map();   // Resolve project -> when its multicams were last asked for
+
+function withTimeout(promise, ms) {
+  let t = null;
+  return Promise.race([promise, new Promise((_, reject) => { t = setTimeout(() => reject(new Error('timeout')), ms); })])
+    .finally(() => clearTimeout(t));
+}
+
+/** Resolve is free: connected, a project open, no render, no cut-through step or queue. */
+function resolveFreeForProjectStatus() {
+  if (!resolveConnected || !resolveProject) return false;
+  if (activeExport) return false;
+  if (cutThrough && typeof cutThrough.isBusy === 'function' && cutThrough.isBusy()) return false;
+  return true;
+}
+
+async function readProjectStatus() {
+  if (projectStatusRunning || !lposClient || !lposClient.isConfigured()) return;
+  if (!resolveFreeForProjectStatus()) return;
+  projectStatusRunning = true;
+  try {
+    const project = resolveProject;
+    const multicams = Date.now() - (projectStatusMulticamsAt.get(project) || 0) > PROJECT_STATUS_MULTICAMS_EVERY_MS;
+    const started = await withTimeout(sendWorkerRequest({ cmd: 'project_status_refresh', multicams }, 'resolve'), 20_000);
+    if (multicams && started?.data?.started) projectStatusMulticamsAt.set(project, Date.now());
+    let snap = null;
+    const deadline = Date.now() + PROJECT_STATUS_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      snap = (await withTimeout(sendWorkerRequest({ cmd: 'project_status_get' }, 'resolve'), 20_000))?.data || null;
+      if (snap && !snap.building) break;
+    }
+    if (!snap || snap.building || snap.error || snap.project !== project) return;
+    const prefs = controlPlane ? controlPlane.getPreferences() : {};
+    const lp = ((prefs?.cutThrough || {}).lposProjects || {})[project] || null;
+    const instanceId = os.hostname();
+    await lposClient.pushProjectStatus({
+      instance_id: instanceId,
+      display_name: prefs?.displayName || instanceId,
+      resolve_project: project,
+      lpos_project_id: lp && lp.id ? String(lp.id) : null,
+      read_at: snap.read_at ? Math.round(snap.read_at * 1000) : Date.now(),
+      timelines: snap.timelines || [],
+      multicams: Array.isArray(snap.multicams) ? snap.multicams : null,
+      cut_multicams: cutThrough && typeof cutThrough.cutMulticams === 'function' ? cutThrough.cutMulticams(project) : []
+    });
+  } catch (_err) {
+    // silent: the next read tries again (older LPOS without the route answers 404)
+  } finally {
+    projectStatusRunning = false;
+  }
+}
+
 // Send waiting /editing events (jobsDb ep_outbox) to LPOS, oldest first, up
 // to a few batches per heartbeat. Recorded and refused ids are dropped; on a
 // network error or 5xx everything stays for the next beat. A 404 means this
@@ -2864,6 +2926,12 @@ app.whenReady().then(() => {
       setPeers([]);
     }
   }, 10_000);
+
+  // /editing project rings: every few minutes, read the open project's timelines,
+  // flags and multicams in the background (helper/project_status.py) and send them
+  // to LPOS. Waits while a render or cut-through is using Resolve.
+  projectStatusTimer = setInterval(() => { readProjectStatus().catch(() => {}); }, PROJECT_STATUS_EVERY_MS);
+  setTimeout(() => { readProjectStatus().catch(() => {}); }, 60_000);
 
   ipcMain.on('helper-request', (event, payload) => {
     // sendWorkerRequest throws synchronously when the worker isn't running,
@@ -4692,6 +4760,7 @@ app.on('before-quit', () => {
   if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
   if (cutThrough) cutThrough.cancel();   // don't leave a GPU transcription running
   if (lposHeartbeatTimer) { clearInterval(lposHeartbeatTimer); lposHeartbeatTimer = null; }
+  if (projectStatusTimer) { clearInterval(projectStatusTimer); projectStatusTimer = null; }
   stopReconcileLoop();
   lposClient = null;
   if (cardIngest) { cardIngest.stopWatching(); cardIngest.cancel(); }

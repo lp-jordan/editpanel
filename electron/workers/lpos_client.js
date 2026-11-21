@@ -162,6 +162,11 @@ class LposClient {
     return this._uploadRequest('POST', '/api/ep/events', { json: payload, timeout: 20_000 });
   }
 
+  /** /editing project rings: one Resolve project's timelines, flags and multicams. */
+  async pushProjectStatus(payload) {
+    return this._uploadRequest('POST', '/api/ep/project-status', { json: payload, timeout: 20_000 });
+  }
+
   async getPeers() {
     return this._request('GET', '/api/ep/peers');
   }

@@ -1078,6 +1078,7 @@ async function queueChain() {
   assert.strictEqual(snap.queue.project, 'Fake Project');
   snap = c.queueRun();
   assert.ok(snap.queue.running, 'not running');
+  assert.strictEqual(c.isBusy(), true);
   // /editing sees the whole queue, not only the multicam that's running
   const dq = c.dashboardState().queue;
   assert.ok(dq && dq.running && dq.total === 2 && dq.stepsTotal === 6 && dq.ready === 0, JSON.stringify(dq));
@@ -1092,6 +1093,15 @@ async function queueChain() {
   assert.deepStrictEqual(ended, [{ project: 'Fake Project', total: 2, ready: 1, failed: 1 }]);
   const dqEnd = c.dashboardState().queue;
   assert.ok(dqEnd && !dqEnd.running && dqEnd.ready === 1 && dqEnd.failed === 1 && dqEnd.stepsDone === 3 && dqEnd.current === null, JSON.stringify(dqEnd));
+  // /editing Cut ring: a multicam counts once its run has a check_<label>.json
+  assert.strictEqual(c.isBusy(), false);
+  assert.deepStrictEqual(c.cutMulticams('Fake Project'), []);
+  const runMc = path.join(dir, 'Fake Project', 'mc_test');
+  fs.writeFileSync(path.join(runMc, 'check_mc_test.json'), '{}');
+  const dayMc = JSON.parse(fs.readFileSync(path.join(runMc, 'day_mc_test.json'), 'utf8')).multicam
+    || JSON.parse(fs.readFileSync(path.join(runMc, 'words_mc_test.json'), 'utf8')).multicam;
+  assert.deepStrictEqual(c.cutMulticams('Fake Project'), [dayMc]);
+  fs.rmSync(path.join(runMc, 'check_mc_test.json'));
   // every multicam is prepped before the first transcription (a problem shows while the editor is still there)
   const words = path.join(dir, 'Fake Project', 'mc_test', 'words_mc_test.json');
   assert.ok(prepAt.mc_missing && prepAt.mc_missing < fs.statSync(words).mtimeMs, 'prep of the second multicam came after the first transcription');

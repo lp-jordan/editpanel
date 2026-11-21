@@ -2624,6 +2624,31 @@ function createCutThrough(opts) {
    *  running now and how far. Null until a label is picked and a step has run. */
   /** The multicam queue for /editing: how much of the whole queue is done. Null when there's no
    *  queue worth showing (empty, or finished more than 12 hours ago with nothing left to look at). */
+  /** Something is driving Resolve: a step or the queue. The /editing project read waits. */
+  function isBusy() {
+    return Boolean(s.busy) || Boolean(queue && queue.state() && queue.state().running);
+  }
+
+  /** /editing Cut ring: multicams in this Resolve project whose run got through Check
+   *  (check_<label>.json is written only when Check succeeds). Names come from day_<label>.json. */
+  function cutMulticams(project) {
+    if (!project) return [];
+    const p = (getPrefs() || {}).cutThrough || {};
+    const base = (p.runFolders || {})[project] || p.filesDir || filesDir;
+    const dir = path.join(base, folderName(project));
+    let labels = [];
+    try { labels = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch (_) { return []; }
+    const out = new Set();
+    for (const label of labels) {
+      if (!fs.existsSync(path.join(dir, label, `check_${label}.json`))) continue;
+      const day = readJson(path.join(dir, label, `day_${label}.json`)) || {};
+      const words = day.multicam ? null : readJson(path.join(dir, label, `words_${label}.json`)) || {};
+      const name = day.multicam || (words && words.multicam);
+      if (name) out.add(String(name));
+    }
+    return [...out];
+  }
+
   function dashboardQueue() {
     const qs = queue ? queue.state() : null;
     const items = (qs && qs.items) || [];
@@ -2678,6 +2703,8 @@ function createCutThrough(opts) {
   return {
     snapshot,
     dashboardState,
+    isBusy,
+    cutMulticams,
     checkQueue,
     queueAdd: (a) => { queue.add(a); return snapshot(); },
     queueRemove: (a) => { queue.remove(a); return snapshot(); },

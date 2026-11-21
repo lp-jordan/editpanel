@@ -27,6 +27,7 @@ from .slate_span_report import handle_slate_span_report
 from .import_media import handle_import_media
 from .import_graphics import handle_import_graphics
 from .create_multicam import handle_create_multicam, handle_create_multicam_timelines
+from .project_status import handle_project_status_refresh, handle_project_status_get
 from .cut_through import handle_ct_list_multicams, handle_ct_run_step, handle_ct_read_timeline, handle_ct_mark_in_out, handle_ct_set_markers, handle_ct_render_audio
 
 
@@ -67,6 +68,9 @@ RESOLVE_HANDLERS = {
     "ct_read_timeline": handle_ct_read_timeline,
     "ct_set_markers": handle_ct_set_markers,
     "ct_render_audio": handle_ct_render_audio,
+    # /editing project rings (2026-11-21): background read, see helper/project_status.py
+    "project_status_refresh": handle_project_status_refresh,
+    "project_status_get": handle_project_status_get,
 }
 
 # Reserved for future media worker commands (audit mode, etc.)
