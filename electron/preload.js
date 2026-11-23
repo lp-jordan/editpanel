@@ -139,6 +139,13 @@ contextBridge.exposeInMainWorld('lposAPI', {
   getProject(projectId) {
     return ipcRenderer.invoke('lpos:project', projectId);
   },
+  /** LPOS projects the Resolve project feeds → {ok, data: {projects, suggested}} */
+  getProjectLinks(resolveProject) {
+    return ipcRenderer.invoke('lpos:project-links-get', resolveProject);
+  },
+  setProjectLinks(resolveProject, projectIds) {
+    return ipcRenderer.invoke('lpos:project-links-set', resolveProject, projectIds);
+  },
   listProjectAssets(projectId) {
     return ipcRenderer.invoke('lpos:project-assets', projectId);
   },

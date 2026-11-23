@@ -167,6 +167,18 @@ class LposClient {
     return this._uploadRequest('POST', '/api/ep/project-status', { json: payload, timeout: 20_000 });
   }
 
+  /** The LPOS projects a Resolve project feeds: { projects: [{ projectId, name, clientName }] }. */
+  async getProjectLinks(resolveProject) {
+    return this._request('GET', `/api/ep/project-links?resolve_project=${encodeURIComponent(resolveProject)}`);
+  }
+
+  /** Replace them; [] unlinks. */
+  async setProjectLinks(resolveProject, projectIds) {
+    return this._uploadRequest('PUT', '/api/ep/project-links', {
+      json: { resolve_project: resolveProject, project_ids: projectIds }, timeout: 20_000,
+    });
+  }
+
   async getPeers() {
     return this._request('GET', '/api/ep/peers');
   }

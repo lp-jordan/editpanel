@@ -158,6 +158,14 @@ function ExportDeliverOverlay({ open, onClose, connected, resolveProject, lposRe
         setPresetName(prefs.lastExportPreset || DEFAULT_PRESET);
         setExportBin(prefs.lastExportBin || DEFAULT_BIN);
         setSelectedProjectId(prefs.lastExportProjectId || '');
+        // Start on the Resolve project's linked LPOS project (status bar link),
+        // unless the last one used is one of them.
+        if (resolveProject && window.lposAPI?.getProjectLinks) {
+          window.lposAPI.getProjectLinks(resolveProject).then((r) => {
+            const ids = (r?.ok && r.data?.projects || []).map((p) => p.projectId);
+            if (ids.length && !ids.includes(prefs.lastExportProjectId)) setSelectedProjectId(ids[0]);
+          }).catch(() => {});
+        }
         setExportVideo(prefs.lastExportVideo !== false);
         setExportAudio(prefs.lastExportAudio !== false);
         setBitrateOn(!!prefs.lastExportBitrateOn);

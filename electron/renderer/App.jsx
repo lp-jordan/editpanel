@@ -160,6 +160,9 @@ function HoverNav({ route, onNavigate }) {
 function App() {
   const [route, setRoute] = React.useState(() => getRouteFromHash());
   const [project, setProject] = React.useState('');
+  // LPOS projects the open Resolve project feeds (click the project name to set)
+  const [projectLinks, setProjectLinks] = React.useState([]);
+  const [projectLinkOpen, setProjectLinkOpen] = React.useState(false);
   const [timeline, setTimeline] = React.useState('');
   const [log, setLog] = React.useState([]);
   const [connected, setConnected] = React.useState(false);
@@ -210,6 +213,16 @@ function App() {
   const [epUserEmail, setEpUserEmail] = React.useState('');
   const [epMachineName, setEpMachineName] = React.useState('');
   const [signinBusy, setSigninBusy] = React.useState(false);
+
+  // Load the open Resolve project's LPOS links whenever it or LPOS changes.
+  React.useEffect(() => {
+    if (!project || lposStatus !== 'ok' || !window.lposAPI?.getProjectLinks) { setProjectLinks([]); return; }
+    let cancelled = false;
+    window.lposAPI.getProjectLinks(project)
+      .then((r) => { if (!cancelled) setProjectLinks(r?.ok ? (r.data?.projects || []) : []); })
+      .catch(() => { if (!cancelled) setProjectLinks([]); });
+    return () => { cancelled = true; };
+  }, [project, lposStatus]);
   // { text, tone: 'ok' | 'error' } | null
   const [signinMessage, setSigninMessage] = React.useState(null);
 
@@ -1146,7 +1159,15 @@ function App() {
             {connected ? (
               <>
                 {!project && <span className="status-bar-chip ok">Connected</span>}
-                {project && <span className="status-bar-chip">{project}</span>}
+                {project && (
+                  <button type="button" className="status-bar-chip status-bar-chip-btn" onClick={() => setProjectLinkOpen(true)}
+                    title={projectLinks.length ? `LPOS: ${projectLinks.map((p) => p.name).join(', ')}` : 'Link to LPOS projects'}>
+                    {project}
+                  </button>
+                )}
+                {project && lposStatus === 'ok' && (
+                  <span className="status-bar-chip dim">{projectLinks.length ? projectLinks.map((p) => p.name).join(' · ') : 'Not linked'}</span>
+                )}
                 {timeline && <span className="status-bar-chip dim">{timeline}</span>}
               </>
             ) : (
@@ -1668,6 +1689,16 @@ function App() {
           lposReady={lposStatus === 'ok'}
           onLog={appendLog}
           onOpenJobs={() => { setExportOpen(false); openJobsTo('exports'); }}
+        />
+      )}
+      {projectLinkOpen && (
+        <ProjectLinkOverlay
+          open={projectLinkOpen}
+          onClose={() => setProjectLinkOpen(false)}
+          resolveProject={project}
+          lposReady={lposStatus === 'ok'}
+          onLog={appendLog}
+          onSaved={setProjectLinks}
         />
       )}
       {openSeqOpen && (

@@ -3220,6 +3220,32 @@ app.whenReady().then(() => {
     }
   });
 
+  // Which LPOS projects a Resolve project feeds (status bar project name →
+  // ProjectLinkOverlay). Kept in LPOS so every machine sees the same link.
+  // `suggested` = the project cut-through's slate uses, ticked before any link.
+  ipcMain.handle('lpos:project-links-get', async (_, resolveProject) => {
+    if (!lposClient || !lposClient.isConfigured()) return { ok: false, error: 'LPOS not configured' };
+    try {
+      const data = await lposClient.getProjectLinks(String(resolveProject || ''));
+      const prefs = controlPlane ? controlPlane.getPreferences() : {};
+      const slate = ((prefs?.cutThrough || {}).lposProjects || {})[resolveProject] || null;
+      return { ok: true, data: { projects: data?.projects || [], suggested: slate && slate.id ? String(slate.id) : null } };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('lpos:project-links-set', async (_, resolveProject, projectIds) => {
+    if (!lposClient || !lposClient.isConfigured()) return { ok: false, error: 'LPOS not configured' };
+    try {
+      const ids = Array.isArray(projectIds) ? projectIds.map(String) : [];
+      const data = await lposClient.setProjectLinks(String(resolveProject || ''), ids);
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('lpos:project', async (_, projectId) => {
     if (!lposClient || !lposClient.isConfigured()) {
       return { ok: false, error: 'LPOS not configured' };
