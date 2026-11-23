@@ -1219,14 +1219,18 @@ function resolveFreeForProjectStatus() {
   return true;
 }
 
-async function readProjectStatus() {
+// refresh: someone pressed Refresh on the project's /editing card (heartbeat
+// reply) — read the multicams too and mark the read so LPOS closes the request.
+// If it can't run now, the next heartbeat asks again.
+async function readProjectStatus({ refresh = false } = {}) {
   if (projectStatusRunning || !lposClient || !lposClient.isConfigured()) return;
   if (!resolveFreeForProjectStatus()) return;
   projectStatusRunning = true;
   try {
     const project = resolveProject;
-    const multicams = Date.now() - (projectStatusMulticamsAt.get(project) || 0) > PROJECT_STATUS_MULTICAMS_EVERY_MS;
+    const multicams = refresh || Date.now() - (projectStatusMulticamsAt.get(project) || 0) > PROJECT_STATUS_MULTICAMS_EVERY_MS;
     const started = await withTimeout(sendWorkerRequest({ cmd: 'project_status_refresh', multicams }, 'resolve'), 20_000);
+    if (refresh && !started?.data?.started) return;
     if (multicams && started?.data?.started) projectStatusMulticamsAt.set(project, Date.now());
     let snap = null;
     const deadline = Date.now() + PROJECT_STATUS_WAIT_MS;
@@ -1247,7 +1251,8 @@ async function readProjectStatus() {
       read_at: snap.read_at ? Math.round(snap.read_at * 1000) : Date.now(),
       timelines: snap.timelines || [],
       multicams: Array.isArray(snap.multicams) ? snap.multicams : null,
-      cut_multicams: cutThrough && typeof cutThrough.cutMulticams === 'function' ? cutThrough.cutMulticams(project) : []
+      cut_multicams: cutThrough && typeof cutThrough.cutMulticams === 'function' ? cutThrough.cutMulticams(project) : [],
+      refresh
     });
   } catch (_err) {
     // silent: the next read tries again (older LPOS without the route answers 404)
@@ -2894,7 +2899,7 @@ app.whenReady().then(() => {
     const instanceId = os.hostname();
     try {
       const jobs = jobEngine ? jobEngine.listJobs() : [];
-      await lposClient.pushStatus({
+      const beat = await lposClient.pushStatus({
         instance_id: instanceId,
         display_name: prefs?.displayName || instanceId,
         resolve_connected: resolveConnected,
@@ -2908,6 +2913,7 @@ app.whenReady().then(() => {
         last_problem: lastProblem,
         cut_through: cutThrough && typeof cutThrough.dashboardState === 'function' ? cutThrough.dashboardState() : null
       });
+      if (beat && beat.refresh_project_status) readProjectStatus({ refresh: true }).catch(() => {});
       await flushEditingOutbox(instanceId, prefs?.displayName || instanceId);
     } catch (_err) {
       // silent — transient network failures are expected
